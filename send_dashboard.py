@@ -373,7 +373,7 @@ if page == "📊 전체 요약":
         x=monthly["month"], y=[tfm(v) for v in monthly[col]],
         mode="lines+markers", line=dict(color=color_map[metric_opt], width=2),
         marker=dict(size=4), fill="tozeroy",
-        fillcolor=color_map[metric_opt].replace(")",",0.1)").replace("rgb","rgba") if color_map[metric_opt].startswith("rgb") else color_map[metric_opt]+"18",
+        fillcolor="rgba(79,143,255,0.1)" if metric_opt=="거래액 (억원)" else ("rgba(237,137,54,0.1)" if metric_opt=="인당 발송 건수" else "rgba(245,101,101,0.1)"),
         name=metric_opt,
     ))
     fig.update_layout(**CHART_THEME, height=280,
@@ -555,11 +555,13 @@ CTR {first_q.avgCtr*100:.2f}% → {last_q.avgCtr*100:.2f}%({ctr_chg:+.0f}%),
             "건당 거래액 (원)":  ("avgRps",     lambda x: round(x,0), "원",  COLORS["green"]),
         }
         col, tfm, unit, clr = ts_col_map[ts_opt]
+        h = clr.lstrip("#"); r,g,b = int(h[0:2],16),int(h[2:4],16),int(h[4:6],16)
+        fill_rgba = f"rgba({r},{g},{b},0.1)"
         fig = go.Figure(go.Scatter(
             x=list(quarterly["quarter"]), y=[tfm(v) for v in quarterly[col]],
             mode="lines+markers", line=dict(color=clr, width=2),
             marker=dict(size=5, color=clr), fill="tozeroy",
-            fillcolor=clr+"18",
+            fillcolor=fill_rgba,
         ))
         fig.update_layout(**CHART_THEME, height=280, yaxis_ticksuffix=unit,
                           xaxis=dict(**CHART_THEME["xaxis"], tickangle=-30))
