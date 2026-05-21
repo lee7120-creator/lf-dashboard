@@ -14,7 +14,6 @@ if uploaded is None:
 
 def load_data(file):
     xl = pd.read_excel(file, sheet_name="세션", header=None)
-
     row0 = xl.iloc[0].tolist()
     col_to_category = {i: row0[i] for i in range(1, len(row0)) if pd.notna(row0[i])}
 
@@ -67,24 +66,29 @@ st.divider()
 tab1, tab2, tab3 = st.tabs(["📈 월별 추이", "📊 채널 비중", "🔍 직접·PUSH 상세"])
 
 with tab1:
+    # long format으로 변환
+    long1 = filtered.melt(id_vars="ym", value_vars=categories, var_name="채널", value_name="세션수")
     fig = px.line(
-        filtered, x="ym", y=categories,
+        long1, x="ym", y="세션수", color="채널",
         title="채널별 월별 세션 추이",
-        labels={"value": "세션 수", "variable": "채널", "ym": "월"},
+        labels={"ym": "월"},
     )
     fig.update_layout(height=420, hovermode="x unified")
     st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
+    # 비중 계산 후 long format
     filtered_pct = filtered.copy()
     for cat in categories:
-        filtered_pct[cat] = filtered_pct[cat] / filtered_pct["합계"] * 100
+        filtered_pct[cat] = (filtered_pct[cat] / filtered_pct["합계"] * 100).round(1)
+    long2 = filtered_pct.melt(id_vars="ym", value_vars=categories, var_name="채널", value_name="비중")
     fig2 = px.bar(
-        filtered_pct, x="ym", y=categories,
+        long2, x="ym", y="비중", color="채널",
         title="채널별 세션 비중 (%)",
-        labels={"value": "비중(%)", "variable": "채널", "ym": "월"},
+        labels={"ym": "월"},
+        barmode="stack",
     )
-    fig2.update_layout(height=420, barmode="stack", hovermode="x unified")
+    fig2.update_layout(height=420, hovermode="x unified")
     st.plotly_chart(fig2, use_container_width=True)
 
 with tab3:
