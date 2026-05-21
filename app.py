@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="LF몰 세션 대시보드", layout="wide")
@@ -41,18 +40,18 @@ def load_data(file):
         row["합계"] = sum(row[c] for c in categories)
         result_rows.append(row)
 
-    df = pd.DataFrame(result_rows)
-    df = df.sort_values("ym").reset_index(drop=True)
+    df = pd.DataFrame(result_rows).sort_values("ym").reset_index(drop=True)
     return df
 
 df = load_data(uploaded)
 categories = ["직접", "광고", "PUSH", "EP", "미디어커머스", "브랜드광고", "제휴"]
+colors = ["#185FA5", "#639922", "#BA7517", "#3C3489", "#888780", "#D85A30", "#0F6E56"]
 
 months = df["ym"].tolist()
 col_f1, col_f2 = st.columns(2)
 start = col_f1.selectbox("시작 월", months, index=0)
 end = col_f2.selectbox("종료 월", months, index=len(months)-1)
-filtered = df[(df["ym"] >= start) & (df["ym"] <= end)].copy()
+filtered = df[(df["ym"] >= start) & (df["ym"] <= end)].copy().reset_index(drop=True)
 
 total = filtered["합계"].sum()
 c1, c2, c3, c4 = st.columns(4)
@@ -66,43 +65,53 @@ st.divider()
 tab1, tab2, tab3 = st.tabs(["📈 월별 추이", "📊 채널 비중", "🔍 직접·PUSH 상세"])
 
 with tab1:
-    # long format으로 변환
-    long1 = filtered.melt(id_vars="ym", value_vars=categories, var_name="채널", value_name="세션수")
-    fig = px.line(
-        long1, x="ym", y="세션수", color="채널",
+    fig1 = go.Figure()
+    for i, cat in enumerate(categories):
+        fig1.add_trace(go.Scatter(
+            x=filtered["ym"], y=filtered[cat],
+            name=cat, mode="lines",
+            line=dict(color=colors[i], width=2)
+        ))
+    fig1.update_layout(
         title="채널별 월별 세션 추이",
-        labels={"ym": "월"},
+        height=420, hovermode="x unified",
+        xaxis_title="월", yaxis_title="세션 수"
     )
-    fig.update_layout(height=420, hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig1, use_container_width=True)
 
 with tab2:
-    # 비중 계산 후 long format
-    filtered_pct = filtered.copy()
-    for cat in categories:
-        filtered_pct[cat] = (filtered_pct[cat] / filtered_pct["합계"] * 100).round(1)
-    long2 = filtered_pct.melt(id_vars="ym", value_vars=categories, var_name="채널", value_name="비중")
-    fig2 = px.bar(
-        long2, x="ym", y="비중", color="채널",
+    fig2 = go.Figure()
+    for i, cat in enumerate(categories):
+        pct = (filtered[cat] / filtered["합계"] * 100).round(1)
+        fig2.add_trace(go.Bar(
+            x=filtered["ym"], y=pct,
+            name=cat, marker_color=colors[i]
+        ))
+    fig2.update_layout(
         title="채널별 세션 비중 (%)",
-        labels={"ym": "월"},
-        barmode="stack",
+        barmode="stack", height=420,
+        hovermode="x unified",
+        xaxis_title="월", yaxis_title="비중(%)"
     )
-    fig2.update_layout(height=420, hovermode="x unified")
     st.plotly_chart(fig2, use_container_width=True)
 
 with tab3:
     fig3 = go.Figure()
     fig3.add_trace(go.Scatter(
         x=filtered["ym"], y=filtered["직접"],
-        name="직접", fill="tozeroy", mode="lines"
+        name="직접", fill="tozeroy", mode="lines",
+        line=dict(color=colors[0], width=2)
     ))
     fig3.add_trace(go.Scatter(
         x=filtered["ym"], y=filtered["PUSH"],
         name="PUSH", fill="tozeroy", mode="lines",
-        line=dict(dash="dash")
+        line=dict(color=colors[2], width=2, dash="dash")
     ))
-    fig3.update_layout(title="직접 vs PUSH 세션 추이", height=420, hovermode="x unified")
+    fig3.update_layout(
+        title="직접 vs PUSH 세션 추이",
+        height=420, hovermode="x unified",
+        xaxis_title="월", yaxis_title="세션 수"
+    )
     st.plotly_chart(fig3, use_container_width=True)
 
 st.divider()
