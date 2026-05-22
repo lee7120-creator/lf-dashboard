@@ -15,18 +15,18 @@ INSIGHT_FILE = "insights_store.json"
 
 st.markdown("""
 <style>
-[data-testid="stAppViewContainer"]{background:#0f1117}
-[data-testid="stSidebar"]{background:#1a1d27;border-right:1px solid #2a2d3a}
-[data-testid="stMetric"]{background:#1e2130;border-radius:8px;padding:12px 16px;border:1px solid #2a2d3a}
-[data-testid="stMetricLabel"]{color:#8a92a0!important;font-size:12px!important}
-[data-testid="stMetricValue"]{color:#f0f2f5!important;font-size:20px!important}
+[data-testid="stAppViewContainer"]{background:#f8f9fc}
+[data-testid="stSidebar"]{background:#ffffff;border-right:1px solid #e2e8f0}
+[data-testid="stMetric"]{background:#ffffff;border-radius:8px;padding:12px 16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+[data-testid="stMetricLabel"]{color:#64748b!important;font-size:12px!important}
+[data-testid="stMetricValue"]{color:#1e293b!important;font-size:20px!important}
 .vg{background:rgba(72,187,120,.08);border-left:3px solid #48bb78;border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;color:#86efac;font-size:13px;line-height:1.65}
 .vr{background:rgba(245,101,101,.08);border-left:3px solid #f56565;border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;color:#fca5a5;font-size:13px;line-height:1.65}
 .va{background:rgba(237,137,54,.08);border-left:3px solid #ed8936;border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;color:#fcd34d;font-size:13px;line-height:1.65}
 .vb{background:rgba(79,143,255,.08);border-left:3px solid #4f8fff;border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;color:#93c5fd;font-size:13px;line-height:1.65}
-.sdiv{border-top:1px solid #2a2d3a;margin:22px 0}
+.sdiv{border-top:1px solid #e2e8f0;margin:22px 0}
 .stat-label{font-size:11px;color:#545c6a;margin-bottom:3px;font-weight:500;letter-spacing:.04em;text-transform:uppercase}
-.appendix{background:#13161d;border:1px solid #2a2d3a;border-radius:8px;padding:14px 18px;margin-top:12px}
+.appendix{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin-top:12px}
 </style>
 """, unsafe_allow_html=True)
 
@@ -46,13 +46,13 @@ def clr(n): return PALETTE[n][0]
 def cbg(n): return PALETTE[n][1]
 
 def base_layout(h=280, ysuffix="", title=""):
-    return dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#8a92a0",size=11), margin=dict(l=10,r=10,t=36,b=10),
+    return dict(paper_bgcolor="rgba(248,249,252,0)", plot_bgcolor="rgba(248,249,252,0)",
+                font=dict(color="#475569",size=11), margin=dict(l=10,r=10,t=36,b=10),
                 height=h, showlegend=False, title=dict(text=title,font=dict(color="#c0c8d8",size=13)),
-                xaxis=dict(gridcolor="rgba(0,0,0,0)",linecolor="#2a2d3a",
-                           tickfont=dict(color="#8a92a0",size=11)),
-                yaxis=dict(gridcolor="#1e2130",linecolor="#2a2d3a",
-                           tickfont=dict(color="#8a92a0",size=11),ticksuffix=ysuffix))
+                xaxis=dict(gridcolor="rgba(0,0,0,0)",linecolor="#e2e8f0",
+                           tickfont=dict(color="#64748b",size=11)),
+                yaxis=dict(gridcolor="#f1f5f9",linecolor="#e2e8f0",
+                           tickfont=dict(color="#64748b",size=11),ticksuffix=ysuffix))
 
 # ══════════════════════════════════════════════════════
 # 인사이트 저장소
@@ -278,6 +278,125 @@ def insight_editor(page_key, default_lines):
     st.session_state.insights = store
     save_insights(store)
 
+
+# ══════════════════════════════════════════════════════
+# 편집 가능 텍스트 시스템
+# ══════════════════════════════════════════════════════
+if "editable_texts" not in st.session_state:
+    st.session_state.editable_texts = load_insights().get("__texts__", {})
+
+def editable_text(key, default, tag="p", style=""):
+    """클릭하면 인라인 편집 가능한 텍스트"""
+    texts = st.session_state.editable_texts
+    if key not in texts:
+        texts[key] = default
+    edit_key = f"__editing_{key}__"
+    if edit_key not in st.session_state:
+        st.session_state[edit_key] = False
+
+    if st.session_state[edit_key]:
+        col1, col2 = st.columns([10,1])
+        new_val = col1.text_area("", texts[key], key=f"ta_{key}", height=80, label_visibility="collapsed")
+        if col2.button("✓", key=f"save_{key}"):
+            texts[key] = new_val
+            st.session_state[edit_key] = False
+            # 저장
+            all_data = load_insights()
+            all_data["__texts__"] = texts
+            save_insights(all_data)
+            st.session_state.editable_texts = texts
+            st.rerun()
+    else:
+        rendered = texts[key]
+        st.markdown(f'<{tag} style="cursor:pointer;{style}" title="클릭하여 편집">{rendered}</{tag}>', unsafe_allow_html=True)
+        if st.button("✏️", key=f"edit_{key}", help="편집"):
+            st.session_state[edit_key] = True
+            st.rerun()
+    return texts[key]
+
+# ══════════════════════════════════════════════════════
+# 기간 비교 헬퍼
+# ══════════════════════════════════════════════════════
+COMPARE_OPTS = ["전년비 (YoY)", "전분기비 (QoQ)", "전월비 (MoM)", "전주비 (WoW)", "전체 기간 처음↔끝"]
+
+def get_compare_periods(df_all, mode):
+    """비교 기준 기간과 현재 기간 반환 → (df_current, df_prev, label_cur, label_prev)"""
+    df_all = df_all.sort_values("date")
+    last_date = df_all["date"].max()
+
+    if mode == "전년비 (YoY)":
+        cur  = df_all[df_all["date"].dt.year == last_date.year]
+        prev = df_all[df_all["date"].dt.year == last_date.year - 1]
+        return cur, prev, str(last_date.year)+"년", str(last_date.year-1)+"년"
+    elif mode == "전분기비 (QoQ)":
+        cur_q  = pd.Period(last_date, "Q")
+        prev_q = cur_q - 1
+        cur  = df_all[df_all["date"].dt.to_period("Q") == cur_q]
+        prev = df_all[df_all["date"].dt.to_period("Q") == prev_q]
+        return cur, prev, str(cur_q), str(prev_q)
+    elif mode == "전월비 (MoM)":
+        cur_m  = pd.Period(last_date, "M")
+        prev_m = cur_m - 1
+        cur  = df_all[df_all["date"].dt.to_period("M") == cur_m]
+        prev = df_all[df_all["date"].dt.to_period("M") == prev_m]
+        return cur, prev, str(cur_m), str(prev_m)
+    elif mode == "전주비 (WoW)":
+        cur_w  = last_date.isocalendar()[1]
+        prev_w = cur_w - 1
+        cur_y  = last_date.year
+        cur  = df_all[(df_all["date"].dt.isocalendar().week == cur_w) & (df_all["date"].dt.year == cur_y)]
+        prev = df_all[(df_all["date"].dt.isocalendar().week == prev_w) & (df_all["date"].dt.year == cur_y)]
+        return cur, prev, f"{cur_y}W{cur_w}", f"{cur_y}W{prev_w}"
+    else:  # 전체
+        mid = df_all["date"].median()
+        cur  = df_all[df_all["date"] >= mid]
+        prev = df_all[df_all["date"] <  mid]
+        return cur, prev, "후반기", "전반기"
+
+def compare_table(df_cur, df_prev, label_cur, label_prev, keys=None):
+    """기간 비교 테이블 생성"""
+    if keys is None:
+        keys = ["perSend","revenue","rps","totalSend","customers","ctr",
+                "purchaseRate","purchaseCust","purchaseCnt","avgOrderVal","unitPrice",
+                "uniqueInflow","totalInflow","visitPerPerson","rpc"]
+    rows = []
+    for k in keys:
+        try:
+            v_cur  = df_cur[k].mean()  if len(df_cur)  else np.nan
+            v_prev = df_prev[k].mean() if len(df_prev) else np.nan
+            chg = pct(v_prev, v_cur) if not np.isnan(v_prev) and v_prev!=0 else np.nan
+            rows.append({
+                "지표": METRIC_LABELS.get(k, k),
+                label_prev: fmt_val(k, v_prev),
+                label_cur:  fmt_val(k, v_cur),
+                "증감율": f"{chg:+.1f}%" if not np.isnan(chg) else "–",
+                "_chg": chg, "_k": k,
+            })
+        except: pass
+    df_out = pd.DataFrame(rows)
+    return df_out
+
+def styled_compare(df_tbl):
+    """증감율에 색상 적용"""
+    positive_good = {"revenue","purchaseCust","purchaseCnt","ctr","purchaseRate",
+                     "rpc","avgOrderVal","uniqueInflow","totalInflow"}
+    def color_row(row):
+        chg = row.get("_chg", np.nan)
+        k   = row.get("_k","")
+        if np.isnan(chg): return [""] * len(row)
+        good = (chg > 0) == (k in positive_good)
+        color = "color: #16a34a; font-weight:600" if good else "color: #dc2626; font-weight:600"
+        result = [""] * len(row)
+        result[list(row.index).index("증감율")] = color
+        return result
+
+    display = df_tbl.drop(columns=["_chg","_k"], errors="ignore")
+    try:
+        return display.style.apply(color_row, axis=1)
+    except:
+        return display
+
+
 # ══════════════════════════════════════════════════════
 # Appendix
 # ══════════════════════════════════════════════════════
@@ -447,7 +566,7 @@ def metric_color(k):
 # PAGE: 전체 요약
 # ══════════════════════════════════════════════════════
 if page == "🏠 전체 요약":
-    st.title("전체 요약")
+    _t = editable_text("title_overview", "전체 요약", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption(f"{meta['start']} ~ {meta['end']} ({meta['days']}일 전체 / 필터 적용: {len(df_f)}일)")
 
     kpi_keys = ["perSend","revenue","ctr","purchaseRate","rps","purchaseCust","avgOrderVal","totalSend"]
@@ -498,9 +617,22 @@ if page == "🏠 전체 요약":
         for k in keys:
             if len(quarterly_f) >= 2:
                 chg = pct(fq[k], lq[k])
-                rows.append({"지표":METRIC_LABELS[k], f"{fq.quarter}":fmt_val(k,fq[k]),
-                              f"{lq.quarter}":fmt_val(k,lq[k]), "변화율":f"{chg:+.1f}%"})
+                rows.append({"지표":METRIC_LABELS[k], f"{fq['quarter']}":fmt_val(k,fq[k]),
+                              f"{lq['quarter']}":fmt_val(k,lq[k]), "변화율":f"{chg:+.1f}%"})
         if rows: col_w.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+    # ── 기간 비교 전체 테이블 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("📊 기간 비교 전체 지표")
+    cmp_mode = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ov")
+    df_cur, df_prev, lbl_cur, lbl_prev = get_compare_periods(G["df"], cmp_mode)
+    if len(df_cur) and len(df_prev):
+        tbl_all = compare_table(df_cur, df_prev, lbl_cur, lbl_prev)
+        st.dataframe(styled_compare(tbl_all), use_container_width=True, hide_index=True)
+        show_appendix(tbl_all.drop(columns=["_chg","_k"],errors="ignore"), f"기간비교_{cmp_mode}")
+    else:
+        st.info("비교 가능한 이전 기간 데이터가 없습니다.")
 
     stat_explainer()
     insight_editor("전체요약", [
@@ -513,12 +645,12 @@ if page == "🏠 전체 요약":
 # PAGE: 발송 빈도 효율
 # ══════════════════════════════════════════════════════
 elif page == "📨 발송 빈도 효율":
-    st.title("발송 빈도 효율 분석")
+    _t = editable_text("title_freq", "발송 빈도 효율 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
 
     q1v, q5v = quintile.iloc[0], quintile.iloc[4]
     st.markdown(f"""
 <div class="vr"><strong>❌ "많이 보낼수록 매출이 오른다" — 기각</strong><br>
-Q1(평균 {q1v.avgTotalSend/1e6:.2f}M건) 거래액 {q1v.revenue/1e8:.3f}억 vs Q5({q5v.avgTotalSend/1e6:.2f}M건) {q5v.revenue/1e8:.3f}억.
+Q1(평균 {q1v["totalSend"]/1e6:.2f}M건) 거래액 {q1v["revenue"]/1e8:.3f}억 vs Q5({q5v["totalSend"]/1e6:.2f}M건) {q5v["revenue"]/1e8:.3f}억.
 2배 이상 더 보내도 매출은 오히려 낮습니다.</div>
 <div class="va"><strong>⚠️ "발송 줄이면 매출 오른다" — 과잉 주장</strong><br>요일 통제 후 방향이 일관되지 않아 인과 주장 불가입니다.</div>
 <div class="vg"><strong>✅ 입증 가능: 과잉 발송은 비용만 늘린다</strong><br>발송건당 거래액은 구간 높아질수록 단조 감소합니다.</div>
@@ -538,12 +670,12 @@ Q1(평균 {q1v.avgTotalSend/1e6:.2f}M건) 거래액 {q1v.revenue/1e8:.3f}억 vs 
         fig3 = go.Figure(go.Bar(
             x=labels, y=yv2,
             marker_color=cbg(cn2), marker_line_color=clr(cn2), marker_line_width=1.5,
-            text=text2, textposition="outside", textfont=dict(color="#8a92a0",size=11),
+            text=text2, textposition="outside", textfont=dict(color="#64748b",size=11),
         ))
         layout3 = base_layout(300, title=f"구간별 {sel_m2}")
         for i,row in buckets_f.iterrows():
             fig3.add_annotation(x=str(row["bucket_f"]),y=0,text=f"n={row['n']}일",
-                showarrow=False,yanchor="top",yshift=-16,font=dict(size=10,color="#545c6a"))
+                showarrow=False,yanchor="top",yshift=-16,font=dict(size=10,color="#94a3b8"))
         fig3.update_layout(**layout3)
         st.plotly_chart(fig3, use_container_width=True)
         show_appendix(buckets_f[["bucket_f","n",sel_k2]].rename(columns={"bucket_f":"구간",sel_k2:sel_m2}), f"구간별_{sel_m2}")
@@ -565,13 +697,25 @@ Q1(평균 {q1v.avgTotalSend/1e6:.2f}M건) 거래액 {q1v.revenue/1e8:.3f}억 vs 
             line=dict(color=clr("amber"),width=2),marker=dict(size=6,color=clr("amber"))))
         layout4 = base_layout(280, title="5분위 비교")
         layout4["showlegend"] = True
-        layout4["legend"]  = dict(orientation="h",y=1.05,bgcolor="rgba(0,0,0,0)",font=dict(color="#8a92a0"))
+        layout4["legend"]  = dict(orientation="h",y=1.05,bgcolor="rgba(0,0,0,0)",font=dict(color="#64748b"))
         layout4["yaxis"]["title"] = ym1_label
         layout4["yaxis2"] = dict(overlaying="y",side="right",title=ym2_label,
-                                  tickfont=dict(color="#8a92a0",size=11),gridcolor="rgba(0,0,0,0)")
+                                  tickfont=dict(color="#64748b",size=11),gridcolor="rgba(0,0,0,0)")
         fig4.update_layout(**layout4)
         st.plotly_chart(fig4, use_container_width=True)
         show_appendix(quintile[["label",ym1,ym2]].rename(columns={"label":"5분위",ym1:ym1_label,ym2:ym2_label}), "5분위분석")
+
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("📊 기간 비교 — 발송 효율")
+    cmp_mode_fr = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_fr")
+    df_cur_fr, df_prev_fr, lbl_cur_fr, lbl_prev_fr = get_compare_periods(G["df"], cmp_mode_fr)
+    if len(df_cur_fr) and len(df_prev_fr):
+        tbl_fr = compare_table(df_cur_fr, df_prev_fr, lbl_cur_fr, lbl_prev_fr,
+                               keys=["perSend","totalSend","customers","rps","revenue",
+                                     "ctr","purchaseRate","purchaseCnt"])
+        st.dataframe(styled_compare(tbl_fr), use_container_width=True, hide_index=True)
+        show_appendix(tbl_fr.drop(columns=["_chg","_k"],errors="ignore"), f"발송효율비교_{cmp_mode_fr}")
 
     stat_explainer()
     insight_editor("발송빈도효율", [
@@ -584,11 +728,11 @@ Q1(평균 {q1v.avgTotalSend/1e6:.2f}M건) 거래액 {q1v.revenue/1e8:.3f}억 vs 
 # PAGE: 피로도 시계열
 # ══════════════════════════════════════════════════════
 elif page == "📈 피로도 시계열":
-    st.title("피로도 시계열 분석")
+    _t = editable_text("title_ts", "피로도 시계열 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("요일 통제 후 잔차 회귀 기준")
 
-    sc = pct(fq.avgSends if hasattr(fq,"avgSends") else fq.perSend, lq.avgSends if hasattr(lq,"avgSends") else lq.perSend)
-    cc = pct(fq.avgCtr if hasattr(fq,"avgCtr") else fq.ctr, lq.avgCtr if hasattr(lq,"avgCtr") else lq.ctr)
+    sc = pct(fq["perSend"], lq["perSend"])
+    cc = pct(fq["ctr"], lq["ctr"])
 
     st.markdown(f"""
 <div class="vg"><strong>✅ 피로도 누적 가설 — 요일 통제 후 p&lt;0.001로 입증됨</strong><br>
@@ -634,11 +778,11 @@ elif page == "📈 피로도 시계열":
             marker=dict(size=5,color=clr("red"))))
         layout6 = base_layout(280, title="발송 vs 효율 (이중축)")
         layout6["showlegend"] = True
-        layout6["legend"] = dict(orientation="h",y=1.05,bgcolor="rgba(0,0,0,0)",font=dict(color="#8a92a0"))
+        layout6["legend"] = dict(orientation="h",y=1.05,bgcolor="rgba(0,0,0,0)",font=dict(color="#64748b"))
         layout6["yaxis"]["title"]    = "인당발송(건)"
         layout6["yaxis"]["ticksuffix"] = "건"
         layout6["yaxis2"] = dict(overlaying="y",side="right",title=dual_sel,
-                                  tickfont=dict(color="#8a92a0",size=11),gridcolor="rgba(0,0,0,0)")
+                                  tickfont=dict(color="#64748b",size=11),gridcolor="rgba(0,0,0,0)")
         fig6.update_layout(**layout6)
         st.plotly_chart(fig6, use_container_width=True)
         show_appendix(quarterly_f[["quarter","perSend",dual_k]].rename(
@@ -656,6 +800,17 @@ elif page == "📈 피로도 시계열":
             f"R²={v['r2']:.3f}  {sig_label(v['p'])}",
             delta_color="inverse" if inv else "normal")
 
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("📊 기간 비교 — 효율 지표")
+    cmp_mode_ts = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ts")
+    df_cur_ts, df_prev_ts, lbl_cur_ts, lbl_prev_ts = get_compare_periods(G["df"], cmp_mode_ts)
+    if len(df_cur_ts) and len(df_prev_ts):
+        tbl_ts = compare_table(df_cur_ts, df_prev_ts, lbl_cur_ts, lbl_prev_ts,
+                               keys=["perSend","ctr","purchaseRate","rps","revenue","rpc"])
+        st.dataframe(styled_compare(tbl_ts), use_container_width=True, hide_index=True)
+        show_appendix(tbl_ts.drop(columns=["_chg","_k"],errors="ignore"), f"피로도비교_{cmp_mode_ts}")
+
     stat_explainer()
     insight_editor("피로도시계열", [
         "인당 발송이 늘어난 기간과 효율이 하락한 기간이 일치함 (요일 통제 후 p<0.001)",
@@ -667,7 +822,7 @@ elif page == "📈 피로도 시계열":
 # PAGE: 인과 검증
 # ══════════════════════════════════════════════════════
 elif page == "🔬 인과 검증":
-    st.title("인과 검증")
+    _t = editable_text("title_causal", "인과 검증", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.markdown("""
 <div class="vr"><strong>❌ "발송 줄이면 매출 오른다" — 인과 근거 없음</strong><br>요일 통제 후 평일 중 절반 이상에서 방향이 일관되지 않습니다.</div>
 <div class="va"><strong>⚠️ "많이 보내면 매출 오른다"도 — 입증 불가</strong><br>요일별 상관계수 방향이 혼재합니다.</div>
@@ -702,7 +857,7 @@ elif page == "🔬 인과 검증":
         marker=dict(size=6,color=clr("red"))))
     layout7 = base_layout(260, title="상관계수 (발송 vs 지표)")
     layout7["showlegend"] = True
-    layout7["legend"] = dict(orientation="h",y=1.1,bgcolor="rgba(0,0,0,0)",font=dict(color="#8a92a0"))
+    layout7["legend"] = dict(orientation="h",y=1.1,bgcolor="rgba(0,0,0,0)",font=dict(color="#64748b"))
     layout7["yaxis"]["range"] = [-1, 0.5]
     layout7["yaxis"]["title"] = "상관계수"
     layout7["shapes"] = [dict(type="line",x0=-0.5,x1=len(dc_corr)-0.5,y0=0,y1=0,
@@ -722,6 +877,16 @@ elif page == "🔬 인과 검증":
 • 4주 이상, 거래액·CTR·구매율·수신거부율 측정
 </div>
 """, unsafe_allow_html=True)
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("📊 기간 비교 — 인과 관련 지표")
+    cmp_mode_ca = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ca")
+    df_cur_ca, df_prev_ca, lbl_cur_ca, lbl_prev_ca = get_compare_periods(G["df"], cmp_mode_ca)
+    if len(df_cur_ca) and len(df_prev_ca):
+        tbl_ca = compare_table(df_cur_ca, df_prev_ca, lbl_cur_ca, lbl_prev_ca,
+                               keys=["perSend","revenue","rps","ctr","purchaseRate","rpc"])
+        st.dataframe(styled_compare(tbl_ca), use_container_width=True, hide_index=True)
+
     stat_explainer()
     insight_editor("인과검증", [
         "요일 통제 후 발송 vs 거래액 상관계수: 방향 불일치 → 인과 주장 불가",
@@ -733,7 +898,7 @@ elif page == "🔬 인과 검증":
 # PAGE: 지표 상관 분석
 # ══════════════════════════════════════════════════════
 elif page == "📊 지표 상관 분석":
-    st.title("지표 상관 분석")
+    _t = editable_text("title_corr", "지표 상관 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("두 지표 간의 관계를 산점도와 상관계수로 확인합니다.")
 
     ca, cb = st.columns(2)
@@ -779,7 +944,7 @@ elif page == "📊 지표 상관 분석":
         corr_mat.columns = mat_labels; corr_mat.index = mat_labels
         fig9 = go.Figure(go.Heatmap(
             z=corr_mat.values.tolist(), x=mat_labels, y=mat_labels,
-            colorscale=[[0,"rgba(245,101,101,0.8)"],[0.5,"rgba(30,33,48,1)"],[1,"rgba(79,143,255,0.8)"]],
+            colorscale=[[0,"rgba(245,101,101,0.8)"],[0.5,"rgba(248,249,252,1)"],[1,"rgba(79,143,255,0.8)"]],
             zmid=0, text=corr_mat.round(2).values.tolist(), texttemplate="%{text}",
             showscale=True,
         ))
@@ -788,6 +953,16 @@ elif page == "📊 지표 상관 분석":
         fig9.update_layout(**layout9)
         st.plotly_chart(fig9, use_container_width=True)
         show_appendix(corr_mat.reset_index().rename(columns={"index":"지표"}), "상관매트릭스")
+
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("📊 기간 비교 — 전 지표")
+    cmp_mode_co = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_co")
+    df_cur_co, df_prev_co, lbl_cur_co, lbl_prev_co = get_compare_periods(G["df"], cmp_mode_co)
+    if len(df_cur_co) and len(df_prev_co):
+        tbl_co = compare_table(df_cur_co, df_prev_co, lbl_cur_co, lbl_prev_co)
+        st.dataframe(styled_compare(tbl_co), use_container_width=True, hide_index=True)
+        show_appendix(tbl_co.drop(columns=["_chg","_k"],errors="ignore"), f"전지표비교_{cmp_mode_co}")
 
     stat_explainer()
     insight_editor("지표상관분석", [
@@ -799,7 +974,7 @@ elif page == "📊 지표 상관 분석":
 # PAGE: 요일별 패턴
 # ══════════════════════════════════════════════════════
 elif page == "📅 요일별 패턴":
-    st.title("요일별 패턴 분석")
+    _t = editable_text("title_dow", "요일별 패턴 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
 
     sel_dow_m = st.selectbox("분석 지표", metric_select_list, index=metric_select_list.index("거래액"), key="dow_m")
     dow_k = key_from_label(sel_dow_m)
@@ -813,7 +988,7 @@ elif page == "📅 요일별 패턴":
             x=dow_agg["요일"].tolist(), y=dow_agg[dow_k].tolist(),
             marker_color=cbg("blue"), marker_line_color=clr("blue"), marker_line_width=1.5,
             text=[fmt_val(dow_k,v) for v in dow_agg[dow_k]], textposition="outside",
-            textfont=dict(color="#8a92a0",size=11),
+            textfont=dict(color="#64748b",size=11),
         ))
         layout10 = base_layout(280, title=f"요일별 {sel_dow_m} 평균")
         fig10.update_layout(**layout10)
@@ -831,13 +1006,29 @@ elif page == "📅 요일별 패턴":
         heat_norm.columns = heat_labels
         fig11 = go.Figure(go.Heatmap(
             z=heat_norm.values.tolist(), x=heat_labels, y=list(heat_norm.index),
-            colorscale=[[0,"rgba(245,101,101,0.8)"],[0.5,"rgba(30,33,48,1)"],[1,"rgba(79,143,255,0.8)"]],
+            colorscale=[[0,"rgba(245,101,101,0.8)"],[0.5,"rgba(248,249,252,1)"],[1,"rgba(79,143,255,0.8)"]],
             zmid=0, text=heat_df.round(2).values.tolist(), texttemplate="%{text}",
         ))
         layout11 = base_layout(280, title="요일 × 지표 (표준화)")
         fig11.update_layout(**layout11)
         st.plotly_chart(fig11, use_container_width=True)
         show_appendix(heat_df.reset_index().rename(columns={"dow":"요일"}), "요일별히트맵")
+
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("📊 기간 비교 — 요일별 성과")
+    cmp_mode_dw = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_dw")
+    df_cur_dw, df_prev_dw, lbl_cur_dw, lbl_prev_dw = get_compare_periods(G["df"], cmp_mode_dw)
+    DOW_KR2 = {0:"월",1:"화",2:"수",3:"목",4:"금",5:"토",6:"일"}
+    if len(df_cur_dw) and len(df_prev_dw) and dow_k:
+        dw_rows = []
+        for d in range(7):
+            vc = df_cur_dw[df_cur_dw["dow"]==d][dow_k].mean()
+            vp = df_prev_dw[df_prev_dw["dow"]==d][dow_k].mean()
+            chg = pct(vp, vc) if not np.isnan(vp) and vp!=0 else np.nan
+            dw_rows.append({"요일":DOW_KR2[d]+"요일", lbl_prev_dw:fmt_val(dow_k,vp),
+                             lbl_cur_dw:fmt_val(dow_k,vc), "증감율":f"{chg:+.1f}%" if not np.isnan(chg) else "–"})
+        st.dataframe(pd.DataFrame(dw_rows), use_container_width=True, hide_index=True)
 
     stat_explainer()
     insight_editor("요일별패턴", [
@@ -849,7 +1040,7 @@ elif page == "📅 요일별 패턴":
 # PAGE: 발송 최적 구간
 # ══════════════════════════════════════════════════════
 elif page == "🎯 발송 최적 구간":
-    st.title("발송 최적 구간 분석")
+    _t = editable_text("title_opt", "발송 최적 구간 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("거래액·효율·구매율을 종합한 최적 발송 구간을 찾습니다.")
 
     if len(buckets_f):
@@ -884,7 +1075,7 @@ elif page == "🎯 발송 최적 구간":
             marker_color=[clr("green") if i==best_idx else cbg("blue") for i in range(len(scored))],
             marker_line_color=clr("blue"), marker_line_width=1.5,
             text=[f"{v:.3f}" for v in scored["score"]],
-            textposition="outside", textfont=dict(color="#8a92a0",size=11),
+            textposition="outside", textfont=dict(color="#64748b",size=11),
         ))
         layout12 = base_layout(280, title="구간별 종합 점수 (가중 합산)")
         fig12.update_layout(**layout12)
@@ -892,6 +1083,16 @@ elif page == "🎯 발송 최적 구간":
         show_appendix(scored[["bucket_f","n","revenue","rps","ctr","purchaseRate","score"]].rename(
             columns={"bucket_f":"구간","revenue":"거래액","rps":"건당거래","ctr":"CTR",
                      "purchaseRate":"구매율","score":"종합점수"}), "최적구간분석")
+
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("📊 기간 비교 — 구간 효과")
+    cmp_mode_op = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_op")
+    df_cur_op, df_prev_op, lbl_cur_op, lbl_prev_op = get_compare_periods(G["df"], cmp_mode_op)
+    if len(df_cur_op) and len(df_prev_op):
+        tbl_op = compare_table(df_cur_op, df_prev_op, lbl_cur_op, lbl_prev_op,
+                               keys=["perSend","revenue","rps","ctr","purchaseRate","avgOrderVal"])
+        st.dataframe(styled_compare(tbl_op), use_container_width=True, hide_index=True)
 
     stat_explainer()
     insight_editor("발송최적구간", [
@@ -903,7 +1104,7 @@ elif page == "🎯 발송 최적 구간":
 # PAGE: 한계수익 분석
 # ══════════════════════════════════════════════════════
 elif page == "📉 한계수익 분석":
-    st.title("한계수익 분석")
+    _t = editable_text("title_lm", "한계수익 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("발송 1건 추가 시 거래액·클릭이 얼마나 증가/감소하는지 분석합니다.")
 
     sel_lm = st.selectbox("분석 지표", metric_select_list, index=metric_select_list.index("발송건당 거래액"), key="lm_sel")
@@ -920,7 +1121,7 @@ elif page == "📉 한계수익 분석":
             x=bk["bucket_str"].tolist(), y=bk[lm_k].tolist(),
             marker_color=cbg("green"), marker_line_color=clr("green"), marker_line_width=1.5,
             text=[fmt_val(lm_k,v) for v in bk[lm_k]], textposition="outside",
-            textfont=dict(color="#8a92a0",size=11),
+            textfont=dict(color="#64748b",size=11),
         ))
         layout13 = base_layout(260, title=f"구간별 {sel_lm}")
         fig13.update_layout(**layout13)
@@ -933,7 +1134,7 @@ elif page == "📉 한계수익 분석":
             marker_line_color=[clr("green") if v>0 else clr("red") for v in bk["marginal"].fillna(0)],
             marker_line_width=1.5,
             text=[f"{v:+.1f}" if not np.isnan(v) else "" for v in bk["marginal"]],
-            textposition="outside", textfont=dict(color="#8a92a0",size=11),
+            textposition="outside", textfont=dict(color="#64748b",size=11),
         ))
         layout14 = base_layout(260, title=f"한계 변화량 (구간 간 차이)")
         layout14["shapes"] = [dict(type="line",x0=-0.5,x1=len(bk)-0.5,y0=0,y1=0,
@@ -942,6 +1143,16 @@ elif page == "📉 한계수익 분석":
         c2_lm.plotly_chart(fig14, use_container_width=True)
         show_appendix(bk[["bucket_str","n",lm_k,"marginal"]].rename(
             columns={"bucket_str":"구간",lm_k:sel_lm,"marginal":"한계변화"}), "한계수익분석")
+
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("📊 기간 비교 — 한계 효율")
+    cmp_mode_lm = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_lm")
+    df_cur_lm, df_prev_lm, lbl_cur_lm, lbl_prev_lm = get_compare_periods(G["df"], cmp_mode_lm)
+    if len(df_cur_lm) and len(df_prev_lm):
+        tbl_lm = compare_table(df_cur_lm, df_prev_lm, lbl_cur_lm, lbl_prev_lm,
+                               keys=["perSend","rps","ctr","purchaseRate","revenue","rpc"])
+        st.dataframe(styled_compare(tbl_lm), use_container_width=True, hide_index=True)
 
     stat_explainer()
     insight_editor("한계수익분석", [
