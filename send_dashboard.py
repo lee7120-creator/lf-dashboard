@@ -986,24 +986,37 @@ elif page == "04. 인과 검증":
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("요일별 상관계수")
     dc_corr = pd.DataFrame(dow_corr)
+    dc_corr = pd.DataFrame(dow_corr)
+    # 요일 순서 고정
+    DOW_ORDER = ["월","화","수","목","금","토","일"]
+    dc_corr["dow"] = pd.Categorical(dc_corr["dow"], categories=DOW_ORDER, ordered=True)
+    dc_corr = dc_corr.sort_values("dow").reset_index(drop=True)
     fig7 = go.Figure()
-    for sign, cn in [(True,"blue"),(False,"red")]:
-        sub = dc_corr[dc_corr["corrRevenue"]>=0] if sign else dc_corr[dc_corr["corrRevenue"]<0]
-        if len(sub):
-            fig7.add_trace(go.Bar(x=list(sub["dow"]),y=list(sub["corrRevenue"].round(3)),
-                name="vs 거래액(양)" if sign else "vs 거래액(음)",
-                showlegend=True, marker_color=cbg(cn),
-                marker_line_color=clr(cn), marker_line_width=1.5))
-    fig7.add_trace(go.Scatter(x=list(dc_corr["dow"]),y=list(dc_corr["corrRps"].round(3)),
-        name="vs 건당거래액",mode="lines+markers",line=dict(color=clr("red"),width=2),
-        marker=dict(size=6,color=clr("red"))))
-    layout7 = base_layout(260, title="상관계수 (발송 vs 지표)")
+    # 단일 Bar — 양수 파란색, 음수 빨간색을 marker_color 리스트로
+    bar_colors = [cbg("blue") if v >= 0 else cbg("red") for v in dc_corr["corrRevenue"]]
+    bar_line_colors = [clr("blue") if v >= 0 else clr("red") for v in dc_corr["corrRevenue"]]
+    fig7.add_trace(go.Bar(
+        x=dc_corr["dow"].tolist(),
+        y=dc_corr["corrRevenue"].round(3).tolist(),
+        name="vs 거래액",
+        marker_color=bar_colors,
+        marker_line_color=bar_line_colors,
+        marker_line_width=1.5,
+    ))
+    fig7.add_trace(go.Scatter(
+        x=dc_corr["dow"].tolist(),
+        y=dc_corr["corrRps"].round(3).tolist(),
+        name="vs 건당거래액", mode="lines+markers",
+        line=dict(color=clr("red"),width=2),
+        marker=dict(size=6,color=clr("red")),
+    ))
+    layout7 = base_layout(260, title="상관계수 — 인당 발송 vs 지표")
     layout7["showlegend"] = True
     layout7["legend"] = dict(orientation="h",y=1.1,bgcolor="rgba(0,0,0,0)",font=dict(color="#64748b"))
     layout7["yaxis"]["range"] = [-1, 0.5]
     layout7["yaxis"]["title"] = "상관계수"
     layout7["shapes"] = [dict(type="line",x0=-0.5,x1=len(dc_corr)-0.5,y0=0,y1=0,
-                               line=dict(color="#2a2d3a",width=1,dash="dot"))]
+                               line=dict(color="#cbd5e1",width=1,dash="dot"))]
     fig7.update_layout(**layout7)
     st.plotly_chart(fig7, use_container_width=True)
 
