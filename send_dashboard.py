@@ -523,8 +523,12 @@ with st.sidebar:
         st.markdown("---")
         lines = ["# 발송 분석 인사이트"]
         for pk, items in st.session_state.insights.items():
+            if pk.startswith("__"): continue
+            if not isinstance(items, list): continue
             lines.append(f"\n## {pk}")
-            for it in items: lines.append(f"- {it['text']}")
+            for it in items:
+                txt = it.get("text", str(it)) if isinstance(it, dict) else str(it)
+                lines.append(f"- {txt}")
         st.download_button("📋 인사이트 내보내기", "\n".join(lines),
                            file_name="insights.txt", mime="text/plain", use_container_width=True)
 
