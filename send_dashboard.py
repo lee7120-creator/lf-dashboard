@@ -20,10 +20,10 @@ st.markdown("""
 [data-testid="stMetric"]{background:#ffffff;border-radius:8px;padding:12px 16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
 [data-testid="stMetricLabel"]{color:#64748b!important;font-size:12px!important}
 [data-testid="stMetricValue"]{color:#1e293b!important;font-size:20px!important}
-.vg{background:rgba(72,187,120,.08);border-left:3px solid #48bb78;border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;color:#86efac;font-size:13px;line-height:1.65}
-.vr{background:rgba(245,101,101,.08);border-left:3px solid #f56565;border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;color:#fca5a5;font-size:13px;line-height:1.65}
-.va{background:rgba(237,137,54,.08);border-left:3px solid #ed8936;border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;color:#fcd34d;font-size:13px;line-height:1.65}
-.vb{background:rgba(79,143,255,.08);border-left:3px solid #4f8fff;border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;color:#93c5fd;font-size:13px;line-height:1.65}
+.vg{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;color:#334155;font-size:13px;line-height:1.65;background:#ffffff}
+.vr{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;color:#334155;font-size:13px;line-height:1.65;background:#ffffff}
+.va{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;color:#334155;font-size:13px;line-height:1.65;background:#ffffff}
+.vb{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;color:#334155;font-size:13px;line-height:1.65;background:#ffffff}
 .sdiv{border-top:1px solid #e2e8f0;margin:22px 0}
 .stat-label{font-size:11px;color:#545c6a;margin-bottom:3px;font-weight:500;letter-spacing:.04em;text-transform:uppercase}
 .appendix{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin-top:12px}
@@ -315,31 +315,19 @@ def editable_text(key, default, tag="p", style=""):
     return texts[key]
 
 def verdict_box(key, default_text, default_color="vg", emoji=""):
-    """편집 가능한 verdict 박스"""
+    """편집 가능한 텍스트 박스 (디자인 없음)"""
     store = st.session_state.insights
     vkey  = f"__verdict_{key}__"
-    ckey  = f"__vcolor_{key}__"
     ekey  = f"__editing_v_{key}__"
 
     if vkey not in store: store[vkey] = default_text
-    if ckey not in store: store[ckey] = default_color
     if ekey not in st.session_state: st.session_state[ekey] = False
 
-    COLOR_MAP = {
-        "초록(✅)":"vg","빨강(❌)":"vr","주황(⚠️)":"va","파랑(ℹ️)":"vb"
-    }
-    COLOR_REVERSE = {"vg":"초록(✅)","vr":"빨강(❌)","va":"주황(⚠️)","vb":"파랑(ℹ️)"}
-
     if st.session_state[ekey]:
-        c1,c2,c3 = st.columns([6,2,1])
-        new_text  = c1.text_area("내용 편집", store[vkey], key=f"vta_{key}", height=100, label_visibility="collapsed")
-        cur_color = COLOR_REVERSE.get(store[ckey],"초록(✅)")
-        new_color = c2.selectbox("색상", list(COLOR_MAP.keys()),
-                                  index=list(COLOR_MAP.keys()).index(cur_color),
-                                  key=f"vcol_{key}", label_visibility="collapsed")
-        if c3.button("✓", key=f"vsave_{key}"):
-            store[vkey]  = new_text
-            store[ckey]  = COLOR_MAP[new_color]
+        c1, c2 = st.columns([11,1])
+        new_text = c1.text_area("", store[vkey], key=f"vta_{key}", height=100, label_visibility="collapsed")
+        if c2.button("✓", key=f"vsave_{key}"):
+            store[vkey] = new_text
             st.session_state[ekey] = False
             all_data = load_insights()
             all_data.update(store)
@@ -347,10 +335,9 @@ def verdict_box(key, default_text, default_color="vg", emoji=""):
             st.session_state.insights = store
             st.rerun()
     else:
-        clss = store[ckey]
-        txt  = store[vkey].replace("\n","<br>")
+        txt = store[vkey].replace("\n","<br>")
         col_a, col_b = st.columns([20,1])
-        col_a.markdown(f'<div class="{clss}">{txt}</div>', unsafe_allow_html=True)
+        col_a.markdown(f'<div class="vg">{txt}</div>', unsafe_allow_html=True)
         if col_b.button("✏️", key=f"vedit_{key}", help="편집"):
             st.session_state[ekey] = True
             st.rerun()
@@ -521,6 +508,10 @@ with st.sidebar:
 
     if G:
         st.markdown("---")
+        if st.button("🗑 인사이트 전체 초기화", use_container_width=True):
+            st.session_state.insights = {}
+            save_insights({})
+            st.rerun()
         lines = ["# 발송 분석 인사이트"]
         for pk, items in st.session_state.insights.items():
             if pk.startswith("__"): continue
@@ -670,11 +661,7 @@ if page == "🏠 전체 요약":
         st.info("비교 가능한 이전 기간 데이터가 없습니다.")
 
     stat_explainer()
-    insight_editor("전체요약", [
-        f"분석 기간 {meta['start']}~{meta['end']} ({meta['days']}일)",
-        "인당 발송 건수 증가와 CTR·구매율 하락이 동기간 동반 발생",
-        "발송건당 거래액은 지속적으로 감소 추세",
-    ])
+    insight_editor("전체요약", [])
 
 # ══════════════════════════════════════════════════════
 # PAGE: 발송 빈도 효율
@@ -686,12 +673,8 @@ elif page == "📨 발송 빈도 효율":
     verdict_box("freq_v1",
         f'❌ "많이 보낼수록 매출이 오른다" — 기각\nQ1(평균 {q1v["totalSend"]/1e6:.2f}M건) 거래액 {q1v["revenue"]/1e8:.3f}억 vs Q5({q5v["totalSend"]/1e6:.2f}M건) {q5v["revenue"]/1e8:.3f}억. 2배 이상 더 보내도 매출은 오히려 낮습니다.',
         "vr")
-    verdict_box("freq_v2",
-        "⚠️ \"발송 줄이면 매출 오른다\" — 과잉 주장\n요일 통제 후 방향이 일관되지 않아 인과 주장 불가입니다.",
-        "va")
-    verdict_box("freq_v3",
-        "✅ 입증 가능: 과잉 발송은 비용만 늘린다\n발송건당 거래액은 구간 높아질수록 단조 감소합니다.",
-        "vg")
+    verdict_box("freq_v2", "", "vg")
+    verdict_box("freq_v3", "", "vg")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("인당 발송 구간별 성과 (30일+ 구간)")
@@ -755,11 +738,7 @@ elif page == "📨 발송 빈도 효율":
         show_appendix(tbl_fr.drop(columns=["_chg","_k"],errors="ignore"), f"발송효율비교_{cmp_mode_fr}")
 
     stat_explainer()
-    insight_editor("발송빈도효율", [
-        "발송건당 거래액은 구간 높아질수록 단조 감소 — 추가 발송의 한계 기여 감소",
-        "총 발송량 Q1(최소) 구간의 거래액이 Q5(최대)보다 높음",
-        "과잉 발송은 비용만 늘리고 매출 기여는 없음",
-    ])
+    insight_editor("발송빈도효율", [])
 
 # ══════════════════════════════════════════════════════
 # PAGE: 피로도 시계열
@@ -771,9 +750,7 @@ elif page == "📈 피로도 시계열":
     sc = pct(fq["perSend"], lq["perSend"])
     cc = pct(fq["ctr"], lq["ctr"])
 
-    verdict_box("ts_v1",
-        f"✅ 피로도 누적 가설 — 요일 통제 후 p<0.001로 입증됨\n인당 발송 증가({sc:+.0f}%)와 CTR 하락({cc:+.0f}%)이 같은 기간 동반 발생. 요일 효과 제거 후에도 모든 효율 지표 하락 추세가 통계적으로 유의합니다.",
-        "vg")
+    verdict_box("ts_v1", "", "vg")
 
     # 지표 선택 트렌드
     sel_ts = st.selectbox("분석 지표", metric_select_list, index=0, key="ts_sel")
@@ -847,26 +824,16 @@ elif page == "📈 피로도 시계열":
         show_appendix(tbl_ts.drop(columns=["_chg","_k"],errors="ignore"), f"피로도비교_{cmp_mode_ts}")
 
     stat_explainer()
-    insight_editor("피로도시계열", [
-        "인당 발송이 늘어난 기간과 효율이 하락한 기간이 일치함 (요일 통제 후 p<0.001)",
-        "피로도 외 대안 가설(수신 모수 확대, 메시지 품질 변화) 배제 불가 — A/B 테스트 필요",
-        "경영진 대응: '지난 2년간 발송 63% 증가, 클릭률 35% 하락 — 통계적으로 유의한 패턴'",
-    ])
+    insight_editor("피로도시계열", [])
 
 # ══════════════════════════════════════════════════════
 # PAGE: 인과 검증
 # ══════════════════════════════════════════════════════
 elif page == "🔬 인과 검증":
     _t = editable_text("title_causal", "인과 검증", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
-    verdict_box("causal_v1",
-        "❌ \"발송 줄이면 매출 오른다\" — 인과 근거 없음\n요일 통제 후 평일 중 절반 이상에서 방향이 일관되지 않습니다.",
-        "vr")
-    verdict_box("causal_v2",
-        "⚠️ \"많이 보내면 매출 오른다\"도 — 입증 불가\n요일별 상관계수 방향이 혼재합니다.",
-        "va")
-    verdict_box("causal_v3",
-        "✅ 입증되는 것: 건당 효율은 일관되게 악화\n모든 요일에서 발송 많은 날의 건당 거래액이 낮습니다.",
-        "vg")
+    verdict_box("causal_v1", "", "vg")
+    verdict_box("causal_v2", "", "vg")
+    verdict_box("causal_v3", "", "vg")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("요일 통제 후 — 같은 요일 내 비교")
@@ -905,12 +872,8 @@ elif page == "🔬 인과 검증":
     st.plotly_chart(fig7, use_container_width=True)
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    verdict_box("causal_mgmt2",
-        "경영진 대응 — 정확한 주장:\n발송을 줄이면 매출이 오른다는 보장은 없습니다. 하지만 현재 발송 수준은 추가 비용 대비 매출 기여가 없습니다. 이 비용을 타겟팅 개선이나 다른 채널에 투자하는 것이 더 효과적입니다.",
-        "vg")
-    verdict_box("causal_ab2",
-        "다음 단계: A/B 테스트\n통제군: 현행 발송 유지 | 실험군: 인당 2.5건 이하 제한\n4주 이상, 거래액·CTR·구매율·수신거부율 측정",
-        "vb")
+    verdict_box("causal_mgmt2", "", "vg")
+    verdict_box("causal_ab2", "", "vg")
     st.subheader("📊 기간 비교 — 인과 관련 지표")
     cmp_mode_ca = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ca")
     df_cur_ca, df_prev_ca, lbl_cur_ca, lbl_prev_ca = get_compare_periods(G["df"], cmp_mode_ca)
@@ -920,11 +883,7 @@ elif page == "🔬 인과 검증":
         st.dataframe(styled_compare(tbl_ca), use_container_width=True, hide_index=True)
 
     stat_explainer()
-    insight_editor("인과검증", [
-        "요일 통제 후 발송 vs 거래액 상관계수: 방향 불일치 → 인과 주장 불가",
-        "발송 vs 건당거래액: 모든 요일에서 음의 상관(-0.4~-0.8) → 일관된 패턴",
-        "올바른 주장: '과잉 발송은 효율 없이 비용만 늘린다'",
-    ])
+    insight_editor("인과검증", [])
 
 # ══════════════════════════════════════════════════════
 # PAGE: 지표 상관 분석
@@ -997,10 +956,7 @@ elif page == "📊 지표 상관 분석":
         show_appendix(tbl_co.drop(columns=["_chg","_k"],errors="ignore"), f"전지표비교_{cmp_mode_co}")
 
     stat_explainer()
-    insight_editor("지표상관분석", [
-        "인당 발송 건수와 발송건당 거래액은 강한 음의 상관관계",
-        "CTR과 구매율은 높은 양의 상관 — 클릭이 구매로 연결되는 구조",
-    ])
+    insight_editor("지표상관분석", [])
 
 # ══════════════════════════════════════════════════════
 # PAGE: 요일별 패턴
@@ -1063,10 +1019,7 @@ elif page == "📅 요일별 패턴":
         st.dataframe(pd.DataFrame(dw_rows), use_container_width=True, hide_index=True)
 
     stat_explainer()
-    insight_editor("요일별패턴", [
-        "특정 요일에 발송이 집중되어 있는지, 그 요일의 효율은 어떤지 확인 필요",
-        "요일 패턴은 발송 빈도 분석의 교란변수 — 반드시 통제 후 해석",
-    ])
+    insight_editor("요일별패턴", [])
 
 # ══════════════════════════════════════════════════════
 # PAGE: 발송 최적 구간
@@ -1095,9 +1048,7 @@ elif page == "🎯 발송 최적 구간":
 
         best_idx = scored["score"].idxmax()
         best = scored.iloc[best_idx]
-        verdict_box("opt_best",
-            f"🎯 종합 최적 구간: {best['bucket_f']}\n가중 점수 {best['score']:.3f} / 거래액 {best.revenue/1e8:.3f}억 / 건당거래 {best.rps:.0f}원 / CTR {best.ctr*100:.2f}% / 구매율 {best.purchaseRate*100:.3f}%",
-            "vg")
+        verdict_box("opt_best", "", "vg")
 
         fig12 = go.Figure()
         fig12.add_trace(go.Bar(
@@ -1126,10 +1077,7 @@ elif page == "🎯 발송 최적 구간":
         st.dataframe(styled_compare(tbl_op), use_container_width=True, hide_index=True)
 
     stat_explainer()
-    insight_editor("발송최적구간", [
-        "단순 거래액 기준이 아닌 효율·구매율 종합 시 최적 구간이 달라질 수 있음",
-        "가중치를 조정해 경영진 우선순위에 맞는 최적 구간 제시 가능",
-    ])
+    insight_editor("발송최적구간", [])
 
 # ══════════════════════════════════════════════════════
 # PAGE: 한계수익 분석
@@ -1186,8 +1134,4 @@ elif page == "📉 한계수익 분석":
         st.dataframe(styled_compare(tbl_lm), use_container_width=True, hide_index=True)
 
     stat_explainer()
-    insight_editor("한계수익분석", [
-        "발송건당 거래액은 구간이 높아질수록 체감 감소 — 추가 발송의 한계 기여가 0에 수렴",
-        "한계수익이 0 이하로 떨어지는 구간부터는 발송이 오히려 역효과",
-        "경영진 설득 포인트: 지금 발송 수준은 음의 한계수익 구간에 있음",
-    ])
+    insight_editor("한계수익분석", [])
