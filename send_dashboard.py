@@ -644,4 +644,3 @@ elif page == "🔬 인과 검증":
 </div>
 """, unsafe_allow_html=True)
     st.text_area("📝 추가 메모", placeholder="후속 과제...", height=120, key="memo_caus")
-ENDOFFILE
