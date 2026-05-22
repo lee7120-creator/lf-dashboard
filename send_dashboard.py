@@ -496,6 +496,99 @@ def stat_explainer():
             "선형회귀 기울기 (slope) — \"하루에 얼마씩 변하는가\"\n예: slope=-0.0028%p/일 → CTR이 매일 0.0028%p씩 하락 = 1년이면 약 1%p 하락",
             "vb")
 
+
+# ══════════════════════════════════════════════════════
+# 메모 블록 — 상단/하단 어디든 삽입 가능
+# ══════════════════════════════════════════════════════
+DEFAULTS = {
+    # 페이지 상단
+    "top_01": "인당 발송 건수와 주요 효율 지표(CTR, 구매율, 건당 거래액)는 분석 기간 내내 반대 방향으로 움직였습니다. 발송이 늘어난 기간에 효율이 낮아지는 패턴이 일관되게 나타납니다.",
+    "top_02": "발송량을 늘려도 총 거래액이 비례해서 증가하지 않습니다. 총 발송량 기준 하위 20% 구간(Q1)의 거래액이 상위 20% 구간(Q5)보다 오히려 높습니다.",
+    "top_03": "인당 발송 건수가 늘어난 기간과 CTR·구매율이 하락한 기간이 일치합니다. 요일 효과를 통제한 후에도 이 패턴은 p<0.001 수준으로 유의합니다.",
+    "top_04": "발송량과 거래액의 관계는 요일을 통제하면 일관된 방향성이 사라집니다. '발송을 줄이면 매출이 오른다'는 인과 주장은 이 데이터로 직접 입증되지 않습니다.",
+    "top_05": "두 지표 간 상관계수가 강하다고 해서 인과관계가 있는 건 아닙니다. 패턴 확인 후 가설을 세우고, A/B 테스트로 검증하는 순서가 필요합니다.",
+    "top_06": "요일별 발송 패턴과 효율 차이를 확인합니다. 특정 요일에 발송이 집중되어 있거나 효율이 낮다면, 발송 스케줄 조정이 효과적인 개선 방법이 될 수 있습니다.",
+    "top_07": "거래액, 건당 거래액, CTR, 구매율에 가중치를 부여해 구간별 종합 점수를 산출합니다. 가중치를 조정하면 경영 우선순위에 맞는 최적 구간이 달라집니다.",
+    "top_08": "발송 구간이 높아질수록 건당 거래액 증가폭이 줄어들다가 결국 마이너스로 전환됩니다. 이 시점이 추가 발송의 한계 수익이 0이 되는 구간입니다.",
+    # 차트 하단
+    "btm_trend":      "월별·분기별 추이에서 계절성이 보인다면 비교 기준 설정 시 같은 시즌끼리 비교하는 것이 더 정확합니다.",
+    "btm_kpi":        "전체 평균 대비 증감은 필터 적용 기간 기준입니다. 기간을 바꾸면 수치가 달라집니다.",
+    "btm_change":     "분기 처음과 끝을 비교하므로 중간의 등락은 반영되지 않습니다. 변화율이 크다면 월별 추이 차트로 구체적인 시점을 확인하세요.",
+    "btm_cmp":        "기간 비교는 선택한 기준 기간의 일평균값 기준입니다. 기간 길이가 다른 경우 절대값보다 비율로 판단하는 것이 더 정확합니다.",
+    "btm_bucket":     "표본이 적은 구간(10일 미만)은 집계에서 제외됩니다. 구간 우측 'n=N일'이 표본 수입니다. 30일 이상인 구간을 기준으로 해석하세요.",
+    "btm_quintile":   "Q1~Q5는 총 발송 건수 기준 5등분입니다. 요일 구성이 구간마다 다를 수 있어 교란 효과가 완전히 제거되지는 않습니다.",
+    "btm_dual":       "두 지표가 서로 반대 방향으로 움직이는 구간을 집중적으로 보세요. 방향이 바뀌는 시점이 정책 변화나 외부 요인과 겹치는지 확인할 필요가 있습니다.",
+    "btm_reg":        "R²가 0.2 이상이면 시간에 따른 추세가 어느 정도 설명됩니다. p<0.001이면 이 패턴이 우연일 확률이 0.1% 미만입니다.",
+    "btm_dow_comp":   "같은 요일 내 비교이므로 요일 효과는 통제됩니다. 방향이 요일마다 다르면 발송량 자체보다 다른 요인이 매출을 결정하고 있을 가능성이 높습니다.",
+    "btm_corr_mat":   "대각선(자기 자신)은 항상 1입니다. 절대값이 0.5 이상인 셀을 중심으로 보세요.",
+    "btm_scatter":    "산점도의 점이 추세선 주변에 얼마나 모여 있는지가 R²로 표현됩니다. 퍼져 있을수록 관계가 약합니다.",
+    "btm_dow_heat":   "표준화 값이므로 절대 수치가 아닌 요일 간 상대적 차이를 나타냅니다.",
+    "btm_score":      "가중 점수는 각 지표를 0~1로 정규화한 후 가중치를 곱한 합산입니다. 가중치 합이 1이 아니어도 됩니다.",
+    "btm_marginal":   "한계 변화량이 음수로 전환되는 구간부터는 발송을 늘릴수록 해당 지표가 낮아지는 구조입니다.",
+    "btm_dow_bar":    "요일별 편차가 크다면 발송 스케줄을 효율이 높은 요일에 집중하는 방안을 검토해볼 수 있습니다.",
+}
+
+def memo_block(key, location="bottom"):
+    """편집 가능한 메모 블록. location: 'top' or 'bottom'"""
+    store    = st.session_state.insights
+    mkey     = f"__memo_{key}__"
+    ekey     = f"__medit_{key}__"
+    hkey     = f"__mhide_{key}__"
+
+    if mkey not in store:
+        store[mkey] = DEFAULTS.get(key, "")
+    if ekey not in st.session_state:
+        st.session_state[ekey] = False
+    if hkey not in st.session_state:
+        st.session_state[hkey] = False
+
+    # 숨김 상태면 아무것도 안 보임
+    if st.session_state[hkey]:
+        if st.button("펼치기", key=f"mshow_{key}", help="메모 표시"):
+            st.session_state[hkey] = False
+            st.rerun()
+        return
+
+    if st.session_state[ekey]:
+        c1, c2, c3 = st.columns([10, 1, 1])
+        new_val = c1.text_area("", store[mkey], key=f"mta_{key}",
+                                height=80, label_visibility="collapsed")
+        if c2.button("저장", key=f"msave_{key}", use_container_width=True):
+            store[mkey] = new_val
+            st.session_state[ekey] = False
+            all_data = load_insights(); all_data.update(store)
+            save_insights(all_data)
+            st.session_state.insights = store
+            st.rerun()
+        if c3.button("숨기기", key=f"mhide_{key}", use_container_width=True):
+            st.session_state[hkey] = True
+            st.session_state[ekey] = False
+            st.rerun()
+    else:
+        txt = store[mkey]
+        if txt:
+            c1, c2 = st.columns([20, 1])
+            c1.markdown(
+                f'<p style="font-size:13px;color:#475569;line-height:1.7;margin:6px 0">{txt}</p>',
+                unsafe_allow_html=True
+            )
+            if c2.button("편집", key=f"medit_{key}", use_container_width=True):
+                st.session_state[ekey] = True
+                st.rerun()
+        else:
+            c1, c2 = st.columns([20, 1])
+            c1.markdown(
+                '<p style="font-size:12px;color:#cbd5e1;margin:4px 0">메모를 입력하세요.</p>',
+                unsafe_allow_html=True
+            )
+            if c2.button("편집", key=f"medit_{key}", use_container_width=True):
+                st.session_state[ekey] = True
+                st.rerun()
+
+    store[mkey] = store.get(mkey, "")
+    st.session_state.insights = store
+
+
 # ══════════════════════════════════════════════════════
 # 사이드바
 # ══════════════════════════════════════════════════════
@@ -636,6 +729,9 @@ if page == "01. 전체 요약":
     _t = editable_text("title_overview", "전체 요약", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption(f"데이터 기간: {meta['start']} ~ {meta['end']} · 전체 {meta['days']}일 · 필터 적용 {len(df_f)}일")
 
+    memo_block("top_01")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
     kpi_keys = ["perSend","revenue","ctr","purchaseRate","rps","purchaseCust","avgOrderVal","totalSend"]
     cols = st.columns(4)
     for i, k in enumerate(kpi_keys):
@@ -647,6 +743,8 @@ if page == "01. 전체 요약":
                          f"{delta:+.1f}% vs 전체평균",
                          delta_color="inverse" if inv else "normal")
 
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    memo_block("btm_kpi")
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
     # 주요 지표 트렌드 차트 (지표 선택)
@@ -673,6 +771,7 @@ if page == "01. 전체 요약":
         fig.update_layout(**layout)
         st.plotly_chart(fig, use_container_width=True)
         show_appendix(agg_df[[x_col,"n",sel_k]].rename(columns={sel_k:sel_metric_label}), f"전체요약_{sel_metric_label}")
+        memo_block("btm_trend")
 
     # 핵심 변화 요약
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -688,6 +787,7 @@ if page == "01. 전체 요약":
                               f"{lq['quarter']}":fmt_val(k,lq[k]), "변화율":f"{chg:+.1f}%"})
         if rows: col_w.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+    memo_block("btm_change")
 
     # ── 기간 비교 전체 테이블 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -701,20 +801,18 @@ if page == "01. 전체 요약":
     else:
         st.info("비교 가능한 이전 기간 데이터가 없습니다.")
 
-    stat_explainer()
-    insight_editor("전체요약", [])
-
 # ══════════════════════════════════════════════════════
 # PAGE: 발송 빈도 효율
 # ══════════════════════════════════════════════════════
 elif page == "02. 발송 빈도 효율":
+    memo_block("top_02")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     _t = editable_text("title_freq", "발송 빈도 효율 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
 
     q1v, q5v = quintile.iloc[0], quintile.iloc[4]
     verdict_box("freq_v1",
         f' "많이 보낼수록 매출이 오른다" — 기각\nQ1(평균 {q1v["totalSend"]/1e6:.2f}M건) 거래액 {q1v["revenue"]/1e8:.3f}억 vs Q5({q5v["totalSend"]/1e6:.2f}M건) {q5v["revenue"]/1e8:.3f}억. 2배 이상 더 보내도 매출은 오히려 낮습니다.',
         "vr")
-    verdict_box("freq_v2", "", "vg")
     verdict_box("freq_v3", "", "vg")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -740,6 +838,7 @@ elif page == "02. 발송 빈도 효율":
         fig3.update_layout(**layout3)
         st.plotly_chart(fig3, use_container_width=True)
         show_appendix(buckets_f[["bucket_f","n",sel_k2]].rename(columns={"bucket_f":"구간",sel_k2:sel_m2}), f"구간별_{sel_m2}")
+        memo_block("btm_bucket")
 
     # 5분위 이중축
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -765,6 +864,7 @@ elif page == "02. 발송 빈도 효율":
         fig4.update_layout(**layout4)
         st.plotly_chart(fig4, use_container_width=True)
         show_appendix(quintile[["label",ym1,ym2]].rename(columns={"label":"5분위",ym1:ym1_label,ym2:ym2_label}), "5분위분석")
+        memo_block("btm_quintile")
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -778,20 +878,17 @@ elif page == "02. 발송 빈도 효율":
         st.dataframe(styled_compare(tbl_fr), use_container_width=True, hide_index=True)
         show_appendix(tbl_fr.drop(columns=["_chg","_k"],errors="ignore"), f"발송효율비교_{cmp_mode_fr}")
 
-    stat_explainer()
-    insight_editor("발송빈도효율", [])
-
 # ══════════════════════════════════════════════════════
 # PAGE: 피로도 시계열
 # ══════════════════════════════════════════════════════
 elif page == "03. 피로도 시계열":
+    memo_block("top_03")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     _t = editable_text("title_ts", "피로도 시계열 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("요일 통제 후 잔차 회귀 기준")
 
     sc = pct(fq["perSend"], lq["perSend"])
     cc = pct(fq["ctr"], lq["ctr"])
-
-    verdict_box("ts_v1", "", "vg")
 
     # 지표 선택 트렌드
     sel_ts = st.selectbox("분석 지표", metric_select_list, index=0, key="ts_sel")
@@ -840,6 +937,7 @@ elif page == "03. 피로도 시계열":
         st.plotly_chart(fig6, use_container_width=True)
         show_appendix(quarterly_f[["quarter","perSend",dual_k]].rename(
             columns={"quarter":"분기","perSend":"인당발송",dual_k:dual_sel}), "피로도이중축")
+        memo_block("btm_dual")
 
     # 회귀 통계
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -864,17 +962,14 @@ elif page == "03. 피로도 시계열":
         st.dataframe(styled_compare(tbl_ts), use_container_width=True, hide_index=True)
         show_appendix(tbl_ts.drop(columns=["_chg","_k"],errors="ignore"), f"피로도비교_{cmp_mode_ts}")
 
-    stat_explainer()
-    insight_editor("피로도시계열", [])
-
 # ══════════════════════════════════════════════════════
 # PAGE: 인과 검증
 # ══════════════════════════════════════════════════════
 elif page == "04. 인과 검증":
+    memo_block("top_04")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     _t = editable_text("title_causal", "인과 검증", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
-    verdict_box("causal_v1", "", "vg")
     verdict_box("causal_v2", "", "vg")
-    verdict_box("causal_v3", "", "vg")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("요일별 통제 비교")
@@ -913,7 +1008,6 @@ elif page == "04. 인과 검증":
     st.plotly_chart(fig7, use_container_width=True)
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    verdict_box("causal_mgmt2", "", "vg")
     verdict_box("causal_ab2", "", "vg")
     st.subheader("기간 비교 — 인과 관련 지표")
     cmp_mode_ca = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ca")
@@ -923,13 +1017,12 @@ elif page == "04. 인과 검증":
                                keys=["perSend","revenue","rps","ctr","purchaseRate","rpc"])
         st.dataframe(styled_compare(tbl_ca), use_container_width=True, hide_index=True)
 
-    stat_explainer()
-    insight_editor("인과검증", [])
-
 # ══════════════════════════════════════════════════════
 # PAGE: 지표 상관 분석
 # ══════════════════════════════════════════════════════
 elif page == "05. 지표 상관 분석":
+    memo_block("top_05")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     _t = editable_text("title_corr", "지표 상관 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("두 지표 간의 관계를 산점도와 상관계수로 확인합니다.")
 
@@ -965,6 +1058,7 @@ elif page == "05. 지표 상관 분석":
         fig8.update_layout(**layout8)
         st.plotly_chart(fig8, use_container_width=True)
         show_appendix(common.rename(columns={xk:xm_label,yk:ym_label}), f"산점도_{xm_label}_{ym_label}")
+        memo_block("btm_scatter")
 
     # 상관 매트릭스
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -985,6 +1079,7 @@ elif page == "05. 지표 상관 분석":
         fig9.update_layout(**layout9)
         st.plotly_chart(fig9, use_container_width=True)
         show_appendix(corr_mat.reset_index().rename(columns={"index":"지표"}), "상관매트릭스")
+        memo_block("btm_corr_mat")
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -996,13 +1091,12 @@ elif page == "05. 지표 상관 분석":
         st.dataframe(styled_compare(tbl_co), use_container_width=True, hide_index=True)
         show_appendix(tbl_co.drop(columns=["_chg","_k"],errors="ignore"), f"전지표비교_{cmp_mode_co}")
 
-    stat_explainer()
-    insight_editor("지표상관분석", [])
-
 # ══════════════════════════════════════════════════════
 # PAGE: 요일별 패턴
 # ══════════════════════════════════════════════════════
 elif page == "06. 요일별 패턴":
+    memo_block("top_06")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     _t = editable_text("title_dow", "요일별 패턴 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
 
     sel_dow_m = st.selectbox("분석 지표", metric_select_list, index=metric_select_list.index("거래액"), key="dow_m")
@@ -1022,6 +1116,7 @@ elif page == "06. 요일별 패턴":
         layout10 = base_layout(280, title=f"요일별 {sel_dow_m} 평균")
         fig10.update_layout(**layout10)
         st.plotly_chart(fig10, use_container_width=True)
+        memo_block("btm_dow_bar")
 
     # 요일 × 지표 히트맵
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -1042,6 +1137,7 @@ elif page == "06. 요일별 패턴":
         fig11.update_layout(**layout11)
         st.plotly_chart(fig11, use_container_width=True)
         show_appendix(heat_df.reset_index().rename(columns={"dow":"요일"}), "요일별히트맵")
+        memo_block("btm_dow_heat")
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -1059,13 +1155,12 @@ elif page == "06. 요일별 패턴":
                              lbl_cur_dw:fmt_val(dow_k,vc), "증감율":f"{chg:+.1f}%" if not np.isnan(chg) else "–"})
         st.dataframe(pd.DataFrame(dw_rows), use_container_width=True, hide_index=True)
 
-    stat_explainer()
-    insight_editor("요일별패턴", [])
-
 # ══════════════════════════════════════════════════════
 # PAGE: 발송 최적 구간
 # ══════════════════════════════════════════════════════
 elif page == "07. 발송 최적 구간":
+    memo_block("top_07")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     _t = editable_text("title_opt", "발송 최적 구간 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("거래액·효율·구매율을 종합한 최적 발송 구간을 찾습니다.")
 
@@ -1089,7 +1184,6 @@ elif page == "07. 발송 최적 구간":
 
         best_idx = scored["score"].idxmax()
         best = scored.iloc[best_idx]
-        verdict_box("opt_best", "", "vg")
 
         fig12 = go.Figure()
         fig12.add_trace(go.Bar(
@@ -1106,6 +1200,7 @@ elif page == "07. 발송 최적 구간":
         show_appendix(scored[["bucket_f","n","revenue","rps","ctr","purchaseRate","score"]].rename(
             columns={"bucket_f":"구간","revenue":"거래액","rps":"건당거래","ctr":"CTR",
                      "purchaseRate":"구매율","score":"종합점수"}), "최적구간분석")
+        memo_block("btm_score")
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -1117,13 +1212,12 @@ elif page == "07. 발송 최적 구간":
                                keys=["perSend","revenue","rps","ctr","purchaseRate","avgOrderVal"])
         st.dataframe(styled_compare(tbl_op), use_container_width=True, hide_index=True)
 
-    stat_explainer()
-    insight_editor("발송최적구간", [])
-
 # ══════════════════════════════════════════════════════
 # PAGE: 한계수익 분석
 # ══════════════════════════════════════════════════════
 elif page == "08. 한계수익 분석":
+    memo_block("top_08")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     _t = editable_text("title_lm", "한계수익 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("발송 1건 추가 시 거래액·클릭이 얼마나 증가/감소하는지 분석합니다.")
 
@@ -1163,6 +1257,7 @@ elif page == "08. 한계수익 분석":
         c2_lm.plotly_chart(fig14, use_container_width=True)
         show_appendix(bk[["bucket_str","n",lm_k,"marginal"]].rename(
             columns={"bucket_str":"구간",lm_k:sel_lm,"marginal":"한계변화"}), "한계수익분석")
+        memo_block("btm_marginal")
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -1173,6 +1268,3 @@ elif page == "08. 한계수익 분석":
         tbl_lm = compare_table(df_cur_lm, df_prev_lm, lbl_cur_lm, lbl_prev_lm,
                                keys=["perSend","rps","ctr","purchaseRate","revenue","rpc"])
         st.dataframe(styled_compare(tbl_lm), use_container_width=True, hide_index=True)
-
-    stat_explainer()
-    insight_editor("한계수익분석", [])
