@@ -8,7 +8,7 @@ import io, json, os, datetime
 # ══════════════════════════════════════════════════════
 # CONFIG
 # ══════════════════════════════════════════════════════
-st.set_page_config(page_title="발송 분석 대시보드", page_icon="📨",
+st.set_page_config(page_title="발송 분석 대시보드", page_icon="",
                    layout="wide", initial_sidebar_state="expanded")
 
 INSIGHT_FILE = "insights_store.json"
@@ -89,9 +89,9 @@ def dow_residual(df, col):
 
 def sig_label(p):
     if np.isnan(p): return "–"
-    if p < 0.001: return "p<0.001 ★★★"
-    if p < 0.01:  return "p<0.01 ★★"
-    if p < 0.05:  return "p<0.05 ★"
+    if p < 0.001: return "p<0.001 "
+    if p < 0.01:  return "p<0.01 "
+    if p < 0.05:  return "p<0.05 "
     return "유의하지 않음 (ns)"
 
 def pct(a, b):
@@ -241,42 +241,83 @@ def compute(file_bytes):
 # 인사이트 에디터
 # ══════════════════════════════════════════════════════
 def insight_editor(page_key, default_lines):
+    """동적 메모 에디터 — 추가/삭제/숨기기 가능"""
     store = st.session_state.insights
     if page_key not in store:
-        store[page_key] = [{"text": t, "color": "vb", "bold": False} for t in default_lines]
+        store[page_key] = []
 
-    items = store[page_key]
-    st.markdown("#### 💡 인사이트 메모 <span style='font-size:11px;color:#545c6a'>(클릭 편집 · 서버 자동 저장)</span>", unsafe_allow_html=True)
+    items    = store[page_key]
+    hide_key = f"__hide_memo_{page_key}__"
+    if hide_key not in st.session_state:
+        st.session_state[hide_key] = False
 
-    COLOR_OPTIONS = {"파란색(vb)":"vb","초록색(vg)":"vg","빨간색(vr)":"vr","주황색(va)":"va"}
-    to_delete = []
-
-    for i, item in enumerate(items):
-        with st.expander(f"{'**' if item.get('bold') else ''}{item['text'][:60]}{'...' if len(item['text'])>60 else ''}{'**' if item.get('bold') else ''}", expanded=False):
-            col1, col2, col3 = st.columns([5,2,1])
-            new_text = col1.text_area("내용", item["text"], key=f"ins_txt_{page_key}_{i}", height=80, label_visibility="collapsed")
-            new_color = col2.selectbox("색상", list(COLOR_OPTIONS.keys()),
-                index=list(COLOR_OPTIONS.values()).index(item.get("color","vb")),
-                key=f"ins_col_{page_key}_{i}", label_visibility="collapsed")
-            new_bold = col2.checkbox("볼드", value=item.get("bold",False), key=f"ins_bold_{page_key}_{i}")
-            if col3.button("🗑", key=f"ins_del_{page_key}_{i}"):
-                to_delete.append(i)
-            items[i] = {"text":new_text, "color":COLOR_OPTIONS[new_color], "bold":new_bold}
-
-        clss = items[i]["color"]
-        txt  = f"<strong>{items[i]['text']}</strong>" if items[i]["bold"] else items[i]["text"]
-        st.markdown(f"<div class='{clss}'>{txt}</div>", unsafe_allow_html=True)
-
-    for idx in sorted(to_delete, reverse=True):
-        items.pop(idx)
-
-    if st.button("＋ 인사이트 추가", key=f"ins_add_{page_key}"):
-        items.append({"text":"새 인사이트를 입력하세요.", "color":"vb", "bold":False})
+    # 헤더 행: "메모" 텍스트 + 숨기기/보이기 토글
+    h1, h2, h3 = st.columns([8, 1, 1])
+    h1.markdown("**메모**", unsafe_allow_html=True)
+    if h2.button("숨기기" if not st.session_state[hide_key] else "펼치기",
+                 key=f"hide_{page_key}", use_container_width=True):
+        st.session_state[hide_key] = not st.session_state[hide_key]
         st.rerun()
+    if h3.button("+ 추가", key=f"add_{page_key}", use_container_width=True):
+        items.append({"text": "", "editing": True})
+        store[page_key] = items
+        st.session_state.insights = store
+        save_insights(store)
+        st.rerun()
+
+    if not st.session_state[hide_key]:
+        if not items:
+            st.markdown(
+                "<p style='color:#94a3b8;font-size:12px;margin:4px 0 0 2px'>"
+                "+ 추가 버튼으로 메모를 입력하세요.</p>",
+                unsafe_allow_html=True
+            )
+        to_delete = []
+        for i, item in enumerate(items):
+            edit_active = item.get("editing", False)
+            c1, c2, c3 = st.columns([10, 1, 1])
+            if edit_active:
+                new_text = c1.text_area(
+                    "", item.get("text",""),
+                    key=f"memo_ta_{page_key}_{i}",
+                    height=72, label_visibility="collapsed",
+                    placeholder="내용을 입력하세요."
+                )
+                if c2.button("저장", key=f"memo_save_{page_key}_{i}", use_container_width=True):
+                    items[i] = {"text": new_text, "editing": False}
+                    store[page_key] = items
+                    st.session_state.insights = store
+                    save_insights(store)
+                    st.rerun()
+                if c3.button("삭제", key=f"memo_del_{page_key}_{i}", use_container_width=True):
+                    to_delete.append(i)
+            else:
+                txt = item.get("text","")
+                c1.markdown(
+                    f"<p style='font-size:13px;color:#334155;margin:2px 0;line-height:1.6'>{txt}</p>",
+                    unsafe_allow_html=True
+                )
+                if c2.button("편집", key=f"memo_edit_{page_key}_{i}", use_container_width=True):
+                    items[i]["editing"] = True
+                    store[page_key] = items
+                    st.session_state.insights = store
+                    save_insights(store)
+                    st.rerun()
+                if c3.button("삭제", key=f"memo_del2_{page_key}_{i}", use_container_width=True):
+                    to_delete.append(i)
+
+        for idx in sorted(to_delete, reverse=True):
+            items.pop(idx)
+        if to_delete:
+            store[page_key] = items
+            st.session_state.insights = store
+            save_insights(store)
+            st.rerun()
 
     store[page_key] = items
     st.session_state.insights = store
     save_insights(store)
+
 
 
 # ══════════════════════════════════════════════════════
@@ -297,7 +338,7 @@ def editable_text(key, default, tag="p", style=""):
     if st.session_state[edit_key]:
         col1, col2 = st.columns([10,1])
         new_val = col1.text_area("", texts[key], key=f"ta_{key}", height=80, label_visibility="collapsed")
-        if col2.button("✓", key=f"save_{key}"):
+        if col2.button("확인", key=f"save_{key}"):
             texts[key] = new_val
             st.session_state[edit_key] = False
             # 저장
@@ -309,7 +350,7 @@ def editable_text(key, default, tag="p", style=""):
     else:
         rendered = texts[key]
         st.markdown(f'<{tag} style="cursor:pointer;{style}" title="클릭하여 편집">{rendered}</{tag}>', unsafe_allow_html=True)
-        if st.button("✏️", key=f"edit_{key}", help="편집"):
+        if st.button("편집", key=f"edit_{key}", help="편집"):
             st.session_state[edit_key] = True
             st.rerun()
     return texts[key]
@@ -326,7 +367,7 @@ def verdict_box(key, default_text, default_color="vg", emoji=""):
     if st.session_state[ekey]:
         c1, c2 = st.columns([11,1])
         new_text = c1.text_area("", store[vkey], key=f"vta_{key}", height=100, label_visibility="collapsed")
-        if c2.button("✓", key=f"vsave_{key}"):
+        if c2.button("확인", key=f"vsave_{key}"):
             store[vkey] = new_text
             st.session_state[ekey] = False
             all_data = load_insights()
@@ -338,7 +379,7 @@ def verdict_box(key, default_text, default_color="vg", emoji=""):
         txt = store[vkey].replace("\n","<br>")
         col_a, col_b = st.columns([20,1])
         col_a.markdown(f'<div class="vg">{txt}</div>', unsafe_allow_html=True)
-        if col_b.button("✏️", key=f"vedit_{key}", help="편집"):
+        if col_b.button("편집", key=f"vedit_{key}"):
             st.session_state[ekey] = True
             st.rerun()
 
@@ -430,23 +471,23 @@ def styled_compare(df_tbl):
 # Appendix
 # ══════════════════════════════════════════════════════
 def show_appendix(df_raw, label="근거 데이터"):
-    with st.expander(f"📎 Appendix — {label}", expanded=False):
+    with st.expander(f"근거 데이터 — {label}", expanded=False):
         st.markdown("<div class='appendix'>", unsafe_allow_html=True)
         st.dataframe(df_raw.reset_index(drop=True), use_container_width=True)
         csv = df_raw.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("⬇ CSV 다운로드", csv, file_name=f"{label}.csv", mime="text/csv")
+        st.download_button("CSV 다운로드", csv, file_name=f"{label}.csv", mime="text/csv")
         st.markdown("</div>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════
 # 통계 해설
 # ══════════════════════════════════════════════════════
 def stat_explainer():
-    with st.expander("📖 통계 용어 해설 — 기초 지식 없이도 이해하기", expanded=False):
+    with st.expander("통계 용어 해설 (클릭하여 펼치기)", expanded=False):
         verdict_box("stat_r2",
             "R² (결정계수) — \"이 지표가 얼마나 일관된 패턴을 보이는가\"\n0~1 사이 숫자. 0.3 이상이면 뚜렷한 경향, 0.1~0.3은 약한 경향, 0.1 미만은 거의 패턴 없음.\n예: R²=0.286 → 시간 흐름에 따른 하락 패턴이 28.6% 설명됨 — 꽤 뚜렷한 경향",
             "vb")
         verdict_box("stat_p",
-            "p값 (유의확률) — \"이 패턴이 우연일 확률\"\np<0.001 ★★★ → 우연일 확률 0.1% 미만 = 거의 확실한 경향\np<0.01 ★★ → 우연일 확률 1% 미만 = 신뢰할 수 있는 경향\np<0.05 ★ → 우연일 확률 5% 미만 = 통계적으로 유의함\np≥0.05 ns → 우연일 수도 있음 = 근거 부족",
+            "p값 (유의확률) — \"이 패턴이 우연일 확률\"\np<0.001  → 우연일 확률 0.1% 미만 = 거의 확실한 경향\np<0.01  → 우연일 확률 1% 미만 = 신뢰할 수 있는 경향\np<0.05  → 우연일 확률 5% 미만 = 통계적으로 유의함\np≥0.05 ns → 우연일 수도 있음 = 근거 부족",
             "vg")
         verdict_box("stat_corr",
             "상관계수 (Correlation) — \"두 지표가 얼마나 함께 움직이는가\"\n-1~+1 사이. 음수 = 한쪽이 오르면 다른 쪽 내려감, 양수 = 같이 움직임.\n-0.4 이하면 꽤 강한 음의 관계. 예: 발송↑ → 건당거래액↓",
@@ -459,7 +500,7 @@ def stat_explainer():
 # 사이드바
 # ══════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("## 📨 발송 분석")
+    st.markdown("##  발송 분석")
     uploaded = st.file_uploader("엑셀 업로드", type=["xlsx","xls"], label_visibility="collapsed")
 
     if uploaded:
@@ -467,12 +508,12 @@ with st.sidebar:
         G    = compute(file_bytes)
         meta = G["meta"]
         df   = G["df"]
-        st.success(f"✅ {meta['days']}일 데이터")
+        st.success(f" {meta['days']}일 데이터")
         st.caption(f"{meta['start']} ~ {meta['end']}")
 
         # 날짜 필터
         st.markdown("---")
-        st.markdown("**📅 기간 필터**")
+        st.markdown("** 기간 필터**")
         date_min = pd.to_datetime(meta["start"])
         date_max = pd.to_datetime(meta["end"])
         d1 = st.date_input("시작일", date_min, min_value=date_min, max_value=date_max)
@@ -481,7 +522,7 @@ with st.sidebar:
         df_f = df[mask_date].copy()
 
         # 요일 필터
-        st.markdown("**📆 요일 필터**")
+        st.markdown("** 요일 필터**")
         DOW_KR = ["월","화","수","목","금","토","일"]
         sel_dow = st.multiselect("요일 선택", DOW_KR, default=DOW_KR)
         dow_map = {v:i for i,v in enumerate(["월","화","수","목","금","토","일"])}
@@ -495,20 +536,20 @@ with st.sidebar:
 
     st.markdown("---")
     PAGE_LIST = [
-        "🏠 전체 요약",
-        "📨 발송 빈도 효율",
-        "📈 피로도 시계열",
-        "🔬 인과 검증",
-        "📊 지표 상관 분석",
-        "📅 요일별 패턴",
-        "🎯 발송 최적 구간",
-        "📉 한계수익 분석",
+        "01. 전체 요약",
+        "02. 발송 빈도 효율",
+        "03. 피로도 시계열",
+        "04. 인과 검증",
+        "05. 지표 상관 분석",
+        "06. 요일별 패턴",
+        "07. 발송 최적 구간",
+        "08. 한계수익 분석",
     ]
     page = st.radio("분석 주제", PAGE_LIST, label_visibility="collapsed")
 
     if G:
         st.markdown("---")
-        if st.button("🗑 인사이트 전체 초기화", use_container_width=True):
+        if st.button("초기화", use_container_width=True):
             st.session_state.insights = {}
             save_insights({})
             st.rerun()
@@ -520,7 +561,7 @@ with st.sidebar:
             for it in items:
                 txt = it.get("text", str(it)) if isinstance(it, dict) else str(it)
                 lines.append(f"- {txt}")
-        st.download_button("📋 인사이트 내보내기", "\n".join(lines),
+        st.download_button("메모 내보내기", "\n".join(lines),
                            file_name="insights.txt", mime="text/plain", use_container_width=True)
 
 # ══════════════════════════════════════════════════════
@@ -591,9 +632,9 @@ def metric_color(k):
 # ══════════════════════════════════════════════════════
 # PAGE: 전체 요약
 # ══════════════════════════════════════════════════════
-if page == "🏠 전체 요약":
+if page == "01. 전체 요약":
     _t = editable_text("title_overview", "전체 요약", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
-    st.caption(f"{meta['start']} ~ {meta['end']} ({meta['days']}일 전체 / 필터 적용: {len(df_f)}일)")
+    st.caption(f"데이터 기간: {meta['start']} ~ {meta['end']} · 전체 {meta['days']}일 · 필터 적용 {len(df_f)}일")
 
     kpi_keys = ["perSend","revenue","ctr","purchaseRate","rps","purchaseCust","avgOrderVal","totalSend"]
     cols = st.columns(4)
@@ -635,7 +676,7 @@ if page == "🏠 전체 요약":
 
     # 핵심 변화 요약
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("핵심 변화 요약")
+    st.subheader("기간별 변화")
     cc1,cc2 = st.columns(2)
     for col_w, keys in [(cc1,["perSend","ctr","purchaseRate","rps"]),
                         (cc2,["revenue","purchaseCust","avgOrderVal","totalSend"])]:
@@ -650,7 +691,7 @@ if page == "🏠 전체 요약":
 
     # ── 기간 비교 전체 테이블 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("📊 기간 비교 전체 지표")
+    st.subheader("기간 비교 — 전체 지표")
     cmp_mode = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ov")
     df_cur, df_prev, lbl_cur, lbl_prev = get_compare_periods(G["df"], cmp_mode)
     if len(df_cur) and len(df_prev):
@@ -666,12 +707,12 @@ if page == "🏠 전체 요약":
 # ══════════════════════════════════════════════════════
 # PAGE: 발송 빈도 효율
 # ══════════════════════════════════════════════════════
-elif page == "📨 발송 빈도 효율":
+elif page == "02. 발송 빈도 효율":
     _t = editable_text("title_freq", "발송 빈도 효율 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
 
     q1v, q5v = quintile.iloc[0], quintile.iloc[4]
     verdict_box("freq_v1",
-        f'❌ "많이 보낼수록 매출이 오른다" — 기각\nQ1(평균 {q1v["totalSend"]/1e6:.2f}M건) 거래액 {q1v["revenue"]/1e8:.3f}억 vs Q5({q5v["totalSend"]/1e6:.2f}M건) {q5v["revenue"]/1e8:.3f}억. 2배 이상 더 보내도 매출은 오히려 낮습니다.',
+        f' "많이 보낼수록 매출이 오른다" — 기각\nQ1(평균 {q1v["totalSend"]/1e6:.2f}M건) 거래액 {q1v["revenue"]/1e8:.3f}억 vs Q5({q5v["totalSend"]/1e6:.2f}M건) {q5v["revenue"]/1e8:.3f}억. 2배 이상 더 보내도 매출은 오히려 낮습니다.',
         "vr")
     verdict_box("freq_v2", "", "vg")
     verdict_box("freq_v3", "", "vg")
@@ -702,7 +743,7 @@ elif page == "📨 발송 빈도 효율":
 
     # 5분위 이중축
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("총 발송량 5분위 vs 지표 (이중축)")
+    st.subheader("총 발송량 5분위 비교")
     ma, mb = st.columns(2)
     ym1_label = ma.selectbox("좌축 지표", metric_select_list, index=metric_select_list.index("거래액"), key="q5_l")
     ym2_label = mb.selectbox("우축 지표", metric_select_list, index=metric_select_list.index("발송건당 거래액"), key="q5_r")
@@ -727,7 +768,7 @@ elif page == "📨 발송 빈도 효율":
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("📊 기간 비교 — 발송 효율")
+    st.subheader("기간 비교 — 발송 효율")
     cmp_mode_fr = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_fr")
     df_cur_fr, df_prev_fr, lbl_cur_fr, lbl_prev_fr = get_compare_periods(G["df"], cmp_mode_fr)
     if len(df_cur_fr) and len(df_prev_fr):
@@ -743,7 +784,7 @@ elif page == "📨 발송 빈도 효율":
 # ══════════════════════════════════════════════════════
 # PAGE: 피로도 시계열
 # ══════════════════════════════════════════════════════
-elif page == "📈 피로도 시계열":
+elif page == "03. 피로도 시계열":
     _t = editable_text("title_ts", "피로도 시계열 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("요일 통제 후 잔차 회귀 기준")
 
@@ -774,7 +815,7 @@ elif page == "📈 피로도 시계열":
 
     # 이중축: 발송 vs 선택 지표
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("인당 발송 vs 효율 지표 역방향 확인")
+    st.subheader("인당 발송 vs 효율 지표")
     dual_sel = st.selectbox("비교 지표 (우축)", metric_select_list,
                              index=metric_select_list.index("CTR"), key="dual_sel")
     dual_k = key_from_label(dual_sel)
@@ -802,7 +843,7 @@ elif page == "📈 피로도 시계열":
 
     # 회귀 통계
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("통계 유의성 (요일 통제 후 잔차 회귀)")
+    st.subheader("통계 유의성")
     reg_cols = st.columns(len(reg))
     for i,(k,v) in enumerate(reg.items()):
         lbl = METRIC_LABELS.get(k,k)
@@ -814,7 +855,7 @@ elif page == "📈 피로도 시계열":
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("📊 기간 비교 — 효율 지표")
+    st.subheader("기간 비교 — 효율 지표")
     cmp_mode_ts = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ts")
     df_cur_ts, df_prev_ts, lbl_cur_ts, lbl_prev_ts = get_compare_periods(G["df"], cmp_mode_ts)
     if len(df_cur_ts) and len(df_prev_ts):
@@ -829,14 +870,14 @@ elif page == "📈 피로도 시계열":
 # ══════════════════════════════════════════════════════
 # PAGE: 인과 검증
 # ══════════════════════════════════════════════════════
-elif page == "🔬 인과 검증":
+elif page == "04. 인과 검증":
     _t = editable_text("title_causal", "인과 검증", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     verdict_box("causal_v1", "", "vg")
     verdict_box("causal_v2", "", "vg")
     verdict_box("causal_v3", "", "vg")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("요일 통제 후 — 같은 요일 내 비교")
+    st.subheader("요일별 통제 비교")
     dc_rows = []
     for r in dow_comp:
         dc_rows.append({"요일":r["dow"]+"요일","기준":f"≤{r['median']:.1f}건",
@@ -848,7 +889,7 @@ elif page == "🔬 인과 검증":
     show_appendix(dc_df, "요일통제비교")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("요일 통제 후 상관계수")
+    st.subheader("요일별 상관계수")
     dc_corr = pd.DataFrame(dow_corr)
     fig7 = go.Figure()
     for sign, cn in [(True,"blue"),(False,"red")]:
@@ -874,7 +915,7 @@ elif page == "🔬 인과 검증":
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     verdict_box("causal_mgmt2", "", "vg")
     verdict_box("causal_ab2", "", "vg")
-    st.subheader("📊 기간 비교 — 인과 관련 지표")
+    st.subheader("기간 비교 — 인과 관련 지표")
     cmp_mode_ca = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ca")
     df_cur_ca, df_prev_ca, lbl_cur_ca, lbl_prev_ca = get_compare_periods(G["df"], cmp_mode_ca)
     if len(df_cur_ca) and len(df_prev_ca):
@@ -888,7 +929,7 @@ elif page == "🔬 인과 검증":
 # ══════════════════════════════════════════════════════
 # PAGE: 지표 상관 분석
 # ══════════════════════════════════════════════════════
-elif page == "📊 지표 상관 분석":
+elif page == "05. 지표 상관 분석":
     _t = editable_text("title_corr", "지표 상관 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("두 지표 간의 관계를 산점도와 상관계수로 확인합니다.")
 
@@ -927,7 +968,7 @@ elif page == "📊 지표 상관 분석":
 
     # 상관 매트릭스
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("주요 지표 상관 매트릭스")
+    st.subheader("지표 간 상관관계")
     mat_keys = ["perSend","revenue","rps","ctr","purchaseRate","purchaseCnt","avgOrderVal"]
     mat_labels = [METRIC_LABELS[k] for k in mat_keys]
     if len(df_f) > 10:
@@ -947,7 +988,7 @@ elif page == "📊 지표 상관 분석":
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("📊 기간 비교 — 전 지표")
+    st.subheader("기간 비교 — 전체 지표")
     cmp_mode_co = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_co")
     df_cur_co, df_prev_co, lbl_cur_co, lbl_prev_co = get_compare_periods(G["df"], cmp_mode_co)
     if len(df_cur_co) and len(df_prev_co):
@@ -961,7 +1002,7 @@ elif page == "📊 지표 상관 분석":
 # ══════════════════════════════════════════════════════
 # PAGE: 요일별 패턴
 # ══════════════════════════════════════════════════════
-elif page == "📅 요일별 패턴":
+elif page == "06. 요일별 패턴":
     _t = editable_text("title_dow", "요일별 패턴 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
 
     sel_dow_m = st.selectbox("분석 지표", metric_select_list, index=metric_select_list.index("거래액"), key="dow_m")
@@ -1004,7 +1045,7 @@ elif page == "📅 요일별 패턴":
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("📊 기간 비교 — 요일별 성과")
+    st.subheader("기간 비교 — 요일별 성과")
     cmp_mode_dw = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_dw")
     df_cur_dw, df_prev_dw, lbl_cur_dw, lbl_prev_dw = get_compare_periods(G["df"], cmp_mode_dw)
     DOW_KR2 = {0:"월",1:"화",2:"수",3:"목",4:"금",5:"토",6:"일"}
@@ -1024,7 +1065,7 @@ elif page == "📅 요일별 패턴":
 # ══════════════════════════════════════════════════════
 # PAGE: 발송 최적 구간
 # ══════════════════════════════════════════════════════
-elif page == "🎯 발송 최적 구간":
+elif page == "07. 발송 최적 구간":
     _t = editable_text("title_opt", "발송 최적 구간 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("거래액·효율·구매율을 종합한 최적 발송 구간을 찾습니다.")
 
@@ -1033,7 +1074,7 @@ elif page == "🎯 발송 최적 구간":
         score_keys = ["revenue","rps","ctr","purchaseRate"]
         score_labels = [METRIC_LABELS[k] for k in score_keys]
         weights = {}
-        st.subheader("지표별 가중치 설정")
+        st.subheader("가중치 설정")
         wcols = st.columns(len(score_keys))
         for i,(k,lbl) in enumerate(zip(score_keys,score_labels)):
             weights[k] = wcols[i].slider(lbl, 0.0, 1.0, 0.25, 0.05, key=f"w_{k}")
@@ -1068,7 +1109,7 @@ elif page == "🎯 발송 최적 구간":
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("📊 기간 비교 — 구간 효과")
+    st.subheader("기간 비교 — 구간 효과")
     cmp_mode_op = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_op")
     df_cur_op, df_prev_op, lbl_cur_op, lbl_prev_op = get_compare_periods(G["df"], cmp_mode_op)
     if len(df_cur_op) and len(df_prev_op):
@@ -1082,7 +1123,7 @@ elif page == "🎯 발송 최적 구간":
 # ══════════════════════════════════════════════════════
 # PAGE: 한계수익 분석
 # ══════════════════════════════════════════════════════
-elif page == "📉 한계수익 분석":
+elif page == "08. 한계수익 분석":
     _t = editable_text("title_lm", "한계수익 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
     st.caption("발송 1건 추가 시 거래액·클릭이 얼마나 증가/감소하는지 분석합니다.")
 
@@ -1125,7 +1166,7 @@ elif page == "📉 한계수익 분석":
 
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("📊 기간 비교 — 한계 효율")
+    st.subheader("기간 비교 — 한계 효율")
     cmp_mode_lm = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_lm")
     df_cur_lm, df_prev_lm, lbl_cur_lm, lbl_prev_lm = get_compare_periods(G["df"], cmp_mode_lm)
     if len(df_cur_lm) and len(df_prev_lm):
