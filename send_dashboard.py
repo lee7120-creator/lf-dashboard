@@ -314,6 +314,48 @@ def editable_text(key, default, tag="p", style=""):
             st.rerun()
     return texts[key]
 
+def verdict_box(key, default_text, default_color="vg", emoji=""):
+    """편집 가능한 verdict 박스"""
+    store = st.session_state.insights
+    vkey  = f"__verdict_{key}__"
+    ckey  = f"__vcolor_{key}__"
+    ekey  = f"__editing_v_{key}__"
+
+    if vkey not in store: store[vkey] = default_text
+    if ckey not in store: store[ckey] = default_color
+    if ekey not in st.session_state: st.session_state[ekey] = False
+
+    COLOR_MAP = {
+        "초록(✅)":"vg","빨강(❌)":"vr","주황(⚠️)":"va","파랑(ℹ️)":"vb"
+    }
+    COLOR_REVERSE = {"vg":"초록(✅)","vr":"빨강(❌)","va":"주황(⚠️)","vb":"파랑(ℹ️)"}
+
+    if st.session_state[ekey]:
+        c1,c2,c3 = st.columns([6,2,1])
+        new_text  = c1.text_area("내용 편집", store[vkey], key=f"vta_{key}", height=100, label_visibility="collapsed")
+        cur_color = COLOR_REVERSE.get(store[ckey],"초록(✅)")
+        new_color = c2.selectbox("색상", list(COLOR_MAP.keys()),
+                                  index=list(COLOR_MAP.keys()).index(cur_color),
+                                  key=f"vcol_{key}", label_visibility="collapsed")
+        if c3.button("✓", key=f"vsave_{key}"):
+            store[vkey]  = new_text
+            store[ckey]  = COLOR_MAP[new_color]
+            st.session_state[ekey] = False
+            all_data = load_insights()
+            all_data.update(store)
+            save_insights(all_data)
+            st.session_state.insights = store
+            st.rerun()
+    else:
+        clss = store[ckey]
+        txt  = store[vkey].replace("\n","<br>")
+        col_a, col_b = st.columns([20,1])
+        col_a.markdown(f'<div class="{clss}">{txt}</div>', unsafe_allow_html=True)
+        if col_b.button("✏️", key=f"vedit_{key}", help="편집"):
+            st.session_state[ekey] = True
+            st.rerun()
+
+
 # ══════════════════════════════════════════════════════
 # 기간 비교 헬퍼
 # ══════════════════════════════════════════════════════
@@ -413,29 +455,18 @@ def show_appendix(df_raw, label="근거 데이터"):
 # ══════════════════════════════════════════════════════
 def stat_explainer():
     with st.expander("📖 통계 용어 해설 — 기초 지식 없이도 이해하기", expanded=False):
-        st.markdown("""
-<div class='vb'>
-<strong>R² (결정계수)</strong> — "이 지표가 얼마나 일관된 패턴을 보이는가"<br>
-0~1 사이 숫자. <strong>0.3 이상이면 뚜렷한 경향</strong>, 0.1~0.3은 약한 경향, 0.1 미만은 거의 패턴 없음.<br>
-예: R²=0.286 → "시간 흐름에 따른 하락 패턴이 28.6% 설명됨 — 꽤 뚜렷한 경향"
-</div>
-<div class='vg' style='margin-top:8px'>
-<strong>p값 (유의확률)</strong> — "이 패턴이 우연일 확률"<br>
-p&lt;0.001 ★★★ → 우연일 확률 0.1% 미만 = <strong>거의 확실한 경향</strong><br>
-p&lt;0.01 ★★ → 우연일 확률 1% 미만 = 신뢰할 수 있는 경향<br>
-p&lt;0.05 ★ → 우연일 확률 5% 미만 = 통계적으로 유의함<br>
-p≥0.05 ns → 우연일 수도 있음 = 근거 부족
-</div>
-<div class='va' style='margin-top:8px'>
-<strong>상관계수 (Correlation)</strong> — "두 지표가 얼마나 함께 움직이는가"<br>
--1~+1 사이. <strong>음수 = 한쪽이 오르면 다른 쪽 내려감</strong>, 양수 = 같이 움직임.<br>
--0.4 이하면 꽤 강한 음의 관계. 예: 발송↑ → 건당거래액↓
-</div>
-<div class='vb' style='margin-top:8px'>
-<strong>선형회귀 기울기 (slope)</strong> — "하루에 얼마씩 변하는가"<br>
-예: slope=-0.0028%p/일 → CTR이 매일 0.0028%p씩 하락 = 1년이면 약 1%p 하락
-</div>
-""", unsafe_allow_html=True)
+        verdict_box("stat_r2",
+            "R² (결정계수) — \"이 지표가 얼마나 일관된 패턴을 보이는가\"\n0~1 사이 숫자. 0.3 이상이면 뚜렷한 경향, 0.1~0.3은 약한 경향, 0.1 미만은 거의 패턴 없음.\n예: R²=0.286 → 시간 흐름에 따른 하락 패턴이 28.6% 설명됨 — 꽤 뚜렷한 경향",
+            "vb")
+        verdict_box("stat_p",
+            "p값 (유의확률) — \"이 패턴이 우연일 확률\"\np<0.001 ★★★ → 우연일 확률 0.1% 미만 = 거의 확실한 경향\np<0.01 ★★ → 우연일 확률 1% 미만 = 신뢰할 수 있는 경향\np<0.05 ★ → 우연일 확률 5% 미만 = 통계적으로 유의함\np≥0.05 ns → 우연일 수도 있음 = 근거 부족",
+            "vg")
+        verdict_box("stat_corr",
+            "상관계수 (Correlation) — \"두 지표가 얼마나 함께 움직이는가\"\n-1~+1 사이. 음수 = 한쪽이 오르면 다른 쪽 내려감, 양수 = 같이 움직임.\n-0.4 이하면 꽤 강한 음의 관계. 예: 발송↑ → 건당거래액↓",
+            "va")
+        verdict_box("stat_slope",
+            "선형회귀 기울기 (slope) — \"하루에 얼마씩 변하는가\"\n예: slope=-0.0028%p/일 → CTR이 매일 0.0028%p씩 하락 = 1년이면 약 1%p 하락",
+            "vb")
 
 # ══════════════════════════════════════════════════════
 # 사이드바
@@ -648,13 +679,15 @@ elif page == "📨 발송 빈도 효율":
     _t = editable_text("title_freq", "발송 빈도 효율 분석", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
 
     q1v, q5v = quintile.iloc[0], quintile.iloc[4]
-    st.markdown(f"""
-<div class="vr"><strong>❌ "많이 보낼수록 매출이 오른다" — 기각</strong><br>
-Q1(평균 {q1v["totalSend"]/1e6:.2f}M건) 거래액 {q1v["revenue"]/1e8:.3f}억 vs Q5({q5v["totalSend"]/1e6:.2f}M건) {q5v["revenue"]/1e8:.3f}억.
-2배 이상 더 보내도 매출은 오히려 낮습니다.</div>
-<div class="va"><strong>⚠️ "발송 줄이면 매출 오른다" — 과잉 주장</strong><br>요일 통제 후 방향이 일관되지 않아 인과 주장 불가입니다.</div>
-<div class="vg"><strong>✅ 입증 가능: 과잉 발송은 비용만 늘린다</strong><br>발송건당 거래액은 구간 높아질수록 단조 감소합니다.</div>
-""", unsafe_allow_html=True)
+    verdict_box("freq_v1",
+        f'❌ "많이 보낼수록 매출이 오른다" — 기각\nQ1(평균 {q1v["totalSend"]/1e6:.2f}M건) 거래액 {q1v["revenue"]/1e8:.3f}억 vs Q5({q5v["totalSend"]/1e6:.2f}M건) {q5v["revenue"]/1e8:.3f}억. 2배 이상 더 보내도 매출은 오히려 낮습니다.',
+        "vr")
+    verdict_box("freq_v2",
+        "⚠️ \"발송 줄이면 매출 오른다\" — 과잉 주장\n요일 통제 후 방향이 일관되지 않아 인과 주장 불가입니다.",
+        "va")
+    verdict_box("freq_v3",
+        "✅ 입증 가능: 과잉 발송은 비용만 늘린다\n발송건당 거래액은 구간 높아질수록 단조 감소합니다.",
+        "vg")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("인당 발송 구간별 성과 (30일+ 구간)")
@@ -734,11 +767,9 @@ elif page == "📈 피로도 시계열":
     sc = pct(fq["perSend"], lq["perSend"])
     cc = pct(fq["ctr"], lq["ctr"])
 
-    st.markdown(f"""
-<div class="vg"><strong>✅ 피로도 누적 가설 — 요일 통제 후 p&lt;0.001로 입증됨</strong><br>
-인당 발송 증가({sc:+.0f}%)와 CTR 하락({cc:+.0f}%)이 같은 기간 동반 발생.
-요일 효과 제거 후에도 모든 효율 지표 하락 추세가 통계적으로 유의합니다.</div>
-""", unsafe_allow_html=True)
+    verdict_box("ts_v1",
+        f"✅ 피로도 누적 가설 — 요일 통제 후 p<0.001로 입증됨\n인당 발송 증가({sc:+.0f}%)와 CTR 하락({cc:+.0f}%)이 같은 기간 동반 발생. 요일 효과 제거 후에도 모든 효율 지표 하락 추세가 통계적으로 유의합니다.",
+        "vg")
 
     # 지표 선택 트렌드
     sel_ts = st.selectbox("분석 지표", metric_select_list, index=0, key="ts_sel")
@@ -823,11 +854,15 @@ elif page == "📈 피로도 시계열":
 # ══════════════════════════════════════════════════════
 elif page == "🔬 인과 검증":
     _t = editable_text("title_causal", "인과 검증", "h2", "font-size:1.8rem;font-weight:700;color:#1e293b")
-    st.markdown("""
-<div class="vr"><strong>❌ "발송 줄이면 매출 오른다" — 인과 근거 없음</strong><br>요일 통제 후 평일 중 절반 이상에서 방향이 일관되지 않습니다.</div>
-<div class="va"><strong>⚠️ "많이 보내면 매출 오른다"도 — 입증 불가</strong><br>요일별 상관계수 방향이 혼재합니다.</div>
-<div class="vg"><strong>✅ 입증되는 것: 건당 효율은 일관되게 악화</strong><br>모든 요일에서 발송 많은 날의 건당 거래액이 낮습니다.</div>
-""", unsafe_allow_html=True)
+    verdict_box("causal_v1",
+        "❌ \"발송 줄이면 매출 오른다\" — 인과 근거 없음\n요일 통제 후 평일 중 절반 이상에서 방향이 일관되지 않습니다.",
+        "vr")
+    verdict_box("causal_v2",
+        "⚠️ \"많이 보내면 매출 오른다\"도 — 입증 불가\n요일별 상관계수 방향이 혼재합니다.",
+        "va")
+    verdict_box("causal_v3",
+        "✅ 입증되는 것: 건당 효율은 일관되게 악화\n모든 요일에서 발송 많은 날의 건당 거래액이 낮습니다.",
+        "vg")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("요일 통제 후 — 같은 요일 내 비교")
@@ -866,19 +901,12 @@ elif page == "🔬 인과 검증":
     st.plotly_chart(fig7, use_container_width=True)
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.markdown("""
-<div class="vg"><strong>경영진 대응 — 정확한 주장:</strong><br>
-"발송을 줄이면 매출이 오른다는 보장은 없습니다.
-하지만 현재 발송 수준은 추가 비용 대비 매출 기여가 없습니다.
-이 비용을 타겟팅 개선이나 다른 채널에 투자하는 것이 더 효과적입니다."
-</div>
-<div class="vb"><strong>다음 단계: A/B 테스트</strong><br>
-• 통제군: 현행 발송 유지 &nbsp;|&nbsp; 실험군: 인당 2.5건 이하 제한<br>
-• 4주 이상, 거래액·CTR·구매율·수신거부율 측정
-</div>
-""", unsafe_allow_html=True)
-
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    verdict_box("causal_mgmt2",
+        "경영진 대응 — 정확한 주장:\n발송을 줄이면 매출이 오른다는 보장은 없습니다. 하지만 현재 발송 수준은 추가 비용 대비 매출 기여가 없습니다. 이 비용을 타겟팅 개선이나 다른 채널에 투자하는 것이 더 효과적입니다.",
+        "vg")
+    verdict_box("causal_ab2",
+        "다음 단계: A/B 테스트\n통제군: 현행 발송 유지 | 실험군: 인당 2.5건 이하 제한\n4주 이상, 거래액·CTR·구매율·수신거부율 측정",
+        "vb")
     st.subheader("📊 기간 비교 — 인과 관련 지표")
     cmp_mode_ca = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ca")
     df_cur_ca, df_prev_ca, lbl_cur_ca, lbl_prev_ca = get_compare_periods(G["df"], cmp_mode_ca)
@@ -1063,10 +1091,9 @@ elif page == "🎯 발송 최적 구간":
 
         best_idx = scored["score"].idxmax()
         best = scored.iloc[best_idx]
-        st.markdown(f"""
-<div class="vg"><strong>🎯 종합 최적 구간: {best['bucket_f']} </strong><br>
-가중 점수 {best['score']:.3f} / 거래액 {best.revenue/1e8:.3f}억 / 건당거래 {best.rps:.0f}원 / CTR {best.ctr*100:.2f}% / 구매율 {best.purchaseRate*100:.3f}%
-</div>""", unsafe_allow_html=True)
+        verdict_box("opt_best",
+            f"🎯 종합 최적 구간: {best['bucket_f']}\n가중 점수 {best['score']:.3f} / 거래액 {best.revenue/1e8:.3f}억 / 건당거래 {best.rps:.0f}원 / CTR {best.ctr*100:.2f}% / 구매율 {best.purchaseRate*100:.3f}%",
+            "vg")
 
         fig12 = go.Figure()
         fig12.add_trace(go.Bar(
