@@ -20,10 +20,10 @@ st.markdown("""
 [data-testid="stMetric"]{background:#ffffff;border-radius:8px;padding:12px 16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
 [data-testid="stMetricLabel"]{color:#64748b!important;font-size:12px!important}
 [data-testid="stMetricValue"]{color:#1e293b!important;font-size:20px!important}
-.vg{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;color:#334155;font-size:13px;line-height:1.65;background:#ffffff}
-.vr{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;color:#334155;font-size:13px;line-height:1.65;background:#ffffff}
-.va{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;color:#334155;font-size:13px;line-height:1.65;background:#ffffff}
-.vb{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;color:#334155;font-size:13px;line-height:1.65;background:#ffffff}
+.vg{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;line-height:1.65;background:#ffffff}
+.vr{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;line-height:1.65;background:#ffffff}
+.va{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;line-height:1.65;background:#ffffff}
+.vb{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;line-height:1.65;background:#ffffff}
 .sdiv{border-top:1px solid #e2e8f0;margin:22px 0}
 .stat-label{font-size:11px;color:#545c6a;margin-bottom:3px;font-weight:500;letter-spacing:.04em;text-transform:uppercase}
 .appendix{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin-top:12px}
@@ -88,11 +88,31 @@ def dow_residual(df, col):
     return res
 
 def sig_label(p):
+    """p값을 누구나 알기 쉬운 한국어로 설명 (p = 이 패턴이 우연일 확률)"""
     if np.isnan(p): return "–"
-    if p < 0.001: return "p<0.001 "
-    if p < 0.01:  return "p<0.01 "
-    if p < 0.05:  return "p<0.05 "
-    return "유의하지 않음 (ns)"
+    if p < 0.001: return "p<0.001 (우연일 확률 0.1% 미만 — 매우 확실)"
+    if p < 0.01:  return "p<0.01 (우연일 확률 1% 미만 — 신뢰할 수 있음)"
+    if p < 0.05:  return "p<0.05 (우연일 확률 5% 미만 — 유의함)"
+    return "유의하지 않음 (우연일 수 있음)"
+
+def r2_label(r2):
+    """R² 값을 누구나 알기 쉬운 한국어로 설명 (R² = 패턴이 얼마나 뚜렷한지)"""
+    if np.isnan(r2): return "–"
+    if r2 >= 0.3:  return f"R²={r2:.3f} → 뚜렷한 경향 (변동의 {r2*100:.0f}% 설명)"
+    if r2 >= 0.1:  return f"R²={r2:.3f} → 약한 경향 (변동의 {r2*100:.0f}% 설명)"
+    return f"R²={r2:.3f} → 경향 거의 없음 ({r2*100:.0f}% 미만 설명)"
+
+def corr_label(r):
+    """상관계수를 누구나 알기 쉬운 한국어로 설명 (두 지표가 얼마나 함께 움직이는지)"""
+    if np.isnan(r): return "–"
+    ar = abs(r)
+    sign = "반대 방향" if r < 0 else "같은 방향"
+    if ar >= 0.7:   strength = "매우 강하게"
+    elif ar >= 0.5: strength = "강하게"
+    elif ar >= 0.3: strength = "보통으로"
+    elif ar >= 0.1: strength = "약하게"
+    else:           strength = "거의 관계 없이"
+    return f"{strength} {sign}으로 움직임"
 
 def pct(a, b):
     return (b-a)/a*100 if a and not np.isnan(a) else 0
@@ -238,10 +258,49 @@ def compute(file_bytes):
                 dow_comp=dow_comp, dow_corr=dow_corr, reg=reg, meta=meta)
 
 # ══════════════════════════════════════════════════════
+# 텍스트 포맷 헬퍼
+# ══════════════════════════════════════════════════════
+FMT_DEFAULTS = {"bold": False, "color": "#334155", "size": 13}
+SIZE_OPTS    = [11, 12, 13, 14, 15, 16, 18, 20, 24]
+
+def _norm(val, base=None):
+    """저장된 텍스트 값을 {text, bold, color, size} 딕셔너리로 정규화 (하위 호환)"""
+    d = (base or FMT_DEFAULTS).copy()
+    if isinstance(val, str):
+        d["text"] = val
+        return d
+    if isinstance(val, dict):
+        merged = d.copy()
+        merged.update({k: v for k, v in val.items() if k != "editing"})
+        merged.setdefault("text", "")
+        return merged
+    d["text"] = ""
+    return d
+
+def _style(fmt):
+    """포맷 딕셔너리 → CSS 인라인 스타일 문자열"""
+    w = "700" if fmt.get("bold") else "400"
+    c = fmt.get("color", "#334155")
+    s = fmt.get("size", 13)
+    return f"font-weight:{w};color:{c};font-size:{s}px;line-height:1.7"
+
+def _fmt_ui(key, fmt):
+    """편집 모드 포맷 컨트롤 (굵게·색상·크기) 렌더링, (bold, color, size) 반환"""
+    fc1, fc2, fc3 = st.columns([1, 2, 2])
+    bold = fc1.checkbox("굵게", value=bool(fmt.get("bold", False)), key=f"_ck_b_{key}")
+    raw_c = fmt.get("color", "#334155")
+    safe_c = raw_c if (isinstance(raw_c, str) and raw_c.startswith("#") and len(raw_c) == 7) else "#334155"
+    color = fc2.color_picker("색상", value=safe_c, key=f"_ck_c_{key}")
+    sz = fmt.get("size", 13)
+    idx = SIZE_OPTS.index(sz) if sz in SIZE_OPTS else SIZE_OPTS.index(13)
+    size = fc3.selectbox("크기(px)", SIZE_OPTS, index=idx, key=f"_ck_s_{key}")
+    return bold, color, size
+
+# ══════════════════════════════════════════════════════
 # 인사이트 에디터
 # ══════════════════════════════════════════════════════
 def insight_editor(page_key, default_lines):
-    """동적 메모 에디터 — 추가/삭제/숨기기 가능"""
+    """동적 메모 에디터 — 추가/삭제/숨기기/포맷 가능"""
     store = st.session_state.insights
     if page_key not in store:
         store[page_key] = []
@@ -259,7 +318,7 @@ def insight_editor(page_key, default_lines):
         st.session_state[hide_key] = not st.session_state[hide_key]
         st.rerun()
     if h3.button("+ 추가", key=f"add_{page_key}", use_container_width=True):
-        items.append({"text": "", "editing": True})
+        items.append({"text": "", "editing": True, "bold": False, "color": "#334155", "size": 13})
         store[page_key] = items
         st.session_state.insights = store
         save_insights(store)
@@ -273,7 +332,11 @@ def insight_editor(page_key, default_lines):
                 unsafe_allow_html=True
             )
         to_delete = []
-        for i, item in enumerate(items):
+        for i, raw_item in enumerate(items):
+            item = _norm(raw_item) if not isinstance(raw_item, dict) else raw_item
+            item.setdefault("bold", False)
+            item.setdefault("color", "#334155")
+            item.setdefault("size", 13)
             edit_active = item.get("editing", False)
             c1, c2, c3 = st.columns([10, 1, 1])
             if edit_active:
@@ -283,8 +346,9 @@ def insight_editor(page_key, default_lines):
                     height=72, label_visibility="collapsed",
                     placeholder="내용을 입력하세요."
                 )
+                bold, color, size = _fmt_ui(f"memo_{page_key}_{i}", item)
                 if c2.button("저장", key=f"memo_save_{page_key}_{i}", use_container_width=True):
-                    items[i] = {"text": new_text, "editing": False}
+                    items[i] = {"text": new_text, "editing": False, "bold": bold, "color": color, "size": size}
                     store[page_key] = items
                     st.session_state.insights = store
                     save_insights(store)
@@ -294,7 +358,7 @@ def insight_editor(page_key, default_lines):
             else:
                 txt = item.get("text","")
                 c1.markdown(
-                    f"<p style='font-size:13px;color:#334155;margin:2px 0;line-height:1.6'>{txt}</p>",
+                    f"<p style='{_style(item)};margin:2px 0'>{txt}</p>",
                     unsafe_allow_html=True
                 )
                 if c2.button("편집", key=f"memo_edit_{page_key}_{i}", use_container_width=True):
@@ -326,49 +390,71 @@ def insight_editor(page_key, default_lines):
 if "editable_texts" not in st.session_state:
     st.session_state.editable_texts = load_insights().get("__texts__", {})
 
+TAG_FMT = {
+    "h2": {"bold": True,  "color": "#1e293b", "size": 24},
+    "h3": {"bold": True,  "color": "#1e293b", "size": 20},
+    "h4": {"bold": True,  "color": "#1e293b", "size": 16},
+    "p":  {"bold": False, "color": "#334155", "size": 13},
+}
+
 def editable_text(key, default, tag="p", style=""):
-    """클릭하면 인라인 편집 가능한 텍스트"""
+    """클릭하면 인라인 편집 가능한 텍스트 (글자색·크기·볼드 포맷 지원)"""
+    base = TAG_FMT.get(tag, FMT_DEFAULTS).copy()
     texts = st.session_state.editable_texts
+
     if key not in texts:
-        texts[key] = default
+        texts[key] = {"text": default, **base}
+    item = _norm(texts[key], base)
+
     edit_key = f"__editing_{key}__"
     if edit_key not in st.session_state:
         st.session_state[edit_key] = False
 
     if st.session_state[edit_key]:
-        col1, col2 = st.columns([10,1])
-        new_val = col1.text_area("", texts[key], key=f"ta_{key}", height=80, label_visibility="collapsed")
+        col1, col2 = st.columns([10, 1])
+        new_val = col1.text_area("", item["text"], key=f"ta_{key}", height=80, label_visibility="collapsed")
+        bold, color, size = _fmt_ui(key, item)
         if col2.button("확인", key=f"save_{key}"):
-            texts[key] = new_val
+            new_item = {"text": new_val, "bold": bold, "color": color, "size": size}
+            texts[key] = new_item
             st.session_state[edit_key] = False
-            # 저장
             all_data = load_insights()
             all_data["__texts__"] = texts
             save_insights(all_data)
             st.session_state.editable_texts = texts
             st.rerun()
     else:
-        rendered = texts[key]
-        st.markdown(f'<{tag} style="cursor:pointer;{style}" title="클릭하여 편집">{rendered}</{tag}>', unsafe_allow_html=True)
+        item = _norm(texts[key], base)
+        rendered = item["text"]
+        st.markdown(
+            f'<{tag} style="{_style(item)};cursor:pointer;{style}" title="클릭하여 편집">{rendered}</{tag}>',
+            unsafe_allow_html=True
+        )
         if st.button("편집", key=f"edit_{key}", help="편집"):
             st.session_state[edit_key] = True
             st.rerun()
-    return texts[key]
+    return item["text"]
 
 def verdict_box(key, default_text, default_color="vg", emoji=""):
-    """편집 가능한 텍스트 박스 (디자인 없음)"""
+    """편집 가능한 텍스트 박스 (글자색·크기·볼드 포맷 지원)"""
     store = st.session_state.insights
     vkey  = f"__verdict_{key}__"
     ekey  = f"__editing_v_{key}__"
 
-    if vkey not in store: store[vkey] = default_text
-    if ekey not in st.session_state: st.session_state[ekey] = False
+    if vkey not in store:
+        store[vkey] = {"text": default_text, "bold": False, "color": "#334155", "size": 13}
+    item = _norm(store[vkey])
+
+    if ekey not in st.session_state:
+        st.session_state[ekey] = False
 
     if st.session_state[ekey]:
-        c1, c2 = st.columns([11,1])
-        new_text = c1.text_area("", store[vkey], key=f"vta_{key}", height=100, label_visibility="collapsed")
+        c1, c2 = st.columns([11, 1])
+        new_text = c1.text_area("", item["text"], key=f"vta_{key}", height=100, label_visibility="collapsed")
+        bold, color, size = _fmt_ui(f"v_{key}", item)
         if c2.button("확인", key=f"vsave_{key}"):
-            store[vkey] = new_text
+            new_item = {"text": new_text, "bold": bold, "color": color, "size": size}
+            store[vkey] = new_item
             st.session_state[ekey] = False
             all_data = load_insights()
             all_data.update(store)
@@ -376,9 +462,13 @@ def verdict_box(key, default_text, default_color="vg", emoji=""):
             st.session_state.insights = store
             st.rerun()
     else:
-        txt = store[vkey].replace("\n","<br>")
-        col_a, col_b = st.columns([20,1])
-        col_a.markdown(f'<div class="vg">{txt}</div>', unsafe_allow_html=True)
+        item = _norm(store[vkey])
+        txt = item["text"].replace("\n", "<br>")
+        col_a, col_b = st.columns([20, 1])
+        col_a.markdown(
+            f'<div class="vg"><span style="{_style(item)}">{txt}</span></div>',
+            unsafe_allow_html=True
+        )
         if col_b.button("편집", key=f"vedit_{key}"):
             st.session_state[ekey] = True
             st.rerun()
@@ -529,14 +619,19 @@ DEFAULTS = {
 }
 
 def memo_block(key, location="bottom"):
-    """편집 가능한 메모 블록. location: 'top' or 'bottom'"""
-    store    = st.session_state.insights
-    mkey     = f"__memo_{key}__"
-    ekey     = f"__medit_{key}__"
-    hkey     = f"__mhide_{key}__"
+    """편집 가능한 메모 블록 (글자색·크기·볼드 포맷 지원)"""
+    store = st.session_state.insights
+    mkey  = f"__memo_{key}__"
+    ekey  = f"__medit_{key}__"
+    hkey  = f"__mhide_{key}__"
+
+    default_text = DEFAULTS.get(key, "")
+    memo_base = {"bold": False, "color": "#475569", "size": 13}
 
     if mkey not in store:
-        store[mkey] = DEFAULTS.get(key, "")
+        store[mkey] = {"text": default_text, **memo_base}
+    item = _norm(store[mkey], memo_base)
+
     if ekey not in st.session_state:
         st.session_state[ekey] = False
     if hkey not in st.session_state:
@@ -551,10 +646,12 @@ def memo_block(key, location="bottom"):
 
     if st.session_state[ekey]:
         c1, c2, c3 = st.columns([10, 1, 1])
-        new_val = c1.text_area("", store[mkey], key=f"mta_{key}",
+        new_val = c1.text_area("", item["text"], key=f"mta_{key}",
                                 height=80, label_visibility="collapsed")
+        bold, color, size = _fmt_ui(f"m_{key}", item)
         if c2.button("저장", key=f"msave_{key}", use_container_width=True):
-            store[mkey] = new_val
+            new_item = {"text": new_val, "bold": bold, "color": color, "size": size}
+            store[mkey] = new_item
             st.session_state[ekey] = False
             all_data = load_insights(); all_data.update(store)
             save_insights(all_data)
@@ -565,11 +662,12 @@ def memo_block(key, location="bottom"):
             st.session_state[ekey] = False
             st.rerun()
     else:
-        txt = store[mkey]
+        item = _norm(store[mkey], memo_base)
+        txt = item["text"]
         if txt:
             c1, c2 = st.columns([20, 1])
             c1.markdown(
-                f'<p style="font-size:13px;color:#475569;line-height:1.7;margin:6px 0">{txt}</p>',
+                f'<p style="{_style(item)};margin:6px 0">{txt}</p>',
                 unsafe_allow_html=True
             )
             if c2.button("편집", key=f"medit_{key}", use_container_width=True):
@@ -585,7 +683,7 @@ def memo_block(key, location="bottom"):
                 st.session_state[ekey] = True
                 st.rerun()
 
-    store[mkey] = store.get(mkey, "")
+    store[mkey] = store.get(mkey, {"text": "", **memo_base})
     st.session_state.insights = store
 
 
@@ -942,15 +1040,35 @@ elif page == "03. 피로도 시계열":
     # 회귀 통계
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("통계 유의성")
+    st.caption(
+        "slope = 하루 변화량 (양수=증가, 음수=감소) · "
+        "R² = 패턴 강도 (0~1, 0.3↑이면 뚜렷) · "
+        "p = 우연일 확률 (0.05 미만이면 신뢰 가능)"
+    )
+    stat_explainer()
+
+    SLOPE_HELP = {
+        "perSend":     "인당 발송 건수의 시간 흐름에 따른 변화. 양수면 발송이 늘어나는 추세, 음수면 줄어드는 추세.",
+        "ctr":         "클릭률(CTR)의 시간 흐름에 따른 변화. 음수면 매일 조금씩 하락하는 중. 요일 효과를 제거한 잔차 기준.",
+        "purchaseRate":"구매전환율의 시간 흐름에 따른 변화. 요일 효과를 제거한 잔차 기준.",
+        "rps":         "발송건당 거래액의 시간 흐름에 따른 변화. 요일 효과를 제거한 잔차 기준.",
+        "revenue":     "거래액의 시간 흐름에 따른 변화. 요일 효과를 제거한 잔차 기준.",
+    }
     reg_cols = st.columns(len(reg))
     for i,(k,v) in enumerate(reg.items()):
         lbl = METRIC_LABELS.get(k,k)
         inv = k not in ["perSend","revenue"]
-        reg_cols[i].metric(f"{lbl} 추세",
-            f"{v['slope']:+.5f}/일" if not np.isnan(v['slope']) else "–",
-            f"R²={v['r2']:.3f}  {sig_label(v['p'])}",
-            delta_color="inverse" if inv else "normal")
-
+        slope_str = f"{v['slope']:+.5f}/일" if not np.isnan(v['slope']) else "–"
+        r2_str    = r2_label(v['r2'])
+        p_str     = sig_label(v['p'])
+        reg_cols[i].metric(
+            f"{lbl} 추세",
+            slope_str,
+            f"{r2_str}  |  {p_str}",
+            delta_color="inverse" if inv else "normal",
+            help=SLOPE_HELP.get(k, "")
+        )
+    memo_block("btm_reg")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("기간 비교 — 효율 지표")
@@ -985,7 +1103,6 @@ elif page == "04. 인과 검증":
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("요일별 상관계수")
-    dc_corr = pd.DataFrame(dow_corr)
     dc_corr = pd.DataFrame(dow_corr)
     # 요일 순서 고정
     DOW_ORDER = ["월","화","수","목","금","토","일"]
@@ -1051,9 +1168,27 @@ elif page == "05. 지표 상관 분석":
         reg_r = linreg(common[xk].values, common[yk].values)
 
         c1,c2,c3 = st.columns(3)
-        c1.metric("상관계수", f"{corr_val:.3f}", "음의 관계" if corr_val<0 else "양의 관계")
-        c2.metric("R²", f"{reg_r['r2']:.3f}", sig_label(reg_r["p"]))
-        c3.metric("표본 수", f"{len(common)}일")
+        c1.metric(
+            "상관계수",
+            f"{corr_val:.3f}",
+            corr_label(corr_val),
+            help="두 지표가 얼마나 함께 움직이는지 나타냅니다. -1~+1 사이. 음수=한쪽 오를 때 다른 쪽 내려감, 양수=같이 움직임, 0=무관계. 절대값이 0.5 이상이면 강한 관계입니다."
+        )
+        c2.metric(
+            "R²",
+            f"{reg_r['r2']:.3f}",
+            sig_label(reg_r["p"]),
+            help="추세선이 데이터를 얼마나 잘 설명하는지 나타냅니다. 0~1 사이. 0.3 이상=뚜렷한 경향, 0.1~0.3=약한 경향, 0.1 미만=경향 거의 없음."
+        )
+        c3.metric(
+            "표본 수",
+            f"{len(common)}일",
+            help="분석에 사용된 데이터 일수입니다. 30일 이상이어야 통계 결과를 신뢰할 수 있습니다."
+        )
+        st.caption(
+            f"해석: 두 지표는 {corr_label(corr_val)} · {r2_label(reg_r['r2'])} · {sig_label(reg_r['p'])}"
+        )
+        stat_explainer()
 
         fig8 = go.Figure(go.Scatter(
             x=common[xk].tolist(), y=common[yk].tolist(),
