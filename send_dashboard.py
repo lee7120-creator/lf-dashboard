@@ -304,6 +304,151 @@ def parse_consent(file_bytes):
     df['dow']   = df['date'].dt.dayofweek
     return df
 
+
+def render_consent_page(df_c, channel):
+    """PUSH/SMS 동의 현황 분석 페이지 공통 렌더러"""
+    if df_c is None:
+        st.info(f"왼쪽 사이드바에서 **{channel} 동의 현황 파일**을 업로드하면 분석이 시작됩니다.")
+        st.stop()
+
+    start_d = df_c['date'].min().strftime("%Y-%m-%d")
+    end_d   = df_c['date'].max().strftime("%Y-%m-%d")
+    latest  = df_c.iloc[-1]
+    total_net = int(df_c['total_change'].sum())
+
+    st.caption(f"데이터 기간: {start_d} ~ {end_d} · {len(df_c)}일")
+    memo_block(f"top_{channel.lower()}")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+    # ── KPI 카드 ──
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("총 수신동의 (최신)",
+              f"{int(latest['total_consent']):,}명",
+              help="가장 최근 날짜 기준 전체 수신동의 고객 수")
+    k2.metric("기간 순증",
+              f"{total_net:+,}명",
+              f"신규추가 {int(df_c['total_add'].sum()):,} / 이탈 {int(df_c['total_leave'].sum()):,}",
+              delta_color="normal" if total_net >= 0 else "inverse",
+              help="분석 기간 동안의 총 순증 (신규추가 − 이탈)")
+    k3.metric("일평균 신규추가",
+              f"{df_c['total_add'].mean():.0f}명/일",
+              help="하루 평균 새로 수신동의한 고객 수")
+    k4.metric("일평균 이탈",
+              f"{df_c['total_leave'].mean():.0f}명/일",
+              help="하루 평균 수신동의를 취소한 고객 수 (낮을수록 좋음)")
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+    # ── 총 수신동의 추이 ──
+    st.subheader("수신동의 총계 추이")
+    fig_total = go.Figure()
+    fig_total.add_trace(go.Scatter(
+        x=df_c['date'].dt.strftime("%m/%d").tolist(),
+        y=df_c['total_consent'].tolist(),
+        mode="lines", line=dict(color=clr("blue"), width=2),
+        fill="tozeroy", fillcolor=cbg("blue"), name="Total 수신동의"
+    ))
+    fig_total.add_trace(go.Scatter(
+        x=df_c['date'].dt.strftime("%m/%d").tolist(),
+        y=df_c['existing_total'].tolist(),
+        mode="lines", line=dict(color=clr("teal"), width=1.5, dash="dot"), name="기존 수신동의"
+    ))
+    fig_total.add_trace(go.Scatter(
+        x=df_c['date'].dt.strftime("%m/%d").tolist(),
+        y=df_c['new_total'].tolist(),
+        mode="lines", line=dict(color=clr("amber"), width=1.5, dash="dot"), name="신규 수신동의"
+    ))
+    layout_t = base_layout(300, title="수신동의 총계 추이")
+    layout_t["showlegend"] = True
+    layout_t["legend"] = dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)", font=dict(color="#64748b"))
+    layout_t["xaxis"]["tickangle"] = -45
+    layout_t["xaxis"]["nticks"] = 20
+    fig_total.update_layout(**layout_t)
+    st.plotly_chart(fig_total, use_container_width=True)
+
+    # ── 일별 신규추가 vs 이탈 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("일별 신규추가 vs 이탈")
+    st.caption("초록=신규추가(수신동의 증가), 빨강=이탈(수신동의 취소)")
+    fig_add = go.Figure()
+    fig_add.add_trace(go.Bar(
+        x=df_c['date'].dt.strftime("%m/%d").tolist(),
+        y=df_c['total_add'].tolist(),
+        name="신규추가", marker_color=cbg("green"), marker_line_color=clr("green"), marker_line_width=0.5
+    ))
+    fig_add.add_trace(go.Bar(
+        x=df_c['date'].dt.strftime("%m/%d").tolist(),
+        y=(-df_c['total_leave']).tolist(),
+        name="이탈(−)", marker_color=cbg("red"), marker_line_color=clr("red"), marker_line_width=0.5
+    ))
+    layout_add = base_layout(260, title="일별 신규추가 / 이탈")
+    layout_add["barmode"] = "overlay"
+    layout_add["showlegend"] = True
+    layout_add["legend"] = dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)", font=dict(color="#64748b"))
+    layout_add["xaxis"]["nticks"] = 20
+    layout_add["xaxis"]["tickangle"] = -45
+    fig_add.update_layout(**layout_add)
+    st.plotly_chart(fig_add, use_container_width=True)
+
+    # ── 순증감 추이 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("일별 순증감")
+    st.caption("양수(초록)=그날 수신동의자 수가 증가, 음수(빨강)=감소")
+    bar_colors_c = [cbg("green") if v >= 0 else cbg("red") for v in df_c['total_change']]
+    bar_line_c   = [clr("green") if v >= 0 else clr("red") for v in df_c['total_change']]
+    fig_net = go.Figure(go.Bar(
+        x=df_c['date'].dt.strftime("%m/%d").tolist(),
+        y=df_c['total_change'].tolist(),
+        marker_color=bar_colors_c, marker_line_color=bar_line_c, marker_line_width=0.5,
+        name="순증감"
+    ))
+    layout_net = base_layout(220, title="일별 순증감 (신규추가 − 이탈)")
+    layout_net["shapes"] = [dict(type="line", x0=0, x1=1, xref="paper", y0=0, y1=0,
+                                  line=dict(color="#94a3b8", width=1, dash="dot"))]
+    layout_net["xaxis"]["nticks"] = 20
+    layout_net["xaxis"]["tickangle"] = -45
+    fig_net.update_layout(**layout_net)
+    st.plotly_chart(fig_net, use_container_width=True)
+
+    # ── 월별 집계 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("월별 집계")
+    monthly_c = df_c.groupby("month").agg(
+        신규추가=("total_add",   "sum"),
+        이탈=("total_leave", "sum"),
+        순증=("total_change", "sum"),
+        일수=("date", "count"),
+    ).reset_index()
+    monthly_c["이탈"] = monthly_c["이탈"].apply(lambda x: f"{x:,}")
+    monthly_c["신규추가"] = monthly_c["신규추가"].apply(lambda x: f"{x:,}")
+    monthly_c["순증"] = monthly_c["순증"].apply(lambda x: f"{x:+,}")
+    st.dataframe(monthly_c.rename(columns={"month":"월"}), use_container_width=True, hide_index=True)
+
+    # ── 월별 신규추가/이탈 막대 ──
+    monthly_raw = df_c.groupby("month").agg(
+        add=("total_add","sum"), leave=("total_leave","sum")
+    ).reset_index()
+    fig_m = go.Figure()
+    fig_m.add_trace(go.Bar(x=monthly_raw["month"].tolist(), y=monthly_raw["add"].tolist(),
+        name="신규추가", marker_color=cbg("green"), marker_line_color=clr("green"), marker_line_width=1.5))
+    fig_m.add_trace(go.Bar(x=monthly_raw["month"].tolist(), y=monthly_raw["leave"].tolist(),
+        name="이탈", marker_color=cbg("red"), marker_line_color=clr("red"), marker_line_width=1.5))
+    layout_m = base_layout(240, title="월별 신규추가 vs 이탈")
+    layout_m["barmode"] = "group"
+    layout_m["showlegend"] = True
+    layout_m["legend"] = dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)", font=dict(color="#64748b"))
+    fig_m.update_layout(**layout_m)
+    st.plotly_chart(fig_m, use_container_width=True)
+
+    # ── 근거 데이터 ──
+    show_appendix(df_c[["date","total_consent","total_add","total_leave","total_change",
+                         "existing_total","new_total"]].rename(columns={
+        "date":"날짜","total_consent":"총수신동의","total_add":"신규추가",
+        "total_leave":"이탈","total_change":"순증감",
+        "existing_total":"기존수신동의","new_total":"신규수신동의"
+    }), f"{channel}_동의현황")
+    memo_block(f"btm_{channel.lower()}")
+
 # ══════════════════════════════════════════════════════
 # 텍스트 포맷 헬퍼
 # ══════════════════════════════════════════════════════
@@ -1506,146 +1651,3 @@ elif page == "08. 한계수익 분석":
 # ══════════════════════════════════════════════════════
 # 동의 현황 공통 렌더러
 # ══════════════════════════════════════════════════════
-def render_consent_page(df_c, channel):
-    """PUSH/SMS 동의 현황 분석 페이지 공통 렌더러"""
-    if df_c is None:
-        st.info(f"왼쪽 사이드바에서 **{channel} 동의 현황 파일**을 업로드하면 분석이 시작됩니다.")
-        st.stop()
-
-    start_d = df_c['date'].min().strftime("%Y-%m-%d")
-    end_d   = df_c['date'].max().strftime("%Y-%m-%d")
-    latest  = df_c.iloc[-1]
-    total_net = int(df_c['total_change'].sum())
-
-    st.caption(f"데이터 기간: {start_d} ~ {end_d} · {len(df_c)}일")
-    memo_block(f"top_{channel.lower()}")
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-
-    # ── KPI 카드 ──
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("총 수신동의 (최신)",
-              f"{int(latest['total_consent']):,}명",
-              help="가장 최근 날짜 기준 전체 수신동의 고객 수")
-    k2.metric("기간 순증",
-              f"{total_net:+,}명",
-              f"신규추가 {int(df_c['total_add'].sum()):,} / 이탈 {int(df_c['total_leave'].sum()):,}",
-              delta_color="normal" if total_net >= 0 else "inverse",
-              help="분석 기간 동안의 총 순증 (신규추가 − 이탈)")
-    k3.metric("일평균 신규추가",
-              f"{df_c['total_add'].mean():.0f}명/일",
-              help="하루 평균 새로 수신동의한 고객 수")
-    k4.metric("일평균 이탈",
-              f"{df_c['total_leave'].mean():.0f}명/일",
-              help="하루 평균 수신동의를 취소한 고객 수 (낮을수록 좋음)")
-
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-
-    # ── 총 수신동의 추이 ──
-    st.subheader("수신동의 총계 추이")
-    fig_total = go.Figure()
-    fig_total.add_trace(go.Scatter(
-        x=df_c['date'].dt.strftime("%m/%d").tolist(),
-        y=df_c['total_consent'].tolist(),
-        mode="lines", line=dict(color=clr("blue"), width=2),
-        fill="tozeroy", fillcolor=cbg("blue"), name="Total 수신동의"
-    ))
-    fig_total.add_trace(go.Scatter(
-        x=df_c['date'].dt.strftime("%m/%d").tolist(),
-        y=df_c['existing_total'].tolist(),
-        mode="lines", line=dict(color=clr("teal"), width=1.5, dash="dot"), name="기존 수신동의"
-    ))
-    fig_total.add_trace(go.Scatter(
-        x=df_c['date'].dt.strftime("%m/%d").tolist(),
-        y=df_c['new_total'].tolist(),
-        mode="lines", line=dict(color=clr("amber"), width=1.5, dash="dot"), name="신규 수신동의"
-    ))
-    layout_t = base_layout(300, title="수신동의 총계 추이")
-    layout_t["showlegend"] = True
-    layout_t["legend"] = dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)", font=dict(color="#64748b"))
-    layout_t["xaxis"]["tickangle"] = -45
-    layout_t["xaxis"]["nticks"] = 20
-    fig_total.update_layout(**layout_t)
-    st.plotly_chart(fig_total, use_container_width=True)
-
-    # ── 일별 신규추가 vs 이탈 ──
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("일별 신규추가 vs 이탈")
-    st.caption("초록=신규추가(수신동의 증가), 빨강=이탈(수신동의 취소)")
-    fig_add = go.Figure()
-    fig_add.add_trace(go.Bar(
-        x=df_c['date'].dt.strftime("%m/%d").tolist(),
-        y=df_c['total_add'].tolist(),
-        name="신규추가", marker_color=cbg("green"), marker_line_color=clr("green"), marker_line_width=0.5
-    ))
-    fig_add.add_trace(go.Bar(
-        x=df_c['date'].dt.strftime("%m/%d").tolist(),
-        y=(-df_c['total_leave']).tolist(),
-        name="이탈(−)", marker_color=cbg("red"), marker_line_color=clr("red"), marker_line_width=0.5
-    ))
-    layout_add = base_layout(260, title="일별 신규추가 / 이탈")
-    layout_add["barmode"] = "overlay"
-    layout_add["showlegend"] = True
-    layout_add["legend"] = dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)", font=dict(color="#64748b"))
-    layout_add["xaxis"]["nticks"] = 20
-    layout_add["xaxis"]["tickangle"] = -45
-    fig_add.update_layout(**layout_add)
-    st.plotly_chart(fig_add, use_container_width=True)
-
-    # ── 순증감 추이 ──
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("일별 순증감")
-    st.caption("양수(초록)=그날 수신동의자 수가 증가, 음수(빨강)=감소")
-    bar_colors_c = [cbg("green") if v >= 0 else cbg("red") for v in df_c['total_change']]
-    bar_line_c   = [clr("green") if v >= 0 else clr("red") for v in df_c['total_change']]
-    fig_net = go.Figure(go.Bar(
-        x=df_c['date'].dt.strftime("%m/%d").tolist(),
-        y=df_c['total_change'].tolist(),
-        marker_color=bar_colors_c, marker_line_color=bar_line_c, marker_line_width=0.5,
-        name="순증감"
-    ))
-    layout_net = base_layout(220, title="일별 순증감 (신규추가 − 이탈)")
-    layout_net["shapes"] = [dict(type="line", x0=0, x1=1, xref="paper", y0=0, y1=0,
-                                  line=dict(color="#94a3b8", width=1, dash="dot"))]
-    layout_net["xaxis"]["nticks"] = 20
-    layout_net["xaxis"]["tickangle"] = -45
-    fig_net.update_layout(**layout_net)
-    st.plotly_chart(fig_net, use_container_width=True)
-
-    # ── 월별 집계 ──
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("월별 집계")
-    monthly_c = df_c.groupby("month").agg(
-        신규추가=("total_add",   "sum"),
-        이탈=("total_leave", "sum"),
-        순증=("total_change", "sum"),
-        일수=("date", "count"),
-    ).reset_index()
-    monthly_c["이탈"] = monthly_c["이탈"].apply(lambda x: f"{x:,}")
-    monthly_c["신규추가"] = monthly_c["신규추가"].apply(lambda x: f"{x:,}")
-    monthly_c["순증"] = monthly_c["순증"].apply(lambda x: f"{x:+,}")
-    st.dataframe(monthly_c.rename(columns={"month":"월"}), use_container_width=True, hide_index=True)
-
-    # ── 월별 신규추가/이탈 막대 ──
-    monthly_raw = df_c.groupby("month").agg(
-        add=("total_add","sum"), leave=("total_leave","sum")
-    ).reset_index()
-    fig_m = go.Figure()
-    fig_m.add_trace(go.Bar(x=monthly_raw["month"].tolist(), y=monthly_raw["add"].tolist(),
-        name="신규추가", marker_color=cbg("green"), marker_line_color=clr("green"), marker_line_width=1.5))
-    fig_m.add_trace(go.Bar(x=monthly_raw["month"].tolist(), y=monthly_raw["leave"].tolist(),
-        name="이탈", marker_color=cbg("red"), marker_line_color=clr("red"), marker_line_width=1.5))
-    layout_m = base_layout(240, title="월별 신규추가 vs 이탈")
-    layout_m["barmode"] = "group"
-    layout_m["showlegend"] = True
-    layout_m["legend"] = dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)", font=dict(color="#64748b"))
-    fig_m.update_layout(**layout_m)
-    st.plotly_chart(fig_m, use_container_width=True)
-
-    # ── 근거 데이터 ──
-    show_appendix(df_c[["date","total_consent","total_add","total_leave","total_change",
-                         "existing_total","new_total"]].rename(columns={
-        "date":"날짜","total_consent":"총수신동의","total_add":"신규추가",
-        "total_leave":"이탈","total_change":"순증감",
-        "existing_total":"기존수신동의","new_total":"신규수신동의"
-    }), f"{channel}_동의현황")
-    memo_block(f"btm_{channel.lower()}")
