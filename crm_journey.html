@@ -87,7 +87,7 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
 .act-btn:hover{background:var(--bg);border-color:#C0C4CC}
 .act-del:hover{background:#FEF1F0;color:#B03030;border-color:#E8C0BC}
 .card-label{font-size:11.5px;font-weight:600;margin-bottom:5px;line-height:1.4}
-.card-timing{font-family:'DM Mono',monospace;font-size:9.5px;color:var(--muted)}
+.card-timing{font-family:'DM Mono',monospace;font-size:10px;color:var(--text);font-weight:500}
 .add-btn{flex:0 0 40px;height:86px;border:1.5px dashed #C8CCDA;border-radius:10px;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:22px;color:#B4B8C4;transition:all .15s}
 .add-btn:hover{border-color:#8A8E9A;color:#606470;background:rgba(0,0,0,.012)}
 
@@ -502,8 +502,8 @@ function cardHTML(c){
     ondragstart="dragStart(event,'${c.id}')" ondragend="dragEnd(event)"
     ondragover="dragOverCard(event)" ondragleave="dragLeaveCard(event)" ondrop="dropOnCard(event,'${c.id}')">
     <div class="card-badges">
-      <span class="ch-badge" style="background:${ch.bg};color:${ch.c};border-color:${ch.c}30">${ch.icon} ${ch.label}</span>
       ${c.push?'<span class="push-badge">🔔 PUSH</span>':''}
+      <span class="ch-badge" style="background:${ch.bg};color:${ch.c};border-color:${ch.c}30">${ch.icon} ${ch.label}</span>
       ${stBadge}
     </div>
     <div class="card-code"><span>${c.code}</span>
@@ -528,9 +528,9 @@ function openDet(id){
   document.getElementById('detContent').innerHTML=`
     <div class="det-head">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        ${c.push?'<span class="push-badge">🔔 PUSH</span>':''}
         <span style="width:8px;height:8px;border-radius:50%;background:${ch.c};display:inline-block"></span>
         <span style="font-family:'DM Mono',monospace;font-size:9px;color:${ch.c};text-transform:uppercase;letter-spacing:.1em">${ch.icon} ${ch.label}</span>
-        ${c.push?'<span class="push-badge">🔔 PUSH</span>':''}
       </div>
       <div class="det-code">${c.code}</div>
       <div class="det-title">${c.label}</div>
