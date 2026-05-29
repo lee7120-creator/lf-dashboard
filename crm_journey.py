@@ -21,4 +21,4 @@ iframe { border: none; }
 html_path = pathlib.Path(__file__).parent / "crm_journey.html"
 html_content = html_path.read_text(encoding="utf-8")
 
-components.html(html_content, height=920, scrolling=True)
+components.html(html_content, height=1100, scrolling=True)
