@@ -68,17 +68,17 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
 .cards-scroll::-webkit-scrollbar{height:4px}
 .cards-scroll::-webkit-scrollbar-thumb{background:#D0D4DE;border-radius:2px}
 
-.card{flex:0 0 192px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:grab;transition:box-shadow .15s,transform .1s;position:relative;border-left:3px solid #ccc}
+.card{flex:0 0 210px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:grab;transition:box-shadow .15s,transform .1s;position:relative;border-left:3px solid #ccc}
 .card:hover{box-shadow:0 4px 18px rgba(0,0,0,.09);transform:translateY(-1px)}
 .card:active{cursor:grabbing}
 .card.dragging{opacity:.4;box-shadow:none}
 .card.drop-before{box-shadow:-3px 0 0 0 #7B6BC8}
 .card.drop-after{box-shadow:3px 0 0 0 #7B6BC8}
 .cards-scroll.drop-hot{outline:2px dashed #B4B0D8;outline-offset:-3px;border-radius:8px;background:rgba(123,107,200,.04)}
-.card-badges{display:flex;align-items:center;gap:3px;margin-bottom:7px;flex-wrap:wrap}
-.ch-badge{font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;font-family:'DM Mono',monospace;letter-spacing:.02em;border:1px solid transparent}
-.push-badge{font-size:8.5px;padding:2px 6px;border-radius:8px;background:#3A3E46;color:#E8E4DE;font-family:'DM Mono',monospace}
-.status-badge{font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;cursor:pointer;user-select:none;margin-left:auto;border:1px solid transparent;transition:opacity .1s;white-space:nowrap}
+.card-badges{display:flex;align-items:center;gap:4px;margin-bottom:7px;flex-wrap:wrap;row-gap:4px}
+.ch-badge{font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;font-family:'DM Mono',monospace;letter-spacing:.02em;border:1px solid transparent;white-space:nowrap;flex-shrink:0}
+.push-badge{font-size:8.5px;padding:2px 6px;border-radius:8px;background:#3A3E46;color:#E8E4DE;font-family:'DM Mono',monospace;white-space:nowrap;flex-shrink:0}
+.status-badge{font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;cursor:pointer;user-select:none;border:1px solid transparent;transition:opacity .1s;white-space:nowrap;flex-shrink:0}
 .status-badge:hover{opacity:.75}
 .card-code{font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);margin-bottom:4px;display:flex;align-items:center;justify-content:space-between}
 .card-actions{display:flex;gap:3px;opacity:0;transition:opacity .15s}
