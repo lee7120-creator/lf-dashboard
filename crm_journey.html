@@ -169,13 +169,15 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
     </div>
     <div class="modal-body">
       <div class="form-row">
-        <div class="fg half"><label>코드</label><input id="fCode" type="text" placeholder="예: LL01"></div>
+        <div class="fg half"><label>AF코드</label><input id="fCode" type="text" placeholder="예: AF-LL01"></div>
         <div class="fg half"><label>발송 채널</label>
           <select id="fCh">
             <option value="sms">📱 SMS</option>
             <option value="alimtok">💬 알림톡</option>
             <option value="friends">💚 플친메시지</option>
             <option value="email">✉️ 이메일</option>
+            <option value="inapp">📲 인앱메시지</option>
+            <option value="none">∅ 없음</option>
           </select>
         </div>
       </div>
@@ -215,6 +217,8 @@ const CH={
   alimtok:{label:'알림톡',c:'#A07010',bg:'#FEF8EA',icon:'💬'},
   friends:{label:'플친',  c:'#367A4C',bg:'#EEF8F1',icon:'💚'},
   email:  {label:'이메일',c:'#2E68B0',bg:'#EEF3FA',icon:'✉️'},
+  inapp:  {label:'인앱',  c:'#7B5BC0',bg:'#F3EFFB',icon:'📲'},
+  none:   {label:'없음',  c:'#96938C',bg:'#F2F1EE',icon:'∅'},
 };
 const ST={
   new:{label:'신규추가',c:'#367A4C',bg:'#EBF8F2',b:'#B4DEC8'},
