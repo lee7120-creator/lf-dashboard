@@ -419,19 +419,18 @@ cp.addEventListener('change',function(){
 });
 
 // ── Timing sort ──
+// 발송 타이밍 문자열을 정렬용 상대 시점(일 단위)으로 환산.
+// 실시간 < 방송예고 < 즉시 < N시간 < D+N < 배송완료 < N일 순.
 function timingNum(t){
-  if(!t)return 999;const s=t.toLowerCase();
+  if(!t)return 999;
+  const s=t.toLowerCase();
   if(s.includes('실시간'))return -1;
   if(s.includes('방송')&&s.includes('전'))return -0.5;
-  if(s==='즉시'||s.includes('즉시'))return 0;
-  const hm=s.match(/(\d+)\s*시간|(\d+)h/);if(hm)return parseInt(hm[1]||hm[2])/24;
-  if(s.includes('배송완료')){const m=s.match(/d\+(\d+)/i);return m?parseFloat(m[1]):0.1;}
-  const dm=s.match(/d\+(\d+)/i);if(dm)return parseFloat(dm[1]);
-  if(s.includes('이탈 후 d+'))return 1.5;
-  if(s.includes('이탈 후 1시간'))return 0.04;
-  if(s.includes('90일'))return 90;if(s.includes('180일'))return 180;if(s.includes('270일'))return 270;
-  if(s.includes('100일'))return 100;
-  if(s.includes('매월')){const m=s.match(/(\d+)일/);return m?parseInt(m[1]):30;}
+  if(s.includes('즉시'))return 0;
+  const hm=s.match(/(\d+)\s*(?:시간|h)/);if(hm)return parseInt(hm[1])/24;   // "가입 +2h", "이탈 +1h"
+  const dm=s.match(/d\s*\+\s*(\d+)/i);if(dm)return parseFloat(dm[1]);        // "가입 D+1", "미방문 D+90"
+  if(s.includes('배송완료'))return 0.1;                                      // "배송완료 당일"
+  const dom=s.match(/(\d+)\s*일/);if(dom)return parseInt(dom[1]);            // "매월 23일"
   if(s.includes('매일'))return 30;
   return 999;
 }
@@ -450,6 +449,12 @@ function ensureOrder(){
 }
 
 // ── Render ──
+// 사용자 편집 값이 innerHTML로 들어가므로 HTML 특수문자를 항상 이스케이프한다.
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g,m=>(
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]
+  ));
+}
 function render(){
   document.getElementById('content').innerHTML=STAGES.map(renderStage).join('');
 }
@@ -465,13 +470,13 @@ function renderStage(stage){
   const c30=stage.color+'30',c50=stage.color+'50';
   return `<div class="stage-section">
     <div class="stage-head" style="background:${stage.color}">
-      <div class="stage-head-label" id="slabel-${stage.id}" onclick="editStageLabel(${stage.id},event)" title="클릭하여 편집">${stage.label}</div>
-      <span class="stage-head-mosu" id="smosu-${stage.id}" onclick="editStageMosu(${stage.id},event)" title="클릭하여 편집">${stage.mosu}</span>
+      <div class="stage-head-label" id="slabel-${stage.id}" onclick="editStageLabel(${stage.id},event)" title="클릭하여 편집">${esc(stage.label)}</div>
+      <span class="stage-head-mosu" id="smosu-${stage.id}" onclick="editStageMosu(${stage.id},event)" title="클릭하여 편집">${esc(stage.mosu)}</span>
       <button class="stage-color-btn" onclick="openColorPicker(${stage.id},event)" title="헤더 색상 변경">🎨</button>
     </div>
     <div class="gap-row">
       <span class="gap-icon">⚠</span>
-      <span class="gap-text" id="gaptext-${stage.id}" onclick="editGapText(${stage.id},event)" title="클릭하여 편집">${stage.gap}</span>
+      <span class="gap-text" id="gaptext-${stage.id}" onclick="editGapText(${stage.id},event)" title="클릭하여 편집">${esc(stage.gap)}</span>
     </div>
     <div class="view-row">
       <div class="row-meta">
@@ -506,14 +511,14 @@ function cardHTML(c){
       <span class="ch-badge" style="background:${ch.bg};color:${ch.c};border-color:${ch.c}30">${ch.icon} ${ch.label}</span>
       ${stBadge}
     </div>
-    <div class="card-code"><span>${c.code}</span>
+    <div class="card-code"><span>${esc(c.code)}</span>
       <span class="card-actions">
         <button class="act-btn" onclick="openEdit('${c.id}',event)" title="편집">✏</button>
         <button class="act-btn act-del" onclick="delCard('${c.id}',event)" title="삭제">×</button>
       </span>
     </div>
-    <div class="card-label">${c.label}</div>
-    <div class="card-timing">⏱ ${c.timing}</div>
+    <div class="card-label">${esc(c.label)}</div>
+    <div class="card-timing">⏱ ${esc(c.timing)}</div>
   </div>`;
 }
 
@@ -532,15 +537,15 @@ function openDet(id){
         <span style="width:8px;height:8px;border-radius:50%;background:${ch.c};display:inline-block"></span>
         <span style="font-family:'DM Mono',monospace;font-size:9px;color:${ch.c};text-transform:uppercase;letter-spacing:.1em">${ch.icon} ${ch.label}</span>
       </div>
-      <div class="det-code">${c.code}</div>
-      <div class="det-title">${c.label}</div>
+      <div class="det-code">${esc(c.code)}</div>
+      <div class="det-title">${esc(c.label)}</div>
       <div style="display:flex;gap:6px">${stBadge}</div>
     </div>
     <div class="det-body">
-      <div class="det-lbl">⏱ 발송 타이밍</div><div class="det-val">${c.timing}</div>
-      <div class="det-lbl">🎯 트리거 조건</div><div class="det-val">${c.trigger||'—'}</div>
-      <div class="det-lbl">🎁 오퍼 / 혜택</div><div class="det-val hl">${c.offer||'—'}</div>
-      <div class="det-lbl">💬 메시지 / 문구</div><div class="det-val">${(c.msg||'—').replace(/\n/g,'<br>')}</div>
+      <div class="det-lbl">⏱ 발송 타이밍</div><div class="det-val">${esc(c.timing)}</div>
+      <div class="det-lbl">🎯 트리거 조건</div><div class="det-val">${esc(c.trigger||'—')}</div>
+      <div class="det-lbl">🎁 오퍼 / 혜택</div><div class="det-val hl">${esc(c.offer||'—')}</div>
+      <div class="det-lbl">💬 메시지 / 문구</div><div class="det-val">${esc(c.msg||'—').replace(/\n/g,'<br>')}</div>
     </div>
     <div class="det-foot">
       <button class="btn btn-primary" onclick="openEdit('${c.id}')">✏ 편집</button>
