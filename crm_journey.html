@@ -32,10 +32,34 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
 .tb-saved-dot{width:6px;height:6px;border-radius:50%;background:#70A880}
 .tb-btn{padding:5px 11px;border-radius:6px;border:1px solid #363432;background:transparent;color:#A8A4A0;cursor:pointer;font-size:11px;font-family:'Noto Sans KR',sans-serif;display:flex;align-items:center;gap:5px;transition:all .15s;white-space:nowrap}
 .tb-btn:hover{background:#282624;border-color:#555;color:#E0DDD8}
+.tb-burger{width:30px;height:30px;border-radius:7px;border:1px solid #363432;background:transparent;color:#C8C4BE;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0}
+.tb-burger:hover{background:#282624;border-color:#555;color:#fff}
 #importInput{display:none}
 
+/* ── Sidebar (필터) ── */
+.sidebar{position:fixed;left:0;top:48px;bottom:0;width:216px;background:#fff;border-right:1px solid var(--border);z-index:100;display:flex;flex-direction:column;transition:transform .22s cubic-bezier(.4,0,.2,1);box-shadow:1px 0 6px rgba(0,0,0,.02)}
+.side-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px}
+.side-title{font-size:13px;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:6px}
+.side-title::before{content:'⚙';font-size:12px;opacity:.6}
+.side-reset{border:none;background:transparent;color:var(--muted);font-size:10.5px;cursor:pointer;font-family:'Noto Sans KR',sans-serif;padding:3px 6px;border-radius:5px;transition:all .12s}
+.side-reset:hover{background:var(--bg);color:var(--sub)}
+.side-body{flex:1;overflow-y:auto;padding:4px 16px 24px}
+.fsearch{width:100%;border:1px solid var(--border);border-radius:9px;padding:8px 11px;font-size:12px;font-family:'Noto Sans KR',sans-serif;color:var(--text);outline:none;background:#F8F9FC;margin-bottom:14px;transition:border-color .15s,box-shadow .15s}
+.fsearch:focus{border-color:#9AAAC8;background:#fff;box-shadow:0 0 0 3px rgba(46,104,176,.08)}
+.fsec{margin-bottom:15px}
+.fsec-t{font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:7px}
+.fchips{display:flex;flex-wrap:wrap;gap:5px}
+.fchip{display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-size:11px;font-family:'Noto Sans KR',sans-serif;color:var(--sub);transition:all .12s;user-select:none}
+.fchip:hover{border-color:#B8BCC8;background:#FAFBFD}
+.fchip.on{font-weight:600}
+.fdot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.fcount{margin-top:6px;padding-top:12px;border-top:1px solid var(--border);font-family:'DM Mono',monospace;font-size:10px;color:var(--muted);text-align:center}
+
 /* ── Content ── */
-.content{padding:18px 22px 60px}
+.content{padding:18px 22px 60px;margin-left:216px;transition:margin-left .22s cubic-bezier(.4,0,.2,1)}
+body.sidebar-collapsed .sidebar{transform:translateX(-100%)}
+body.sidebar-collapsed .content{margin-left:0}
+.empty-state{text-align:center;padding:70px 20px;color:var(--muted);font-size:13px;line-height:2}
 
 /* ── Stage Section ── */
 .stage-section{margin-bottom:14px;border-radius:14px;overflow:hidden;border:1px solid var(--border);box-shadow:0 2px 8px rgba(0,0,0,.04)}
@@ -147,6 +171,7 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
 <body>
 
 <div class="topbar">
+  <button class="tb-burger" onclick="toggleSidebar()" title="필터 패널 열기/닫기">☰</button>
   <div class="tb-logo">
     <div class="tb-icon">LF</div>
     <span class="tb-title">LF Mall CRM · 고객 여정 대시보드</span>
@@ -157,6 +182,14 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
   <button class="tb-btn" onclick="document.getElementById('importInput').click()">📂 불러오기</button>
   <input type="file" id="importInput" accept=".json" onchange="importJSON(event)">
 </div>
+
+<aside class="sidebar" id="sidebar">
+  <div class="side-head">
+    <span class="side-title">필터</span>
+    <button class="side-reset" onclick="resetFilters()">초기화</button>
+  </div>
+  <div class="side-body" id="sideBody"></div>
+</aside>
 
 <div class="content" id="content"></div>
 
@@ -233,6 +266,9 @@ const ST={
 };
 const ST_ORDER=['new','mod','kep','del'];
 const STORE_KEY='lfmall_crm_v3';
+
+// ── 필터 상태 (빈 Set = 전체) ──
+let FILTERS={search:'',channels:new Set(),statuses:new Set(),views:new Set(),stages:new Set(),pushOnly:false};
 
 let STAGES=[
   {id:0,label:'가입 / 미구매',      color:'#7B6BC8',mosu:'33,167명/월',gap:'골든타임(0~2h) 트리거 공백 — 첫 접점이 가입 D+1 SMS'},
@@ -357,7 +393,7 @@ function importJSON(e){
       if(Array.isArray(d.cards))CARDS=d.cards;
       if(Array.isArray(d.stages))d.stages.forEach(s=>{const t=STAGES.find(x=>x.id===s.id);if(t)Object.assign(t,s);});
       if(d._uid)_uid=d._uid;
-      ensureOrder();render();saveData();
+      ensureOrder();renderSidebar();render();saveData();
       alert('데이터를 성공적으로 불러왔습니다.');
     }catch(ex){alert('JSON 파일을 읽을 수 없습니다.');}
   };
@@ -373,7 +409,7 @@ function editStageLabel(id,e){
   const inp=document.createElement('input');
   inp.type='text';inp.value=stage.label;inp.className='stage-head-label-input';
   el.replaceWith(inp);inp.focus();inp.select();
-  function save(){stage.label=inp.value.trim()||stage.label;render();saveData();}
+  function save(){stage.label=inp.value.trim()||stage.label;renderSidebar();render();saveData();}
   inp.addEventListener('blur',save);
   inp.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();save();}if(ev.key==='Escape')render();});
 }
@@ -414,24 +450,23 @@ function openColorPicker(id,e){
 }
 cp.addEventListener('change',function(){
   const stage=STAGES.find(s=>s.id===_cpStageId);
-  if(stage){stage.color=this.value;render();saveData();}
+  if(stage){stage.color=this.value;renderSidebar();render();saveData();}
   this.style.pointerEvents='none';
 });
 
 // ── Timing sort ──
+// 발송 타이밍 문자열을 정렬용 상대 시점(일 단위)으로 환산.
+// 실시간 < 방송예고 < 즉시 < N시간 < D+N < 배송완료 < N일 순.
 function timingNum(t){
-  if(!t)return 999;const s=t.toLowerCase();
+  if(!t)return 999;
+  const s=t.toLowerCase();
   if(s.includes('실시간'))return -1;
   if(s.includes('방송')&&s.includes('전'))return -0.5;
-  if(s==='즉시'||s.includes('즉시'))return 0;
-  const hm=s.match(/(\d+)\s*시간|(\d+)h/);if(hm)return parseInt(hm[1]||hm[2])/24;
-  if(s.includes('배송완료')){const m=s.match(/d\+(\d+)/i);return m?parseFloat(m[1]):0.1;}
-  const dm=s.match(/d\+(\d+)/i);if(dm)return parseFloat(dm[1]);
-  if(s.includes('이탈 후 d+'))return 1.5;
-  if(s.includes('이탈 후 1시간'))return 0.04;
-  if(s.includes('90일'))return 90;if(s.includes('180일'))return 180;if(s.includes('270일'))return 270;
-  if(s.includes('100일'))return 100;
-  if(s.includes('매월')){const m=s.match(/(\d+)일/);return m?parseInt(m[1]):30;}
+  if(s.includes('즉시'))return 0;
+  const hm=s.match(/(\d+)\s*(?:시간|h)/);if(hm)return parseInt(hm[1])/24;   // "가입 +2h", "이탈 +1h"
+  const dm=s.match(/d\s*\+\s*(\d+)/i);if(dm)return parseFloat(dm[1]);        // "가입 D+1", "미방문 D+90"
+  if(s.includes('배송완료'))return 0.1;                                      // "배송완료 당일"
+  const dom=s.match(/(\d+)\s*일/);if(dom)return parseInt(dom[1]);            // "매월 23일"
   if(s.includes('매일'))return 30;
   return 999;
 }
@@ -450,47 +485,117 @@ function ensureOrder(){
 }
 
 // ── Render ──
+// 사용자 편집 값이 innerHTML로 들어가므로 HTML 특수문자를 항상 이스케이프한다.
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g,m=>(
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]
+  ));
+}
+// 카드가 현재 카드 단위 필터(채널·상태·PUSH·검색)를 통과하는지
+function cardMatches(c){
+  if(FILTERS.channels.size&&!FILTERS.channels.has(c.ch))return false;
+  if(FILTERS.pushOnly&&!c.push)return false;
+  if(FILTERS.statuses.size&&(!c.status||!FILTERS.statuses.has(c.status)))return false;
+  if(FILTERS.search){
+    const q=FILTERS.search.toLowerCase();
+    const hay=[c.code,c.label,c.timing,c.trigger,c.offer,c.msg].join(' ').toLowerCase();
+    if(!hay.includes(q))return false;
+  }
+  return true;
+}
+// 단계/보기 필터까지 반영한 표시 대상 카드 수
+function visibleCount(){
+  return CARDS.filter(c=>{
+    if(FILTERS.stages.size&&!FILTERS.stages.has(String(c.stage)))return false;
+    if(FILTERS.views.size&&!FILTERS.views.has(c.v))return false;
+    return cardMatches(c);
+  }).length;
+}
+
 function render(){
-  document.getElementById('content').innerHTML=STAGES.map(renderStage).join('');
+  const html=STAGES.map(renderStage).join('');
+  document.getElementById('content').innerHTML=html.trim()
+    ?html
+    :`<div class="empty-state">조건에 맞는 캠페인이 없습니다.<br><button class="btn btn-ghost" onclick="resetFilters()">필터 초기화</button></div>`;
+  const fc=document.getElementById('fcount');
+  if(fc)fc.textContent=`표시 ${visibleCount()}건 / 전체 ${CARDS.length}건`;
 }
 
 function renderStage(stage){
-  const asis=[...CARDS.filter(c=>c.stage===stage.id&&c.v==='asis')].sort((a,b)=>ordOf(a)-ordOf(b));
-  const tobe=[...CARDS.filter(c=>c.stage===stage.id&&c.v==='tobe')].sort((a,b)=>ordOf(a)-ordOf(b));
+  if(FILTERS.stages.size&&!FILTERS.stages.has(String(stage.id)))return '';
+  const anyCardFilter=FILTERS.channels.size||FILTERS.statuses.size||FILTERS.pushOnly||!!FILTERS.search;
+  const asis=CARDS.filter(c=>c.stage===stage.id&&c.v==='asis'&&cardMatches(c)).sort((a,b)=>ordOf(a)-ordOf(b));
+  const tobe=CARDS.filter(c=>c.stage===stage.id&&c.v==='tobe'&&cardMatches(c)).sort((a,b)=>ordOf(a)-ordOf(b));
+  const showAsis=(!FILTERS.views.size||FILTERS.views.has('asis'))&&(asis.length>0||!anyCardFilter);
+  const showTobe=(!FILTERS.views.size||FILTERS.views.has('tobe'))&&(tobe.length>0||!anyCardFilter);
+  if(!showAsis&&!showTobe)return '';
   const cnt={new:0,mod:0,kep:0,del:0};
   tobe.forEach(c=>{if(c.status&&cnt[c.status]!==undefined)cnt[c.status]++;});
   const stCounts=['new','mod','kep','del'].map(k=>cnt[k]>0
     ?`<span class="row-count" style="background:${ST[k].bg};color:${ST[k].c};border-color:${ST[k].b}">${ST[k].label} ${cnt[k]}</span>`
     :'').join('');
   const c30=stage.color+'30',c50=stage.color+'50';
-  return `<div class="stage-section">
-    <div class="stage-head" style="background:${stage.color}">
-      <div class="stage-head-label" id="slabel-${stage.id}" onclick="editStageLabel(${stage.id},event)" title="클릭하여 편집">${stage.label}</div>
-      <span class="stage-head-mosu" id="smosu-${stage.id}" onclick="editStageMosu(${stage.id},event)" title="클릭하여 편집">${stage.mosu}</span>
-      <button class="stage-color-btn" onclick="openColorPicker(${stage.id},event)" title="헤더 색상 변경">🎨</button>
-    </div>
-    <div class="gap-row">
-      <span class="gap-icon">⚠</span>
-      <span class="gap-text" id="gaptext-${stage.id}" onclick="editGapText(${stage.id},event)" title="클릭하여 편집">${stage.gap}</span>
-    </div>
-    <div class="view-row">
+  const asisRow=showAsis?`<div class="view-row">
       <div class="row-meta">
         <span class="row-label" style="color:#9A9890">AS-IS</span>
         <span class="row-count" style="background:#EDEEF4;color:#9A9890;border-color:#DDE0EA">${asis.length}건</span>
       </div>
       <div class="cards-scroll" data-stage="${stage.id}" data-view="asis" ondragover="dragOverRow(event)" ondragleave="dragLeaveRow(event)" ondrop="dropOnRow(event)">${asis.map(c=>cardHTML(c)).join('')}<button class="add-btn" onclick="openAdd('asis',${stage.id})">+</button></div>
-    </div>
-    <div class="mid-divider"></div>
-    <div class="view-row tobe">
+    </div>`:'';
+  const tobeRow=showTobe?`<div class="view-row tobe">
       <div class="row-meta">
         <span class="row-label" style="color:${stage.color}">TO-BE</span>
         <span class="row-count" style="background:${c30};color:${stage.color};border-color:${c50}">${tobe.length}건</span>
         ${stCounts}
       </div>
       <div class="cards-scroll" data-stage="${stage.id}" data-view="tobe" ondragover="dragOverRow(event)" ondragleave="dragLeaveRow(event)" ondrop="dropOnRow(event)">${tobe.map(c=>cardHTML(c)).join('')}<button class="add-btn" onclick="openAdd('tobe',${stage.id})">+</button></div>
+    </div>`:'';
+  const divider=(showAsis&&showTobe)?'<div class="mid-divider"></div>':'';
+  return `<div class="stage-section">
+    <div class="stage-head" style="background:${stage.color}">
+      <div class="stage-head-label" id="slabel-${stage.id}" onclick="editStageLabel(${stage.id},event)" title="클릭하여 편집">${esc(stage.label)}</div>
+      <span class="stage-head-mosu" id="smosu-${stage.id}" onclick="editStageMosu(${stage.id},event)" title="클릭하여 편집">${esc(stage.mosu)}</span>
+      <button class="stage-color-btn" onclick="openColorPicker(${stage.id},event)" title="헤더 색상 변경">🎨</button>
     </div>
+    <div class="gap-row">
+      <span class="gap-icon">⚠</span>
+      <span class="gap-text" id="gaptext-${stage.id}" onclick="editGapText(${stage.id},event)" title="클릭하여 편집">${esc(stage.gap)}</span>
+    </div>
+    ${asisRow}${divider}${tobeRow}
   </div>`;
 }
+
+// ── Sidebar (필터 패널) ──
+function renderSidebar(){
+  const chip=(key,val,label,color,showDot)=>{
+    const on=FILTERS[key].has(val);
+    const style=on?` style="border-color:${color};background:${color}1A;color:${color}"`:'';
+    const dot=showDot?`<span class="fdot" style="background:${color}"></span>`:'';
+    return `<button class="fchip${on?' on':''}" onclick="toggleSetFilter('${key}','${val}')"${style}>${dot}${esc(label)}</button>`;
+  };
+  const sec=(t,inner)=>`<div class="fsec"><div class="fsec-t">${t}</div><div class="fchips">${inner}</div></div>`;
+  const pushOn=FILTERS.pushOnly;
+  document.getElementById('sideBody').innerHTML=
+    `<input id="filterSearch" class="fsearch" type="text" placeholder="🔍 검색 (이름·코드·문구)" value="${esc(FILTERS.search)}" oninput="onSearch(this.value)">`
+    +sec('보기', [['asis','AS-IS'],['tobe','TO-BE']].map(([k,l])=>chip('views',k,l,'#7B6BC8',false)).join(''))
+    +sec('발송 채널', Object.keys(CH).map(k=>chip('channels',k,CH[k].label,CH[k].c,true)).join(''))
+    +sec('변경 유형', Object.keys(ST).map(k=>chip('statuses',k,ST[k].label,ST[k].c,false)).join(''))
+    +sec('고객 여정 단계', STAGES.map(s=>chip('stages',String(s.id),s.label,s.color,true)).join(''))
+    +sec('기타', `<button class="fchip${pushOn?' on':''}" onclick="togglePush()"${pushOn?' style="border-color:#3A3E46;background:#3A3E461A;color:#3A3E46"':''}>🔔 PUSH 발송만</button>`)
+    +`<div class="fcount" id="fcount"></div>`;
+}
+function toggleSetFilter(key,val){
+  const set=FILTERS[key];
+  set.has(val)?set.delete(val):set.add(val);
+  renderSidebar();render();
+}
+function togglePush(){FILTERS.pushOnly=!FILTERS.pushOnly;renderSidebar();render();}
+function onSearch(v){FILTERS.search=v;render();}
+function resetFilters(){
+  FILTERS={search:'',channels:new Set(),statuses:new Set(),views:new Set(),stages:new Set(),pushOnly:false};
+  renderSidebar();render();
+}
+function toggleSidebar(){document.body.classList.toggle('sidebar-collapsed');}
 
 function cardHTML(c){
   const ch=CH[c.ch]||CH.sms;
@@ -506,14 +611,14 @@ function cardHTML(c){
       <span class="ch-badge" style="background:${ch.bg};color:${ch.c};border-color:${ch.c}30">${ch.icon} ${ch.label}</span>
       ${stBadge}
     </div>
-    <div class="card-code"><span>${c.code}</span>
+    <div class="card-code"><span>${esc(c.code)}</span>
       <span class="card-actions">
         <button class="act-btn" onclick="openEdit('${c.id}',event)" title="편집">✏</button>
         <button class="act-btn act-del" onclick="delCard('${c.id}',event)" title="삭제">×</button>
       </span>
     </div>
-    <div class="card-label">${c.label}</div>
-    <div class="card-timing">⏱ ${c.timing}</div>
+    <div class="card-label">${esc(c.label)}</div>
+    <div class="card-timing">⏱ ${esc(c.timing)}</div>
   </div>`;
 }
 
@@ -532,15 +637,15 @@ function openDet(id){
         <span style="width:8px;height:8px;border-radius:50%;background:${ch.c};display:inline-block"></span>
         <span style="font-family:'DM Mono',monospace;font-size:9px;color:${ch.c};text-transform:uppercase;letter-spacing:.1em">${ch.icon} ${ch.label}</span>
       </div>
-      <div class="det-code">${c.code}</div>
-      <div class="det-title">${c.label}</div>
+      <div class="det-code">${esc(c.code)}</div>
+      <div class="det-title">${esc(c.label)}</div>
       <div style="display:flex;gap:6px">${stBadge}</div>
     </div>
     <div class="det-body">
-      <div class="det-lbl">⏱ 발송 타이밍</div><div class="det-val">${c.timing}</div>
-      <div class="det-lbl">🎯 트리거 조건</div><div class="det-val">${c.trigger||'—'}</div>
-      <div class="det-lbl">🎁 오퍼 / 혜택</div><div class="det-val hl">${c.offer||'—'}</div>
-      <div class="det-lbl">💬 메시지 / 문구</div><div class="det-val">${(c.msg||'—').replace(/\n/g,'<br>')}</div>
+      <div class="det-lbl">⏱ 발송 타이밍</div><div class="det-val">${esc(c.timing)}</div>
+      <div class="det-lbl">🎯 트리거 조건</div><div class="det-val">${esc(c.trigger||'—')}</div>
+      <div class="det-lbl">🎁 오퍼 / 혜택</div><div class="det-val hl">${esc(c.offer||'—')}</div>
+      <div class="det-lbl">💬 메시지 / 문구</div><div class="det-val">${esc(c.msg||'—').replace(/\n/g,'<br>')}</div>
     </div>
     <div class="det-foot">
       <button class="btn btn-primary" onclick="openEdit('${c.id}')">✏ 편집</button>
@@ -705,6 +810,7 @@ document.getElementById('modalOv').addEventListener('click',function(e){if(e.tar
 
 loadData();
 ensureOrder();
+renderSidebar();
 render();
 </script>
 </body>
