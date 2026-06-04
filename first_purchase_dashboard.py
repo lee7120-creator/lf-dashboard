@@ -1058,24 +1058,28 @@ elif page == "04. 채널 효율":
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
-    # 유입율 → CR 회귀
-    st.subheader("유입율 → CR 선형회귀 (채널별)")
+    # 유입율 → CR 회귀 (채널별 유입율 데이터 있으면 채널별, 없으면 *TOTAL 폴백)
+    ir_segs = avail_segs("유입율")
+    reg_targets = [c for c in ch_list() if c in ir_segs] or (["*TOTAL"] if "*TOTAL" in ir_segs else [])
+    st.subheader("유입율 → CR 선형회귀" + (" (전체 기준)" if reg_targets == ["*TOTAL"] else " (채널별)"))
+    if reg_targets == ["*TOTAL"]:
+        st.caption("채널별 유입율 데이터가 없어 전체(*TOTAL) 기준으로 분석합니다.")
     reg_rows = []
-    for ch in ch_list():
-        ir = df_full[(df_full["metric"] == "유입율") & (df_full["segment"] == ch)].set_index("date")["value"]
-        cr = df_full[(df_full["metric"] == "CR")     & (df_full["segment"] == ch)].set_index("date")["value"]
+    for ch in reg_targets:
+        ir = df_full[(df_full["metric"] == "유입율") & (df_full["segment"] == ch)].dropna(subset=["value"]).set_index("date")["value"]
+        cr = df_full[(df_full["metric"] == "CR")     & (df_full["segment"] == ch)].dropna(subset=["value"]).set_index("date")["value"]
         common = ir.index.intersection(cr.index)
         if len(common) < 10: continue
         sl, _, r, p, _ = stats.linregress(ir[common].values.astype(float), cr[common].values.astype(float))
         reg_rows.append({
-            "채널": ch, "기울기": f"{sl:.4f}", "R²": r2_label(r**2),
+            "구분": ch, "기울기": f"{sl:.4f}", "R²": r2_label(r**2),
             "p값": sig_label(p), "판정": "✅ 유의" if p < 0.05 else "⬜ 비유의",
         })
     if reg_rows:
-        st.dataframe(pd.DataFrame(reg_rows).set_index("채널"), use_container_width=True)
+        st.dataframe(pd.DataFrame(reg_rows).set_index("구분"), use_container_width=True)
         st.caption("R² : 유입율이 CR 변동을 얼마나 설명하는지 (높을수록 강한 관계)")
     else:
-        st.info("회귀 분석에 필요한 데이터가 부족합니다 (채널당 10일 이상 필요).")
+        st.info("회귀 분석에 필요한 데이터가 부족합니다 (10일 이상 필요).")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 

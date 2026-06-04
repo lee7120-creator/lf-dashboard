@@ -75,9 +75,9 @@ if "insights" not in st.session_state:
 # ══════════════════════════════════════════════════════
 def linreg(x, y):
     mask = ~np.isnan(x.astype(float)) & ~np.isnan(y.astype(float))
-    if mask.sum() < 5: return dict(slope=np.nan, r2=np.nan, p=np.nan)
-    sl, _, r, p, _ = stats.linregress(x[mask], y[mask])
-    return dict(slope=sl, r2=r**2, p=p)
+    if mask.sum() < 5: return dict(slope=np.nan, intercept=np.nan, r2=np.nan, p=np.nan)
+    sl, ic, r, p, _ = stats.linregress(x[mask], y[mask])
+    return dict(slope=sl, intercept=ic, r2=r**2, p=p)
 
 def dow_residual(df, col):
     vals = df[col].values.astype(float)
@@ -196,9 +196,10 @@ def parse_xlsx(file_bytes):
     df["quarter"] = df["date"].dt.to_period("Q").astype(str)
     df["year"]    = df["date"].dt.year
     df["week"]    = df["date"].dt.isocalendar().week.astype(int)
-    # 파생 지표
-    df["purchaseRate"] = df["purchaseCust"] / df["customers"]
-    df["rpc"]          = df["revenue"] / df["customers"]
+    # 파생 지표 (0 나눗셈 방지: 발송고객수 0 → NaN 처리)
+    _cust = df["customers"].replace(0, np.nan)
+    df["purchaseRate"] = (df["purchaseCust"] / _cust).clip(0, 1)  # 구매고객/발송고객 → [0,1] 범위
+    df["rpc"]          = df["revenue"] / _cust
     return df
 
 @st.cache_data(show_spinner=False)
@@ -217,12 +218,13 @@ def compute(file_bytes):
     buckets = df.groupby("bucket", observed=True).agg(n=("revenue","count"), **{k:pd.NamedAgg(k,"mean") for k in list(ALL_METRICS)+["purchaseRate","rpc"]}).reset_index()
     buckets = buckets[buckets["n"] >= 30].reset_index(drop=True)
 
-    # Quintile
-    df_s = df.sort_values("totalSend").reset_index(drop=True)
-    sz   = len(df_s)//5
+    # Quintile — array_split으로 전체 데이터를 균등 5분할 (나머지 일수 손실 방지)
+    df_s   = df.sort_values("totalSend").reset_index(drop=True)
+    qparts = np.array_split(df_s, 5)
     quintile = pd.DataFrame([
         dict(label=["Q1 최소","Q2","Q3","Q4","Q5 최대"][i],
-             **{k: df_s.iloc[i*sz:(i+1)*sz][k].mean() for k in list(ALL_METRICS)+["purchaseRate","rpc"]})
+             n=len(qparts[i]),
+             **{k: qparts[i][k].mean() for k in list(ALL_METRICS)+["purchaseRate","rpc"]})
         for i in range(5)
     ])
 
@@ -268,14 +270,28 @@ def parse_consent(file_bytes):
     df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine='openpyxl')
     date_strs = df_raw.iloc[1, 2:].tolist()
 
-    # 날짜 파싱 — 연도 없이 M/D 형식, 2025년 기준
+    # 시작 연도 자동 감지 (행 0에 연도 마커가 있으면 사용, 없으면 2025 기본값)
     year = 2025
+    for v in df_raw.iloc[0, :]:
+        try:
+            iv = int(float(v))
+            if 2020 <= iv <= 2030:
+                year = iv; break
+        except Exception:
+            pass
+
+    # 날짜 파싱 — M/D 형식, 월이 줄어들면(12→1) 연도 롤오버
     dates = []
+    prev_month = None
     for ds in date_strs:
         if pd.isnull(ds):
             dates.append(pd.NaT)
             continue
         try:
+            mm = int(str(ds).split("/")[0])
+            if prev_month is not None and mm < prev_month:
+                year += 1  # 연도 전환 (예: 12/31 → 1/1)
+            prev_month = mm
             dates.append(pd.Timestamp(f"{year}/{ds}"))
         except:
             dates.append(pd.NaT)
@@ -1433,10 +1449,10 @@ elif page == "05. 지표 상관 분석":
             mode="markers", marker=dict(color=clr("blue"),size=5,opacity=0.6),
             text=df_f.loc[common.index,"date"].dt.strftime("%Y-%m-%d").tolist(),
         ))
-        # 추세선
+        # 추세선 (기울기·절편 모두 반영 — 데이터를 실제로 통과하는 회귀선)
         xfit = np.linspace(common[xk].min(), common[xk].max(), 100)
-        yfit = reg_r["slope"]*xfit + linreg(common[xk].values, common[yk].values).get("slope",0)
-        fig8.add_trace(go.Scatter(x=xfit.tolist(), y=(reg_r["slope"]*xfit).tolist(),
+        yfit = reg_r["slope"]*xfit + reg_r["intercept"]
+        fig8.add_trace(go.Scatter(x=xfit.tolist(), y=yfit.tolist(),
             mode="lines", line=dict(color=clr("red"),width=1.5,dash="dot"), name="추세선"))
         layout8 = base_layout(300, title=f"{xm_label} vs {ym_label} (r={corr_val:.3f})")
         layout8["xaxis"]["title"] = xm_label
