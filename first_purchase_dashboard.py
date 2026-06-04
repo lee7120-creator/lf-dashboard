@@ -457,23 +457,35 @@ def fmt_pct(v):
 def parse_xlsx(file_bytes: bytes) -> pd.DataFrame:
     df_raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine="openpyxl")
 
-    year = 2026
-    for v in df_raw.iloc[0, :]:
+    # row 0에서 연도 마커 위치 수집 (예: 2025→col6, 2026→col371)
+    year_markers = {}
+    for ci, v in enumerate(df_raw.iloc[0, :]):
         try:
-            iv = int(v)
+            iv = int(float(v))
             if 2020 <= iv <= 2030:
-                year = iv; break
+                year_markers[ci] = iv
         except Exception:
             pass
 
+    # 컬럼 인덱스별 연도 매핑 (각 마커 시작 컬럼부터 다음 마커 전까지 같은 연도)
+    sorted_markers = sorted(year_markers.items())
+    default_year = sorted_markers[0][1] if sorted_markers else 2026
+    col_to_year = {}
+    for idx, (col, yr) in enumerate(sorted_markers):
+        end_col = sorted_markers[idx + 1][0] if idx + 1 < len(sorted_markers) else df_raw.shape[1]
+        for c in range(col, end_col):
+            col_to_year[c] = yr
+
     raw_dates = df_raw.iloc[2, 6:].tolist()
     dates = []
-    for ds in raw_dates:
+    for offset, ds in enumerate(raw_dates):
+        ci = offset + 6
+        yr = col_to_year.get(ci, default_year)
         if pd.isnull(ds):
             dates.append(pd.NaT)
         else:
             try:
-                dates.append(pd.Timestamp(f"{year}/{str(ds).strip()}"))
+                dates.append(pd.Timestamp(f"{yr}/{str(ds).strip()}"))
             except Exception:
                 dates.append(pd.NaT)
 
