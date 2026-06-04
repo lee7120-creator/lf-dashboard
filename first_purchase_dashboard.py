@@ -554,7 +554,15 @@ with st.sidebar:
     ch_sel = st.multiselect("채널 선택", options=CHANNELS, default=CHANNELS, key="fp_ch")
 
     st.markdown("---")
-    if st.button("메모 JSON 내보내기", key="fp_export_memo"):
+    if st.button("💾 전체 저장", key="fp_save_all", use_container_width=True,
+                 help="편집한 모든 메모·텍스트를 fp_insights.json에 저장합니다"):
+        all_data = load_insights()
+        all_data.update(st.session_state.insights)
+        all_data["__fp_texts__"] = st.session_state.get("editable_texts", {})
+        save_insights(all_data)
+        st.success("저장됐습니다 ✓")
+
+    if st.button("메모 JSON 내보내기", key="fp_export_memo", use_container_width=True):
         j = json.dumps(st.session_state.insights, ensure_ascii=False, indent=2)
         st.download_button("다운로드", j.encode("utf-8"), "fp_insights.json", "application/json")
 
