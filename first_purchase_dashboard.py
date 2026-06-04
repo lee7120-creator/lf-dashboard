@@ -355,13 +355,46 @@ def stat_explainer():
 # ══════════════════════════════════════════════════════
 COMPARE_OPTS = ["전년비 (YoY)", "전분기비 (QoQ)", "전월비 (MoM)", "전주비 (WoW)", "전체 기간 처음↔끝"]
 
-def get_compare_periods(df_all, mode):
+def cmp_selectbox(key):
+    """비교 기준 selectbox + YoY일 때 기준일 date_input 반환 → (mode, yoy_ref)"""
+    mode = st.selectbox("비교 기준", COMPARE_OPTS, key=f"fp_cmp_{key}")
+    yoy_ref = None
+    if mode == "전년비 (YoY)":
+        avail_years = sorted(df_full["date"].dt.year.unique(), reverse=True)
+        cur_year = avail_years[0]
+        max_date = df_full[df_full["date"].dt.year == cur_year]["date"].max().date()
+        ref_date = st.date_input(
+            f"기준일 ({cur_year}년 기준)",
+            value=max_date,
+            min_value=df_full[df_full["date"].dt.year == cur_year]["date"].min().date(),
+            max_value=max_date,
+            key=f"fp_yoy_ref_{key}",
+            help=f"선택한 날짜까지의 {cur_year}년 데이터와 전년도 같은 기간을 비교합니다",
+        )
+        yoy_ref = pd.Timestamp(ref_date)
+    return mode, yoy_ref
+
+def get_compare_periods(df_all, mode, yoy_ref=None):
     df_all = df_all.sort_values("date")
     last_date = df_all["date"].max()
     if mode == "전년비 (YoY)":
-        cur  = df_all[df_all["date"].dt.year == last_date.year]
-        prev = df_all[df_all["date"].dt.year == last_date.year - 1]
-        return cur, prev, str(last_date.year)+"년", str(last_date.year-1)+"년"
+        # 동일 기간 비교: 현재 연도의 최대 날짜 기준 (또는 사용자 지정) 같은 월/일까지
+        ref = yoy_ref if yoy_ref else last_date
+        cur_year  = ref.year
+        prev_year = cur_year - 1
+        # 현재 연도: 1/1 ~ ref 날짜
+        cur  = df_all[(df_all["date"].dt.year == cur_year) &
+                      (df_all["date"] <= ref)]
+        # 전년도: 1/1 ~ 전년도 같은 월/일
+        try:
+            prev_ref = ref.replace(year=prev_year)
+        except ValueError:  # 2/29 같은 경우
+            prev_ref = ref.replace(year=prev_year, day=28)
+        prev = df_all[(df_all["date"].dt.year == prev_year) &
+                      (df_all["date"] <= prev_ref)]
+        lc = f"{cur_year}년 (~{ref.strftime('%m/%d')})"
+        lp = f"{prev_year}년 (~{prev_ref.strftime('%m/%d')})"
+        return cur, prev, lc, lp
     elif mode == "전분기비 (QoQ)":
         cur_q  = pd.Period(last_date, "Q"); prev_q = cur_q - 1
         cur  = df_all[df_all["date"].dt.to_period("Q") == cur_q]
@@ -382,12 +415,21 @@ def get_compare_periods(df_all, mode):
         cur  = df_all[df_all["date"] >= mid]; prev = df_all[df_all["date"] < mid]
         return cur, prev, "후반기", "전반기"
 
+def avail_segs(metric, df=None):
+    """해당 지표에서 실제 non-NaN 값을 가진 세그먼트 목록 반환"""
+    if df is None: df = df_full
+    return (df[df["metric"] == metric]
+            .groupby("segment")["value"]
+            .apply(lambda s: s.notna().any())
+            .pipe(lambda x: x[x].index.tolist()))
+
 def compare_table(df_cur, df_prev, label_cur, label_prev, metric, channels):
-    """롱포맷 기준 기간 비교 테이블"""
+    """롱포맷 기준 기간 비교 테이블 — 데이터 없는 세그먼트는 건너뜀"""
     rows = []
     for ch in channels:
         v_cur  = df_cur[(df_cur["metric"] == metric) & (df_cur["segment"] == ch)]["value"].mean()
         v_prev = df_prev[(df_prev["metric"] == metric) & (df_prev["segment"] == ch)]["value"].mean()
+        if np.isnan(v_cur) and np.isnan(v_prev): continue  # 둘 다 없으면 스킵
         chg    = (v_cur - v_prev) / v_prev * 100 if (not np.isnan(v_prev) and v_prev != 0) else np.nan
         rows.append({
             "채널":    ch,
@@ -703,8 +745,8 @@ if page == "01. 개요":
 
     # 기간 비교
     st.subheader("기간 비교")
-    cmp_mode = st.selectbox("비교 기준", COMPARE_OPTS, key="fp_cmp_ov")
-    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode)
+    cmp_mode, _yoy_ref = cmp_selectbox("ov")
+    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode, _yoy_ref)
     for m in ["일평균거래액", "일평균고객수", "CR"]:
         tbl = compare_table(cmp_cur, cmp_prev, lc, lp, m, ch_list())
         if not tbl.empty:
@@ -803,8 +845,8 @@ elif page == "02. 거래액 분석":
 
     # 기간 비교
     st.subheader("기간 비교")
-    cmp_mode = st.selectbox("비교 기준", COMPARE_OPTS, key="fp_cmp_tx")
-    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode)
+    cmp_mode, _yoy_ref = cmp_selectbox("tx")
+    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode, _yoy_ref)
     tbl = compare_table(cmp_cur, cmp_prev, lc, lp, "일평균거래액", ch_list())
     if not tbl.empty:
         st.dataframe(styled_compare(tbl), use_container_width=True, hide_index=True)
@@ -912,8 +954,8 @@ elif page == "03. 고객수 분석":
 
     # 기간 비교
     st.subheader("기간 비교")
-    cmp_mode = st.selectbox("비교 기준", COMPARE_OPTS, key="fp_cmp_cust")
-    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode)
+    cmp_mode, _yoy_ref = cmp_selectbox("cust")
+    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode, _yoy_ref)
     tbl = compare_table(cmp_cur, cmp_prev, lc, lp, "일평균고객수", ch_list())
     if not tbl.empty:
         st.dataframe(styled_compare(tbl), use_container_width=True, hide_index=True)
@@ -965,16 +1007,26 @@ elif page == "04. 채널 효율":
         fig.update_layout(**ly)
         st.plotly_chart(fig, use_container_width=True)
 
-    # 평균 유입율 bar
+    # 평균 유입율 bar — 채널별 데이터 없으면 *TOTAL 표시
     with cR:
-        st.subheader("채널별 평균 유입율 (필터 기간)")
-        avg_ir = (df_full[(df_full["metric"] == "유입율") & (df_full["segment"].isin(ch_list()))]
-                  .groupby("segment")["value"].mean().reindex(ch_list()).fillna(0))
+        st.subheader("평균 유입율 (필터 기간)")
+        ir_ch = (df_full[(df_full["metric"] == "유입율") & (df_full["segment"].isin(ch_list()))]
+                 .groupby("segment")["value"].mean().reindex(ch_list()))
+        if ir_ch.notna().any():
+            ir_data = ir_ch.fillna(0)
+            x_labels = ir_data.index.tolist()
+            colors_bg = [ch_cbg(c) for c in x_labels]
+            colors_ln = [ch_clr(c) for c in x_labels]
+        else:
+            # 채널별 데이터 없음 → *TOTAL 단일 표시
+            total_val = df_full[(df_full["metric"] == "유입율") & (df_full["segment"] == "*TOTAL")]["value"].mean()
+            ir_data = pd.Series({"*TOTAL": total_val if not np.isnan(total_val) else 0})
+            x_labels = ["*TOTAL"]; colors_bg = [ch_cbg("*TOTAL")]; colors_ln = [ch_clr("*TOTAL")]
+            st.caption("채널별 유입율 데이터 없음 — 전체(*TOTAL) 기준 표시")
         fig = go.Figure(go.Bar(
-            x=avg_ir.index.tolist(), y=(avg_ir * 100).tolist(),
-            marker_color=[ch_cbg(c) for c in avg_ir.index],
-            marker_line_color=[ch_clr(c) for c in avg_ir.index], marker_line_width=1.2,
-            text=[f"{v*100:.2f}%" for v in avg_ir.values], textposition="outside",
+            x=x_labels, y=(ir_data * 100).tolist(),
+            marker_color=colors_bg, marker_line_color=colors_ln, marker_line_width=1.2,
+            text=[f"{v*100:.2f}%" for v in ir_data.values], textposition="outside",
         ))
         ly = base_layout(260, ysuffix="%", title="평균 유입율")
         fig.update_layout(**ly)
@@ -1051,10 +1103,11 @@ elif page == "04. 채널 효율":
 
     # 기간 비교
     st.subheader("기간 비교")
-    cmp_mode = st.selectbox("비교 기준", COMPARE_OPTS, key="fp_cmp_eff")
-    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode)
+    cmp_mode, _yoy_ref = cmp_selectbox("eff")
+    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode, _yoy_ref)
     for m in ["CR", "유입율", "일평균객단가"]:
-        tbl = compare_table(cmp_cur, cmp_prev, lc, lp, m, ch_list())
+        segs = avail_segs(m) if m == "유입율" else ch_list()
+        tbl = compare_table(cmp_cur, cmp_prev, lc, lp, m, segs)
         if not tbl.empty:
             st.caption(METRIC_KO.get(m, m))
             st.dataframe(styled_compare(tbl), use_container_width=True, hide_index=True)
@@ -1198,10 +1251,11 @@ elif page == "06. 월별 요약":
 
     # 기간 비교 (전 지표)
     st.subheader("기간 비교 — 전 지표")
-    cmp_mode = st.selectbox("비교 기준", COMPARE_OPTS, key="fp_cmp_monthly")
-    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode)
+    cmp_mode, _yoy_ref = cmp_selectbox("monthly")
+    cmp_cur, cmp_prev, lc, lp = get_compare_periods(df_full, cmp_mode, _yoy_ref)
     for m in ["일평균거래액", "일평균고객수", "일평균객단가", "CR", "유입율"]:
-        tbl = compare_table(cmp_cur, cmp_prev, lc, lp, m, ch_list())
+        segs = avail_segs(m) if m == "유입율" else ch_list()
+        tbl = compare_table(cmp_cur, cmp_prev, lc, lp, m, segs)
         if not tbl.empty:
             st.caption(METRIC_KO.get(m, m))
             st.dataframe(styled_compare(tbl), use_container_width=True, hide_index=True)
