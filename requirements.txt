@@ -4,3 +4,5 @@ openpyxl
 plotly
 scipy
 numpy
+seaborn
+matplotlib
