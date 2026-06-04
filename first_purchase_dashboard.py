@@ -553,6 +553,10 @@ def parse_xlsx(file_bytes: bytes) -> pd.DataFrame:
     df["quarter"] = df["date"].dt.to_period("Q").astype(str)
     df["year"]  = df["date"].dt.year
     df["dow"]   = df["date"].dt.dayofweek
+    # 비율 지표 클리핑 (CR, 유입율, 거래액비중, 고객비중: 0~1 범위 강제)
+    pct_metrics = {"CR", "유입율", "거래액비중", "고객비중"}
+    mask = df["metric"].isin(pct_metrics)
+    df.loc[mask, "value"] = df.loc[mask, "value"].clip(lower=0.0, upper=1.0)
     return df
 
 # ══════════════════════════════════════════════════════
@@ -1126,6 +1130,9 @@ elif page == "05. 채널 비중 추이":
     def stacked_area_chart(metric, title, pct_label="비중 (%)"):
         pivot = get_pivot(metric, ch_list())
         pivot = pivot.ffill().fillna(0)
+        # 날짜별 합계로 정규화 → 정확히 100% 합산
+        row_sum = pivot.sum(axis=1).replace(0, np.nan)
+        pivot = pivot.div(row_sum, axis=0).fillna(0)
         dates_str = pivot.index.strftime("%m/%d").tolist()
         fig = go.Figure()
         for ch in ch_list():
