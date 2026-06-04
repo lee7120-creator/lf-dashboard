@@ -958,6 +958,13 @@ with st.sidebar:
 
     if G:
         st.markdown("---")
+        if st.button("💾 전체 저장", key="sd_save_all", use_container_width=True,
+                     help="편집한 모든 메모·텍스트를 insights_store.json에 저장합니다"):
+            all_data = load_insights()
+            all_data.update(st.session_state.insights)
+            all_data["__texts__"] = st.session_state.get("editable_texts", {})
+            save_insights(all_data)
+            st.success("저장됐습니다 ✓")
         if st.button("초기화", use_container_width=True):
             st.session_state.insights = {}
             save_insights({})
