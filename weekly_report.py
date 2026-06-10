@@ -28,6 +28,12 @@ st.markdown("""
 [data-testid="stMetricValue"]{color:#1e293b!important;font-size:20px!important}
 .sdiv{border-top:1px solid #e2e8f0;margin:22px 0}
 .report-box{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;line-height:1.7;background:#ffffff;white-space:pre-wrap}
+.kpi-card{background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+.kpi-label{color:#64748b;font-size:12px}
+.kpi-value{color:#1e293b;font-size:21px;font-weight:600;margin:2px 0 8px}
+.kpi-delta{display:inline-block;font-size:12px;border-radius:6px;padding:2px 8px;margin:2px 4px 0 0;font-weight:500}
+.kpi-delta.up{background:#ecfdf5;color:#15803d}
+.kpi-delta.down{background:#fef2f2;color:#dc2626}
 </style>
 """, unsafe_allow_html=True)
 
@@ -778,24 +784,36 @@ def main():
         if wlabel:
             st.caption(f"기준 주차: {wy}년 {wlabel}")
 
-        # KPI 카드 (최신 주차, WoW)
+        # KPI 카드 (기준 주차 — 전주비·전월비·전년비 모두 주차 기준)
         if wlabel:
             cols = st.columns(4)
             kpi_metrics = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가", "가입자수"]
             py, plb = prev_label(df, "주", wy, wlabel)
+            # 전월 동일 주차 (예: 06월 1주차 → 05월 1주차)
+            mom_y = mom_lbl = None
+            wm = re.match(r"(\d{1,2})월 (\d)주차", wlabel)
+            if wm:
+                mo, wk = int(wm.group(1)), int(wm.group(2))
+                mom_y, mom_m = (wy, mo - 1) if mo > 1 else (wy - 1, 12)
+                mom_lbl = f"{mom_m:02d}월 {wk}주차"
             for col, met in zip(cols, kpi_metrics):
                 cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
+                deltas = []
                 prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
+                deltas.append((fmt_delta(met, cur, prv), "전주비"))
+                if mom_lbl:
+                    mom = pick(df, "주", met, "*TOTAL", mom_y, mom_lbl, "final")
+                    deltas.append((fmt_delta(met, cur, mom), "전월비"))
                 yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
-                d_w = fmt_delta(met, cur, prv)
-                d_y = fmt_delta(met, cur, yoy)
-                col.metric(f"{met} ({wlabel})", fmt_value(met, cur),
-                           delta=f"{d_w} (전주비)" if d_w else None)
-                if d_y:
-                    up = not d_y.startswith("-")
-                    color, arrow = ("#16a34a", "▲") if up else ("#dc2626", "▼")
-                    col.markdown(f"<span style='font-size:12px;color:{color}'>"
-                                 f"{arrow} {d_y} (전년비)</span>", unsafe_allow_html=True)
+                deltas.append((fmt_delta(met, cur, yoy), "전년비"))
+                pills = "".join(
+                    f'<div class="kpi-delta {"up" if not d.startswith("-") else "down"}">'
+                    f'{"↑" if not d.startswith("-") else "↓"} {d} ({lab})</div>'
+                    for d, lab in deltas if d)
+                col.markdown(
+                    f'<div class="kpi-card"><div class="kpi-label">{met} ({wlabel})</div>'
+                    f'<div class="kpi-value">{fmt_value(met, cur)}</div>{pills}</div>',
+                    unsafe_allow_html=True)
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 실적 요약 YoY 표
