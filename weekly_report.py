@@ -97,9 +97,25 @@ def fmt_delta(metric, cur, prev):
     if isinstance(cur, float) and np.isnan(cur): return None
     if isinstance(prev, float) and np.isnan(prev): return None
     if metric in PCT_METRICS:
-        return f"{(cur-prev)*100:+.2f}%p"
+        d = (cur - prev) * 100
+        return f"△{abs(d):.2f}%p" if d < 0 else f"+{d:.2f}%p"
     if prev == 0: return None
-    return f"{(cur-prev)/prev*100:+.1f}%"
+    d = (cur - prev) / prev * 100
+    return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
+
+def style_delta_cols(tbl):
+    """증감 컬럼(△/+)에 빨강/초록 색상 적용한 Styler 반환"""
+    delta_cols = [c for c in tbl.columns
+                  if any(k in str(c) for k in ("전년비", "전주비", "전월비", "증감"))]
+    def _color(v):
+        s = str(v)
+        if s.startswith("△"): return "color:#dc2626;font-weight:600"
+        if s.startswith("+"): return "color:#16a34a;font-weight:600"
+        return ""
+    try:
+        return tbl.style.map(_color, subset=delta_cols)
+    except Exception:
+        return tbl
 
 # ══════════════════════════════════════════════════════
 # 파싱 — 원천 파일 → 통합 long DataFrame
@@ -582,10 +598,16 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
     ws.cell(r, 1, "구분").font = head_font
     for j, cname in enumerate(tbl.columns):
         c = ws.cell(r, 2 + j, cname); c.font = head_font; c.fill = head_fill
+    red_font = Font(color="DC2626")
+    green_font = Font(color="16A34A")
     for i, met in enumerate(tbl.index):
         ws.cell(r + 1 + i, 1, met).font = head_font
         for j, cname in enumerate(tbl.columns):
-            ws.cell(r + 1 + i, 2 + j, tbl.loc[met, cname])
+            c = ws.cell(r + 1 + i, 2 + j, tbl.loc[met, cname])
+            s = str(c.value)
+            if "전년비" in str(cname):
+                if s.startswith("△"): c.font = red_font
+                elif s.startswith("+"): c.font = green_font
     r += len(tbl) + 3
 
     # 보고란
@@ -646,7 +668,10 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
             ws.cell(r + 1 + i, 1, seg)
             ws.cell(r + 1 + i, 2, None if np.isnan(pv) else pv).number_format = "#,##0"
             ws.cell(r + 1 + i, 3, None if np.isnan(cv) else cv).number_format = "#,##0"
-            ws.cell(r + 1 + i, 4, fmt_delta(met, cv, pv) or "–")
+            dcell = ws.cell(r + 1 + i, 4, fmt_delta(met, cv, pv) or "–")
+            ds = str(dcell.value)
+            if ds.startswith("△"): dcell.font = red_font
+            elif ds.startswith("+"): dcell.font = green_font
         r += len(segs) + 3
 
     ws.column_dimensions["A"].width = 16
@@ -810,9 +835,10 @@ def main():
                 pills = ""
                 for d, lab in deltas:
                     if d:
-                        cls = "up" if not d.startswith("-") else "down"
-                        arrow = "↑" if cls == "up" else "↓"
-                        pills += f'<div class="kpi-delta {cls}">{arrow} {d} ({lab})</div>'
+                        neg = d.startswith("△")
+                        cls = "down" if neg else "up"
+                        prefix = "" if neg else "↑ "
+                        pills += f'<div class="kpi-delta {cls}">{prefix}{d} ({lab})</div>'
                     else:
                         pills += f'<div class="kpi-delta na">– ({lab})</div>'
                 col.markdown(
@@ -825,7 +851,7 @@ def main():
         st.subheader("실적 요약 (일평균 · 전년비)")
         tbl, (pm_y, pm_m) = yoy_summary_table(df, ref_year, ref_month, METRICS7)
         st.caption(f"전월({pm_m}월)은 월마감, 당월({ref_month}월)은 일마감(MTD) 기준 동일기간 비교")
-        st.dataframe(tbl, use_container_width=True)
+        st.dataframe(style_delta_cols(tbl), use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
@@ -902,7 +928,8 @@ def main():
                              f"{plb or '-'}": fmt_value(met, prv),
                              f"{wlabel}": fmt_value(met, cur),
                              "전주비": fmt_delta(met, cur, prv) or "–"})
-            st.dataframe(pd.DataFrame(rows).set_index("지표"), use_container_width=True)
+            st.dataframe(style_delta_cols(pd.DataFrame(rows).set_index("지표")),
+                         use_container_width=True)
 
     # ════════════ 04. 채널별 실적 ════════════
     elif page == "04. 채널별 실적":
@@ -919,7 +946,8 @@ def main():
                          f"{ref_year-1}년 {ref_month}월": fmt_value(met, pv),
                          f"{ref_year}년 {ref_month}월": fmt_value(met, cv),
                          "전년비": fmt_delta(met, cv, pv) or "–"})
-        st.dataframe(pd.DataFrame(rows).set_index("채널"), use_container_width=True)
+        st.dataframe(style_delta_cols(pd.DataFrame(rows).set_index("채널")),
+                     use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader(f"{met} — 채널별 월 추이 ({ref_year}년)")
