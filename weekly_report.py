@@ -357,6 +357,8 @@ def trend_table(df, gran, metrics, years, seg="*TOTAL"):
                      df["value"].notna()]
             if sub.empty: continue
             columns.append((y, lb))
+    if not columns:
+        return pd.DataFrame()
     for met in metrics:
         vals = []
         for y, lb in columns:
@@ -366,9 +368,10 @@ def trend_table(df, gran, metrics, years, seg="*TOTAL"):
     return tbl
 
 def style_trend(tbl, metrics):
-    disp = tbl.copy()
+    # 최신 pandas는 float 컬럼에 문자열 대입을 금지하므로 object로 변환 후 포맷
+    disp = tbl.astype(object).copy()
     for met in disp.index:
-        disp.loc[met] = [fmt_value(met, v) for v in disp.loc[met]]
+        disp.loc[met] = [fmt_value(met, v) for v in tbl.loc[met]]
     return disp
 
 # ══════════════════════════════════════════════════════
