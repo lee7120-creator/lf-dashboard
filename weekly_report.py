@@ -661,6 +661,18 @@ def main():
         months_avail = sorted({int(re.match(r"(\d+)월", l).group(1))
                                for l in df[(df["gran"] == "월") & (df["year"] == ref_year)]["label"]})
         ref_month = st.selectbox("기준 월", months_avail[::-1], key="wr_refm")
+        weeks_avail = (df[(df["gran"] == "주") & (df["year"] == ref_year) & df["value"].notna()]
+                       [["label", "sortkey"]].drop_duplicates()
+                       .sort_values("sortkey")["label"].tolist())
+        if weeks_avail:
+            # 기본값은 직전 완료 주차 (최신 주차는 보통 진행 중)
+            default_week = weeks_avail[-2] if len(weeks_avail) >= 2 else weeks_avail[-1]
+            ref_week = st.selectbox("기준 주차", weeks_avail[::-1],
+                                    index=weeks_avail[::-1].index(default_week),
+                                    key="wr_refw",
+                                    help="주간보고 대상 주차. 기본값은 최신 직전(완료) 주차입니다.")
+        else:
+            ref_week = None
         st.markdown("**차트 연도**")
         default_yrs = years_all[-2:] if len(years_all) >= 2 else years_all
         chart_years = st.multiselect("비교 연도", years_all, default=default_yrs, key="wr_cyrs")
@@ -673,9 +685,9 @@ def main():
     # ════════════ 01. 주간보고 요약 ════════════
     if page == "01. 주간보고 요약":
         st.markdown(f"## 첫구매 주간보고 — {ref_year}년 {ref_month}월")
-        wy, wlabel = latest_period(df, "주")
+        wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
         if wlabel:
-            st.caption(f"최신 주차 데이터: {wy}년 {wlabel}")
+            st.caption(f"기준 주차: {wy}년 {wlabel}")
 
         # KPI 카드 (최신 주차, WoW)
         if wlabel:
@@ -759,7 +771,7 @@ def main():
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("전주비(WoW) 증감")
-        wy, wlabel = latest_period(df, "주")
+        wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
         if wlabel:
             py, plb = prev_label(df, "주", wy, wlabel)
             rows = []
