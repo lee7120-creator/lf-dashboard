@@ -4,6 +4,7 @@
 통합 결과는 (월/주/첫구매_요약 + 차트) 엑셀 워크북으로 다운로드할 수 있다.
 """
 
+import datetime
 import io, json, os, re
 import numpy as np
 import pandas as pd
@@ -81,7 +82,7 @@ def fmt_value(metric, v):
     if metric in PCT_METRICS: return f"{v*100:.2f}%"
     if metric == "첫구매 거래액": return f"{v/1e6:,.1f}백만원"
     if metric == "첫구매 객단가": return f"{v:,.0f}원"
-    return f"{v:,.0f}명"
+    return f"{int(v):,}명"  # 명 단위(고객수 등)는 소수점 버림
 
 def fmt_delta(metric, cur, prev):
     """전년비/전주비 문자열: 비율 지표는 %p 차이, 그 외 증감율"""
@@ -176,6 +177,16 @@ def period_parts(gran, year, plabel):
     return f"{mo}/{dd}", year * 10000 + mo * 100 + dd
 
 def parse_file(name, data: bytes) -> pd.DataFrame:
+    # 누적 데이터 백업 CSV(long 포맷) 재업로드 시 그대로 복원
+    if name.lower().endswith(".csv"):
+        first = data[:400].decode("utf-8", "ignore").splitlines()[0] if data else ""
+        if "gran" in first and "metric" in first and "sortkey" in first:
+            try:
+                d = pd.read_csv(io.BytesIO(data), encoding="utf-8-sig")
+                if set(STORE_COLS) <= set(d.columns):
+                    return d[STORE_COLS]
+            except Exception:
+                pass
     kind, gran, file_metric = detect_file(name)
     try:
         rows = read_grid(name, data)
@@ -295,9 +306,35 @@ def combine_files(file_tuples) -> pd.DataFrame:
     frames = [f for f in frames if not f.empty]
     if not frames: return pd.DataFrame()
     df = pd.concat(frames, ignore_index=True)
-    df = df.drop_duplicates(subset=["gran", "metric", "segment", "year", "label", "close"],
-                            keep="last")
+    df = df.drop_duplicates(subset=KEY_COLS, keep="last")
     return df
+
+# ══════════════════════════════════════════════════════
+# 데이터 누적 저장소 — 업로드할 때마다 병합·저장
+# ══════════════════════════════════════════════════════
+DATA_STORE = "wr_data_store.csv"
+KEY_COLS = ["gran", "metric", "segment", "year", "label", "close"]
+STORE_COLS = KEY_COLS + ["sortkey", "value"]
+
+def load_store() -> pd.DataFrame:
+    if os.path.exists(DATA_STORE):
+        try:
+            d = pd.read_csv(DATA_STORE, encoding="utf-8-sig")
+            if set(STORE_COLS) <= set(d.columns):
+                return d[STORE_COLS]
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+def save_store(df: pd.DataFrame):
+    df[STORE_COLS].to_csv(DATA_STORE, index=False, encoding="utf-8-sig")
+
+def merge_store(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+    """기존 누적 + 신규 업로드 병합 — 같은 (단위·지표·채널·기간) 키는 신규 우선"""
+    if old is None or old.empty: return new
+    if new is None or new.empty: return old
+    return (pd.concat([old[STORE_COLS], new[STORE_COLS]], ignore_index=True)
+            .drop_duplicates(subset=KEY_COLS, keep="last"))
 
 # ══════════════════════════════════════════════════════
 # 조회 헬퍼 — mtd(당월/당주 일마감) vs final 선택
@@ -357,13 +394,23 @@ def save_insights(d):
     with open(INSIGHT_FILE, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
 
-def report_text_block(key, title, default=""):
-    """편집 가능한 보고란 텍스트 박스 (JSON 저장)"""
+def report_text_block(key, title, default="", regen=None):
+    """편집 가능한 보고란 텍스트 박스 (JSON 저장).
+    regen 텍스트를 주면 '자동 생성' 버튼으로 데이터 기반 문구를 다시 채울 수 있다."""
     store = st.session_state.wr_texts
-    if key not in store: store[key] = default
+    if not store.get(key): store[key] = default
     ekey = f"__wr_edit_{key}__"
     if ekey not in st.session_state: st.session_state[ekey] = False
-    st.markdown(f"**{title}**")
+    if regen is not None:
+        h1, h2 = st.columns([7, 2])
+        h1.markdown(f"**{title}**")
+        if h2.button("🔄 자동 생성", key=f"wr_regen_{key}", use_container_width=True,
+                     help="기준 주차 실적으로 문구를 다시 생성합니다 (기존 내용 대체)"):
+            store[key] = regen
+            all_d = load_insights(); all_d[key] = regen; save_insights(all_d)
+            st.session_state[ekey] = False; st.rerun()
+    else:
+        st.markdown(f"**{title}**")
     if st.session_state[ekey]:
         c1, c2 = st.columns([10, 1])
         new = c1.text_area("", store[key], key=f"wr_ta_{key}", height=160,
@@ -603,14 +650,28 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
 # ══════════════════════════════════════════════════════
 # 자동 보고 초안
 # ══════════════════════════════════════════════════════
-def auto_draft(df, ref_year, ref_month):
+def auto_draft(df, ref_year, ref_month, ref_week=None):
+    """기준 주차(없으면 기준 월) 실적으로 보고 문구 자동 생성"""
     lines = []
     for met in METRICS7:
-        cur = pick(df, "월", met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
-        prv = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
-        d = fmt_delta(met, cur, prv)
-        if isinstance(cur, float) and np.isnan(cur): continue
-        lines.append(f" - {met} — {fmt_value(met, cur)}" + (f", 전년비 {d}" if d else ""))
+        if ref_week:
+            cur = pick(df, "주", met, "*TOTAL", ref_year, ref_week, "mtd")
+            if isinstance(cur, float) and np.isnan(cur): continue
+            py, plb = prev_label(df, "주", ref_year, ref_week)
+            prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
+            yoy = pick(df, "주", met, "*TOTAL", ref_year - 1, ref_week, "final")
+            parts = [f" - {met} — {fmt_value(met, cur)}"]
+            d_w = fmt_delta(met, cur, prv)
+            d_y = fmt_delta(met, cur, yoy)
+            if d_w: parts.append(f"전주비 {d_w}")
+            if d_y: parts.append(f"전년비 {d_y}")
+            lines.append(", ".join(parts))
+        else:
+            cur = pick(df, "월", met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
+            prv = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
+            if isinstance(cur, float) and np.isnan(cur): continue
+            d = fmt_delta(met, cur, prv)
+            lines.append(f" - {met} — {fmt_value(met, cur)}" + (f", 전년비 {d}" if d else ""))
     return "\n".join(lines)
 
 # ══════════════════════════════════════════════════════
@@ -632,20 +693,27 @@ def main():
                  "04. 채널별 실적", "05. 통합 데이터·다운로드"]
         page = st.radio("페이지", PAGES, key="wr_page")
 
-    if not files:
-        st.info("👈 사이드바에서 주간 폴더의 엑셀/CSV 파일들을 업로드해주세요.")
+    stored = load_store()
+    expanded = expand_uploads(files) if files else []
+    df_new = combine_files(tuple(expanded)) if expanded else pd.DataFrame()
+
+    if files and df_new.empty and stored.empty:
+        st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
+        st.stop()
+    if not files and stored.empty:
+        st.info("👈 사이드바에서 주간 폴더의 엑셀/CSV/ZIP 파일들을 업로드해주세요.")
         st.markdown("""
 - **마스터**: `전체관점 - 일자별/주별/월별 실적 (기본)`
 - **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
-- 파일명으로 **일/주/월 단위와 지표를 자동 감지**합니다.
+- 주간 폴더를 **zip으로 묶어 통째로** 올려도 됩니다. 파일 내용으로 일/주/월 단위와 지표를 자동 감지합니다.
+- 업로드한 데이터는 **자동으로 누적 저장**되어, 다음에 새 주차 파일만 올려도 과거 데이터와 합쳐집니다.
 """)
         st.stop()
 
-    expanded = expand_uploads(files)
-    df = combine_files(tuple(expanded))
-    if df.empty:
-        st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
-        st.stop()
+    # 누적 저장소와 병합 — 새 데이터가 있으면 저장
+    df = merge_store(stored, df_new)
+    if not df_new.empty:
+        save_store(df)
 
     # ── 인식 결과 + 필터
     years_all = sorted(df["year"].dropna().unique().astype(int))
@@ -653,7 +721,8 @@ def main():
     ref_year_default = ly or years_all[-1]
     with st.sidebar:
         st.markdown("---")
-        st.caption(f"인식된 파일 {len(expanded)}개 · 지표 {df['metric'].nunique()}종 · "
+        src = f"인식된 파일 {len(expanded)}개" if expanded else "누적 데이터 사용 중"
+        st.caption(f"{src} · 지표 {df['metric'].nunique()}종 · "
                    f"{years_all[0]}–{years_all[-1]}년")
         st.markdown("**기준 기간**")
         ref_year = st.selectbox("기준 연도", years_all[::-1],
@@ -665,12 +734,19 @@ def main():
                        [["label", "sortkey"]].drop_duplicates()
                        .sort_values("sortkey")["label"].tolist())
         if weeks_avail:
-            # 기본값은 직전 완료 주차 (최신 주차는 보통 진행 중)
-            default_week = weeks_avail[-2] if len(weeks_avail) >= 2 else weeks_avail[-1]
+            # 최신 주차가 진행 중(일마감 데이터이거나 오늘이 속한 주차)이면 직전 주를 기본값으로
+            latest_w = weeks_avail[-1]
+            today = datetime.date.today()
+            cur_week_lbl = f"{today.month:02d}월 {(today.day - 1) // 7 + 1}주차"
+            is_partial = not df[(df["gran"] == "주") & (df["year"] == ref_year) &
+                                (df["label"] == latest_w) & (df["close"] == "mtd")].empty
+            in_progress = is_partial or (ref_year == today.year and latest_w == cur_week_lbl)
+            default_week = (weeks_avail[-2] if in_progress and len(weeks_avail) >= 2
+                            else latest_w)
             ref_week = st.selectbox("기준 주차", weeks_avail[::-1],
                                     index=weeks_avail[::-1].index(default_week),
                                     key="wr_refw",
-                                    help="주간보고 대상 주차. 기본값은 최신 직전(완료) 주차입니다.")
+                                    help="주간보고 대상 주차. 최신 주차가 진행 중이면 직전 완료 주차가 기본값입니다.")
         else:
             ref_week = None
         st.markdown("**차트 연도**")
@@ -679,6 +755,19 @@ def main():
         st.markdown("**채널**")
         ch_sel = st.multiselect("채널 선택", CHANNELS, default=CHANNELS, key="wr_ch")
         if not chart_years: chart_years = default_yrs
+
+        st.markdown("---")
+        st.markdown("**누적 데이터**")
+        new_cnt = len(df_new) if not df_new.empty else 0
+        st.caption(f"총 {len(df):,}행 저장됨" + (f" (이번 업로드 {new_cnt:,}행 병합)" if new_cnt else ""))
+        st.download_button("💾 누적 데이터 백업 (CSV)",
+                           df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
+                           "wr_data_store.csv", "text/csv", use_container_width=True,
+                           help="앱 재배포 시 누적 데이터가 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 업로드하면 복원됩니다.")
+        if st.button("🗑 누적 데이터 초기화", key="wr_clear_store", use_container_width=True):
+            if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
+            st.cache_data.clear()
+            st.rerun()
 
     texts = st.session_state.wr_texts
 
@@ -697,9 +786,16 @@ def main():
             for col, met in zip(cols, kpi_metrics):
                 cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
                 prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-                d = fmt_delta(met, cur, prv)
+                yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
+                d_w = fmt_delta(met, cur, prv)
+                d_y = fmt_delta(met, cur, yoy)
                 col.metric(f"{met} ({wlabel})", fmt_value(met, cur),
-                           delta=f"{d} (전주비)" if d else None)
+                           delta=f"{d_w} (전주비)" if d_w else None)
+                if d_y:
+                    up = not d_y.startswith("-")
+                    color, arrow = ("#16a34a", "▲") if up else ("#dc2626", "▼")
+                    col.markdown(f"<span style='font-size:12px;color:{color}'>"
+                                 f"{arrow} {d_y} (전년비)</span>", unsafe_allow_html=True)
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 실적 요약 YoY 표
@@ -711,10 +807,11 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 보고란
+        draft = auto_draft(df, ref_year, ref_month, ref_week=wlabel)
         cL, cR = st.columns(2)
         with cL:
             report_text_block("wr_metrics_summary", "전주 주요 지표 현황",
-                              default=auto_draft(df, ref_year, ref_month))
+                              default=draft, regen=draft)
         with cR:
             report_text_block("wr_exec_summary", "금주 집행 내용 요약")
 
