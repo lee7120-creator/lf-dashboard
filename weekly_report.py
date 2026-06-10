@@ -100,21 +100,31 @@ YEAR_RE   = re.compile(r"^(20\d{2})(\.0)?$")
 PERIOD_RE = re.compile(r"^\s*(\d{1,2}\s*월(\s*\d\s*주차)?|\d{1,2}/\d{1,2})\s*$")
 
 def detect_file(name):
-    """파일명으로 (kind, granularity, metric) 자동 감지"""
+    """파일명에서 (kind, granularity 힌트, metric) 감지.
+    단위(일/주/월)와 마스터 여부는 parse_file에서 내용으로 최종 판별하므로 여기선 힌트만."""
     base = os.path.basename(name)
     base = re.sub(r"\.(xlsx|xls|csv)$", "", base, flags=re.I)
-    if "전체관점" in base:
-        gran = "일" if "일자별" in base else ("주" if "주별" in base else "월")
+    key = base.replace(" ", "")
+    # 단위 힌트: 일자별/주별/월별 키워드 또는 일_/주_/월_ 접두사
+    gran = None
+    if "일자별" in key or "데일리" in key: gran = "일"
+    elif "주별" in key or "주간" in key:   gran = "주"
+    elif "월별" in key or "월간" in key:   gran = "월"
+    else:
+        m = re.match(r"^(일|주|월)[_\s]", base)
+        if m: gran = m.group(1)
+    if "전체관점" in key or "마스터" in key:
         return "master", gran, None
+    # 지표 키워드는 파일명 어느 위치에 있어도 인식
+    for k, v in METRIC_FILE_MAP.items():
+        if k.replace(" ", "") in key:
+            return "metric", gran, v
+    # 접두사형(월_xxx)인데 모르는 지표면 정리된 이름 그대로 사용
     m = re.match(r"^(일|주|월)[_\s]+(.+)$", base)
     if m:
-        gran = m.group(1)
-        rest = re.sub(r"\(.*?\)", "", m.group(2)).strip().replace(" ", "")
-        for k, v in METRIC_FILE_MAP.items():
-            if rest.startswith(k.replace(" ", "")):
-                return "metric", gran, v
-        return "metric", gran, rest or "기타"
-    return None, None, None
+        rest = re.sub(r"\(.*?\)", "", m.group(2)).strip()
+        return "metric", m.group(1), rest or "기타"
+    return None, gran, None
 
 def _decode_text(data: bytes) -> str:
     for enc in ("utf-16", "utf-8-sig", "cp949", "utf-8"):
@@ -167,8 +177,10 @@ def period_parts(gran, year, plabel):
 
 def parse_file(name, data: bytes) -> pd.DataFrame:
     kind, gran, file_metric = detect_file(name)
-    if kind is None: return pd.DataFrame()
-    rows = read_grid(name, data)
+    try:
+        rows = read_grid(name, data)
+    except Exception:
+        return pd.DataFrame()
     if not rows: return pd.DataFrame()
 
     # 헤더 행 탐색 (앞 6행): 연도 / 기간라벨 / 마감구분
@@ -183,6 +195,18 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
         if close_row is None and nC >= 2: close_row = ri
     if period_row is None: return pd.DataFrame()
     data_start = max(r for r in (year_row, period_row, close_row) if r is not None) + 1
+
+    # ── 내용 기반 최종 판별 (파일명은 힌트일 뿐)
+    # 단위: 기간 라벨 형태가 결정 (N월 N주차 → 주, N/N → 일, N월 → 월)
+    plabels = [_cell(c) for c in rows[period_row] if PERIOD_RE.match(_cell(c))]
+    if any("주차" in p for p in plabels):  gran = "주"
+    elif any("/" in p for p in plabels):   gran = "일"
+    else:                                   gran = "월"
+    # 마스터 여부: 헤더에 '구분01'이 있으면 마스터(전체관점) 구조
+    if any("구분01" in _cell(c) for ri in range(data_start) for c in rows[ri]):
+        kind = "master"
+    if kind is None or (kind == "metric" and not file_metric):
+        return pd.DataFrame()
 
     ncols = max(len(r) for r in rows)
     def cell(ri, ci):
@@ -230,6 +254,39 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
                 "value": _num(rows[ri][ci] if ci < len(rows[ri]) else None),
             })
     return pd.DataFrame(records)
+
+def _zip_entry_name(info):
+    """zip 내 한글 파일명 복원 (UTF-8 플래그 없으면 cp437→cp949 재해석)"""
+    if info.flag_bits & 0x800:
+        return info.filename
+    for enc in ("cp949", "utf-8", "euc-kr"):
+        try: return info.filename.encode("cp437").decode(enc)
+        except (UnicodeDecodeError, UnicodeEncodeError): pass
+    return info.filename
+
+def expand_uploads(uploads):
+    """업로드 목록 → (이름, bytes) 목록. zip은 풀어서 내부 엑셀/CSV를 꺼낸다"""
+    out = []
+    for f in uploads:
+        data = f.getvalue()
+        if f.name.lower().endswith(".zip"):
+            import zipfile
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(data))
+            except zipfile.BadZipFile:
+                continue
+            with zf:
+                for info in zf.infolist():
+                    if info.is_dir(): continue
+                    name = _zip_entry_name(info)
+                    if "__MACOSX" in name: continue
+                    base = os.path.basename(name)
+                    if base.startswith((".", "~")): continue
+                    if not base.lower().endswith((".xlsx", ".xls", ".csv")): continue
+                    out.append((base, zf.read(info)))
+        else:
+            out.append((f.name, data))
+    return out
 
 @st.cache_data(show_spinner=False)
 def combine_files(file_tuples) -> pd.DataFrame:
@@ -400,16 +457,18 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
         x_all = labels_sorted(df, gran, years)
     fig = go.Figure()
     for i, y in enumerate(sorted(years)):
-        s = series_by_label(df, gran, metric, seg, y, prefer="final")
-        s = s.reindex(x_all)
+        # 연도마다 없는 주차(5주차 등)는 건너뛰고 선을 잇는다
+        s = series_by_label(df, gran, metric, seg, y, prefer="final").reindex(x_all).dropna()
         fig.add_trace(go.Scatter(
-            x=x_all, y=(s / div).tolist(), mode="lines+markers", name=str(y),
+            x=s.index.tolist(), y=(s / div).tolist(), mode="lines+markers", name=str(y),
             line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
-            marker=dict(size=5), connectgaps=False,
+            marker=dict(size=5),
         ))
     gname = "월별" if gran == "월" else "주차별"
     ly = base_layout(h, ysuffix=unit if unit == "%" else "",
                      title=f"{metric} {gname} 추이 ({unit})")
+    ly["xaxis"]["categoryorder"] = "array"
+    ly["xaxis"]["categoryarray"] = x_all
     if gran == "주": ly["xaxis"]["tickangle"] = -45; ly["xaxis"]["nticks"] = 20
     fig.update_layout(**ly)
     return fig
@@ -564,9 +623,10 @@ def main():
     with st.sidebar:
         st.markdown("## 📋 주간보고 통합")
         files = st.file_uploader(
-            "원천 엑셀/CSV 업로드 (복수 선택)",
-            type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="wr_up",
-            help="전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 한 번에 올리세요.")
+            "원천 엑셀/CSV/ZIP 업로드 (복수 선택)",
+            type=["xlsx", "xls", "csv", "zip"], accept_multiple_files=True, key="wr_up",
+            help="주간 폴더를 zip으로 묶어 통째로 올려도 됩니다. "
+                 "전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동 인식합니다.")
         st.markdown("---")
         PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
                  "04. 채널별 실적", "05. 통합 데이터·다운로드"]
@@ -581,7 +641,8 @@ def main():
 """)
         st.stop()
 
-    df = combine_files(tuple((f.name, f.getvalue()) for f in files))
+    expanded = expand_uploads(files)
+    df = combine_files(tuple(expanded))
     if df.empty:
         st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
         st.stop()
@@ -592,7 +653,7 @@ def main():
     ref_year_default = ly or years_all[-1]
     with st.sidebar:
         st.markdown("---")
-        st.caption(f"인식된 파일 {len(files)}개 · 지표 {df['metric'].nunique()}종 · "
+        st.caption(f"인식된 파일 {len(expanded)}개 · 지표 {df['metric'].nunique()}종 · "
                    f"{years_all[0]}–{years_all[-1]}년")
         st.markdown("**기준 기간**")
         ref_year = st.selectbox("기준 연도", years_all[::-1],
@@ -733,12 +794,12 @@ def main():
         unit, div = METRIC_UNIT.get(met, ("", 1))
         if met in PCT_METRICS: div, unit = 0.01, "%"
         fig = go.Figure()
+        x = [month_label(i) for i in range(1, 13)]
         for seg in [c for c in CHANNELS if c in ch_sel]:
-            s = series_by_label(df, "월", met, seg, ref_year)
-            if s.dropna().empty: continue
-            x = [month_label(i) for i in range(1, 13)]
+            s = series_by_label(df, "월", met, seg, ref_year).reindex(x).dropna()
+            if s.empty: continue
             fig.add_trace(go.Scatter(
-                x=x, y=(s.reindex(x) / div).tolist(), mode="lines+markers", name=seg,
+                x=s.index.tolist(), y=(s / div).tolist(), mode="lines+markers", name=seg,
                 line=dict(color=clr(CHANNEL_PAL.get(seg, "blue")), width=1.8),
                 marker=dict(size=4)))
         ly = base_layout(340, ysuffix=unit if unit == "%" else "",
