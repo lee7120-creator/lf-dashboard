@@ -1,0 +1,782 @@
+"""주간보고 — 첫구매 통합 실적 대시보드
+여러 원천 엑셀(전체관점 마스터 + 지표별 파일)을 업로드하면 하나의 통합 뷰로 종합하고,
+전년(YoY)·전주(WoW) 증감현황과 보고란을 갖춘 주간보고 화면을 만든다.
+통합 결과는 (월/주/첫구매_요약 + 차트) 엑셀 워크북으로 다운로드할 수 있다.
+"""
+
+import io, json, os, re
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+# ══════════════════════════════════════════════════════
+# CONFIG
+# ══════════════════════════════════════════════════════
+st.set_page_config(page_title="주간보고 — 첫구매 통합 실적", page_icon="📋",
+                   layout="wide", initial_sidebar_state="expanded")
+
+INSIGHT_FILE = "wr_insights.json"
+
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"]{background:#f8f9fc}
+[data-testid="stSidebar"]{background:#ffffff;border-right:1px solid #e2e8f0}
+[data-testid="stMetric"]{background:#ffffff;border-radius:8px;padding:12px 16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+[data-testid="stMetricLabel"]{color:#64748b!important;font-size:12px!important}
+[data-testid="stMetricValue"]{color:#1e293b!important;font-size:20px!important}
+.sdiv{border-top:1px solid #e2e8f0;margin:22px 0}
+.report-box{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;line-height:1.7;background:#ffffff;white-space:pre-wrap}
+</style>
+""", unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════
+# 색상 팔레트 (기존 first_purchase 와 동일 계열)
+# ══════════════════════════════════════════════════════
+PALETTE = {
+    "blue":   ("rgba(79,143,255,1)",  "rgba(79,143,255,0.15)"),
+    "red":    ("rgba(245,101,101,1)", "rgba(245,101,101,0.15)"),
+    "green":  ("rgba(72,187,120,1)",  "rgba(72,187,120,0.15)"),
+    "amber":  ("rgba(237,137,54,1)",  "rgba(237,137,54,0.15)"),
+    "purple": ("rgba(159,122,234,1)", "rgba(159,122,234,0.15)"),
+    "teal":   ("rgba(56,178,172,1)",  "rgba(56,178,172,0.15)"),
+    "orange": ("rgba(249,115,22,1)",  "rgba(249,115,22,0.15)"),
+    "slate":  ("rgba(100,116,139,1)", "rgba(100,116,139,0.15)"),
+}
+def clr(n): return PALETTE.get(n, PALETTE["blue"])[0]
+def cbg(n): return PALETTE.get(n, PALETTE["blue"])[1]
+
+CHANNEL_PAL = {
+    "직접": "blue", "광고": "amber", "EP": "green", "PUSH": "purple",
+    "제휴": "red", "브랜드광고": "teal", "미디어커머스": "orange", "*TOTAL": "slate",
+}
+CHANNELS = ["직접", "광고", "EP", "PUSH", "제휴", "브랜드광고", "미디어커머스"]
+YEAR_PAL = ["slate", "blue", "red", "green", "purple", "amber", "teal"]
+
+# ══════════════════════════════════════════════════════
+# 지표 정의
+# ══════════════════════════════════════════════════════
+METRICS7 = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가",
+            "비회원트래픽", "가입자수", "가입율", "당일가입CR"]
+PCT_METRICS = {"가입율", "당일가입CR", "유입율", "CR", "거래액비중", "고객비중"}
+# 마스터 파일 지표 → 보고서 지표 매핑
+MASTER_MAP = {"일평균거래액": "첫구매 거래액", "일평균고객수": "첫구매 고객수",
+              "일평균객단가": "첫구매 객단가"}
+# 지표별 파일명 → 보고서 지표 매핑 (공백 제거 후 매칭)
+METRIC_FILE_MAP = {
+    "가입율": "가입율", "가입률": "가입율",
+    "가입자수": "가입자수",
+    "당일가입첫구매율": "당일가입CR", "당일가입CR": "당일가입CR",
+    "비회원트래픽": "비회원트래픽",
+}
+
+METRIC_UNIT = {
+    "첫구매 거래액": ("백만원", 1e6), "첫구매 고객수": ("명", 1),
+    "첫구매 객단가": ("원", 1), "비회원트래픽": ("명", 1),
+    "가입자수": ("명", 1), "가입율": ("%", 1), "당일가입CR": ("%", 1),
+}
+
+def fmt_value(metric, v):
+    if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
+    if metric in PCT_METRICS: return f"{v*100:.2f}%"
+    if metric == "첫구매 거래액": return f"{v/1e6:,.1f}백만원"
+    if metric == "첫구매 객단가": return f"{v:,.0f}원"
+    return f"{v:,.0f}명"
+
+def fmt_delta(metric, cur, prev):
+    """전년비/전주비 문자열: 비율 지표는 %p 차이, 그 외 증감율"""
+    if cur is None or prev is None: return None
+    if isinstance(cur, float) and np.isnan(cur): return None
+    if isinstance(prev, float) and np.isnan(prev): return None
+    if metric in PCT_METRICS:
+        return f"{(cur-prev)*100:+.2f}%p"
+    if prev == 0: return None
+    return f"{(cur-prev)/prev*100:+.1f}%"
+
+# ══════════════════════════════════════════════════════
+# 파싱 — 원천 파일 → 통합 long DataFrame
+# ══════════════════════════════════════════════════════
+YEAR_RE   = re.compile(r"^(20\d{2})(\.0)?$")
+PERIOD_RE = re.compile(r"^\s*(\d{1,2}\s*월(\s*\d\s*주차)?|\d{1,2}/\d{1,2})\s*$")
+
+def detect_file(name):
+    """파일명으로 (kind, granularity, metric) 자동 감지"""
+    base = os.path.basename(name)
+    base = re.sub(r"\.(xlsx|xls|csv)$", "", base, flags=re.I)
+    if "전체관점" in base:
+        gran = "일" if "일자별" in base else ("주" if "주별" in base else "월")
+        return "master", gran, None
+    m = re.match(r"^(일|주|월)[_\s]+(.+)$", base)
+    if m:
+        gran = m.group(1)
+        rest = re.sub(r"\(.*?\)", "", m.group(2)).strip().replace(" ", "")
+        for k, v in METRIC_FILE_MAP.items():
+            if rest.startswith(k.replace(" ", "")):
+                return "metric", gran, v
+        return "metric", gran, rest or "기타"
+    return None, None, None
+
+def _decode_text(data: bytes) -> str:
+    for enc in ("utf-16", "utf-8-sig", "cp949", "utf-8"):
+        try: return data.decode(enc)
+        except (UnicodeDecodeError, UnicodeError): pass
+    return data.decode("utf-8", "replace")
+
+def read_grid(name, data: bytes):
+    """csv(UTF-16/탭 포함)·xlsx 모두 2차원 셀 그리드로 읽는다"""
+    if name.lower().endswith((".csv", ".txt", ".tsv")):
+        text = _decode_text(data)
+        return [line.split("\t") for line in text.splitlines()]
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    ws = wb.worksheets[0]
+    return [list(row) for row in ws.iter_rows(values_only=True)]
+
+def _cell(v):
+    return "" if v is None else str(v).strip()
+
+def _num(v):
+    """셀 값 → float (콤마·% 처리, %는 비율로 변환)"""
+    if v is None: return np.nan
+    if isinstance(v, (int, float)): return float(v)
+    s = str(v).strip().replace(",", "")
+    if s in ("", "-", "–"): return np.nan
+    pct = s.endswith("%")
+    if pct: s = s[:-1]
+    try: f = float(s)
+    except ValueError: return np.nan
+    return f / 100 if pct else f
+
+def period_parts(gran, year, plabel):
+    """기간 라벨 → (표준라벨, 정렬키)"""
+    p = plabel.replace(" ", "")
+    if gran == "월":
+        m = re.match(r"(\d{1,2})월", p)
+        if not m: return None
+        mo = int(m.group(1))
+        return f"{mo}월", year * 10000 + mo * 100
+    if gran == "주":
+        m = re.match(r"(\d{1,2})월(\d)주차", p)
+        if not m: return None
+        mo, wk = int(m.group(1)), int(m.group(2))
+        return f"{mo:02d}월 {wk}주차", year * 10000 + mo * 100 + wk
+    m = re.match(r"(\d{1,2})/(\d{1,2})", p)
+    if not m: return None
+    mo, dd = int(m.group(1)), int(m.group(2))
+    return f"{mo}/{dd}", year * 10000 + mo * 100 + dd
+
+def parse_file(name, data: bytes) -> pd.DataFrame:
+    kind, gran, file_metric = detect_file(name)
+    if kind is None: return pd.DataFrame()
+    rows = read_grid(name, data)
+    if not rows: return pd.DataFrame()
+
+    # 헤더 행 탐색 (앞 6행): 연도 / 기간라벨 / 마감구분
+    year_row = period_row = close_row = None
+    for ri in range(min(6, len(rows))):
+        cells = [_cell(c) for c in rows[ri]]
+        nY = sum(1 for c in cells if YEAR_RE.match(c))
+        nP = sum(1 for c in cells if PERIOD_RE.match(c))
+        nC = sum(1 for c in cells if "마감" in c)
+        if year_row is None and nY >= 1 and nP == 0: year_row = ri
+        if period_row is None and nP >= 2: period_row = ri
+        if close_row is None and nC >= 2: close_row = ri
+    if period_row is None: return pd.DataFrame()
+    data_start = max(r for r in (year_row, period_row, close_row) if r is not None) + 1
+
+    ncols = max(len(r) for r in rows)
+    def cell(ri, ci):
+        return _cell(rows[ri][ci]) if ri is not None and ci < len(rows[ri]) else ""
+
+    # 컬럼별 연도(좌측 ffill)·기간·마감
+    col_year, cur_y = {}, None
+    for ci in range(ncols):
+        m = YEAR_RE.match(cell(year_row, ci)) if year_row is not None else None
+        if m: cur_y = int(m.group(1))
+        col_year[ci] = cur_y
+    # 기간 라벨이 빈 셀(병합)인 일마감/MTD 컬럼은 직전 라벨을 이어받는다
+    data_cols, col_label, last_lbl = [], {}, None
+    for ci in range(ncols):
+        lbl = cell(period_row, ci)
+        if PERIOD_RE.match(lbl) and col_year[ci]:
+            last_lbl = lbl
+            col_label[ci] = lbl
+            data_cols.append(ci)
+        elif (close_row is not None and "마감" in cell(close_row, ci)
+              and last_lbl and col_year[ci]):
+            col_label[ci] = last_lbl
+            data_cols.append(ci)
+
+    seg_col = 1 if kind == "master" else 0
+    records, cur_metric = [], None
+    for ri in range(data_start, len(rows)):
+        if kind == "master":
+            m0 = cell(ri, 0)
+            if m0 and m0 not in ("-", "–"): cur_metric = m0
+            metric = MASTER_MAP.get(cur_metric, cur_metric)
+        else:
+            metric = file_metric
+        seg = cell(ri, seg_col)
+        if not seg or seg in ("-", "–") or metric is None: continue
+        for ci in data_cols:
+            pp = period_parts(gran, col_year[ci], col_label[ci])
+            if pp is None: continue
+            label, sortkey = pp
+            close = cell(close_row, ci) if close_row is not None else ""
+            records.append({
+                "gran": gran, "metric": metric, "segment": seg,
+                "year": col_year[ci], "label": label, "sortkey": sortkey,
+                "close": "mtd" if "일마감" in close and gran != "일" else "final",
+                "value": _num(rows[ri][ci] if ci < len(rows[ri]) else None),
+            })
+    return pd.DataFrame(records)
+
+@st.cache_data(show_spinner=False)
+def combine_files(file_tuples) -> pd.DataFrame:
+    """업로드 파일들 → 통합 long DF. 동일 키는 마지막 파일 우선"""
+    frames = [parse_file(n, b) for n, b in file_tuples]
+    frames = [f for f in frames if not f.empty]
+    if not frames: return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+    df = df.drop_duplicates(subset=["gran", "metric", "segment", "year", "label", "close"],
+                            keep="last")
+    return df
+
+# ══════════════════════════════════════════════════════
+# 조회 헬퍼 — mtd(당월/당주 일마감) vs final 선택
+# ══════════════════════════════════════════════════════
+def pick(df, gran, metric, seg, year, label, prefer="final"):
+    sub = df[(df["gran"] == gran) & (df["metric"] == metric) &
+             (df["segment"] == seg) & (df["year"] == year) & (df["label"] == label)]
+    if sub.empty: return np.nan
+    order = ["final", "mtd"] if prefer == "final" else ["mtd", "final"]
+    for c in order:
+        s = sub[sub["close"] == c]["value"].dropna()
+        if len(s): return s.iloc[-1]
+    return np.nan
+
+def series_by_label(df, gran, metric, seg, year, prefer="final"):
+    """한 연도의 기간라벨 → 값 Series (sortkey 순)"""
+    sub = df[(df["gran"] == gran) & (df["metric"] == metric) &
+             (df["segment"] == seg) & (df["year"] == year)].copy()
+    if sub.empty: return pd.Series(dtype=float)
+    pref = {"final": 0, "mtd": 1} if prefer == "final" else {"mtd": 0, "final": 1}
+    sub["_p"] = sub["close"].map(pref)
+    sub = sub.sort_values(["sortkey", "_p"]).drop_duplicates("label", keep="first")
+    return sub.set_index("label")["value"]
+
+def labels_sorted(df, gran, years=None):
+    sub = df[df["gran"] == gran]
+    if years is not None: sub = sub[sub["year"].isin(years)]
+    return (sub[["label", "sortkey"]].assign(k=lambda d: d["sortkey"] % 10000)
+            .drop_duplicates("label").sort_values("k")["label"].tolist())
+
+def latest_period(df, gran):
+    """가장 최근 (year, label)"""
+    sub = df[(df["gran"] == gran) & df["value"].notna()]
+    if sub.empty: return None, None
+    row = sub.loc[sub["sortkey"].idxmax()]
+    return int(row["year"]), row["label"]
+
+def prev_label(df, gran, year, label):
+    """직전 기간 (연도 경계 포함)"""
+    sub = (df[(df["gran"] == gran) & df["value"].notna()]
+           [["year", "label", "sortkey"]].drop_duplicates().sort_values("sortkey"))
+    keys = sub[["year", "label"]].apply(tuple, axis=1).tolist()
+    try: i = keys.index((year, label))
+    except ValueError: return None, None
+    return keys[i - 1] if i > 0 else (None, None)
+
+# ══════════════════════════════════════════════════════
+# 보고란 영속화
+# ══════════════════════════════════════════════════════
+def load_insights():
+    if os.path.exists(INSIGHT_FILE):
+        with open(INSIGHT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_insights(d):
+    with open(INSIGHT_FILE, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+
+def report_text_block(key, title, default=""):
+    """편집 가능한 보고란 텍스트 박스 (JSON 저장)"""
+    store = st.session_state.wr_texts
+    if key not in store: store[key] = default
+    ekey = f"__wr_edit_{key}__"
+    if ekey not in st.session_state: st.session_state[ekey] = False
+    st.markdown(f"**{title}**")
+    if st.session_state[ekey]:
+        c1, c2 = st.columns([10, 1])
+        new = c1.text_area("", store[key], key=f"wr_ta_{key}", height=160,
+                           label_visibility="collapsed")
+        if c2.button("저장", key=f"wr_save_{key}", use_container_width=True):
+            store[key] = new
+            all_d = load_insights(); all_d[key] = new; save_insights(all_d)
+            st.session_state[ekey] = False; st.rerun()
+    else:
+        c1, c2 = st.columns([20, 1])
+        c1.markdown(f"<div class='report-box'>{store[key] or '내용을 입력하세요.'}</div>",
+                    unsafe_allow_html=True)
+        if c2.button("편집", key=f"wr_edit_{key}"):
+            st.session_state[ekey] = True; st.rerun()
+    return store[key]
+
+# ══════════════════════════════════════════════════════
+# YoY 요약표 / 추이표 빌더
+# ══════════════════════════════════════════════════════
+def month_label(n): return f"{n}월"
+
+def yoy_summary_table(df, ref_year, ref_month, metrics):
+    """참고본 '실적 요약' 표: 전월·당월 × (전년, 당년, 전년비)"""
+    rows = []
+    pm_y, pm_m = (ref_year, ref_month - 1) if ref_month > 1 else (ref_year - 1, 12)
+    cols = [f"{pm_y-1}년 {pm_m}월", f"{pm_y}년 {pm_m}월", "전년비(전월)",
+            f"{ref_year-1}년 {ref_month}월", f"{ref_year}년 {ref_month}월", "전년비(당월)"]
+    for met in metrics:
+        pm_prev = pick(df, "월", met, "*TOTAL", pm_y - 1, month_label(pm_m), "final")
+        pm_cur  = pick(df, "월", met, "*TOTAL", pm_y,     month_label(pm_m), "final")
+        cm_prev = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
+        cm_cur  = pick(df, "월", met, "*TOTAL", ref_year,     month_label(ref_month), "mtd")
+        rows.append({
+            "구분": met,
+            cols[0]: fmt_value(met, pm_prev), cols[1]: fmt_value(met, pm_cur),
+            cols[2]: fmt_delta(met, pm_cur, pm_prev) or "–",
+            cols[3]: fmt_value(met, cm_prev), cols[4]: fmt_value(met, cm_cur),
+            cols[5]: fmt_delta(met, cm_cur, cm_prev) or "–",
+        })
+    return pd.DataFrame(rows).set_index("구분"), (pm_y, pm_m)
+
+def trend_table(df, gran, metrics, years, seg="*TOTAL"):
+    """추이표: 행=지표, 열=(연도, 기간)"""
+    out, columns = {}, []
+    for y in years:
+        for lb in labels_sorted(df, gran, [y]):
+            sub = df[(df["gran"] == gran) & (df["year"] == y) & (df["label"] == lb) &
+                     df["value"].notna()]
+            if sub.empty: continue
+            columns.append((y, lb))
+    for met in metrics:
+        vals = []
+        for y, lb in columns:
+            vals.append(pick(df, gran, met, seg, y, lb, "final"))
+        out[met] = vals
+    tbl = pd.DataFrame(out, index=pd.MultiIndex.from_tuples(columns, names=["연도", "기간"])).T
+    return tbl
+
+def style_trend(tbl, metrics):
+    disp = tbl.copy()
+    for met in disp.index:
+        disp.loc[met] = [fmt_value(met, v) for v in disp.loc[met]]
+    return disp
+
+# ══════════════════════════════════════════════════════
+# YoY 라인차트 (Plotly)
+# ══════════════════════════════════════════════════════
+def base_layout(h=300, ysuffix="", title=""):
+    return dict(
+        paper_bgcolor="rgba(248,249,252,0)", plot_bgcolor="rgba(248,249,252,0)",
+        font=dict(color="#475569", size=11), margin=dict(l=10, r=10, t=40, b=10),
+        height=h, showlegend=True,
+        legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#64748b", size=10)),
+        title=dict(text=title, font=dict(color="#94a3b8", size=13)),
+        xaxis=dict(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
+                   tickfont=dict(color="#64748b", size=10)),
+        yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
+                   tickfont=dict(color="#64748b", size=10), ticksuffix=ysuffix),
+    )
+
+def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
+    unit, div = METRIC_UNIT.get(metric, ("", 1))
+    if metric in PCT_METRICS: div, unit = 0.01, "%"
+    if gran == "월":
+        x_all = [month_label(i) for i in range(1, 13)]
+    else:
+        x_all = labels_sorted(df, gran, years)
+    fig = go.Figure()
+    for i, y in enumerate(sorted(years)):
+        s = series_by_label(df, gran, metric, seg, y, prefer="final")
+        s = s.reindex(x_all)
+        fig.add_trace(go.Scatter(
+            x=x_all, y=(s / div).tolist(), mode="lines+markers", name=str(y),
+            line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
+            marker=dict(size=5), connectgaps=False,
+        ))
+    gname = "월별" if gran == "월" else "주차별"
+    ly = base_layout(h, ysuffix=unit if unit == "%" else "",
+                     title=f"{metric} {gname} 추이 ({unit})")
+    if gran == "주": ly["xaxis"]["tickangle"] = -45; ly["xaxis"]["nticks"] = 20
+    fig.update_layout(**ly)
+    return fig
+
+# ══════════════════════════════════════════════════════
+# 엑셀 워크북 내보내기 (월/주/첫구매_요약 + 차트)
+# ══════════════════════════════════════════════════════
+def build_workbook(df, texts, ref_year, ref_month, chart_years):
+    from openpyxl import Workbook
+    from openpyxl.chart import LineChart, Reference
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    head_font = Font(bold=True, size=11)
+    head_fill = PatternFill("solid", fgColor="EEF3FA")
+    title_font = Font(bold=True, size=13)
+
+    # ── 데이터 시트 (월/주): 지표 블록 스택
+    extra_metrics = [m for m in df["metric"].unique() if m not in METRICS7]
+    for gran, sheet in (("월", "월"), ("주", "주")):
+        ws = wb.create_sheet(sheet)
+        sub_g = df[df["gran"] == gran]
+        if sub_g.empty: continue
+        cols = (sub_g[["year", "label", "sortkey"]].drop_duplicates()
+                .sort_values("sortkey")[["year", "label"]].apply(tuple, axis=1).tolist())
+        r = 1
+        for met in METRICS7 + sorted(extra_metrics):
+            sub_m = sub_g[sub_g["metric"] == met]
+            if sub_m.empty: continue
+            ws.cell(r, 1, met).font = title_font
+            for j, (y, lb) in enumerate(cols):
+                ws.cell(r, 2 + j, y).font = head_font
+                ws.cell(r + 1, 2 + j, lb).font = head_font
+                ws.cell(r + 1, 2 + j).fill = head_fill
+            segs = ["*TOTAL"] + [s for s in CHANNELS if s in set(sub_m["segment"])]
+            for i, seg in enumerate(segs):
+                ws.cell(r + 2 + i, 1, seg).font = head_font
+                for j, (y, lb) in enumerate(cols):
+                    v = pick(df, gran, met, seg, y, lb, "final")
+                    c = ws.cell(r + 2 + i, 2 + j)
+                    if not (isinstance(v, float) and np.isnan(v)):
+                        c.value = v
+                        c.number_format = "0.00%" if met in PCT_METRICS else "#,##0"
+            r += 2 + len(segs) + 2
+
+    # ── 요약 시트
+    ws = wb.create_sheet("첫구매_요약", 0)
+    wb.remove(wb["Sheet"])
+    r = 1
+    ws.cell(r, 1, f"첫구매 주간보고 — {ref_year}년 {ref_month}월 기준").font = Font(bold=True, size=15)
+    r += 2
+
+    # 실적 요약 YoY 표
+    ws.cell(r, 1, "실적 요약 (일평균)").font = title_font; r += 1
+    tbl, _ = yoy_summary_table(df, ref_year, ref_month, METRICS7)
+    ws.cell(r, 1, "구분").font = head_font
+    for j, cname in enumerate(tbl.columns):
+        c = ws.cell(r, 2 + j, cname); c.font = head_font; c.fill = head_fill
+    for i, met in enumerate(tbl.index):
+        ws.cell(r + 1 + i, 1, met).font = head_font
+        for j, cname in enumerate(tbl.columns):
+            ws.cell(r + 1 + i, 2 + j, tbl.loc[met, cname])
+    r += len(tbl) + 3
+
+    # 보고란
+    ws.cell(r, 1, "전주 주요 지표 현황").font = title_font
+    ws.cell(r, 8, "금주 집행 내용 요약").font = title_font
+    c1 = ws.cell(r + 1, 1, texts.get("wr_metrics_summary", ""))
+    c2 = ws.cell(r + 1, 8, texts.get("wr_exec_summary", ""))
+    for c in (c1, c2): c.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.merge_cells(start_row=r + 1, start_column=1, end_row=r + 8, end_column=6)
+    ws.merge_cells(start_row=r + 1, start_column=8, end_row=r + 8, end_column=13)
+    r += 11
+
+    # 차트 데이터 블록 + 라인차트 (월별/주차별 × 거래액·고객수·객단가)
+    chart_metrics = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]
+    for gran, gname in (("월", "월별"), ("주", "주차별")):
+        x_all = ([month_label(i) for i in range(1, 13)] if gran == "월"
+                 else labels_sorted(df, gran, chart_years))
+        if not x_all: continue
+        anchor_row = r
+        for k, met in enumerate(chart_metrics):
+            ws.cell(r, 1, f"{met} {gname} (차트 데이터)").font = head_font
+            for j, lb in enumerate(x_all):
+                ws.cell(r, 2 + j, lb).fill = head_fill
+            nrow = 0
+            for y in sorted(chart_years):
+                s = series_by_label(df, gran, met, "*TOTAL", y).reindex(x_all)
+                if s.dropna().empty: continue
+                nrow += 1
+                ws.cell(r + nrow, 1, y)
+                for j, v in enumerate(s.tolist()):
+                    if not (isinstance(v, float) and np.isnan(v)):
+                        c = ws.cell(r + nrow, 2 + j, v)
+                        c.number_format = "#,##0"
+            if nrow:
+                ch = LineChart()
+                ch.title = f"{met} {gname} 추이"
+                ch.height, ch.width = 7.5, 13
+                data = Reference(ws, min_col=1, min_row=r + 1,
+                                 max_col=1 + len(x_all), max_row=r + nrow)
+                cats = Reference(ws, min_col=2, min_row=r, max_col=1 + len(x_all))
+                ch.add_data(data, titles_from_data=True, from_rows=True)
+                ch.set_categories(cats)
+                ws.add_chart(ch, f"{get_column_letter(2 + len(x_all) + 1 + (k % 3) * 8)}{anchor_row}")
+            r += nrow + 2
+        r += 14
+
+    # 채널별 실적 (당월 YoY)
+    ws.cell(r, 1, f"채널별 실적 — {ref_year}년 {ref_month}월 (전년비)").font = title_font; r += 1
+    for met in chart_metrics:
+        ws.cell(r, 1, met).font = head_font
+        heads = [f"{ref_year-1}년 {ref_month}월", f"{ref_year}년 {ref_month}월", "전년비"]
+        for j, hd in enumerate(heads):
+            c = ws.cell(r, 2 + j, hd); c.font = head_font; c.fill = head_fill
+        segs = ["*TOTAL"] + CHANNELS
+        for i, seg in enumerate(segs):
+            pv = pick(df, "월", met, seg, ref_year - 1, month_label(ref_month), "mtd")
+            cv = pick(df, "월", met, seg, ref_year, month_label(ref_month), "mtd")
+            ws.cell(r + 1 + i, 1, seg)
+            ws.cell(r + 1 + i, 2, None if np.isnan(pv) else pv).number_format = "#,##0"
+            ws.cell(r + 1 + i, 3, None if np.isnan(cv) else cv).number_format = "#,##0"
+            ws.cell(r + 1 + i, 4, fmt_delta(met, cv, pv) or "–")
+        r += len(segs) + 3
+
+    ws.column_dimensions["A"].width = 16
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+# ══════════════════════════════════════════════════════
+# 자동 보고 초안
+# ══════════════════════════════════════════════════════
+def auto_draft(df, ref_year, ref_month):
+    lines = []
+    for met in METRICS7:
+        cur = pick(df, "월", met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
+        prv = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
+        d = fmt_delta(met, cur, prv)
+        if isinstance(cur, float) and np.isnan(cur): continue
+        lines.append(f" - {met} — {fmt_value(met, cur)}" + (f", 전년비 {d}" if d else ""))
+    return "\n".join(lines)
+
+# ══════════════════════════════════════════════════════
+# 메인 앱
+# ══════════════════════════════════════════════════════
+def main():
+    if "wr_texts" not in st.session_state:
+        st.session_state.wr_texts = load_insights()
+
+    with st.sidebar:
+        st.markdown("## 📋 주간보고 통합")
+        files = st.file_uploader(
+            "원천 엑셀/CSV 업로드 (복수 선택)",
+            type=["xlsx", "xls", "csv"], accept_multiple_files=True, key="wr_up",
+            help="전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 한 번에 올리세요.")
+        st.markdown("---")
+        PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
+                 "04. 채널별 실적", "05. 통합 데이터·다운로드"]
+        page = st.radio("페이지", PAGES, key="wr_page")
+
+    if not files:
+        st.info("👈 사이드바에서 주간 폴더의 엑셀/CSV 파일들을 업로드해주세요.")
+        st.markdown("""
+- **마스터**: `전체관점 - 일자별/주별/월별 실적 (기본)`
+- **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
+- 파일명으로 **일/주/월 단위와 지표를 자동 감지**합니다.
+""")
+        st.stop()
+
+    df = combine_files(tuple((f.name, f.getvalue()) for f in files))
+    if df.empty:
+        st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
+        st.stop()
+
+    # ── 인식 결과 + 필터
+    years_all = sorted(df["year"].dropna().unique().astype(int))
+    ly, llabel = latest_period(df, "월")
+    ref_year_default = ly or years_all[-1]
+    with st.sidebar:
+        st.markdown("---")
+        st.caption(f"인식된 파일 {len(files)}개 · 지표 {df['metric'].nunique()}종 · "
+                   f"{years_all[0]}–{years_all[-1]}년")
+        st.markdown("**기준 기간**")
+        ref_year = st.selectbox("기준 연도", years_all[::-1],
+                                index=years_all[::-1].index(ref_year_default), key="wr_refy")
+        months_avail = sorted({int(re.match(r"(\d+)월", l).group(1))
+                               for l in df[(df["gran"] == "월") & (df["year"] == ref_year)]["label"]})
+        ref_month = st.selectbox("기준 월", months_avail[::-1], key="wr_refm")
+        st.markdown("**차트 연도**")
+        default_yrs = years_all[-2:] if len(years_all) >= 2 else years_all
+        chart_years = st.multiselect("비교 연도", years_all, default=default_yrs, key="wr_cyrs")
+        st.markdown("**채널**")
+        ch_sel = st.multiselect("채널 선택", CHANNELS, default=CHANNELS, key="wr_ch")
+        if not chart_years: chart_years = default_yrs
+
+    texts = st.session_state.wr_texts
+
+    # ════════════ 01. 주간보고 요약 ════════════
+    if page == "01. 주간보고 요약":
+        st.markdown(f"## 첫구매 주간보고 — {ref_year}년 {ref_month}월")
+        wy, wlabel = latest_period(df, "주")
+        if wlabel:
+            st.caption(f"최신 주차 데이터: {wy}년 {wlabel}")
+
+        # KPI 카드 (최신 주차, WoW)
+        if wlabel:
+            cols = st.columns(4)
+            kpi_metrics = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가", "가입자수"]
+            py, plb = prev_label(df, "주", wy, wlabel)
+            for col, met in zip(cols, kpi_metrics):
+                cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
+                prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
+                d = fmt_delta(met, cur, prv)
+                col.metric(f"{met} ({wlabel})", fmt_value(met, cur),
+                           delta=f"{d} (전주비)" if d else None)
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+        # 실적 요약 YoY 표
+        st.subheader("실적 요약 (일평균 · 전년비)")
+        tbl, (pm_y, pm_m) = yoy_summary_table(df, ref_year, ref_month, METRICS7)
+        st.caption(f"전월({pm_m}월)은 월마감, 당월({ref_month}월)은 일마감(MTD) 기준 동일기간 비교")
+        st.dataframe(tbl, use_container_width=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+        # 보고란
+        cL, cR = st.columns(2)
+        with cL:
+            report_text_block("wr_metrics_summary", "전주 주요 지표 현황",
+                              default=auto_draft(df, ref_year, ref_month))
+        with cR:
+            report_text_block("wr_exec_summary", "금주 집행 내용 요약")
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+        # 핵심 차트 (주차별 YoY 3종)
+        st.subheader("주차별 추이 — 전년 비교")
+        c1, c2, c3 = st.columns(3)
+        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
+            with col:
+                st.plotly_chart(yoy_chart(df, "주", met, chart_years, h=280),
+                                use_container_width=True)
+
+    # ════════════ 02. 월별 추이 ════════════
+    elif page == "02. 월별 추이":
+        st.markdown("## 월별 추이")
+        st.subheader("월별 추이 차트 — 전년 비교")
+        c1, c2, c3 = st.columns(3)
+        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
+            with col:
+                st.plotly_chart(yoy_chart(df, "월", met, chart_years, h=280),
+                                use_container_width=True)
+        c4, c5, c6 = st.columns(3)
+        for col, met in zip((c4, c5, c6), ["비회원트래픽", "가입자수", "가입율"]):
+            with col:
+                st.plotly_chart(yoy_chart(df, "월", met, chart_years, h=280),
+                                use_container_width=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader("월별 추이표 (일평균)")
+        tbl = trend_table(df, "월", METRICS7, chart_years)
+        st.dataframe(style_trend(tbl, METRICS7), use_container_width=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        report_text_block(f"wr_month_memo_{ref_year}_{ref_month}",
+                          f"{ref_year}년 {ref_month}월 액션·이슈사항")
+
+    # ════════════ 03. 주차별 추이 ════════════
+    elif page == "03. 주차별 추이":
+        st.markdown("## 주차별 추이")
+        st.subheader("주차별 추이 차트 — 전년 비교")
+        c1, c2, c3 = st.columns(3)
+        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
+            with col:
+                st.plotly_chart(yoy_chart(df, "주", met, chart_years, h=280),
+                                use_container_width=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader(f"주차별 추이표 — {ref_year}년")
+        tbl = trend_table(df, "주", METRICS7, [ref_year])
+        if not tbl.empty:
+            recent = tbl.columns[-16:]
+            st.dataframe(style_trend(tbl[recent], METRICS7), use_container_width=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader("전주비(WoW) 증감")
+        wy, wlabel = latest_period(df, "주")
+        if wlabel:
+            py, plb = prev_label(df, "주", wy, wlabel)
+            rows = []
+            for met in METRICS7:
+                cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
+                prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
+                rows.append({"지표": met,
+                             f"{plb or '-'}": fmt_value(met, prv),
+                             f"{wlabel}": fmt_value(met, cur),
+                             "전주비": fmt_delta(met, cur, prv) or "–"})
+            st.dataframe(pd.DataFrame(rows).set_index("지표"), use_container_width=True)
+
+    # ════════════ 04. 채널별 실적 ════════════
+    elif page == "04. 채널별 실적":
+        st.markdown("## 채널(BPU)별 실적")
+        avail = [m for m in METRICS7 if (df["metric"] == m).any()]
+        met = st.selectbox("지표 선택", avail, key="wr_chmet")
+
+        st.subheader(f"{met} — {ref_year}년 {ref_month}월 채널별 전년비")
+        rows = []
+        for seg in ["*TOTAL"] + [c for c in CHANNELS if c in ch_sel]:
+            pv = pick(df, "월", met, seg, ref_year - 1, month_label(ref_month), "mtd")
+            cv = pick(df, "월", met, seg, ref_year, month_label(ref_month), "mtd")
+            rows.append({"채널": seg,
+                         f"{ref_year-1}년 {ref_month}월": fmt_value(met, pv),
+                         f"{ref_year}년 {ref_month}월": fmt_value(met, cv),
+                         "전년비": fmt_delta(met, cv, pv) or "–"})
+        st.dataframe(pd.DataFrame(rows).set_index("채널"), use_container_width=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader(f"{met} — 채널별 월 추이 ({ref_year}년)")
+        unit, div = METRIC_UNIT.get(met, ("", 1))
+        if met in PCT_METRICS: div, unit = 0.01, "%"
+        fig = go.Figure()
+        for seg in [c for c in CHANNELS if c in ch_sel]:
+            s = series_by_label(df, "월", met, seg, ref_year)
+            if s.dropna().empty: continue
+            x = [month_label(i) for i in range(1, 13)]
+            fig.add_trace(go.Scatter(
+                x=x, y=(s.reindex(x) / div).tolist(), mode="lines+markers", name=seg,
+                line=dict(color=clr(CHANNEL_PAL.get(seg, "blue")), width=1.8),
+                marker=dict(size=4)))
+        ly = base_layout(340, ysuffix=unit if unit == "%" else "",
+                         title=f"{met} 채널별 ({unit})")
+        fig.update_layout(**ly)
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader(f"{met} — 채널 × 월 표 ({ref_year}년)")
+        rows = []
+        for seg in ["*TOTAL"] + [c for c in CHANNELS if c in ch_sel]:
+            s = series_by_label(df, "월", met, seg, ref_year)
+            row = {"채널": seg}
+            for lb in [month_label(i) for i in range(1, 13)]:
+                if lb in s.index and not np.isnan(s[lb]):
+                    row[lb] = fmt_value(met, s[lb])
+            rows.append(row)
+        st.dataframe(pd.DataFrame(rows).set_index("채널"), use_container_width=True)
+
+    # ════════════ 05. 통합 데이터·다운로드 ════════════
+    else:
+        st.markdown("## 통합 데이터 · 다운로드")
+        st.caption("업로드한 모든 파일을 합친 통합 long 데이터입니다.")
+        st.dataframe(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
+                     use_container_width=True, height=420)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader("통합 워크북 다운로드")
+        st.caption("`첫구매_요약`(요약표·보고란·YoY 차트·채널표) + `월`·`주`(통합 데이터) 3개 시트")
+        if st.button("📥 엑셀 워크북 생성", key="wr_build"):
+            with st.spinner("워크북 생성 중…"):
+                xls = build_workbook(df, st.session_state.wr_texts,
+                                     ref_year, ref_month, chart_years)
+            st.download_button(
+                "다운로드 — 첫구매_주간보고.xlsx", xls,
+                file_name=f"첫구매_주간보고_{ref_year}{ref_month:02d}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        csv = df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("통합 long 데이터 CSV", csv, "통합데이터.csv", "text/csv")
+
+
+if st.runtime.exists():
+    main()
