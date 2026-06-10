@@ -31,9 +31,10 @@ st.markdown("""
 .kpi-card{background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
 .kpi-label{color:#64748b;font-size:12px}
 .kpi-value{color:#1e293b;font-size:21px;font-weight:600;margin:2px 0 8px}
-.kpi-delta{display:inline-block;font-size:12px;border-radius:6px;padding:2px 8px;margin:2px 4px 0 0;font-weight:500}
+.kpi-delta{display:block;width:fit-content;font-size:12px;border-radius:6px;padding:2px 8px;margin:4px 0 0;font-weight:500;white-space:nowrap}
 .kpi-delta.up{background:#ecfdf5;color:#15803d}
 .kpi-delta.down{background:#fef2f2;color:#dc2626}
+.kpi-delta.na{background:#f1f5f9;color:#94a3b8}
 </style>
 """, unsafe_allow_html=True)
 
@@ -806,10 +807,14 @@ def main():
                     deltas.append((fmt_delta(met, cur, mom), "전월비"))
                 yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
                 deltas.append((fmt_delta(met, cur, yoy), "전년비"))
-                pills = "".join(
-                    f'<div class="kpi-delta {"up" if not d.startswith("-") else "down"}">'
-                    f'{"↑" if not d.startswith("-") else "↓"} {d} ({lab})</div>'
-                    for d, lab in deltas if d)
+                pills = ""
+                for d, lab in deltas:
+                    if d:
+                        cls = "up" if not d.startswith("-") else "down"
+                        arrow = "↑" if cls == "up" else "↓"
+                        pills += f'<div class="kpi-delta {cls}">{arrow} {d} ({lab})</div>'
+                    else:
+                        pills += f'<div class="kpi-delta na">– ({lab})</div>'
                 col.markdown(
                     f'<div class="kpi-card"><div class="kpi-label">{met} ({wlabel})</div>'
                     f'<div class="kpi-value">{fmt_value(met, cur)}</div>{pills}</div>',
