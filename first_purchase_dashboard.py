@@ -565,7 +565,8 @@ def parse_xlsx(file_bytes: bytes) -> pd.DataFrame:
 with st.sidebar:
     st.markdown("## 🛒 첫구매 분석")
     uploaded = st.file_uploader("Excel 파일 업로드", type=["xlsx", "xls"], key="fp_up",
-                                 help="첫구매 채널별 지표 엑셀 파일을 업로드하세요.")
+                                 accept_multiple_files=True,
+                                 help="첫구매 채널별 지표 엑셀 파일을 업로드하세요. 여러 파일을 올리면 날짜 기준으로 이어붙입니다 (중복 날짜는 나중 파일 우선).")
     st.markdown("---")
 
     PAGE_LIST = [
@@ -581,12 +582,18 @@ with st.sidebar:
     page = st.radio("페이지", PAGE_LIST, key="fp_page")
 
 # ── 데이터 없으면 정지
-if uploaded is None:
+if not uploaded:
     st.info("👈 사이드바에서 Excel 파일을 업로드해주세요.")
     st.stop()
 
 with st.spinner("데이터 파싱 중…"):
-    df_all = parse_xlsx(uploaded.read())
+    # 여러 파일 이어붙이기 — 같은 (날짜, 지표, 채널)이 겹치면 나중 파일 값 사용
+    _dfs = [parse_xlsx(f.read()) for f in uploaded]
+    df_all = (pd.concat(_dfs, ignore_index=True)
+                .drop_duplicates(subset=["date", "metric", "segment"], keep="last")
+                .sort_values("date").reset_index(drop=True))
+    if len(uploaded) > 1:
+        st.caption(f"📎 파일 {len(uploaded)}개 병합 완료 — {df_all['date'].min().date()} ~ {df_all['date'].max().date()}")
 
 if df_all.empty:
     st.error("데이터를 읽지 못했습니다. 엑셀 파일 형식을 확인해주세요.")
