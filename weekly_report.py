@@ -456,6 +456,20 @@ def merge_member(old, new):
     return (pd.concat([old[MEMBER_COLS], new[MEMBER_COLS]], ignore_index=True)
             .drop_duplicates(subset=MEMBER_KEY, keep="last"))
 
+def _period_set(d, cols):
+    if d is None or d.empty: return set()
+    return set(map(tuple, d[cols].drop_duplicates().values.tolist()))
+
+def upload_diff(stored, df_new, member_stored, member_new):
+    """업로드 데이터가 기존 누적 대비 추가/갱신하는 기간 수 (저장 전 미리보기용)"""
+    cols_c, cols_m = ["gran", "year", "label"], ["year", "label"]
+    nc, oc = _period_set(df_new, cols_c), _period_set(stored, cols_c)
+    nm, om = _period_set(member_new, cols_m), _period_set(member_stored, cols_m)
+    added = len(nc - oc) + len(nm - om)
+    updated = len(nc & oc) + len(nm & om)
+    return added, updated
+
+
 def member_pick(mdf, metric, seg, year, mo):
     s = mdf[(mdf["metric"] == metric) & (mdf["segment"] == seg) &
             (mdf["year"] == year) & (mdf["label"] == f"{mo}월")]["value"].dropna()
@@ -971,17 +985,31 @@ def main():
 - **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
 - **회원 실적**: 신규/기존 회원별 9개 지표 월별 파일 (유효회원수·UV·구매고객수·CR 등)
 - 주간 폴더를 **zip으로 묶어 통째로** 올려도 됩니다. 파일 내용으로 단위·지표를 자동 감지합니다.
-- 업로드한 데이터는 **자동으로 누적 저장**되어, 다음에 새 파일만 올려도 과거 데이터와 합쳐집니다.
+- 업로드 후 **저장**을 누르면 누적됩니다. 다음에 기간이 다른 파일을 올리면 **겹치는 기간은 최신값으로 갱신**되고 나머지는 이어붙습니다.
 """)
         st.stop()
 
-    # 누적 저장소와 병합 — 새 데이터가 있으면 저장
+    # 누적 저장소와 병합 — 미리보기(저장 전까지 영구 반영 안 함)
     df = merge_store(stored, df_new)
-    if not df_new.empty:
-        save_store(df)
     mdf = merge_member(member_stored, member_new)
-    if not member_new.empty:
-        save_member_store(mdf)
+
+    has_new = (not df_new.empty) or (not member_new.empty)
+    sig = tuple(sorted((n, len(b)) for n, b in expanded))
+    with st.sidebar:
+        if has_new:
+            added, updated = upload_diff(stored, df_new, member_stored, member_new)
+            saved = st.session_state.get("wr_saved_sig") == sig
+            if saved:
+                st.success("저장됨 ✓ (누적 반영 완료)")
+            else:
+                st.warning(f"새 데이터 감지 — 추가 {added}기간 · 갱신(겹침) {updated}기간\n\n"
+                           "**저장** 눌러야 누적에 반영됩니다.")
+                if st.button("💾 저장 (누적 반영)", key="wr_commit",
+                             type="primary", use_container_width=True):
+                    if not df_new.empty: save_store(df)
+                    if not member_new.empty: save_member_store(mdf)
+                    st.session_state["wr_saved_sig"] = sig
+                    st.rerun()
 
     # 코어 데이터가 비어 회원 데이터만 있을 때: 회원 페이지로 안내
     if df.empty:
@@ -1033,9 +1061,10 @@ def main():
 
         st.markdown("---")
         st.markdown("**누적 데이터**")
-        new_cnt = len(df_new) if not df_new.empty else 0
-        st.caption(f"총 {len(df):,}행 저장됨" + (f" (이번 업로드 {new_cnt:,}행 병합)" if new_cnt else ""))
-        st.download_button("💾 누적 데이터 백업 (CSV)",
+        saved_rows = len(load_store())
+        pend = " · 저장 시 반영" if (has_new and not st.session_state.get("wr_saved_sig") == sig) else ""
+        st.caption(f"저장됨 {saved_rows:,}행 / 현재 보기 {len(df):,}행{pend}")
+        st.download_button("⬇ 누적 데이터 백업 (CSV)",
                            df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
                            "wr_data_store.csv", "text/csv", use_container_width=True,
                            help="앱 재배포 시 누적 데이터가 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 업로드하면 복원됩니다.")
