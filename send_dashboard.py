@@ -203,8 +203,16 @@ def parse_xlsx(file_bytes):
     return df
 
 @st.cache_data(show_spinner=False)
-def compute(file_bytes):
-    df = parse_xlsx(file_bytes)
+def compute(files_bytes):
+    """단일 bytes 또는 bytes 튜플(다중 파일) → 날짜 기준 이어붙이기 후 집계.
+    같은 날짜가 여러 파일에 있으면 나중에 업로드한 파일 값을 사용."""
+    if isinstance(files_bytes, bytes):
+        files_bytes = (files_bytes,)
+    dfs = [parse_xlsx(fb) for fb in files_bytes]
+    df  = (pd.concat(dfs, ignore_index=True)
+             .drop_duplicates(subset="date", keep="last")
+             .sort_values("date").reset_index(drop=True))
+    df["t"] = np.arange(len(df))  # 병합 후 시계열 인덱스 재생성
 
     # Aggregations
     monthly   = df.groupby("month",   sort=True).agg(n=("revenue","count"), **{k:pd.NamedAgg(k,"mean") for k in list(ALL_METRICS)+["purchaseRate","rpc"]}).reset_index()
@@ -218,13 +226,13 @@ def compute(file_bytes):
     buckets = df.groupby("bucket", observed=True).agg(n=("revenue","count"), **{k:pd.NamedAgg(k,"mean") for k in list(ALL_METRICS)+["purchaseRate","rpc"]}).reset_index()
     buckets = buckets[buckets["n"] >= 30].reset_index(drop=True)
 
-    # Quintile — array_split으로 전체 데이터를 균등 5분할 (나머지 일수 손실 방지)
+    # Quintile — 인덱스를 균등 5분할 (나머지 일수 손실 방지, DataFrame 컬럼 접근 유지)
     df_s   = df.sort_values("totalSend").reset_index(drop=True)
-    qparts = np.array_split(df_s, 5)
+    qidx   = np.array_split(np.arange(len(df_s)), 5)
     quintile = pd.DataFrame([
         dict(label=["Q1 최소","Q2","Q3","Q4","Q5 최대"][i],
-             n=len(qparts[i]),
-             **{k: qparts[i][k].mean() for k in list(ALL_METRICS)+["purchaseRate","rpc"]})
+             n=len(qidx[i]),
+             **{k: df_s.iloc[qidx[i]][k].mean() for k in list(ALL_METRICS)+["purchaseRate","rpc"]})
         for i in range(5)
     ])
 
@@ -687,15 +695,24 @@ def verdict_box(key, default_text, default_color="vg", emoji=""):
 # ══════════════════════════════════════════════════════
 COMPARE_OPTS = ["전년비 (YoY)", "전분기비 (QoQ)", "전월비 (MoM)", "전주비 (WoW)", "전체 기간 처음↔끝"]
 
-def get_compare_periods(df_all, mode):
+def get_compare_periods(df_all, mode, yoy_ref=None):
     """비교 기준 기간과 현재 기간 반환 → (df_current, df_prev, label_cur, label_prev)"""
     df_all = df_all.sort_values("date")
     last_date = df_all["date"].max()
 
     if mode == "전년비 (YoY)":
-        cur  = df_all[df_all["date"].dt.year == last_date.year]
-        prev = df_all[df_all["date"].dt.year == last_date.year - 1]
-        return cur, prev, str(last_date.year)+"년", str(last_date.year-1)+"년"
+        # 동일 기간 비교: 기준일까지의 올해 vs 전년도 같은 월/일까지
+        ref = yoy_ref if yoy_ref is not None else last_date
+        cur_year, prev_year = ref.year, ref.year - 1
+        cur = df_all[(df_all["date"].dt.year == cur_year) & (df_all["date"] <= ref)]
+        try:
+            prev_ref = ref.replace(year=prev_year)
+        except ValueError:  # 2/29 윤년 보정
+            prev_ref = ref.replace(year=prev_year, day=28)
+        prev = df_all[(df_all["date"].dt.year == prev_year) & (df_all["date"] <= prev_ref)]
+        return (cur, prev,
+                f"{cur_year}년 (~{ref.strftime('%m/%d')})",
+                f"{prev_year}년 (~{prev_ref.strftime('%m/%d')})")
     elif mode == "전분기비 (QoQ)":
         cur_q  = pd.Period(last_date, "Q")
         prev_q = cur_q - 1
@@ -720,6 +737,24 @@ def get_compare_periods(df_all, mode):
         cur  = df_all[df_all["date"] >= mid]
         prev = df_all[df_all["date"] <  mid]
         return cur, prev, "후반기", "전반기"
+
+def cmp_selectbox(key, df_all):
+    """비교 기준 selectbox + YoY일 때 기준일 date_input → (mode, yoy_ref) 반환"""
+    mode = st.selectbox("비교 기준", COMPARE_OPTS, key=f"cmp_{key}")
+    yoy_ref = None
+    if mode == "전년비 (YoY)":
+        cur_year = int(df_all["date"].dt.year.max())
+        year_df  = df_all[df_all["date"].dt.year == cur_year]
+        ref_date = st.date_input(
+            f"기준일 ({cur_year}년 기준)",
+            value=year_df["date"].max().date(),
+            min_value=year_df["date"].min().date(),
+            max_value=year_df["date"].max().date(),
+            key=f"yoy_ref_{key}",
+            help=f"선택한 날짜까지의 {cur_year}년 데이터와 전년도 같은 기간(1/1~같은 월일)을 비교합니다",
+        )
+        yoy_ref = pd.Timestamp(ref_date)
+    return mode, yoy_ref
 
 def compare_table(df_cur, df_prev, label_cur, label_prev, keys=None):
     """기간 비교 테이블 생성"""
@@ -900,14 +935,18 @@ def memo_block(key, location="bottom"):
 # ══════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("##  발송 분석")
-    uploaded = st.file_uploader("엑셀 업로드", type=["xlsx","xls"], label_visibility="collapsed")
+    uploaded_list = st.file_uploader(
+        "엑셀 업로드", type=["xlsx","xls"], label_visibility="collapsed",
+        accept_multiple_files=True,
+        help="기간이 다른 파일 여러 개를 올리면 날짜 기준으로 자동으로 이어붙입니다. 같은 날짜가 겹치면 나중 파일 값을 사용합니다.")
 
-    if uploaded:
-        file_bytes = uploaded.read()
-        G    = compute(file_bytes)
+    if uploaded_list:
+        files_bytes = tuple(f.read() for f in uploaded_list)
+        G    = compute(files_bytes)
         meta = G["meta"]
         df   = G["df"]
-        st.success(f" {meta['days']}일 데이터")
+        merged_note = f" · 파일 {len(uploaded_list)}개 병합" if len(uploaded_list) > 1 else ""
+        st.success(f" {meta['days']}일 데이터{merged_note}")
         st.caption(f"{meta['start']} ~ {meta['end']}")
 
         # 날짜 필터
@@ -936,23 +975,32 @@ with st.sidebar:
     # ── 동의 현황 파일 업로드 ──
     st.markdown("---")
     st.markdown("## 동의 현황")
-    sms_up   = st.file_uploader("SMS 동의 파일", type=["xlsx","xls"], key="sms_up",  label_visibility="collapsed")
-    st.caption("SMS 동의 현황 xlsx")
-    push_up  = st.file_uploader("PUSH 동의 파일", type=["xlsx","xls"], key="push_up", label_visibility="collapsed")
-    st.caption("PUSH 동의 현황 xlsx")
+    sms_up   = st.file_uploader("SMS 동의 파일", type=["xlsx","xls"], key="sms_up",  label_visibility="collapsed",
+                                accept_multiple_files=True)
+    st.caption("SMS 동의 현황 xlsx (여러 파일 가능)")
+    push_up  = st.file_uploader("PUSH 동의 파일", type=["xlsx","xls"], key="push_up", label_visibility="collapsed",
+                                accept_multiple_files=True)
+    st.caption("PUSH 동의 현황 xlsx (여러 파일 가능)")
+
+    def _load_consent_multi(files):
+        """여러 동의 현황 파일을 날짜 기준으로 이어붙임 (중복 날짜는 나중 파일 우선)"""
+        dfs = [parse_consent(f.read()) for f in files]
+        return (pd.concat(dfs, ignore_index=True)
+                  .drop_duplicates(subset="date", keep="last")
+                  .sort_values("date").reset_index(drop=True))
 
     if sms_up:
-        sms_bytes  = sms_up.read()
-        df_sms = parse_consent(sms_bytes)
-        st.success(f"SMS {len(df_sms)}일")
+        df_sms = _load_consent_multi(sms_up)
+        merged = f" · {len(sms_up)}개 병합" if len(sms_up) > 1 else ""
+        st.success(f"SMS {len(df_sms)}일{merged}")
         st.caption(f"{str(df_sms['date'].min().date())} ~ {str(df_sms['date'].max().date())}")
     else:
         df_sms = None
 
     if push_up:
-        push_bytes = push_up.read()
-        df_push = parse_consent(push_bytes)
-        st.success(f"PUSH {len(df_push)}일")
+        df_push = _load_consent_multi(push_up)
+        merged = f" · {len(push_up)}개 병합" if len(push_up) > 1 else ""
+        st.success(f"PUSH {len(df_push)}일{merged}")
         st.caption(f"{str(df_push['date'].min().date())} ~ {str(df_push['date'].max().date())}")
     else:
         df_push = None
@@ -1144,8 +1192,8 @@ if page == "01. 전체 요약":
     # ── 기간 비교 전체 테이블 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("기간 비교 — 전체 지표")
-    cmp_mode = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ov")
-    df_cur, df_prev, lbl_cur, lbl_prev = get_compare_periods(G["df"], cmp_mode)
+    cmp_mode, _yoy_ref = cmp_selectbox("ov", G["df"])
+    df_cur, df_prev, lbl_cur, lbl_prev = get_compare_periods(G["df"], cmp_mode, _yoy_ref)
     if len(df_cur) and len(df_prev):
         tbl_all = compare_table(df_cur, df_prev, lbl_cur, lbl_prev)
         st.dataframe(styled_compare(tbl_all), use_container_width=True, hide_index=True)
@@ -1221,8 +1269,8 @@ elif page == "02. 발송 빈도 효율":
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("기간 비교 — 발송 효율")
-    cmp_mode_fr = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_fr")
-    df_cur_fr, df_prev_fr, lbl_cur_fr, lbl_prev_fr = get_compare_periods(G["df"], cmp_mode_fr)
+    cmp_mode_fr, _yoy_ref_fr = cmp_selectbox("fr", G["df"])
+    df_cur_fr, df_prev_fr, lbl_cur_fr, lbl_prev_fr = get_compare_periods(G["df"], cmp_mode_fr, _yoy_ref_fr)
     if len(df_cur_fr) and len(df_prev_fr):
         tbl_fr = compare_table(df_cur_fr, df_prev_fr, lbl_cur_fr, lbl_prev_fr,
                                keys=["perSend","totalSend","customers","rps","revenue",
@@ -1326,8 +1374,8 @@ elif page == "03. 피로도 시계열":
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("기간 비교 — 효율 지표")
-    cmp_mode_ts = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ts")
-    df_cur_ts, df_prev_ts, lbl_cur_ts, lbl_prev_ts = get_compare_periods(G["df"], cmp_mode_ts)
+    cmp_mode_ts, _yoy_ref_ts = cmp_selectbox("ts", G["df"])
+    df_cur_ts, df_prev_ts, lbl_cur_ts, lbl_prev_ts = get_compare_periods(G["df"], cmp_mode_ts, _yoy_ref_ts)
     if len(df_cur_ts) and len(df_prev_ts):
         tbl_ts = compare_table(df_cur_ts, df_prev_ts, lbl_cur_ts, lbl_prev_ts,
                                keys=["perSend","ctr","purchaseRate","rps","revenue","rpc"])
@@ -1394,8 +1442,8 @@ elif page == "04. 인과 검증":
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     verdict_box("causal_ab2", "", "vg")
     st.subheader("기간 비교 — 인과 관련 지표")
-    cmp_mode_ca = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_ca")
-    df_cur_ca, df_prev_ca, lbl_cur_ca, lbl_prev_ca = get_compare_periods(G["df"], cmp_mode_ca)
+    cmp_mode_ca, _yoy_ref_ca = cmp_selectbox("ca", G["df"])
+    df_cur_ca, df_prev_ca, lbl_cur_ca, lbl_prev_ca = get_compare_periods(G["df"], cmp_mode_ca, _yoy_ref_ca)
     if len(df_cur_ca) and len(df_prev_ca):
         tbl_ca = compare_table(df_cur_ca, df_prev_ca, lbl_cur_ca, lbl_prev_ca,
                                keys=["perSend","revenue","rps","ctr","purchaseRate","rpc"])
@@ -1486,8 +1534,8 @@ elif page == "05. 지표 상관 분석":
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("기간 비교 — 전체 지표")
-    cmp_mode_co = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_co")
-    df_cur_co, df_prev_co, lbl_cur_co, lbl_prev_co = get_compare_periods(G["df"], cmp_mode_co)
+    cmp_mode_co, _yoy_ref_co = cmp_selectbox("co", G["df"])
+    df_cur_co, df_prev_co, lbl_cur_co, lbl_prev_co = get_compare_periods(G["df"], cmp_mode_co, _yoy_ref_co)
     if len(df_cur_co) and len(df_prev_co):
         tbl_co = compare_table(df_cur_co, df_prev_co, lbl_cur_co, lbl_prev_co)
         st.dataframe(styled_compare(tbl_co), use_container_width=True, hide_index=True)
@@ -1544,8 +1592,8 @@ elif page == "06. 요일별 패턴":
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("기간 비교 — 요일별 성과")
-    cmp_mode_dw = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_dw")
-    df_cur_dw, df_prev_dw, lbl_cur_dw, lbl_prev_dw = get_compare_periods(G["df"], cmp_mode_dw)
+    cmp_mode_dw, _yoy_ref_dw = cmp_selectbox("dw", G["df"])
+    df_cur_dw, df_prev_dw, lbl_cur_dw, lbl_prev_dw = get_compare_periods(G["df"], cmp_mode_dw, _yoy_ref_dw)
     DOW_KR2 = {0:"월",1:"화",2:"수",3:"목",4:"금",5:"토",6:"일"}
     if len(df_cur_dw) and len(df_prev_dw) and dow_k:
         dw_rows = []
@@ -1607,8 +1655,8 @@ elif page == "07. 발송 최적 구간":
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("기간 비교 — 구간 효과")
-    cmp_mode_op = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_op")
-    df_cur_op, df_prev_op, lbl_cur_op, lbl_prev_op = get_compare_periods(G["df"], cmp_mode_op)
+    cmp_mode_op, _yoy_ref_op = cmp_selectbox("op", G["df"])
+    df_cur_op, df_prev_op, lbl_cur_op, lbl_prev_op = get_compare_periods(G["df"], cmp_mode_op, _yoy_ref_op)
     if len(df_cur_op) and len(df_prev_op):
         tbl_op = compare_table(df_cur_op, df_prev_op, lbl_cur_op, lbl_prev_op,
                                keys=["perSend","revenue","rps","ctr","purchaseRate","avgOrderVal"])
@@ -1664,8 +1712,8 @@ elif page == "08. 한계수익 분석":
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("기간 비교 — 한계 효율")
-    cmp_mode_lm = st.selectbox("비교 기준", COMPARE_OPTS, key="cmp_lm")
-    df_cur_lm, df_prev_lm, lbl_cur_lm, lbl_prev_lm = get_compare_periods(G["df"], cmp_mode_lm)
+    cmp_mode_lm, _yoy_ref_lm = cmp_selectbox("lm", G["df"])
+    df_cur_lm, df_prev_lm, lbl_cur_lm, lbl_prev_lm = get_compare_periods(G["df"], cmp_mode_lm, _yoy_ref_lm)
     if len(df_cur_lm) and len(df_prev_lm):
         tbl_lm = compare_table(df_cur_lm, df_prev_lm, lbl_cur_lm, lbl_prev_lm,
                                keys=["perSend","rps","ctr","purchaseRate","revenue","rpc"])
