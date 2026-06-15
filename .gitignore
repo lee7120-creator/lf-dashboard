@@ -3,3 +3,4 @@ __pycache__/
 *.pyo
 .env
 wr_data_store.csv
+wr_member_store.csv
