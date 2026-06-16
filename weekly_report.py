@@ -540,35 +540,38 @@ def save_insights(d):
 
 def report_text_block(key, title, default="", regen=None):
     """편집 가능한 보고란 텍스트 박스 (JSON 저장).
-    regen 텍스트를 주면 '자동 생성' 버튼으로 데이터 기반 문구를 다시 채울 수 있다."""
+    regen 텍스트를 주면 '자동 생성' 버튼으로 데이터 기반 문구를 다시 채울 수 있다.
+    좁은 컬럼 안에서도 안 깨지도록 버튼은 박스 위/아래에 배치한다."""
     store = st.session_state.wr_texts
     if not store.get(key): store[key] = default
     ekey = f"__wr_edit_{key}__"
     if ekey not in st.session_state: st.session_state[ekey] = False
+
+    # 제목 + 액션 버튼 (제목 한 줄, 버튼은 그 아래 좁지 않은 컬럼)
+    st.markdown(f"**{title}**")
+    bcols = st.columns(2)
+    edit_on = st.session_state[ekey]
+    if bcols[0].button("편집" if not edit_on else "보기",
+                       key=f"wr_edit_{key}", use_container_width=True):
+        st.session_state[ekey] = not edit_on; st.rerun()
     if regen is not None:
-        h1, h2 = st.columns([7, 2])
-        h1.markdown(f"**{title}**")
-        if h2.button("🔄 자동 생성", key=f"wr_regen_{key}", use_container_width=True,
-                     help="기준 주차 실적으로 문구를 다시 생성합니다 (기존 내용 대체)"):
+        if bcols[1].button("자동 생성", key=f"wr_regen_{key}", use_container_width=True,
+                           help="기준 주차 실적으로 문구를 다시 생성합니다 (기존 내용 대체)"):
             store[key] = regen
             all_d = load_insights(); all_d[key] = regen; save_insights(all_d)
             st.session_state[ekey] = False; st.rerun()
-    else:
-        st.markdown(f"**{title}**")
+
     if st.session_state[ekey]:
-        c1, c2 = st.columns([10, 1])
-        new = c1.text_area("", store[key], key=f"wr_ta_{key}", height=160,
+        new = st.text_area("", store[key], key=f"wr_ta_{key}", height=180,
                            label_visibility="collapsed")
-        if c2.button("저장", key=f"wr_save_{key}", use_container_width=True):
+        if st.button("저장", key=f"wr_save_{key}", type="primary",
+                     use_container_width=True):
             store[key] = new
             all_d = load_insights(); all_d[key] = new; save_insights(all_d)
             st.session_state[ekey] = False; st.rerun()
     else:
-        c1, c2 = st.columns([20, 1])
-        c1.markdown(f"<div class='report-box'>{store[key] or '내용을 입력하세요.'}</div>",
+        st.markdown(f"<div class='report-box'>{store[key] or '내용을 입력하세요.'}</div>",
                     unsafe_allow_html=True)
-        if c2.button("편집", key=f"wr_edit_{key}"):
-            st.session_state[ekey] = True; st.rerun()
     return store[key]
 
 # ══════════════════════════════════════════════════════
