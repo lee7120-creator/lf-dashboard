@@ -564,6 +564,25 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
 
     # 제목 + 액션 버튼 (제목 한 줄, 버튼은 그 아래 정상 너비 컬럼)
     st.markdown(f"**{title}**")
+
+    # AI 참고 메모: 데이터에 안 나오는 배경(프로모션·이벤트·이슈)을 적으면
+    # AI 생성 시 [배경 메모]로 분리 주입돼 원인·맥락 해석에 활용된다.
+    memo_val = ""
+    if ai_fn is not None:
+        mkey = f"{key}__memo"
+        if mkey not in store: store[mkey] = ""
+        with st.expander("🧠 AI 참고 메모 (프로모션·이벤트·운영 이슈 등 배경)",
+                         expanded=bool(store[mkey])):
+            memo_val = st.text_area(
+                "데이터에 안 나오는 배경을 적으면 AI가 원인·맥락 해석에 활용합니다. "
+                "(수치는 데이터에서만 인용)",
+                store[mkey], key=f"wr_memo_{key}", height=120)
+            if st.button("메모 저장", key=f"wr_memosave_{key}",
+                         use_container_width=True):
+                store[mkey] = memo_val
+                all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
+                st.rerun()
+
     n = 2 + (1 if regen is not None else 0) + (1 if ai_fn is not None else 0)
     bcols = st.columns(n)
     bi = 0
@@ -581,9 +600,11 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
         bi += 1
     if ai_fn is not None:
         if bcols[bi].button("AI 생성", key=f"wr_ai_{key}", use_container_width=True,
-                            help="Claude가 데이터를 보고 인사이트 문구를 작성합니다 (기존 내용 대체)"):
+                            help="Claude가 데이터(+참고 메모)를 보고 인사이트 문구를 작성합니다 (기존 내용 대체)"):
+            store[mkey] = memo_val
+            all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
             with st.spinner("AI가 인사이트를 작성 중…"):
-                text, err = ai_fn()
+                text, err = ai_fn(memo_val)
             if err:
                 st.error(err)
             else:
@@ -946,8 +967,10 @@ def _ai_metric_facts(df, ref_year, ref_month, ref_week=None):
             rows.append(f"- {met}: {fmt_value(met, cur)} (전년비 {fmt_delta(met, cur, prv) or '–'})")
     return "\n".join(rows)
 
-def ai_generate_insight(df, ref_year, ref_month, ref_week, model, focus="전주 주요 지표 현황"):
-    """Claude API로 보고 인사이트 생성 → HTML(역신장 빨강) 반환. (텍스트, 에러) 튜플"""
+def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
+                        focus="전주 주요 지표 현황", memo=""):
+    """Claude API로 보고 인사이트 생성 → HTML(역신장 빨강) 반환. (텍스트, 에러) 튜플.
+    memo: 사용자가 적은 정성 배경(프로모션·이벤트 등). 수치와 분리해 [배경 메모]로 주입."""
     key = _anthropic_key()
     if not key:
         return None, ("ANTHROPIC_API_KEY가 설정되지 않았습니다. "
@@ -961,14 +984,22 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model, focus="전주 
     facts = _ai_metric_facts(df, ref_year, ref_month, ref_week)
     system = (
         "당신은 LF몰 CRM 첫구매 보고서를 작성하는 데이터 분석가입니다. "
-        "주어진 지표 수치만 근거로 한국어 실무 보고 문구를 작성하세요. "
-        "수치를 지어내지 말고, 추세·특이점·점검 포인트를 간결한 불릿으로 정리하세요. "
+        "한국어 실무 보고 문구를 간결한 불릿으로 작성하세요. "
+        "[확정 수치]에 있는 숫자만 인용하고 수치를 지어내지 마세요. "
+        "[배경 메모]는 사용자가 제공한 정성적 맥락으로, 추세·특이점의 원인 추정과 "
+        "해석에만 활용하세요. 메모에 적힌 숫자가 [확정 수치]와 다르면 [확정 수치]를 "
+        "우선합니다. 메모에 없는 사실을 단정하지 말고, 추정은 '~로 보임'처럼 표기하세요. "
+        "[배경 메모]가 비어 있으면 수치만으로 작성하세요. "
         "출력은 HTML로만 (불릿은 <br>로 구분). "
         "증감 수치 중 역신장(감소)은 <span style=\"color:#dc2626;font-weight:700\">…</span>, "
         "신장(증가)은 <span style=\"color:#16a34a;font-weight:700\">…</span>로 감싸세요. "
         "서론·맺음말 없이 불릿만 출력하세요."
     )
-    user = f"[기준: {period}]\n다음 지표로 '{focus}' 문구를 작성하세요:\n{facts}"
+    memo_block = (memo or "").strip() or "(없음)"
+    user = (f"[기준: {period}]\n\n"
+            f"[확정 수치]\n{facts}\n\n"
+            f"[배경 메모]\n{memo_block}\n\n"
+            f"위 자료로 '{focus}' 문구를 작성하세요.")
     try:
         client = anthropic.Anthropic(api_key=key)
         resp = client.messages.create(
@@ -1346,8 +1377,8 @@ def main():
         with cL:
             report_text_block("wr_metrics_summary", "전주 주요 지표 현황",
                               default=draft, regen=draft,
-                              ai_fn=lambda: ai_generate_insight(df, ref_year, ref_month,
-                                                                wlabel, ai_model))
+                              ai_fn=lambda memo: ai_generate_insight(df, ref_year, ref_month,
+                                                                wlabel, ai_model, memo=memo))
         with cR:
             report_text_block("wr_exec_summary", "금주 집행 내용 요약")
 
@@ -1386,8 +1417,9 @@ def main():
         report_text_block(
             f"wr_month_memo_{ref_year}_{ref_month}",
             f"{ref_year}년 {ref_month}월 액션·이슈사항",
-            ai_fn=lambda: ai_generate_insight(df, ref_year, ref_month, None, ai_model,
-                                              focus=f"{ref_year}년 {ref_month}월 액션·이슈 및 인사이트"))
+            ai_fn=lambda memo: ai_generate_insight(df, ref_year, ref_month, None, ai_model,
+                                              focus=f"{ref_year}년 {ref_month}월 액션·이슈 및 인사이트",
+                                              memo=memo))
 
     # ════════════ 03. 주차별 추이 ════════════
     elif page == "03. 주차별 추이":
@@ -1420,8 +1452,9 @@ def main():
         report_text_block(
             f"wr_week_memo_{wy2}_{wlabel2}",
             f"{wy2}년 {wlabel2} 액션·이슈사항" if wlabel2 else "주차별 액션·이슈사항",
-            ai_fn=lambda: ai_generate_insight(df, ref_year, ref_month, wlabel2, ai_model,
-                                              focus=f"{wlabel2} 주차 액션·이슈 및 인사이트"))
+            ai_fn=lambda memo: ai_generate_insight(df, ref_year, ref_month, wlabel2, ai_model,
+                                              focus=f"{wlabel2} 주차 액션·이슈 및 인사이트",
+                                              memo=memo))
 
     # ════════════ 04. 채널별 실적 ════════════
     elif page == "04. 채널별 실적":
