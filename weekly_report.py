@@ -621,6 +621,28 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
 # ══════════════════════════════════════════════════════
 def month_label(n): return f"{n}월"
 
+def week_disp(year, label):
+    """주차 표시: 2026년 06월 2주차"""
+    return f"{year}년 {label}" if label else "-"
+
+def wow_summary_table(df, wy, wlabel, metrics):
+    """전주비 요약표 (실적 요약과 동일 구조): 전주·기준주·전주비 + 전년동주·전년비"""
+    py, plb = prev_label(df, "주", wy, wlabel)
+    cols = [week_disp(py, plb), week_disp(wy, wlabel), "전주비",
+            week_disp(wy - 1, wlabel), "전년비"]
+    rows = []
+    for met in metrics:
+        cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
+        prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
+        yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
+        rows.append({
+            "구분": met,
+            cols[0]: fmt_value(met, prv), cols[1]: fmt_value(met, cur),
+            cols[2]: fmt_delta(met, cur, prv) or "–",
+            cols[3]: fmt_value(met, yoy), cols[4]: fmt_delta(met, cur, yoy) or "–",
+        })
+    return pd.DataFrame(rows).set_index("구분")
+
 def yoy_summary_table(df, ref_year, ref_month, metrics):
     """참고본 '실적 요약' 표: 전월·당월 × (전년, 당년, 전년비)"""
     rows = []
@@ -883,8 +905,8 @@ def auto_draft(df, ref_year, ref_month, ref_week=None):
 # AI 인사이트 생성 (Claude API) — 모델 교체 가능
 # ══════════════════════════════════════════════════════
 AI_MODELS = {
+    "Claude Sonnet 4.6 (균형·기본)": "claude-sonnet-4-6",
     "Claude Opus 4.8 (최고 품질)": "claude-opus-4-8",
-    "Claude Sonnet 4.6 (균형·추천)": "claude-sonnet-4-6",
     "Claude Haiku 4.5 (빠름·저렴)": "claude-haiku-4-5",
 }
 
@@ -1262,7 +1284,7 @@ def main():
         st.markdown(f"## 첫구매 주간보고 — {ref_year}년 {ref_month}월")
         wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
         if wlabel:
-            st.caption(f"기준 주차: {wy}년 {wlabel}")
+            st.caption(f"기준 주차: {week_disp(wy, wlabel)}")
 
         # KPI 카드 (기준 주차 — 전주비·전월비·전년비 모두 주차 기준)
         if wlabel:
@@ -1296,9 +1318,17 @@ def main():
                     else:
                         pills += f'<div class="kpi-delta na">– ({lab})</div>'
                 col.markdown(
-                    f'<div class="kpi-card"><div class="kpi-label">{met} ({wlabel})</div>'
+                    f'<div class="kpi-card"><div class="kpi-label">{met} ({week_disp(wy, wlabel)})</div>'
                     f'<div class="kpi-value">{fmt_value(met, cur)}</div>{pills}</div>',
                     unsafe_allow_html=True)
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+        # 실적 요약 — 전주비 (주차 기준)
+        if wlabel:
+            st.subheader("실적 요약 (일평균 · 전주비)")
+            st.caption(f"기준 주차: {week_disp(wy, wlabel)} — 전주·전년 동주 대비")
+            st.dataframe(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
+                         use_container_width=True)
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 실적 요약 YoY 표
@@ -1311,7 +1341,7 @@ def main():
 
         # 보고란
         draft = auto_draft(df, ref_year, ref_month, ref_week=wlabel)
-        ai_model = st.session_state.get("wr_ai_model", "claude-opus-4-8")
+        ai_model = st.session_state.get("wr_ai_model", "claude-sonnet-4-6")
         cL, cR = st.columns(2)
         with cL:
             report_text_block("wr_metrics_summary", "전주 주요 지표 현황",
@@ -1352,7 +1382,7 @@ def main():
         st.dataframe(style_trend(tbl, METRICS7), use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        ai_model = st.session_state.get("wr_ai_model", "claude-opus-4-8")
+        ai_model = st.session_state.get("wr_ai_model", "claude-sonnet-4-6")
         report_text_block(
             f"wr_month_memo_{ref_year}_{ref_month}",
             f"{ref_year}년 {ref_month}월 액션·이슈사항",
@@ -1380,24 +1410,13 @@ def main():
         st.subheader("전주비(WoW)·전년비(YoY) 증감")
         wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
         if wlabel:
-            py, plb = prev_label(df, "주", wy, wlabel)
-            rows = []
-            for met in METRICS7:
-                cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
-                prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-                yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
-                rows.append({"지표": met,
-                             f"{plb or '-'}": fmt_value(met, prv),
-                             f"{wy-1} {wlabel}": fmt_value(met, yoy),
-                             f"{wlabel}": fmt_value(met, cur),
-                             "전주비": fmt_delta(met, cur, prv) or "–",
-                             "전년비": fmt_delta(met, cur, yoy) or "–"})
-            st.dataframe(style_delta_cols(pd.DataFrame(rows).set_index("지표")),
+            st.caption(f"기준 주차: {week_disp(wy, wlabel)}")
+            st.dataframe(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
                          use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         wy2, wlabel2 = (ref_year, ref_week) if ref_week else latest_period(df, "주")
-        ai_model = st.session_state.get("wr_ai_model", "claude-opus-4-8")
+        ai_model = st.session_state.get("wr_ai_model", "claude-sonnet-4-6")
         report_text_block(
             f"wr_week_memo_{wy2}_{wlabel2}",
             f"{wy2}년 {wlabel2} 액션·이슈사항" if wlabel2 else "주차별 액션·이슈사항",
