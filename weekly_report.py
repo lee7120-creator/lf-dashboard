@@ -1377,7 +1377,7 @@ def main():
             st.dataframe(style_trend(tbl[recent], METRICS7), use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader("전주비(WoW) 증감")
+        st.subheader("전주비(WoW)·전년비(YoY) 증감")
         wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
         if wlabel:
             py, plb = prev_label(df, "주", wy, wlabel)
@@ -1385,10 +1385,13 @@ def main():
             for met in METRICS7:
                 cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
                 prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
+                yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
                 rows.append({"지표": met,
                              f"{plb or '-'}": fmt_value(met, prv),
+                             f"{wy-1} {wlabel}": fmt_value(met, yoy),
                              f"{wlabel}": fmt_value(met, cur),
-                             "전주비": fmt_delta(met, cur, prv) or "–"})
+                             "전주비": fmt_delta(met, cur, prv) or "–",
+                             "전년비": fmt_delta(met, cur, yoy) or "–"})
             st.dataframe(style_delta_cols(pd.DataFrame(rows).set_index("지표")),
                          use_container_width=True)
 
