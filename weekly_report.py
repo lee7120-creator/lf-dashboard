@@ -10,6 +10,13 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
+
+try:
+    from streamlit_quill import st_quill
+    HAS_QUILL = True
+except Exception:
+    HAS_QUILL = False
 
 # ══════════════════════════════════════════════════════
 # CONFIG
@@ -27,7 +34,8 @@ st.markdown("""
 [data-testid="stMetricLabel"]{color:#64748b!important;font-size:12px!important}
 [data-testid="stMetricValue"]{color:#1e293b!important;font-size:20px!important}
 .sdiv{border-top:1px solid #e2e8f0;margin:22px 0}
-.report-box{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;line-height:1.7;background:#ffffff;white-space:pre-wrap}
+.report-box{border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:8px 0;line-height:1.7;background:#ffffff}
+.report-box p{margin:0 0 4px}
 .kpi-card{background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
 .kpi-label{color:#64748b;font-size:12px}
 .kpi-value{color:#1e293b;font-size:21px;font-weight:600;margin:2px 0 8px}
@@ -35,6 +43,13 @@ st.markdown("""
 .kpi-delta.up{background:#ecfdf5;color:#15803d}
 .kpi-delta.down{background:#fef2f2;color:#dc2626}
 .kpi-delta.na{background:#f1f5f9;color:#94a3b8}
+@media print {
+  [data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"],
+  header, .stButton, .no-print, iframe { display:none !important; }
+  [data-testid="stAppViewContainer"], .main, .block-container { background:#fff !important; }
+  .block-container { max-width:100% !important; padding-top:0 !important; }
+  .stPlotlyChart, .report-box, table { break-inside:avoid; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -547,7 +562,7 @@ def report_text_block(key, title, default="", regen=None):
     ekey = f"__wr_edit_{key}__"
     if ekey not in st.session_state: st.session_state[ekey] = False
 
-    # 제목 + 액션 버튼 (제목 한 줄, 버튼은 그 아래 좁지 않은 컬럼)
+    # 제목 + 액션 버튼 (제목 한 줄, 버튼은 그 아래 정상 너비 컬럼)
     st.markdown(f"**{title}**")
     bcols = st.columns(2)
     edit_on = st.session_state[ekey]
@@ -562,12 +577,24 @@ def report_text_block(key, title, default="", regen=None):
             st.session_state[ekey] = False; st.rerun()
 
     if st.session_state[ekey]:
-        new = st.text_area("", store[key], key=f"wr_ta_{key}", height=180,
-                           label_visibility="collapsed")
+        if HAS_QUILL:
+            # Word 수준 리치 에디터 (글자 크기·색·굵게·기울임·밑줄·목록·정렬 등)
+            toolbar = [
+                [{"size": ["small", False, "large", "huge"]}],
+                ["bold", "italic", "underline", "strike"],
+                [{"color": []}, {"background": []}],
+                [{"list": "ordered"}, {"list": "bullet"}],
+                [{"align": []}], ["clean"],
+            ]
+            new = st_quill(value=store[key], html=True, toolbar=toolbar,
+                           key=f"wr_quill_{key}")
+        else:
+            new = st.text_area("", store[key], key=f"wr_ta_{key}", height=180,
+                               label_visibility="collapsed")
         if st.button("저장", key=f"wr_save_{key}", type="primary",
                      use_container_width=True):
-            store[key] = new
-            all_d = load_insights(); all_d[key] = new; save_insights(all_d)
+            store[key] = new if new is not None else store[key]
+            all_d = load_insights(); all_d[key] = store[key]; save_insights(all_d)
             st.session_state[ekey] = False; st.rerun()
     else:
         st.markdown(f"<div class='report-box'>{store[key] or '내용을 입력하세요.'}</div>",
@@ -806,8 +833,14 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
 # ══════════════════════════════════════════════════════
 # 자동 보고 초안
 # ══════════════════════════════════════════════════════
+def _delta_html(d):
+    """증감 문자열 → 색상 span (역신장 △ 빨강 / 신장 + 초록)"""
+    if not d: return ""
+    if d.startswith("△"): return f'<span style="color:#dc2626;font-weight:700">{d}</span>'
+    return f'<span style="color:#16a34a;font-weight:700">{d}</span>'
+
 def auto_draft(df, ref_year, ref_month, ref_week=None):
-    """기준 주차(없으면 기준 월) 실적으로 보고 문구 자동 생성"""
+    """기준 주차(없으면 기준 월) 실적으로 보고 문구 자동 생성 (HTML, 역신장 빨강)"""
     lines = []
     for met in METRICS7:
         if ref_week:
@@ -819,16 +852,17 @@ def auto_draft(df, ref_year, ref_month, ref_week=None):
             parts = [f" - {met} — {fmt_value(met, cur)}"]
             d_w = fmt_delta(met, cur, prv)
             d_y = fmt_delta(met, cur, yoy)
-            if d_w: parts.append(f"전주비 {d_w}")
-            if d_y: parts.append(f"전년비 {d_y}")
+            if d_w: parts.append(f"전주비 {_delta_html(d_w)}")
+            if d_y: parts.append(f"전년비 {_delta_html(d_y)}")
             lines.append(", ".join(parts))
         else:
             cur = pick(df, "월", met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
             prv = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
             if isinstance(cur, float) and np.isnan(cur): continue
             d = fmt_delta(met, cur, prv)
-            lines.append(f" - {met} — {fmt_value(met, cur)}" + (f", 전년비 {d}" if d else ""))
-    return "\n".join(lines)
+            tail = f", 전년비 {_delta_html(d)}" if d else ""
+            lines.append(f" - {met} — {fmt_value(met, cur)}" + tail)
+    return "<br>".join(lines)
 
 # ══════════════════════════════════════════════════════
 # 회원 실적 페이지
@@ -952,6 +986,18 @@ def render_member_page(mdf, chart_years=None):
     st.dataframe(pd.DataFrame(rows).set_index("세그먼트"), use_container_width=True)
 
 # ══════════════════════════════════════════════════════
+# 페이지 PDF 저장 (브라우저 인쇄 → PDF, 차트 포함)
+# ══════════════════════════════════════════════════════
+def print_button(label="이 페이지 PDF 저장 / 인쇄"):
+    components.html(
+        f"""<button onclick="window.parent.print()"
+        style="float:right;background:#2E68B0;color:#fff;border:0;border-radius:6px;
+        padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;
+        font-family:'Pretendard',-apple-system,sans-serif">{label}</button>
+        <div style="clear:both"></div>""", height=44)
+    st.caption("버튼이 동작하지 않으면 Ctrl+P(Mac ⌘+P) → 대상을 'PDF로 저장'으로 인쇄하세요.")
+
+# ══════════════════════════════════════════════════════
 # 메인 앱
 # ══════════════════════════════════════════════════════
 def main():
@@ -1018,6 +1064,7 @@ def main():
     if df.empty:
         st.warning("첫구매(전체관점/지표별) 데이터가 없습니다. **05. 회원 실적** 페이지를 이용하세요.")
         if not mdf.empty:
+            print_button()
             render_member_page(mdf)
         st.stop()
 
@@ -1083,6 +1130,7 @@ def main():
             st.rerun()
 
     texts = st.session_state.wr_texts
+    print_button()
 
     # ════════════ 01. 주간보고 요약 ════════════
     if page == "01. 주간보고 요약":
