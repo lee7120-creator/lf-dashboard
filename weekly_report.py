@@ -1372,6 +1372,15 @@ def main():
             st.dataframe(style_delta_cols(pd.DataFrame(rows).set_index("지표")),
                          use_container_width=True)
 
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        wy2, wlabel2 = (ref_year, ref_week) if ref_week else latest_period(df, "주")
+        ai_model = st.session_state.get("wr_ai_model", "claude-opus-4-8")
+        report_text_block(
+            f"wr_week_memo_{wy2}_{wlabel2}",
+            f"{wy2}년 {wlabel2} 액션·이슈사항" if wlabel2 else "주차별 액션·이슈사항",
+            ai_fn=lambda: ai_generate_insight(df, ref_year, ref_month, wlabel2, ai_model,
+                                              focus=f"{wlabel2} 주차 액션·이슈 및 인사이트"))
+
     # ════════════ 04. 채널별 실적 ════════════
     elif page == "04. 채널별 실적":
         st.markdown("## 채널(BPU)별 실적")
