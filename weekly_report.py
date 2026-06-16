@@ -924,8 +924,8 @@ def _ai_metric_facts(df, ref_year, ref_month, ref_week=None):
             rows.append(f"- {met}: {fmt_value(met, cur)} (전년비 {fmt_delta(met, cur, prv) or '–'})")
     return "\n".join(rows)
 
-def ai_generate_insight(df, ref_year, ref_month, ref_week, model):
-    """Claude API로 주간보고 인사이트 생성 → HTML(역신장 빨강) 반환. (텍스트, 에러) 튜플"""
+def ai_generate_insight(df, ref_year, ref_month, ref_week, model, focus="전주 주요 지표 현황"):
+    """Claude API로 보고 인사이트 생성 → HTML(역신장 빨강) 반환. (텍스트, 에러) 튜플"""
     key = _anthropic_key()
     if not key:
         return None, ("ANTHROPIC_API_KEY가 설정되지 않았습니다. "
@@ -938,7 +938,7 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model):
     period = f"{ref_year}년 {ref_week}" if ref_week else f"{ref_year}년 {ref_month}월"
     facts = _ai_metric_facts(df, ref_year, ref_month, ref_week)
     system = (
-        "당신은 LF몰 CRM 첫구매 주간보고를 작성하는 데이터 분석가입니다. "
+        "당신은 LF몰 CRM 첫구매 보고서를 작성하는 데이터 분석가입니다. "
         "주어진 지표 수치만 근거로 한국어 실무 보고 문구를 작성하세요. "
         "수치를 지어내지 말고, 추세·특이점·점검 포인트를 간결한 불릿으로 정리하세요. "
         "출력은 HTML로만 (불릿은 <br>로 구분). "
@@ -946,7 +946,7 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model):
         "신장(증가)은 <span style=\"color:#16a34a;font-weight:700\">…</span>로 감싸세요. "
         "서론·맺음말 없이 불릿만 출력하세요."
     )
-    user = f"[기준: {period}]\n다음 지표로 '전주 주요 지표 현황' 보고 문구를 작성하세요:\n{facts}"
+    user = f"[기준: {period}]\n다음 지표로 '{focus}' 문구를 작성하세요:\n{facts}"
     try:
         client = anthropic.Anthropic(api_key=key)
         resp = client.messages.create(
@@ -1332,8 +1332,12 @@ def main():
         st.dataframe(style_trend(tbl, METRICS7), use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        report_text_block(f"wr_month_memo_{ref_year}_{ref_month}",
-                          f"{ref_year}년 {ref_month}월 액션·이슈사항")
+        ai_model = st.session_state.get("wr_ai_model", "claude-opus-4-8")
+        report_text_block(
+            f"wr_month_memo_{ref_year}_{ref_month}",
+            f"{ref_year}년 {ref_month}월 액션·이슈사항",
+            ai_fn=lambda: ai_generate_insight(df, ref_year, ref_month, None, ai_model,
+                                              focus=f"{ref_year}년 {ref_month}월 액션·이슈 및 인사이트"))
 
     # ════════════ 03. 주차별 추이 ════════════
     elif page == "03. 주차별 추이":
