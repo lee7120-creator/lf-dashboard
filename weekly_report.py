@@ -553,9 +553,9 @@ def save_insights(d):
     with open(INSIGHT_FILE, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
 
-def report_text_block(key, title, default="", regen=None):
+def report_text_block(key, title, default="", regen=None, ai_fn=None):
     """편집 가능한 보고란 텍스트 박스 (JSON 저장).
-    regen 텍스트를 주면 '자동 생성' 버튼으로 데이터 기반 문구를 다시 채울 수 있다.
+    regen 텍스트를 주면 '자동 생성'(템플릿) 버튼, ai_fn을 주면 'AI 생성'(Claude) 버튼이 뜬다.
     좁은 컬럼 안에서도 안 깨지도록 버튼은 박스 위/아래에 배치한다."""
     store = st.session_state.wr_texts
     if not store.get(key): store[key] = default
@@ -564,17 +564,32 @@ def report_text_block(key, title, default="", regen=None):
 
     # 제목 + 액션 버튼 (제목 한 줄, 버튼은 그 아래 정상 너비 컬럼)
     st.markdown(f"**{title}**")
-    bcols = st.columns(2)
+    n = 2 + (1 if regen is not None else 0) + (1 if ai_fn is not None else 0)
+    bcols = st.columns(n)
+    bi = 0
     edit_on = st.session_state[ekey]
-    if bcols[0].button("편집" if not edit_on else "보기",
-                       key=f"wr_edit_{key}", use_container_width=True):
+    if bcols[bi].button("편집" if not edit_on else "보기",
+                        key=f"wr_edit_{key}", use_container_width=True):
         st.session_state[ekey] = not edit_on; st.rerun()
+    bi += 1
     if regen is not None:
-        if bcols[1].button("자동 생성", key=f"wr_regen_{key}", use_container_width=True,
-                           help="기준 주차 실적으로 문구를 다시 생성합니다 (기존 내용 대체)"):
+        if bcols[bi].button("자동 생성", key=f"wr_regen_{key}", use_container_width=True,
+                            help="기준 주차 실적으로 템플릿 문구를 채웁니다 (기존 내용 대체)"):
             store[key] = regen
             all_d = load_insights(); all_d[key] = regen; save_insights(all_d)
             st.session_state[ekey] = False; st.rerun()
+        bi += 1
+    if ai_fn is not None:
+        if bcols[bi].button("AI 생성", key=f"wr_ai_{key}", use_container_width=True,
+                            help="Claude가 데이터를 보고 인사이트 문구를 작성합니다 (기존 내용 대체)"):
+            with st.spinner("AI가 인사이트를 작성 중…"):
+                text, err = ai_fn()
+            if err:
+                st.error(err)
+            else:
+                store[key] = text
+                all_d = load_insights(); all_d[key] = text; save_insights(all_d)
+                st.session_state[ekey] = False; st.rerun()
 
     if st.session_state[ekey]:
         if HAS_QUILL:
@@ -865,6 +880,89 @@ def auto_draft(df, ref_year, ref_month, ref_week=None):
     return "<br>".join(lines)
 
 # ══════════════════════════════════════════════════════
+# AI 인사이트 생성 (Claude API) — 모델 교체 가능
+# ══════════════════════════════════════════════════════
+AI_MODELS = {
+    "Claude Opus 4.8 (최고 품질)": "claude-opus-4-8",
+    "Claude Sonnet 4.6 (균형·추천)": "claude-sonnet-4-6",
+    "Claude Haiku 4.5 (빠름·저렴)": "claude-haiku-4-5",
+}
+
+def _anthropic_key():
+    """Streamlit secrets 또는 환경변수에서 API 키 조회"""
+    try:
+        if "ANTHROPIC_API_KEY" in st.secrets:
+            return st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        pass
+    return os.environ.get("ANTHROPIC_API_KEY")
+
+def _ai_metric_facts(df, ref_year, ref_month, ref_week=None):
+    """모델에 넘길 지표·증감 요약 텍스트"""
+    rows = []
+    for met in METRICS7:
+        if ref_week:
+            cur = pick(df, "주", met, "*TOTAL", ref_year, ref_week, "mtd")
+            if isinstance(cur, float) and np.isnan(cur): continue
+            py, plb = prev_label(df, "주", ref_year, ref_week)
+            prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
+            yoy = pick(df, "주", met, "*TOTAL", ref_year - 1, ref_week, "final")
+            wm = re.match(r"(\d{1,2})월 (\d)주차", ref_week)
+            mom = np.nan
+            if wm:
+                mo, wk = int(wm.group(1)), int(wm.group(2))
+                my, mm = (ref_year, mo - 1) if mo > 1 else (ref_year - 1, 12)
+                mom = pick(df, "주", met, "*TOTAL", my, f"{mm:02d}월 {wk}주차", "final")
+            rows.append(f"- {met}: {fmt_value(met, cur)} "
+                        f"(전주비 {fmt_delta(met, cur, prv) or '–'}, "
+                        f"전월비 {fmt_delta(met, cur, mom) or '–'}, "
+                        f"전년비 {fmt_delta(met, cur, yoy) or '–'})")
+        else:
+            cur = pick(df, "월", met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
+            prv = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
+            if isinstance(cur, float) and np.isnan(cur): continue
+            rows.append(f"- {met}: {fmt_value(met, cur)} (전년비 {fmt_delta(met, cur, prv) or '–'})")
+    return "\n".join(rows)
+
+def ai_generate_insight(df, ref_year, ref_month, ref_week, model):
+    """Claude API로 주간보고 인사이트 생성 → HTML(역신장 빨강) 반환. (텍스트, 에러) 튜플"""
+    key = _anthropic_key()
+    if not key:
+        return None, ("ANTHROPIC_API_KEY가 설정되지 않았습니다. "
+                      "Streamlit Cloud → Settings → Secrets에 ANTHROPIC_API_KEY를 추가하세요.")
+    try:
+        import anthropic
+    except ImportError:
+        return None, "anthropic 패키지가 설치되지 않았습니다. requirements.txt 반영 후 재배포하세요."
+
+    period = f"{ref_year}년 {ref_week}" if ref_week else f"{ref_year}년 {ref_month}월"
+    facts = _ai_metric_facts(df, ref_year, ref_month, ref_week)
+    system = (
+        "당신은 LF몰 CRM 첫구매 주간보고를 작성하는 데이터 분석가입니다. "
+        "주어진 지표 수치만 근거로 한국어 실무 보고 문구를 작성하세요. "
+        "수치를 지어내지 말고, 추세·특이점·점검 포인트를 간결한 불릿으로 정리하세요. "
+        "출력은 HTML로만 (불릿은 <br>로 구분). "
+        "증감 수치 중 역신장(감소)은 <span style=\"color:#dc2626;font-weight:700\">…</span>, "
+        "신장(증가)은 <span style=\"color:#16a34a;font-weight:700\">…</span>로 감싸세요. "
+        "서론·맺음말 없이 불릿만 출력하세요."
+    )
+    user = f"[기준: {period}]\n다음 지표로 '전주 주요 지표 현황' 보고 문구를 작성하세요:\n{facts}"
+    try:
+        client = anthropic.Anthropic(api_key=key)
+        resp = client.messages.create(
+            model=model, max_tokens=2000, system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        return (text or None), (None if text else "빈 응답이 반환됐습니다.")
+    except anthropic.AuthenticationError:
+        return None, "API 키 인증에 실패했습니다. 키를 확인하세요."
+    except anthropic.RateLimitError:
+        return None, "요청이 많아 일시적으로 제한됐습니다. 잠시 후 다시 시도하세요."
+    except Exception as e:
+        return None, f"생성 중 오류: {e}"
+
+# ══════════════════════════════════════════════════════
 # 회원 실적 페이지
 # ══════════════════════════════════════════════════════
 def member_delta(metric, cur, prev):
@@ -1110,6 +1208,13 @@ def main():
         if not chart_years: chart_years = default_yrs
 
         st.markdown("---")
+        st.markdown("**AI 인사이트 모델**")
+        ai_label = st.selectbox("모델 선택", list(AI_MODELS.keys()), key="wr_ai_model_label")
+        st.session_state["wr_ai_model"] = AI_MODELS[ai_label]
+        st.caption("✅ API 키 설정됨" if _anthropic_key()
+                   else "⚠ ANTHROPIC_API_KEY 미설정 — Secrets에 추가하세요")
+
+        st.markdown("---")
         st.markdown("**누적 데이터**")
         saved_rows = len(load_store())
         pend = " · 저장 시 반영" if (has_new and not st.session_state.get("wr_saved_sig") == sig) else ""
@@ -1186,10 +1291,13 @@ def main():
 
         # 보고란
         draft = auto_draft(df, ref_year, ref_month, ref_week=wlabel)
+        ai_model = st.session_state.get("wr_ai_model", "claude-opus-4-8")
         cL, cR = st.columns(2)
         with cL:
             report_text_block("wr_metrics_summary", "전주 주요 지표 현황",
-                              default=draft, regen=draft)
+                              default=draft, regen=draft,
+                              ai_fn=lambda: ai_generate_insight(df, ref_year, ref_month,
+                                                                wlabel, ai_model))
         with cR:
             report_text_block("wr_exec_summary", "금주 집행 내용 요약")
 
