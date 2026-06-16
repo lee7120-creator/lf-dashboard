@@ -1234,6 +1234,26 @@ def main():
             st.cache_data.clear()
             st.rerun()
 
+        st.markdown("---")
+        st.markdown("**보고란·메모**")
+        st.download_button(
+            "⬇ 보고란·메모 백업 (JSON)",
+            json.dumps(st.session_state.wr_texts, ensure_ascii=False, indent=2).encode("utf-8"),
+            "wr_insights.json", "application/json", use_container_width=True,
+            help="모든 보고란·인사이트 메모를 백업합니다. 재배포로 초기화돼도 이 파일을 복원하면 되살아납니다.")
+        restore = st.file_uploader("메모 복원 (JSON 업로드)", type=["json"], key="wr_restore_memo")
+        if restore is not None:
+            try:
+                data = json.loads(restore.getvalue().decode("utf-8"))
+                if isinstance(data, dict) and st.session_state.get("wr_restored") != restore.name:
+                    merged = {**st.session_state.wr_texts, **data}  # 업로드 값 우선
+                    st.session_state.wr_texts = merged
+                    all_d = load_insights(); all_d.update(merged); save_insights(all_d)
+                    st.session_state["wr_restored"] = restore.name
+                    st.success(f"{len(data)}개 메모 복원됨 ✓"); st.rerun()
+            except Exception as e:
+                st.error(f"복원 실패: {e}")
+
     texts = st.session_state.wr_texts
     print_button()
 
