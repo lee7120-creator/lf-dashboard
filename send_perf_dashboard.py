@@ -243,6 +243,173 @@ def merge_store(old, new):
     return both.drop_duplicates(subset=["date", "af"], keep="last").reset_index(drop=True)
 
 
+# ── 전사 MTD 발송상세 (인당발송 피로도·CTR) — send_dashboard 분석 이식 ──────
+MTD_METRICS = {
+    "perSend": ["인당발송건수"], "revenue": ["거래액"], "rps": ["발송건당거래액"],
+    "totalSend": ["총발송건수"], "customers": ["유니크발송고객수"], "ctr": ["CTR"],
+    "uniqueInflow": ["유니크유입"], "totalInflow": ["총유입"], "visitPerPerson": ["인당방문횟수"],
+    "purchaseCust": ["구매고객수"], "purchaseCnt": ["구매건수"], "purchasePerPerson": ["인당구매건수"],
+    "avgOrderVal": ["객단가"], "unitPrice": ["건단가"], "mRevenue": ["M당거래액"], "pointM": ["적립M"],
+}
+MTD_LABELS = {
+    "perSend": "인당 발송 건수", "revenue": "거래액", "rps": "발송건당 거래액",
+    "totalSend": "총 발송 건수", "customers": "유니크 발송 고객수", "ctr": "CTR",
+    "uniqueInflow": "유니크 유입", "totalInflow": "총 유입", "visitPerPerson": "인당 방문 횟수",
+    "purchaseCust": "구매 고객수", "purchaseCnt": "구매 건수", "purchasePerPerson": "인당 구매 건수",
+    "avgOrderVal": "객단가", "unitPrice": "건단가", "mRevenue": "M당 거래액", "pointM": "적립M",
+    "purchaseRate": "구매전환율(CR)", "rpc": "고객당 매출",
+}
+MTD_DERIVED = ["purchaseRate", "rpc"]
+MTD_STORE = "send_perf_mtd_store.csv"
+MTD_STORE_COLS = ["date"] + list(MTD_METRICS)
+
+
+def _linreg(x, y):
+    import scipy.stats as ss
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    m = ~np.isnan(x) & ~np.isnan(y)
+    if m.sum() < 5:
+        return dict(slope=np.nan, intercept=np.nan, r2=np.nan, p=np.nan)
+    sl, ic, r, p, _ = ss.linregress(x[m], y[m])
+    return dict(slope=sl, intercept=ic, r2=r ** 2, p=p)
+
+
+def _dow_residual(df, col):
+    """요일 평균을 뺀 잔차 — 요일 효과 통제용."""
+    vals = df[col].values.astype(float); res = vals.copy()
+    for d in range(7):
+        idx = df["dow"].values == d
+        if idx.sum() > 0:
+            res[idx] -= np.nanmean(res[idx])
+    return res
+
+
+def parse_mtd_bytes(file_bytes):
+    """전사 MTD 발송상세(날짜=열, 지표=행) → 일자별 DataFrame. 시작 열 자동 탐지."""
+    xls = pd.ExcelFile(io.BytesIO(file_bytes))
+    ws = pd.read_excel(xls, header=None, sheet_name=xls.sheet_names[0])
+    date_row = ws.iloc[1, :]
+    start = None
+    for j in range(1, ws.shape[1]):
+        v = date_row.iloc[j]
+        if pd.isnull(v):
+            continue
+        try:
+            (pd.Timestamp("1899-12-30") + pd.Timedelta(days=int(v))) if isinstance(v, (int, float)) else pd.Timestamp(v)
+            start = j; break
+        except Exception:
+            continue
+    if start is None:
+        return pd.DataFrame()
+    dates = []
+    for v in ws.iloc[1, start:]:
+        if pd.isnull(v):
+            dates.append(pd.NaT); continue
+        try:
+            d = (pd.Timestamp("1899-12-30") + pd.Timedelta(days=int(v))) if isinstance(v, (int, float)) else pd.Timestamp(v)
+            dates.append(d)
+        except Exception:
+            dates.append(pd.NaT)
+    metric_col = ws.iloc[3:, 0].astype(str).str.strip()
+
+    def get_m(keys):
+        for kw in keys:
+            match = metric_col[metric_col.str.replace(" ", "") == kw.replace(" ", "")]
+            if not match.empty:
+                vals = ws.iloc[match.index[0], start:start + len(dates)].values
+                return pd.to_numeric(vals, errors="coerce")
+        return np.full(len(dates), np.nan)
+
+    data = {k: get_m(v) for k, v in MTD_METRICS.items()}
+    data["date"] = dates
+    df = pd.DataFrame(data).dropna(subset=["perSend", "revenue"]).copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    return df
+
+
+def load_mtd_store():
+    if os.path.exists(MTD_STORE):
+        try:
+            return pd.read_csv(MTD_STORE, encoding="utf-8-sig")
+        except Exception:
+            pass
+    return pd.DataFrame(columns=MTD_STORE_COLS)
+
+
+def save_mtd_store(df):
+    out = df[[c for c in MTD_STORE_COLS if c in df]].copy()
+    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out.to_csv(MTD_STORE, index=False, encoding="utf-8-sig")
+
+
+def merge_mtd_store(old, new):
+    """일자 기준 병합 — 같은 날짜는 신규 우선."""
+    def _p(d):
+        if d is None or len(d) == 0:
+            return pd.DataFrame(columns=MTD_STORE_COLS)
+        d = d[[c for c in MTD_STORE_COLS if c in d]].copy()
+        d["date"] = pd.to_datetime(d["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        return d
+    both = pd.concat([_p(old), _p(new)], ignore_index=True).dropna(subset=["date"])
+    if both.empty:
+        return both
+    return both.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
+
+
+def compute_mtd(df):
+    """일자별 MTD → 피로도/효율 집계 (수신동의 제외)."""
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    for c in list(MTD_METRICS):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    _cust = df["customers"].replace(0, np.nan)
+    df["purchaseRate"] = (df["purchaseCust"] / _cust).clip(0, 1)
+    df["rpc"] = df["revenue"] / _cust
+    df["t"] = np.arange(len(df))
+    df["dow"] = df["date"].dt.dayofweek
+    df["month"] = df["date"].dt.to_period("M").astype(str)
+    df["quarter"] = df["date"].dt.to_period("Q").astype(str)
+    df["year"] = df["date"].dt.year
+    allk = list(MTD_METRICS) + MTD_DERIVED
+    agg = {k: pd.NamedAgg(k, "mean") for k in allk}
+    monthly = df.groupby("month", sort=True).agg(n=("revenue", "count"), **agg).reset_index()
+    quarterly = df.groupby("quarter", sort=True).agg(n=("revenue", "count"), **agg).reset_index()
+
+    BINS = [0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 99]
+    LBLS = ["~2.0건", "2.0~2.5", "2.5~3.0", "3.0~3.5", "3.5~4.0", "4.0~4.5", "4.5건+"]
+    df["bucket"] = pd.cut(df["perSend"], bins=BINS, labels=LBLS)
+    buckets = df.groupby("bucket", observed=True).agg(n=("revenue", "count"), **agg).reset_index()
+    buckets = buckets[buckets["n"] >= 30].reset_index(drop=True)
+
+    df_s = df.sort_values("totalSend").reset_index(drop=True)
+    qidx = np.array_split(np.arange(len(df_s)), 5) if len(df_s) >= 5 else []
+    quintile = pd.DataFrame([
+        dict(label=["Q1 최소", "Q2", "Q3", "Q4", "Q5 최대"][i], n=len(qidx[i]),
+             **{k: df_s.iloc[qidx[i]][k].mean() for k in allk})
+        for i in range(len(qidx))]) if qidx else pd.DataFrame()
+
+    DOW = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
+    dow_mean = df.groupby("dow").agg(**agg).reset_index()
+    dow_mean["요일"] = dow_mean["dow"].map(DOW)
+    dow_comp = []
+    for d in [0, 1, 2, 3, 4]:
+        sub = df[df["dow"] == d]
+        if len(sub) < 20:
+            continue
+        med = sub["perSend"].median()
+        lo, hi = sub[sub["perSend"] <= med], sub[sub["perSend"] > med]
+        dow_comp.append(dict(요일=DOW[d], lowRps=lo["rps"].mean(), highRps=hi["rps"].mean(),
+                             lowCtr=lo["ctr"].mean(), highCtr=hi["ctr"].mean()))
+    t = df["t"].values.astype(float)
+    reg = {k: _linreg(t, _dow_residual(df, k) if k != "perSend" else df[k].values)
+           for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]}
+    meta = dict(start=str(df["date"].min().date()), end=str(df["date"].max().date()), days=len(df))
+    return dict(df=df, monthly=monthly, quarterly=quarterly, buckets=buckets,
+                quintile=quintile, dow_mean=dow_mean, dow_comp=dow_comp, reg=reg, meta=meta)
+
+
 # ── 문구 자동 태깅 ─────────────────────────────────────────────────────
 EMOJI_RE = re.compile(
     "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F000-\U0001F0FF"
@@ -368,6 +535,9 @@ def main():
     @st.cache_data(show_spinner=False)
     def cached_plan(b): return parse_plan_bytes(b)
 
+    @st.cache_data(show_spinner=False)
+    def cached_mtd(b): return parse_mtd_bytes(b)
+
     AI_MODELS = {
         "Claude Opus 4.8 (최고 품질)": "claude-opus-4-8",
         "Claude Sonnet 4.6 (균형)": "claude-sonnet-4-6",
@@ -419,6 +589,10 @@ def main():
     plan_file = st.sidebar.file_uploader(
         "② 발송기획 파일 (통합본)", type=["xlsx"],
         help="새 실적 주차를 추가할 때만 필요합니다. 이미 누적된 데이터만 볼 땐 생략 가능.")
+    mtd_files = st.sidebar.file_uploader(
+        "③ 전사 MTD 발송상세 (선택 · xlsx/zip)", type=["xlsx", "zip"],
+        accept_multiple_files=True, key="mtd_up",
+        help="발송피로도(인당발송·CTR) 전사 분석용. 날짜=열, 지표=행 형식. 일자 기준 누적 저장됩니다.")
 
     stored = load_store()
     parse_log = []
@@ -486,6 +660,33 @@ def main():
     raw["matched"] = raw["matched"].map(_to_bool) if "matched" in raw else False
     raw = add_tags(raw)
 
+    # ── 전사 MTD (발송피로도) 누적 처리 ──
+    mtd_stored = load_mtd_store()
+    mtd_new = None
+    if mtd_files:
+        mframes = []
+        for nm, b in expand_uploads(mtd_files):
+            if b is None:
+                continue
+            try:
+                md = cached_mtd(b)
+                if len(md):
+                    mframes.append(md[[c for c in MTD_STORE_COLS if c in md]])
+                parse_log.append(f"· [MTD] {nm[:22]} — {len(md)}일")
+            except Exception as e:
+                parse_log.append(f"· [MTD] {nm[:22]} — 실패: {e}")
+        if mframes:
+            mtd_new = pd.concat(mframes, ignore_index=True)
+    if mtd_new is not None and len(mtd_new):
+        mtd_work = merge_mtd_store(mtd_stored, mtd_new)
+        st.sidebar.success(f"MTD 신규 {len(mtd_new)}일 → 누적 {len(mtd_work)}일 (미리보기)")
+        if st.sidebar.button("💾 MTD 저장 (누적 반영)", use_container_width=True, key="save_mtd"):
+            save_mtd_store(mtd_work); st.cache_data.clear()
+            st.sidebar.success("MTD 저장됨 ✓")
+    else:
+        mtd_work = mtd_stored
+    mtd_data = compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
+
     # ── 필터 ──
     st.sidebar.markdown("---")
     st.sidebar.markdown("#### 필터")
@@ -503,10 +704,20 @@ def main():
     fdf = df[df["send"].fillna(0) >= min_send].reset_index(drop=True)
 
     st.sidebar.markdown("---")
-    page = st.sidebar.radio("페이지", [
+    CAMPAIGN_PAGES = [
         "01. 종합 요약", "08. 전체 효율·추이", "02. 문구 속성별 성과", "03. 캠페인 리더보드",
-        "04. 카테고리·시간대 매트릭스", "05. 타이밍·피로도", "06. AI 처방", "07. 데이터·다운로드",
-    ])
+        "04. 카테고리·시간대 매트릭스", "05. 타이밍 패턴", "06. AI 처방", "07. 데이터·다운로드",
+    ]
+    FATIGUE_PAGES = [
+        "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
+    ]
+    cat = st.sidebar.radio("분석 영역", ["📊 발송성과 (문구×성과)", "😮‍💨 발송피로도 (전사 MTD)"])
+    if cat.startswith("📊"):
+        page = st.sidebar.radio("페이지", CAMPAIGN_PAGES)
+    else:
+        page = st.sidebar.radio("페이지", FATIGUE_PAGES)
+        if mtd_data is None:
+            st.sidebar.info("③ 전사 MTD 발송상세 파일을 올리면 활성화됩니다.")
     model_name = st.sidebar.selectbox("AI 모델", list(AI_MODELS.keys()))
     model = AI_MODELS[model_name]
 
@@ -542,6 +753,19 @@ def main():
                 os.remove(DATA_STORE)
             st.cache_data.clear()
             st.success("초기화됨 — 새로고침하세요")
+        st.markdown("---")
+        st.caption(f"전사 MTD 누적 {0 if mtd_work is None else len(mtd_work)}일")
+        if mtd_work is not None and len(mtd_work):
+            st.download_button(
+                "⬇ MTD 백업 (CSV)",
+                mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"),
+                file_name="send_perf_mtd_backup.csv", mime="text/csv",
+                use_container_width=True, key="mtd_bak")
+        if st.button("🗑 MTD 초기화", use_container_width=True, key="clear_mtd"):
+            if os.path.exists(MTD_STORE):
+                os.remove(MTD_STORE)
+            st.cache_data.clear()
+            st.success("MTD 초기화됨 — 새로고침하세요")
 
     # 지표 메타
     METRIC_OPTS = {
@@ -713,7 +937,7 @@ def main():
     # PAGE 05 — 타이밍·피로도
     # ══════════════════════════════════════════════════════════════
     elif page.startswith("05"):
-        st.title("타이밍 · 피로도")
+        st.title("타이밍 패턴")
         mlabel = st.selectbox("지표", list(METRIC_OPTS.keys()))
         mcol = METRIC_OPTS[mlabel][0]
         is_pct = mcol in ("ord_cr", "infl_cr")
@@ -841,6 +1065,157 @@ def main():
         st.markdown('<div class="appendix">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산되지 않습니다 '
                     '— 전사 MTD 발송상세가 필요합니다. 여기서는 캠페인 합산 기준 전체 효율을 봅니다.</div>',
                     unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════
+    # 발송피로도 (전사 MTD) — F1~F4
+    # ══════════════════════════════════════════════════════════════
+    elif page.startswith("F"):
+        MTDOPT = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps",
+                  "거래액": "revenue", "인당 발송 건수": "perSend", "객단가": "avgOrderVal"}
+        MTD_PCT = {"ctr", "purchaseRate"}
+        MCLR = {"ctr": PALETTE["red"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
+                "revenue": PALETTE["blue"], "perSend": PALETTE["amber"], "avgOrderVal": PALETTE["teal"]}
+
+        def mfmt(col, v):
+            if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
+            if col in MTD_PCT: return f"{v*100:.2f}%"
+            if col in ("revenue",): return won(v)
+            if col == "perSend": return f"{v:.2f}건"
+            return f"{v:,.0f}"
+
+        if mtd_data is None:
+            st.title("발송피로도 (전사 MTD)")
+            st.info("③ 전사 MTD 발송상세 파일(날짜=열, 지표=행)을 사이드바에서 올리고 「MTD 저장」을 누르세요.")
+            st.stop()
+        md = mtd_data["df"]
+        st.caption(f"전사 MTD · {mtd_data['meta']['start']} ~ {mtd_data['meta']['end']} "
+                   f"({mtd_data['meta']['days']:,}일)")
+
+        # ── F1. 피로도 시계열·CTR ──
+        if page.startswith("F1"):
+            st.title("피로도 시계열 · CTR")
+            st.markdown("인당 발송 건수(발송 강도)와 효율 지표가 시간에 따라 어떻게 같이/반대로 움직이는지.")
+            gran = st.radio("집계", ["월별", "분기별"], horizontal=True)
+            agg = mtd_data["monthly"] if gran == "월별" else mtd_data["quarterly"]
+            xcol = "month" if gran == "월별" else "quarter"
+            ylab = st.selectbox("효율 지표(우축)", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)"])
+            yc = MTDOPT[ylab]
+            fig = go.Figure()
+            fig.add_bar(x=agg[xcol], y=agg["perSend"], name="인당 발송 건수",
+                        marker_color=PALETTE["amber"], opacity=0.5)
+            ys = agg[yc] * (100 if yc in MTD_PCT else 1)
+            fig.add_trace(go.Scatter(x=agg[xcol], y=ys, name=ylab, mode="lines+markers",
+                                     line=dict(color=MCLR[yc], width=2), yaxis="y2"))
+            lay = base_layout(h=380, title=f"인당 발송 건수(좌) vs {ylab}(우)")
+            lay["showlegend"] = True
+            lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+            lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
+                                 tickfont=dict(color="#64748b", size=11),
+                                 ticksuffix=("%" if yc in MTD_PCT else ""))
+            fig.update_layout(**lay)
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("##### 추세 회귀 (요일 효과 통제)")
+            rows = []
+            for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]:
+                r = mtd_data["reg"][k]
+                unit = "%p/일" if k in MTD_PCT else ("원/일" if k in ("rps", "revenue") else "/일")
+                sl = r["slope"] * (100 if k in MTD_PCT else 1)
+                rows.append(dict(지표=MTD_LABELS[k], **{"일변화": f"{sl:+.4g}{unit}"},
+                                 R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            st.markdown('<div class="appendix">인당 발송 건수는 상승, CTR·구매전환율·RPS는 하락 추세라면 '
+                        '“발송 강도를 높일수록 효율이 떨어지는” 피로도 신호입니다. '
+                        'R²는 추세의 뚜렷함(0~1), 유의성은 우연일 가능성입니다.</div>', unsafe_allow_html=True)
+
+        # ── F2. 발송 빈도 효율 ──
+        elif page.startswith("F2"):
+            st.title("발송 빈도 효율")
+            st.markdown("인당 발송 건수 구간별 평균 효율 — 어느 강도까지가 효율적인가.")
+            lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "객단가"])
+            mc = MTDOPT[lab]
+            b = mtd_data["buckets"]
+            if len(b):
+                y = b[mc] * (100 if mc in MTD_PCT else 1)
+                fig = go.Figure(go.Bar(x=b["bucket"].astype(str), y=y, marker_color=MCLR[mc],
+                                       text=[f"{v:.2f}" for v in y], textposition="outside"))
+                fig.update_layout(**base_layout(h=340, ysuffix=("%" if mc in MTD_PCT else ""),
+                                                title=f"인당 발송 구간별 평균 {lab} (표본 30일+)"))
+                st.plotly_chart(fig, use_container_width=True)
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 발송량 5분위 효율")
+            q = mtd_data["quintile"]
+            if len(q):
+                cc = st.columns(2)
+                with cc[0]:
+                    l1 = st.selectbox("좌축", ["발송건당거래액(RPS)", "CTR", "거래액"], key="q_l")
+                with cc[1]:
+                    l2 = st.selectbox("우축", ["CTR", "구매전환율(CR)", "객단가"], key="q_r")
+                m1, m2 = MTDOPT[l1], MTDOPT[l2]
+                fig = go.Figure()
+                fig.add_bar(x=q["label"], y=q[m1] * (100 if m1 in MTD_PCT else 1),
+                            name=l1, marker_color=MCLR[m1], opacity=0.6)
+                fig.add_trace(go.Scatter(x=q["label"], y=q[m2] * (100 if m2 in MTD_PCT else 1),
+                                         name=l2, mode="lines+markers", line=dict(color=MCLR[m2]), yaxis="y2"))
+                lay = base_layout(h=340, title="발송량 5분위(Q1 소량→Q5 대량)")
+                lay["showlegend"] = True
+                lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+                lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
+                                     tickfont=dict(color="#64748b", size=11))
+                fig.update_layout(**lay)
+                st.plotly_chart(fig, use_container_width=True)
+
+        # ── F3. 한계수익 ──
+        elif page.startswith("F3"):
+            st.title("한계수익")
+            st.markdown("발송 강도 구간을 한 단계 올릴 때 효율이 얼마나 더/덜 나오는가 (구간 간 변화).")
+            lab = st.selectbox("지표", ["발송건당거래액(RPS)", "CTR", "구매전환율(CR)", "거래액"])
+            mc = MTDOPT[lab]
+            b = mtd_data["buckets"].reset_index(drop=True)
+            if len(b) >= 2:
+                vals = (b[mc] * (100 if mc in MTD_PCT else 1)).values
+                diff = np.diff(vals)
+                labels = [f"{b['bucket'].astype(str).iloc[i]}→{b['bucket'].astype(str).iloc[i+1]}"
+                          for i in range(len(b) - 1)]
+                fig = go.Figure(go.Bar(x=labels, y=diff,
+                                       marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in diff],
+                                       text=[f"{v:+.2f}" for v in diff], textposition="outside"))
+                fig.update_layout(**base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
+                st.plotly_chart(fig, use_container_width=True)
+                st.markdown('<div class="appendix">값이 음(−)이면 그 구간부터는 발송을 더 늘릴수록 '
+                            '효율이 오히려 줄어드는 역효과 구간입니다.</div>', unsafe_allow_html=True)
+            else:
+                st.info("구간 표본이 부족합니다.")
+
+        # ── F4. 요일 패턴 ──
+        else:
+            st.title("요일 패턴")
+            lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "인당 발송 건수"])
+            mc = MTDOPT[lab]
+            dm = mtd_data["dow_mean"]
+            order = ["월", "화", "수", "목", "금", "토", "일"]
+            dm = dm.set_index("요일").reindex([o for o in order if o in dm["요일"].values]).reset_index()
+            y = dm[mc] * (100 if mc in MTD_PCT else 1)
+            fig = go.Figure(go.Bar(x=dm["요일"], y=y, marker_color=MCLR[mc],
+                                   text=[f"{v:.2f}" for v in y], textposition="outside"))
+            fig.update_layout(**base_layout(h=320, ysuffix=("%" if mc in MTD_PCT else ""),
+                                            title=f"요일별 평균 {lab}"))
+            st.plotly_chart(fig, use_container_width=True)
+            dc = pd.DataFrame(mtd_data["dow_comp"])
+            if len(dc):
+                st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+                st.markdown("##### 요일 내 ‘저발송일 vs 고발송일’ 효율 (요일 효과 통제)")
+                show = pd.DataFrame({
+                    "요일": dc["요일"],
+                    "저발송일 CTR": (dc["lowCtr"] * 100).map("{:.2f}%".format),
+                    "고발송일 CTR": (dc["highCtr"] * 100).map("{:.2f}%".format),
+                    "저발송일 RPS": dc["lowRps"].map("{:,.0f}".format),
+                    "고발송일 RPS": dc["highRps"].map("{:,.0f}".format),
+                })
+                st.dataframe(show, hide_index=True, use_container_width=True)
+                st.markdown('<div class="appendix">같은 요일 안에서도 발송이 적은 날의 CTR·RPS가 더 높다면, '
+                            '발송 강도 자체가 효율을 떨어뜨린다는 (요일 효과를 통제한) 근거입니다.</div>',
+                            unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 07 — 데이터·다운로드
