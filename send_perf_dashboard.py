@@ -514,14 +514,27 @@ EMOJI_RE = re.compile(
     "\U000023E0-\U000023FF" "✅❌✨⚠⏰⏳⌚❤❗❓✌☝"
     "]", flags=re.UNICODE)
 
+# 할인율(%)·가격(원) 소구는 숫자 패턴으로 판별 — 날짜/시간 숫자(2일·1시간)는 제외된다
+PCT_RE   = re.compile(r'\d+\s*[%％]')
+PRICE_RE = re.compile(r'\d[\d,]*\s*원|\d+\s*만\s*원|\d+\s*만\b')
+
+# CRM PUSH 카피 실무형 소구(訴求) 분류 — 제목+내용 조합으로 판별
 KW = {
-    "혜택강조": ["할인", "세일", "쿠폰", "적립", "증정", "특가", "사은품", "무료배송", "무배",
-              "%", "최대", "반값", "균일가", "得", "혜택", "기프트", "페이백", "캐시백"],
-    "긴급성":  ["오늘", "마지막", "마감", "종료", "임박", "한정", "지금", "단독", "오픈", "D-",
-              "단 ", "단하루", "오직", "초읽기", "마지막날", "곧 ", "예정", "남았", "놓치"],
-    "개인화":  ["#{", "고객명", "님,", "님!", "회원님", "등급", "관심", "찜한", "장바구니"],
-    "호기심":  ["쉿", "확인", "알림", "[?]", "❓", "비밀", "공개", "대기", "미확인", "두근", "설마",
-              "이것", "단 한", "혹시"],
+    "할인율소구": ["할인", "세일", "반값", "오프", "OFF", "off", "％", "%", "최대"],
+    "가격소구":   ["특가", "단돈", "균일가", "최저가", "초특가", "땡처리", "최저", "득템", "가성비"],
+    "쿠폰적립":   ["쿠폰", "적립", "페이백", "캐시백", "포인트", "마일리지", "코드입력", "코드 입력"],
+    "사은품증정": ["증정", "사은품", "기프트", "1+1", "더블", "덤", "추가증정", "사은", "드려요", "드립니다", "받아가", "선물"],
+    "무료배송":   ["무료배송", "무배", "배송비", "무료 배송"],
+    "마감임박":   ["오늘", "마지막", "마감", "종료", "임박", "단 ", "남았", "까지", "D-", "곧 ",
+                "놓치", "마지막날", "단하루", "오늘만", "막차", "오늘까지", "내일까지", "지금",
+                "타임세일", "타임딜", "분만", "막판", "마지막 기회"],
+    "한정희소":   ["한정", "단독", "선착순", "수량", "품절", "리미티드", "한정판", "독점", "단 한",
+                "한정수량", "소진", "조기"],
+    "신상입고":   ["신상", "신규", "출시", "입고", "재입고", "새로", "론칭", "오픈", "신제품",
+                "NEW", "new", "New", "최초", "예약판매", "예판"],
+    "알림안내":   ["알림", "안내", "도착", "공지", "리마인드", "확인하", "체크", "소식", "업데이트", "리마인"],
+    "개인화":     ["고객님", "회원님", "님,", "님!", "님 ", "님의", "님을", "님께", "#{", "고객명",
+                "장바구니", "찜", "관심", "등급", "맞춤"],
 }
 
 
@@ -537,25 +550,30 @@ def _s(v):
 
 
 def tag_copy(title, body=""):
-    """제목(+본문) → 문구 속성 dict. 분석의 핵심 축."""
+    """제목+내용 → CRM 실무형 문구 속성 dict. 분석의 핵심 축. (제목·본문 조합 기준)"""
     t = _s(title)
     b = _s(body)
     full = (t + " " + b).strip()
     return {
-        "이모지":   bool(EMOJI_RE.search(t)),
-        "숫자노출": bool(re.search(r'\d', t)),
-        "혜택강조": _has(full, KW["혜택강조"]),
-        "긴급성":   _has(full, KW["긴급성"]),
-        "개인화":   _has(full, KW["개인화"]),
-        "호기심":   _has(full, KW["호기심"]),
-        "질문형":   ("?" in t or "？" in t),
-        "대괄호":   bool(re.search(r'[\[\]【】（）()]', t)),
-        "제목길이": len(t),
-        "본문길이": len(b),
+        "할인율소구": bool(PCT_RE.search(full)) or _has(full, KW["할인율소구"]),
+        "가격소구":   bool(PRICE_RE.search(full)) or _has(full, KW["가격소구"]),
+        "쿠폰적립":   _has(full, KW["쿠폰적립"]),
+        "사은품증정": _has(full, KW["사은품증정"]),
+        "무료배송":   _has(full, KW["무료배송"]),
+        "마감임박":   _has(full, KW["마감임박"]),
+        "한정희소":   _has(full, KW["한정희소"]),
+        "신상입고":   _has(full, KW["신상입고"]),
+        "알림안내":   _has(full, KW["알림안내"]),
+        "개인화":     _has(full, KW["개인화"]),
+        "질문형":     ("?" in full or "？" in full),
+        "이모지":     bool(EMOJI_RE.search(full)),
+        "제목길이":   len(t),
+        "본문길이":   len(b),
     }
 
 
-TAG_BOOLS = ["이모지", "숫자노출", "혜택강조", "긴급성", "개인화", "호기심", "질문형", "대괄호"]
+TAG_BOOLS = ["할인율소구", "가격소구", "쿠폰적립", "사은품증정", "무료배송",
+             "마감임박", "한정희소", "신상입고", "알림안내", "개인화", "질문형", "이모지"]
 
 
 def add_tags(df):
@@ -1085,11 +1103,13 @@ def main():
         """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기."""
         if d is None or len(d) == 0:
             st.info("해당 조건의 발송 메시지가 없습니다."); return
-        dd = d.sort_values(mcol, ascending=False).head(n).reset_index(drop=True)
-        all_cols = ["date", "cat", "brand", "title", "send", "infl_cr", "ord_cr", "rps", "amt"]
+        dd = d.sort_values(mcol, ascending=False).head(n).reset_index(drop=True).copy()
+        if "body" in dd.columns:
+            dd["_bprev"] = dd["body"].map(lambda x: " ".join(_s(x).split())[:60])
+        all_cols = ["date", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt"]
         cols = [c for c in all_cols if c in dd.columns]
-        ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "send": "발송",
-               "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
+        ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "_bprev": "내용",
+               "send": "발송", "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
         fmts = {"발송": "{:,.0f}", "유입CR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
         show = dd[cols].rename(columns=ren)
         fmts = {k: v for k, v in fmts.items() if k in show.columns}
@@ -1228,9 +1248,10 @@ def main():
         tagcols = [t for t in TAG_BOOLS]
         view = base.copy()
         view["속성"] = view[tagcols].apply(lambda r: " ".join(t for t in tagcols if r[t]), axis=1)
-        cols = ["date", "cat", "brand", "title", "send", "infl_cr", "ord_cr", "rps", "amt", "속성"]
-        ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "send": "발송",
-               "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
+        view["_bprev"] = view["body"].map(lambda x: " ".join(_s(x).split())[:60]) if "body" in view else ""
+        cols = ["date", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt", "속성"]
+        ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "_bprev": "내용",
+               "send": "발송", "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
         st.dataframe(view[cols].rename(columns=ren).style.format(
             {"발송": "{:,.0f}", "유입CR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}),
             hide_index=True, use_container_width=True, height=560)
@@ -1749,14 +1770,17 @@ def build_facts(df, with_attr=False, metric_col="ord_cr"):
     lines.append(f"[평균] 유입전환율 {df['infl_cr'].mean()*100:.2f}% · "
                  f"주문전환율 {df['ord_cr'].mean()*100:.2f}% · "
                  f"RPS {df['rps'].mean():,.0f}원 · 객단가 {df['aov'].mean():,.0f}원")
+    def _bodyprev(r):
+        b = " ".join(_s(r.get("body", "")).split())
+        return f" │ 내용: {b[:50]}" if b else ""
     win = df.sort_values(metric_col, ascending=False).head(6)
     los = df.sort_values(metric_col).head(6)
-    lines.append("\n[주문전환율 상위 문구]")
+    lines.append("\n[주문전환율 상위 문구] (제목 │ 내용)")
     for _, r in win.iterrows():
-        lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {int(r['send']):,} / {r['cat']} / “{r['title']}”")
-    lines.append("\n[주문전환율 하위 문구]")
+        lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {int(r['send']):,} / {r['cat']} / “{r['title']}”{_bodyprev(r)}")
+    lines.append("\n[주문전환율 하위 문구] (제목 │ 내용)")
     for _, r in los.iterrows():
-        lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {int(r['send']):,} / {r['cat']} / “{r['title']}”")
+        lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {int(r['send']):,} / {r['cat']} / “{r['title']}”{_bodyprev(r)}")
     if with_attr:
         lines.append("\n[문구 속성별 평균 주문전환율 (보유 vs 미보유)]")
         for tag in TAG_BOOLS:
