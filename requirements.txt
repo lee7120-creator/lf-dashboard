@@ -8,3 +8,5 @@ seaborn
 matplotlib
 streamlit-quill
 anthropic
+gspread>=6.0.0
+google-auth
