@@ -1083,10 +1083,14 @@ def main():
             return d
         return d[d[col].astype(str).str.replace(r'\.0$', '', regex=True).isin(sel)]
 
-    search = st.sidebar.text_input("🔎 문구·브랜드·AF 검색", "")
+    search = st.sidebar.text_input("🔎 문구·브랜드·AF 검색", "",
+                                   help="제목·내용·브랜드·AF코드·카테고리에서 입력어를 포함한 캠페인만 표시")
     only_matched = st.sidebar.checkbox("문구 매칭된 캠페인만", value=True,
-                                       help="실적엔 있으나 기획 문구를 못 찾은 건 제외")
-    min_send = st.sidebar.number_input("최소 발송수 (분석 표본)", value=5000, step=1000, min_value=0)
+                                       help="실적엔 있으나 기획시트에서 문구(제목·내용)를 못 찾은 건 제외합니다")
+    min_send = st.sidebar.number_input(
+        "최소 발송수 (분석 표본)", value=5000, step=1000, min_value=0,
+        help="이 발송수 미만의 캠페인은 분석에서 제외합니다. 발송이 너무 적으면 전환율이 우연에 좌우돼 "
+             "비교가 왜곡되기 때문입니다(소표본 통제). 값을 낮추면 더 많은 캠페인이 포함됩니다.")
 
     base_opt = raw[raw["matched"]] if only_matched else raw
 
@@ -1103,24 +1107,33 @@ def main():
 
     with st.sidebar.expander("📤 발송 속성"):
         sel_st = st.multiselect("발송유형", _opts(base_opt, "stype"))
-        sel_target = st.multiselect("타겟 구분", _opts(base_opt, "target"))
-        sel_bpu = st.multiselect("BPU", _opts(base_opt, "bpu"))
+        sel_target = st.multiselect("타겟 구분", _opts(base_opt, "target"),
+                                    help="신규·휴면·전체 등 발송 대상")
+        sel_bpu = st.multiselect("BPU(사업부)", _opts(base_opt, "bpu"))
+        sel_prio = st.multiselect("우선순위", _opts(base_opt, "prio"),
+                                  help="같은 시간대 발송 순번(1=가장 먼저)")
+
+    with st.sidebar.expander("🕒 발송 시점"):
         sel_hour = st.multiselect("시간대", _opts(base_opt, "hour"))
         sel_dow = st.multiselect("요일", _opts(base_opt, "dow_k"))
-        sel_prio = st.multiselect("우선순위", _opts(base_opt, "prio"))
 
     with st.sidebar.expander("🏷️ 상품·담당"):
         sel_cat = st.multiselect("카테고리", _opts(base_opt, "cat"))
-        sel_attr = st.multiselect("속성", _opts(base_opt, "attr"))
         sel_brand = st.multiselect("브랜드", _opts(base_opt, "brand"))
         sel_owner = st.multiselect("담당자", _opts(base_opt, "owner"))
 
     with st.sidebar.expander("✍️ 문구 속성"):
-        sel_tags = st.multiselect("포함 속성(모두 충족)", TAG_BOOLS,
-                                  help="선택한 문구 속성을 모두 가진 캠페인만")
+        sel_tags = st.multiselect("문구 소구 속성", TAG_BOOLS,
+                                  help="할인율소구·마감임박 등 제목+내용에서 자동 분류된 속성")
+        tags_and = True
+        if sel_tags:
+            tags_and = st.radio("조건", ["모두 충족(AND)", "하나라도(OR)"], horizontal=True,
+                                key="tags_mode",
+                                help="AND: 선택 속성을 모두 가진 캠페인 / OR: 하나라도 가진 캠페인") \
+                == "모두 충족(AND)"
 
     CATSEL = {"stype": sel_st, "target": sel_target, "bpu": sel_bpu, "hour": sel_hour,
-              "dow_k": sel_dow, "prio": sel_prio, "cat": sel_cat, "attr": sel_attr,
+              "dow_k": sel_dow, "prio": sel_prio, "cat": sel_cat,
               "brand": sel_brand, "owner": sel_owner}
 
     def apply_filters(d):
@@ -1130,9 +1143,14 @@ def main():
             d = d[(d["dt"] >= lo) & (d["dt"] < hi)]
         for col, sel in CATSEL.items():
             d = _apply_in(d, col, sel)
-        for t in sel_tags:
-            if t in d:
-                d = d[d[t]]
+        present_tags = [t for t in sel_tags if t in d.columns]
+        if present_tags:
+            if tags_and:
+                for t in present_tags:
+                    d = d[d[t]]
+            else:
+                mask = np.logical_or.reduce([d[t].values for t in present_tags])
+                d = d[mask]
         if search.strip():
             q = search.strip().lower()
             hay = (d["title"].astype(str) + " " + d["body"].astype(str) + " " +
@@ -1146,10 +1164,19 @@ def main():
     fdf = df[df["send"].fillna(0) >= min_send].reset_index(drop=True)
 
     st.sidebar.markdown("---")
+    # 활용도·주제 흐름순: 개요 → 문구분석(핵심) → 맥락 → 조직/매크로 → 액션 → 추출
     CAMPAIGN_PAGES = [
-        "01. 종합 요약", "08. 전체 효율·추이", "02. 문구 속성별 성과", "03. 캠페인 리더보드",
-        "10. 키워드·이모지 성과", "04. 카테고리·시간대 매트릭스", "11. 소구 추세·마모",
-        "09. BPU·우선순위 효율", "05. 타이밍 패턴", "06. AI 처방", "07. 데이터·다운로드",
+        "1. 종합 요약",          # 개요
+        "2. 문구 속성별 성과",    # ── 문구 분석(핵심)
+        "3. 캠페인 리더보드",
+        "4. 키워드·이모지 성과",
+        "5. 소구 추세·마모",
+        "6. 카테고리·시간대",     # ── 맥락
+        "7. 타이밍·발송슬롯",
+        "8. BPU·우선순위 효율",   # ── 조직·매크로
+        "9. 전체 효율·추이",
+        "10. AI 처방·카피",       # ── 액션
+        "11. 데이터·다운로드",    # 추출
     ]
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
@@ -1246,6 +1273,37 @@ def main():
 
     # 전환율은 캠페인별 단순 평균으로 비교(표본은 사이드바 '최소 발송수'로 통제)
 
+    def glossary(which="full"):
+        """비전문가용 지표·통계 용어 설명 (접이식). 통계가 나오는 페이지 하단에 호출."""
+        metrics_md = (
+            "**📊 성과 지표**\n"
+            "- **유입전환율(유입CR)** = UV ÷ 발송. 메시지를 받은 사람 중 몇 %가 들어왔나. "
+            "제목·발송시점·타겟이 좋을수록 올라갑니다.\n"
+            "- **주문전환율(주문CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀나. "
+            "오퍼·상품·랜딩이 좋을수록 올라갑니다.\n"
+            "- **RPS(발송건당 거래액)** = 거래액 ÷ 발송. 한 건 보낼 때 평균 얼마를 벌었나(종합 효율).\n"
+            "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건당 평균 결제금액.\n")
+        stats_md = (
+            "**🔬 통계 용어 (쉽게)**\n"
+            "- **유의성 / p값**: 이 차이가 '우연'일 가능성. 작을수록 진짜 차이. "
+            "보통 p<0.05면 '우연으로 보기 어렵다(유의)'고 판단합니다.\n"
+            "- **효과크기(Cohen's d)**: 차이가 *실제로 얼마나 큰지*. |d| 0.2 작음·0.5 중간·0.8 큼. "
+            "(p값은 '차이가 있나 없나', 효과크기는 '얼마나 크냐'를 봅니다.)\n"
+            "- **유의성(보정) / FDR**: 여러 항목을 한꺼번에 비교하면 우연히 '유의'가 섞이기 쉬워서, "
+            "이를 더 엄격하게 바로잡은 값입니다.\n"
+            "- **순효과(다변량 회귀)**: 카테고리·시간대 등 다른 조건을 똑같이 맞췄을 때 "
+            "그 요소 *하나만의* 순수 기여. 단순 평균이 주는 착시(예: 특정 카테고리에 몰림)를 걷어냅니다.\n"
+            "- **상관 r**: 두 값이 함께 움직이는 정도(−1~+1). +면 같이 오르고, −면 반대, 0이면 무관계.\n"
+            "- **±2σ(시그마)**: 평균에서 표준편차의 2배 넘게 벗어남 = '평소와 매우 다름'(상·하위 약 2.5%).\n")
+        criteria_md = (
+            "**📐 기준**\n"
+            "- **최소 발송수 / 표본 수(n)**: 건수가 너무 적으면 우연이 커서, 일정 수 이상만 분석에 넣습니다. "
+            "표(n)가 작으면 결과를 신중히 보세요.\n"
+            "- **가중 평균**: 발송량이 큰 캠페인에 비중을 더 둔 평균(합산÷합산). 전체 실제 효율에 가깝습니다.\n"
+            "- **단순 평균**: 캠페인 1건을 1표로 본 평균. 작은 캠페인도 동등하게 반영됩니다.\n")
+        with st.expander("📖 지표·통계 용어 쉽게 보기 (처음이면 클릭)"):
+            st.markdown(metrics_md + "\n" + stats_md + "\n" + criteria_md)
+
     def render_messages(d, mcol, key, n=200):
         """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기."""
         if d is None or len(d) == 0:
@@ -1277,7 +1335,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # PAGE 01 — 종합 요약
     # ══════════════════════════════════════════════════════════════
-    if page.startswith("01"):
+    if "종합 요약" in page:
         st.title("종합 요약")
         st.caption(f"분석 표본: 발송 {min_send:,}건 이상 · {len(fdf)}개 캠페인 · {drange}")
         base = fdf if len(fdf) else df
@@ -1358,10 +1416,12 @@ def main():
         if st.session_state.get("ai_sum_txt"):
             st.markdown(f'<div class="vg">{st.session_state["ai_sum_txt"]}</div>', unsafe_allow_html=True)
 
+        glossary()
+
     # ══════════════════════════════════════════════════════════════
     # PAGE 02 — 문구 속성별 성과 (핵심)
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("02"):
+    elif "문구 속성별" in page:
         st.title("문구 속성별 성과")
         st.caption("각 문구 속성 보유/미보유 그룹의 평균 성과 차이 + 통계 유의성(Welch t-검정)")
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()))
@@ -1552,10 +1612,12 @@ def main():
             st.caption(f"'{sel_tag}' 속성 보유 캠페인 {len(sub)}건 — {mlabel} 높은 순")
             render_messages(sub, mcol, f"p02_{sel_tag}")
 
+        glossary()
+
     # ══════════════════════════════════════════════════════════════
     # PAGE 03 — 캠페인 리더보드
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("03"):
+    elif "캠페인 리더보드" in page:
         st.title("캠페인 리더보드")
         mlabel = st.selectbox("정렬 지표", list(METRIC_OPTS.keys()))
         mcol = METRIC_OPTS[mlabel][0]
@@ -1587,7 +1649,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # PAGE 04 — 카테고리·시간대 매트릭스
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("04"):
+    elif "카테고리" in page:
         st.title("카테고리·시간대 매트릭스")
         mlabel = st.selectbox("지표", list(METRIC_OPTS.keys()))
         mcol = METRIC_OPTS[mlabel][0]
@@ -1675,7 +1737,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # PAGE 05 — 타이밍·피로도
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("05"):
+    elif "타이밍" in page:
         st.title("타이밍 패턴")
         mlabel = st.selectbox("지표", list(METRIC_OPTS.keys()))
         mcol = METRIC_OPTS[mlabel][0]
@@ -1782,7 +1844,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # PAGE 06 — AI 처방
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("06"):
+    elif "AI 처방" in page:
         st.title("AI 처방 — 다음 캠페인 카피 가이드")
         st.caption("머지 데이터(문구 속성 × 성과)를 근거로 Claude가 패턴 종합 + 실행 가이드를 작성합니다.")
         base = fdf
@@ -1843,7 +1905,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # PAGE 08 — 전체 효율·추이 (send_dashboard 피로도 관점 계승)
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("08"):
+    elif "전체 효율" in page:
         st.title("전체 효율 · 추이")
         st.caption("누적된 전 발송(문구 매칭 여부 무관)을 주차 단위로 집계한 전체 효율·피로도 관점. "
                    "사이드바 필터(기간·발송속성 등)는 반영되며, '최소 발송수'는 제외됩니다.")
@@ -2008,10 +2070,12 @@ def main():
                         st.markdown("**카테고리별 주문전환율 변화 (최근 − 직전)**")
                         st.dataframe(ch, hide_index=True, use_container_width=True, height=260)
 
+        glossary()
+
     # ══════════════════════════════════════════════════════════════
     # PAGE 09 — BPU·우선순위 효율
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("09"):
+    elif "BPU" in page:
         st.title("BPU · 우선순위 효율")
         st.caption("BPU(사업부)별 / 우선순위(같은 시간대 발송 순번)별 효율 — 어느 주체·어느 순번이 잘 먹히나. "
                    "전환율·RPS는 합산 기준 가중 평균입니다.")
@@ -2120,10 +2184,12 @@ def main():
         st.caption(f"조건 일치 {len(sub9)}건 — {mlabel} 높은 순")
         render_messages(sub9, mcol, "p09_drill")
 
+        glossary()
+
     # ══════════════════════════════════════════════════════════════
     # PAGE 10 — 키워드·이모지 성과
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("10"):
+    elif "키워드" in page:
         st.title("키워드 · 이모지 성과")
         st.caption("규칙 분류를 넘어, 실제 문구의 '단어'와 '이모지'를 쪼개 성과를 봅니다. "
                    "각 단어/이모지를 포함한 캠페인의 평균 성과(전체 평균 대비)입니다.")
@@ -2192,7 +2258,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # PAGE 11 — 소구 추세·마모 (시계열)
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("11"):
+    elif "소구 추세" in page:
         st.title("소구 추세 · 마모")
         st.caption("특정 문구 속성(소구)이 시간이 갈수록 효과가 떨어지는지(마모) 봅니다. "
                    "주차별로 '그 속성 보유 캠페인'의 평균 성과 추이를 보고, 반복 소구의 피로를 진단합니다.")
@@ -2263,6 +2329,8 @@ def main():
         st.markdown('<div class="appendix">추세 회귀의 상관 r이 음수이고 유의하면 "반복 소구로 효과가 마모"되는 신호입니다. '
                     '사용 빈도가 늘면서 성과가 떨어지면 해당 소구를 잠시 쉬어가는 전략을 고려하세요. '
                     '단, 카테고리·시즌 구성 변화가 섞일 수 있습니다.</div>', unsafe_allow_html=True)
+
+        glossary()
 
     # ══════════════════════════════════════════════════════════════
     # 발송피로도 (전사 MTD) — F1~F4
