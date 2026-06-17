@@ -106,6 +106,39 @@ def _finalize(df):
     return df
 
 
+def _parse_plan_sheet(rows, lookup):
+    """한 주차 시트의 rows(2차원 리스트/튜플) → lookup 갱신.
+
+    헤더가 2줄로 쪼개져 있어도(예: 45행=AF코드, 46행=제목/내용) 컬럼 매핑을
+    행마다 '누적' 갱신하며 AF코드 행을 파싱한다. 엑셀/구글시트 공용.
+    """
+    c_af = c_date = c_title = c_body = None
+    for row in rows:
+        cells = [("" if v is None else str(v)) for v in row[:45]]
+        for j, c in enumerate(cells):
+            cs = c.strip()
+            if cs == "AF코드":
+                c_af = j
+            elif cs == "제목":
+                c_title = j
+            elif cs == "내용":
+                c_body = j
+            elif (("일자" in cs or cs == "날짜") and len(cs) < 16):
+                c_date = j
+        if c_af is None or c_af >= len(cells):
+            continue
+        af = cells[c_af].strip()
+        if not AF_RE.match(af):
+            continue
+        d = _norm_date(row[c_date]) if (c_date is not None and c_date < len(row)) else None
+        if d is None:                                # 날짜열이 비면 보통 B열(index 1)에 있음
+            d = _norm_date(row[1]) if len(row) > 1 else None
+        title = cells[c_title].strip() if (c_title is not None and c_title < len(cells)) else ""
+        body = cells[c_body].strip() if (c_body is not None and c_body < len(cells)) else ""
+        if title or body:
+            lookup[(d, af)] = (title, body)
+
+
 def parse_plan_bytes(file_bytes):
     """기획 엑셀(통합본) → {(date, af): (title, body)} 사전.
 
@@ -119,34 +152,35 @@ def parse_plan_bytes(file_bytes):
         if not WEEK_RE.search(sname):
             continue
         ws = wb[sname]
-        c_af = c_date = c_title = c_body = None
-        # 헤더가 2줄로 쪼개져 있으므로(45행=AF코드, 46행=제목/내용) 컬럼 매핑을 행마다 '누적' 갱신
-        for row in ws.iter_rows(values_only=True, max_col=45):
-            cells = [("" if v is None else str(v)) for v in row]
-            for j, c in enumerate(cells):
-                cs = c.strip()
-                if cs == "AF코드":
-                    c_af = j
-                elif cs == "제목":
-                    c_title = j
-                elif cs == "내용":
-                    c_body = j
-                elif (("일자" in cs or cs == "날짜") and len(cs) < 16):
-                    c_date = j
-            if c_af is None or c_af >= len(cells):
-                continue
-            af = cells[c_af].strip()
-            if not AF_RE.match(af):
-                continue
-            d = _norm_date(row[c_date]) if (c_date is not None and c_date < len(row)) else None
-            if d is None:                                # 날짜열이 비면 보통 B열(index 1)에 있음
-                d = _norm_date(row[1]) if len(row) > 1 else None
-            title = cells[c_title].strip() if (c_title is not None and c_title < len(cells)) else ""
-            body = cells[c_body].strip() if (c_body is not None and c_body < len(cells)) else ""
-            if title or body:
-                lookup[(d, af)] = (title, body)
+        rows = list(ws.iter_rows(values_only=True, max_col=45))
+        _parse_plan_sheet(rows, lookup)
     wb.close()
     return lookup
+
+
+def parse_plan_gsheet(sh, recent=None, progress_cb=None):
+    """구글시트(gspread Spreadsheet) → 기획 lookup. 주차(WEEK_RE) 시트만 순회.
+
+    · recent=N 이면 시트 목록 뒤쪽(최근) N개만 읽어 API 호출/속도를 통제한다.
+    · progress_cb(i, total, title) 콜백으로 진행 상황을 외부에 알린다.
+    반환: (lookup, 읽은_시트명_리스트)
+    """
+    week_ws = [ws for ws in sh.worksheets() if WEEK_RE.search(ws.title)]
+    if recent and recent > 0:
+        week_ws = week_ws[-recent:]
+    lookup = {}
+    read = []
+    total = len(week_ws)
+    for i, ws in enumerate(week_ws):
+        if progress_cb:
+            progress_cb(i + 1, total, ws.title)
+        try:
+            rows = ws.get_all_values()
+        except Exception:
+            continue
+        _parse_plan_sheet(rows, lookup)
+        read.append(ws.title)
+    return lookup, read
 
 
 def merge_perf_plan(perf_df, plan_lookup, keep_unmatched=False):
@@ -701,9 +735,52 @@ def main():
         "① 발송실적 파일 (주차별 xlsx · 연도별 ZIP 가능)",
         type=["xlsx", "zip"], accept_multiple_files=True,
         help="주차별 실적 xlsx 를 여러 개, 또는 연도 폴더를 ZIP 으로 묶어 올리면 전부 풀어 머지합니다.")
-    plan_file = st.sidebar.file_uploader(
-        "② 발송기획 파일 (통합본)", type=["xlsx"],
-        help="새 실적 주차를 추가할 때만 필요합니다. 이미 누적된 데이터만 볼 땐 생략 가능.")
+    def _has_sa():
+        try:
+            return "gcp_service_account" in st.secrets
+        except Exception:
+            return False
+
+    # ── ② 기획(문구) 소스: 엑셀 업로드 ↔ 구글시트 직접연결 ──
+    plan_source = st.sidebar.radio(
+        "② 발송기획(문구) 소스", ["엑셀 업로드", "구글시트 직접연결"], horizontal=True,
+        help="구글시트를 서비스계정에 공유해두면 다운로드 없이 ★APP PUSH 발송 시트를 바로 읽습니다.")
+    plan_file = None
+    if plan_source == "엑셀 업로드":
+        plan_file = st.sidebar.file_uploader(
+            "발송기획 파일 (통합본 xlsx)", type=["xlsx"],
+            help="새 실적 주차를 추가할 때만 필요합니다. 이미 누적된 데이터만 볼 땐 생략 가능.")
+    else:
+        try:
+            _def_url = (st.secrets.get("gsheets", {}).get("plan_spreadsheet")
+                        or st.secrets.get("gsheets_plan_spreadsheet") or "")
+        except Exception:
+            _def_url = ""
+        plan_url = st.sidebar.text_input("기획 구글시트 URL / 키", value=_def_url,
+                                         placeholder="https://docs.google.com/spreadsheets/d/…")
+        recent_n = st.sidebar.number_input("동기화할 최근 주차 수 (0=전체)", value=12, min_value=0, step=1,
+                                           help="시트가 많으면 전체(0)는 느리고 API 한도에 걸릴 수 있어요. 보통 새 주차만 받으면 12면 충분합니다.")
+        if st.sidebar.button("🔄 구글시트에서 기획 동기화", use_container_width=True):
+            if not _has_sa():
+                st.sidebar.error("서비스계정 미설정 — Secrets에 gcp_service_account 추가 후 사용하세요.")
+            elif not str(plan_url).strip():
+                st.sidebar.error("기획 구글시트 URL/키를 입력하세요.")
+            else:
+                try:
+                    sh_plan = gs_open(st.secrets["gcp_service_account"], plan_url)
+                    prog = st.sidebar.progress(0.0, text="기획 시트 읽는 중…")
+                    def _cb(i, total, title):
+                        prog.progress(i / max(total, 1), text=f"기획 동기화 {i}/{total} — {title[:16]}")
+                    lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_cb)
+                    prog.empty()
+                    st.session_state.plan_lookup_gs = lk
+                    st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
+                    st.sidebar.success(f"기획 동기화 완료 — {st.session_state.plan_lookup_meta}")
+                except Exception as e:
+                    st.sidebar.error(f"기획 동기화 실패: {str(e)[:90]}")
+        if st.session_state.get("plan_lookup_gs") is not None:
+            st.sidebar.caption(f"✓ 기획(구글시트) 적재됨: {st.session_state.get('plan_lookup_meta','')}")
+
     mtd_files = st.sidebar.file_uploader(
         "③ 전사 MTD 발송상세 (선택 · xlsx/zip)", type=["xlsx", "zip"],
         accept_multiple_files=True, key="mtd_up",
@@ -721,14 +798,23 @@ def main():
     new_raw = None
 
     if perf_files:
-        if not plan_file:
-            st.sidebar.warning("새 실적을 머지하려면 기획 파일(②)도 올려주세요.\n(없으면 기존 누적 데이터만 표시)")
+        # 기획 lookup 확보: 엑셀 업로드 또는 구글시트 직접연결(세션 적재분)
+        plan_lookup = None
+        if plan_source == "엑셀 업로드":
+            if plan_file:
+                try:
+                    with st.spinner("기획 파일(통합본) 파싱 중… 최초 1회만 수십 초 소요됩니다."):
+                        plan_lookup = cached_plan(plan_file.getvalue())
+                except Exception as e:
+                    st.error(f"기획 파일 파싱 실패: {e}"); st.stop()
         else:
-            try:
-                with st.spinner("기획 파일(통합본) 파싱 중… 최초 1회만 수십 초 소요됩니다."):
-                    plan_lookup = cached_plan(plan_file.getvalue())
-            except Exception as e:
-                st.error(f"기획 파일 파싱 실패: {e}"); st.stop()
+            plan_lookup = st.session_state.get("plan_lookup_gs")
+        if plan_lookup is None:
+            if plan_source == "엑셀 업로드":
+                st.sidebar.warning("새 실적을 머지하려면 기획 파일(②)도 올려주세요.\n(없으면 기존 누적 데이터만 표시)")
+            else:
+                st.sidebar.warning("새 실적을 머지하려면 먼저 「🔄 구글시트에서 기획 동기화」를 눌러주세요.\n(없으면 기존 누적 데이터만 표시)")
+        else:
             frames = []
             expanded = expand_uploads(perf_files)
             prog = st.sidebar.progress(0.0, text="실적 파일 머지 중…")
@@ -967,6 +1053,22 @@ def main():
             st.caption("구글시트 연동: Secrets에 `gcp_service_account`(서비스계정 JSON)와 "
                        "`[gsheets] spreadsheet=\"<시트 URL/키>\"`를 넣고, 해당 시트를 "
                        "서비스계정 이메일과 **편집자**로 공유하세요.")
+        st.markdown("##### 📥 기획(문구) 구글시트 직접연결")
+        try:
+            _sa_email = st.secrets["gcp_service_account"].get("client_email", "(secrets 확인)")
+        except Exception:
+            _sa_email = "(서비스계정 미설정)"
+        st.markdown(
+            "★APP PUSH 발송 시트를 다운로드 없이 바로 읽으려면:<br>"
+            f"1) 그 구글시트를 서비스계정 이메일 <code>{_sa_email}</code> 에 "
+            "**뷰어**로 공유<br>"
+            "2) (선택) Secrets에 <code>[gsheets] plan_spreadsheet=\"&lt;기획시트 URL&gt;\"</code> "
+            "추가 → 사이드바에 URL 자동 입력<br>"
+            "3) 사이드바에서 <b>② 기획 소스 → 구글시트 직접연결</b> 선택 후 "
+            "<b>🔄 동기화</b> → ① 실적 파일과 함께 <b>저장</b><br>"
+            "<span style='color:#94a3b8'>※ 시트가 165개처럼 많으면 '최근 주차 수'로 제한하세요 "
+            "(API 한도·속도). 보통 새 주차만 받으면 충분합니다.</span>",
+            unsafe_allow_html=True)
 
     # 지표 메타
     METRIC_OPTS = {
