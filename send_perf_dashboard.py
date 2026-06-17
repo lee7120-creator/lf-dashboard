@@ -1027,18 +1027,19 @@ def main():
         cc = st.columns(2)
         win = base.sort_values("ord_cr", ascending=False).head(8)
         los = base[base["send"] >= min_send].sort_values("ord_cr").head(8)
+        _tbcols = ["title", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
+        _tbren = {"title": "제목", "cat": "카테고리", "send": "발송", "infl_cr": "유입CR",
+                  "ord_cr": "주문CR", "rps": "RPS", "aov": "객단가", "amt": "거래액"}
+        _tbfmt = {"발송": "{:,.0f}", "유입CR": "{:.2%}", "주문CR": "{:.2%}",
+                  "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"}
         with cc[0]:
             st.markdown("##### 🏆 주문전환율 TOP")
-            st.dataframe(win[["title", "cat", "send", "ord_cr", "rps"]].rename(
-                columns={"title": "제목", "cat": "카테고리", "send": "발송", "ord_cr": "주문CR", "rps": "RPS"}
-            ).style.format({"발송": "{:,.0f}", "주문CR": "{:.2%}", "RPS": "{:,.0f}"}),
-                hide_index=True, use_container_width=True)
+            st.dataframe(win[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
+                         hide_index=True, use_container_width=True)
         with cc[1]:
             st.markdown("##### 🧊 주문전환율 BOTTOM")
-            st.dataframe(los[["title", "cat", "send", "ord_cr", "rps"]].rename(
-                columns={"title": "제목", "cat": "카테고리", "send": "발송", "ord_cr": "주문CR", "rps": "RPS"}
-            ).style.format({"발송": "{:,.0f}", "주문CR": "{:.2%}", "RPS": "{:,.0f}"}),
-                hide_index=True, use_container_width=True)
+            st.dataframe(los[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
+                         hide_index=True, use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🤖 AI 핵심 인사이트")
