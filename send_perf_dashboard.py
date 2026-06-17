@@ -585,6 +585,71 @@ def add_tags(df):
     return pd.concat([df, tdf], axis=1)
 
 
+# ── 키워드(단어)·이모지 단위 성과 분석 ────────────────────────────────────
+TOKEN_RE = re.compile(r'[가-힣]{2,}|[A-Za-z]{2,}')
+STOPWORDS = set((
+    "그리고 그러나 하지만 또는 그 이 저 것 수 등 더 안 못 잘 좀 또 및 의 가 은 는 를 을 에 와 과 도 "
+    "으로 한 할 있 너무 정말 지금 바로 모든 위한 위해 통해 에서 에게 부터 까지 처럼 보다 만약 우리 "
+    "여기 거기 이런 저런 그런 어떤 무슨 많은 모두 각 약 총 단 매 본 전 후 중 시 분 일 월 년 개 건 명"
+).split())
+
+
+def keyword_perf(df, metric_col, min_n=5, top=30):
+    """제목+내용을 단어로 토큰화 → 단어별 (캠페인 단위) 평균 성과·표본·전체평균 대비 차이.
+
+    한 캠페인에서 같은 단어가 여러 번 나와도 1회로만 집계(set). 불용어·숫자 제외.
+    반환: DataFrame[단어, 캠페인수, 평균, 차이] (평균 내림차순)
+    """
+    from collections import defaultdict
+    if df is None or len(df) == 0 or metric_col not in df:
+        return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
+    bucket = defaultdict(list)
+    metvals = []
+    for _, r in df.iterrows():
+        m = r.get(metric_col)
+        if m is None or (isinstance(m, float) and np.isnan(m)):
+            continue
+        m = float(m); metvals.append(m)
+        text = _s(r.get("title", "")) + " " + _s(r.get("body", ""))
+        for tk in set(TOKEN_RE.findall(text)):
+            if tk in STOPWORDS:
+                continue
+            bucket[tk].append(m)
+    if not metvals:
+        return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
+    base_mean = float(np.mean(metvals))
+    rows = [dict(단어=tk, 캠페인수=len(v), 평균=float(np.mean(v)), 차이=float(np.mean(v)) - base_mean)
+            for tk, v in bucket.items() if len(v) >= min_n]
+    if not rows:
+        return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
+    return pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+
+
+def emoji_perf(df, metric_col, min_n=3, top=30):
+    """제목+내용의 이모지(기호)별 (캠페인 단위) 평균 성과·표본·전체평균 대비 차이."""
+    from collections import defaultdict
+    if df is None or len(df) == 0 or metric_col not in df:
+        return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
+    bucket = defaultdict(list)
+    metvals = []
+    for _, r in df.iterrows():
+        m = r.get(metric_col)
+        if m is None or (isinstance(m, float) and np.isnan(m)):
+            continue
+        m = float(m); metvals.append(m)
+        text = _s(r.get("title", "")) + " " + _s(r.get("body", ""))
+        for em in set(EMOJI_RE.findall(text)):
+            bucket[em].append(m)
+    if not metvals:
+        return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
+    base_mean = float(np.mean(metvals))
+    rows = [dict(이모지=em, 캠페인수=len(v), 평균=float(np.mean(v)), 차이=float(np.mean(v)) - base_mean)
+            for em, v in bucket.items() if len(v) >= min_n]
+    if not rows:
+        return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
+    return pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. Streamlit 앱
 # ══════════════════════════════════════════════════════════════════════
@@ -653,6 +718,16 @@ def main():
 
     @st.cache_data(show_spinner=False)
     def cached_mtd(b): return parse_mtd_bytes(b)
+
+    @st.cache_data(show_spinner=False)
+    def prepare_raw(work_df):
+        """파생 재계산 + 타입정리 + 문구 태깅을 1회만 — 필터·페이지 이동 때 재계산 방지(성능 핵심).
+        입력 work_df 가 동일하면(저장 데이터만 볼 때) 캐시 히트하여 무거운 태깅을 건너뛴다."""
+        r = _finalize(work_df.copy())
+        r["title"] = r["title"].fillna("").astype(str) if "title" in r else ""
+        r["body"] = r["body"].fillna("").astype(str) if "body" in r else ""
+        r["matched"] = r["matched"].map(_to_bool) if "matched" in r else False
+        return add_tags(r)
 
     # ── 저장소 백엔드: 구글시트(설정 시) ↔ 로컬 CSV(폴백) ──
     @st.cache_resource(show_spinner=False)
@@ -882,12 +957,8 @@ def main():
         </div>""", unsafe_allow_html=True)
         st.stop()
 
-    # 작업 데이터 확정: 파생 재계산 + 타입 정리 + 문구 재태깅
-    raw = _finalize(work.copy())
-    raw["title"] = raw["title"].fillna("").astype(str) if "title" in raw else ""
-    raw["body"] = raw["body"].fillna("").astype(str) if "body" in raw else ""
-    raw["matched"] = raw["matched"].map(_to_bool) if "matched" in raw else False
-    raw = add_tags(raw)
+    # 작업 데이터 확정: 파생 재계산 + 타입 정리 + 문구 태깅 (캐시 — 성능 핵심)
+    raw = prepare_raw(work)
 
     # ── 전사 MTD (발송피로도) 누적 처리 ──
     if "mtd_store_df" not in st.session_state:
@@ -1001,8 +1072,8 @@ def main():
     st.sidebar.markdown("---")
     CAMPAIGN_PAGES = [
         "01. 종합 요약", "08. 전체 효율·추이", "02. 문구 속성별 성과", "03. 캠페인 리더보드",
-        "04. 카테고리·시간대 매트릭스", "09. BPU·우선순위 효율", "05. 타이밍 패턴",
-        "06. AI 처방", "07. 데이터·다운로드",
+        "10. 키워드·이모지 성과", "04. 카테고리·시간대 매트릭스", "11. 소구 추세·마모",
+        "09. BPU·우선순위 효율", "05. 타이밍 패턴", "06. AI 처방", "07. 데이터·다운로드",
     ]
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
@@ -1232,17 +1303,22 @@ def main():
         st.markdown("##### 🔗 속성 조합 패턴 — 어떤 조합이 효율이 높은가")
         st.caption("문구 속성 2개를 동시에 가진 캠페인의 평균 성과 (예: 할인율소구+마감임박). "
                    "표본(n)이 작으면 우연일 수 있으니 캠페인 수와 함께 보세요. 전체 평균 대비 차이로 정렬됩니다.")
-        cmin = st.number_input("조합 최소 표본 (캠페인 수)", value=5, min_value=2, step=1, key="p02_cmin")
+        cc1, cc2 = st.columns([2, 1])
+        cmin = cc1.number_input("조합 최소 표본 (캠페인 수)", value=5, min_value=2, step=1, key="p02_cmin")
+        ksize = cc2.radio("조합 크기", [2, 3], horizontal=True, key="p02_ksize")
         base_mean = float(base[mcol].mean())
         crows = []
-        for ta, tb in itertools.combinations(TAG_BOOLS, 2):
-            if ta not in base or tb not in base:
+        for combo in itertools.combinations(TAG_BOOLS, ksize):
+            if any(t not in base for t in combo):
                 continue
-            sub = base[base[ta] & base[tb]][mcol].dropna()
+            mask = np.logical_and.reduce([base[t].values for t in combo])
+            sub = base.loc[mask, mcol].dropna()
             if len(sub) < cmin:
                 continue
-            crows.append(dict(조합=f"{ta}+{tb}", 캠페인수=len(sub),
-                              평균=float(sub.mean()), 차이=float(sub.mean()) - base_mean))
+            rest = base.loc[~mask, mcol].dropna()
+            p = welch(sub.values, rest.values) if len(rest) > 1 else None
+            crows.append(dict(조합="+".join(combo), 캠페인수=len(sub),
+                              평균=float(sub.mean()), 차이=float(sub.mean()) - base_mean, p=p))
         if not crows:
             st.info("최소 표본을 만족하는 조합이 없습니다. 표본 기준을 낮추거나 사이드바 '최소 발송수'를 낮춰 보세요.")
         else:
@@ -1255,7 +1331,7 @@ def main():
                 text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, topn["캠페인수"])],
                 textposition="outside",
                 hovertemplate="%{y}<br>평균 " + mlabel + ": %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
-            lay = base_layout(h=440, title=f"속성 조합별 평균 {mlabel} (상위 12 · 전체평균 점선)")
+            lay = base_layout(h=440, title=f"속성 {ksize}개 조합별 평균 {mlabel} (상위 12 · 전체평균 점선)")
             lay["xaxis"]["range"] = [0, float(yv.max()) * 1.18] if len(yv) else None
             figc.update_layout(**lay)
             figc.update_yaxes(autorange="reversed")
@@ -1274,15 +1350,49 @@ def main():
             else:
                 cshow["평균"] = cshow["평균"].map(lambda v: f"{v:,.1f}")
                 cshow["차이"] = cshow["차이"].map(lambda v: f"{v:+,.1f}")
-            st.dataframe(cshow[["조합", "캠페인수", "평균", "차이"]].style.format({"캠페인수": "{:,.0f}"}),
+            cshow["유의성"] = cdf["p"].map(sig_label)
+            st.dataframe(cshow[["조합", "캠페인수", "평균", "차이", "유의성"]].style.format({"캠페인수": "{:,.0f}"}),
                          hide_index=True, use_container_width=True, height=320)
+            st.markdown('<div class="appendix">유의성은 해당 조합 보유 vs 미보유 그룹의 Welch t-검정 결과입니다. '
+                        'n이 작으면 평균이 높아도 우연일 수 있으니 유의성을 함께 보세요.</div>',
+                        unsafe_allow_html=True)
 
             sel_combo = st.selectbox("조합 선택 → 실제 발송 메시지 보기", list(cdf["조합"]), key="p02_combo")
             if sel_combo:
-                ta, tb = sel_combo.split("+")
-                subc = base[base[ta] & base[tb]]
+                parts = sel_combo.split("+")
+                mask = np.logical_and.reduce([base[t].values for t in parts])
+                subc = base[mask]
                 st.caption(f"'{sel_combo}' 동시 보유 {len(subc)}건 — {mlabel} 높은 순")
                 render_messages(subc, mcol, f"combo_{sel_combo}")
+
+        # ── 문구 길이 최적 구간 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📏 문구 길이 최적 구간")
+        st.caption("제목/본문 글자수 구간별 평균 성과. 어느 길이대가 가장 효율적인지 — 너무 짧거나 길면 떨어지는지 확인.")
+        lc1, lc2 = st.columns(2)
+
+        def len_bins(colname, label, container):
+            if colname not in base:
+                return
+            b = base[base[colname].fillna(0) > 0].copy()
+            if len(b) < 8:
+                container.info(f"{label} 표본 부족"); return
+            try:
+                b["_bin"] = pd.qcut(b[colname], q=4, duplicates="drop")
+            except Exception:
+                container.info(f"{label} 구간화 불가"); return
+            g = b.groupby("_bin", observed=True)[mcol].agg(["mean", "count"])
+            xs = [f"{int(iv.left)}~{int(iv.right)}자" for iv in g.index]
+            yvv = g["mean"].values * (100 if is_pct else 1)
+            fig = go.Figure(go.Bar(x=xs, y=yvv, marker_color=mclr,
+                                   text=[f"{v:.2f}<br>(n={int(n)})" for v, n in zip(yvv, g["count"])],
+                                   textposition="outside"))
+            fig.update_layout(**base_layout(h=300, ysuffix=("%" if is_pct else ""),
+                                            title=f"{label} 길이 구간별 평균 {mlabel}"))
+            container.plotly_chart(fig, use_container_width=True)
+
+        len_bins("제목길이", "제목", lc1)
+        len_bins("본문길이", "본문", lc2)
 
         # ── 속성별 드릴다운: 실제 발송 메시지 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -1351,6 +1461,48 @@ def main():
         heat("cat", "stype", f"카테고리 × 발송유형 — 평균 {mlabel}")
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         heat("hour", "dow_k", f"시간대 × 요일 — 평균 {mlabel}")
+
+        # ── 카테고리별 최적 문구 전략: 카테고리 × 문구속성 히트맵 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🎯 카테고리별 최적 문구 전략 (카테고리 × 문구속성)")
+        st.caption("카테고리마다 잘 먹히는 소구가 다릅니다. 칸이 진할수록 그 카테고리에서 해당 속성의 평균 성과가 높습니다.")
+        present_tags = [t for t in TAG_BOOLS if t in base.columns]
+        cat_rows = []
+        cat_list = [c for c in base["cat"].dropna().unique() if str(c).strip() not in ("", "nan", "None")]
+        for c in cat_list:
+            sub = base[base["cat"] == c]
+            if len(sub) < 3:
+                continue
+            row = {"카테고리": str(c)}
+            for t in present_tags:
+                vv = sub[sub[t]][mcol].dropna()
+                row[t] = float(vv.mean()) if len(vv) else np.nan
+            cat_rows.append(row)
+        if cat_rows:
+            cmat = pd.DataFrame(cat_rows).set_index("카테고리")
+            z = cmat.values * (100 if is_pct else 1)
+            fig = go.Figure(go.Heatmap(
+                z=z, x=list(cmat.columns), y=list(cmat.index), colorscale="Blues",
+                text=np.round(z, 2), texttemplate="%{text}", textfont=dict(size=9),
+                colorbar=dict(thickness=10), hoverongaps=False))
+            fig.update_layout(**base_layout(h=max(320, 60 + 34 * len(cmat)),
+                                            title=f"카테고리 × 문구속성 — 평균 {mlabel}"))
+            st.plotly_chart(fig, use_container_width=True)
+            # 카테고리별 베스트 속성 추천표
+            recs = []
+            for c in cmat.index:
+                rowv = cmat.loc[c].dropna()
+                if len(rowv) == 0:
+                    continue
+                best = rowv.idxmax()
+                bv = rowv.max() * (100 if is_pct else 1)
+                bstr = f"{bv:.2f}%" if is_pct else (won(rowv.max()) if mcol in ("rps", "aov", "amt") else f"{bv:,.1f}")
+                recs.append(dict(카테고리=c, 추천속성=best, 평균성과=bstr))
+            if recs:
+                st.markdown("**카테고리별 추천 소구**")
+                st.dataframe(pd.DataFrame(recs), hide_index=True, use_container_width=True)
+        else:
+            st.info("카테고리별 표본이 부족합니다.")
 
         # ── 드릴다운: 카테고리 / 시간대 / 요일 선택 → 메시지 목록 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -1452,6 +1604,43 @@ def main():
             st.markdown(f'<div class="vg">{st.session_state["ai_rx_txt"]}</div>', unsafe_allow_html=True)
         with st.expander("AI에 전달되는 데이터 미리보기"):
             st.text(build_facts(base, with_attr=True))
+
+        # ── AI 카피 초안 생성 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ✍️ AI 카피 초안 생성 — 성과 패턴 기반 다음 메시지")
+        st.caption("성과가 좋았던 문구 속성·조합을 근거로 다음 캠페인 PUSH 문구 초안을 작성합니다.")
+        dc1, dc2 = st.columns(2)
+        cat_opts_ai = ["(전체)"] + [str(c) for c in sorted(base["cat"].dropna().unique())
+                                    if str(c).strip() not in ("", "nan", "None")]
+        draft_cat = dc1.selectbox("대상 카테고리", cat_opts_ai, key="ai_draft_cat")
+        draft_goal = dc2.selectbox("목표 지표", list(METRIC_OPTS.keys()), key="ai_draft_goal")
+        draft_brand = st.text_input("브랜드/상품 (선택)", key="ai_draft_brand",
+                                    placeholder="예: DAKS 코트, 겨울 세일")
+        draft_n = st.slider("초안 개수", 3, 10, 5, key="ai_draft_n")
+        if st.button("✍️ 카피 초안 생성", key="ai_draft_btn"):
+            gcol = METRIC_OPTS[draft_goal][0]
+            scope = base if draft_cat == "(전체)" else base[base["cat"].astype(str) == draft_cat]
+            facts = build_facts(scope, with_attr=True, metric_col=gcol)
+            ctx = f"대상 카테고리: {draft_cat} / 목표 지표: {draft_goal}"
+            if draft_brand.strip():
+                ctx += f" / 브랜드·상품: {draft_brand.strip()}"
+            system = (
+                "당신은 LF몰 CRM PUSH 카피라이터입니다. 주어진 '문구 속성별 성과'와 상·하위 문구 "
+                "데이터를 근거로, 성과가 높았던 소구·속성 조합을 적용한 새 PUSH 문구 초안을 작성하세요. "
+                f"요청 맥락: {ctx}. "
+                f"다음을 한국어로: 1) 이 맥락에 권장하는 카피 전략 2~3줄(근거 속성 명시), "
+                f"2) 바로 쓸 수 있는 PUSH 문구 초안 {draft_n}개 — 각 초안은 '제목'과 '내용'을 모두 포함하고 "
+                "사용한 소구 속성을 [할인율소구+마감임박]처럼 태그로 표기. "
+                "실제 데이터에 없는 구체 수치(가격·할인율)는 〇〇로 비워두세요. "
+                "출력은 HTML, 소제목 <b>, 항목 <br> 구분.")
+            with st.spinner("카피 초안 생성 중…"):
+                txt, err = ai_generate(system, facts, model)
+            if err:
+                st.warning(err)
+            else:
+                st.session_state["ai_draft_txt"] = txt
+        if st.session_state.get("ai_draft_txt"):
+            st.markdown(f'<div class="vg">{st.session_state["ai_draft_txt"]}</div>', unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 08 — 전체 효율·추이 (send_dashboard 피로도 관점 계승)
@@ -1645,6 +1834,150 @@ def main():
         render_messages(sub9, mcol, "p09_drill")
 
     # ══════════════════════════════════════════════════════════════
+    # PAGE 10 — 키워드·이모지 성과
+    # ══════════════════════════════════════════════════════════════
+    elif page.startswith("10"):
+        st.title("키워드 · 이모지 성과")
+        st.caption("규칙 분류를 넘어, 실제 문구의 '단어'와 '이모지'를 쪼개 성과를 봅니다. "
+                   "각 단어/이모지를 포함한 캠페인의 평균 성과(전체 평균 대비)입니다.")
+        mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p10_metric")
+        mcol, _ms, mclr = METRIC_OPTS[mlabel]
+        is_pct = mcol in ("ord_cr", "infl_cr")
+        base = fdf
+        if len(base) < 5:
+            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+
+        c1, c2 = st.columns(2)
+        kmin = c1.number_input("키워드 최소 표본(캠페인 수)", value=5, min_value=2, step=1, key="p10_kmin")
+        ktop = c2.number_input("상위 N개", value=20, min_value=5, step=5, key="p10_ktop")
+
+        def _barfig(d, namecol, title, h):
+            up = d.head(int(ktop))
+            yv = up["평균"] * (100 if is_pct else 1)
+            fig = go.Figure(go.Bar(
+                x=yv, y=up[namecol], orientation="h", marker_color=mclr, customdata=up["캠페인수"],
+                text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, up["캠페인수"])],
+                textposition="outside",
+                hovertemplate="%{y}<br>평균: %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
+            lay = base_layout(h=h, title=title)
+            lay["xaxis"]["range"] = [0, float(yv.max()) * 1.18] if len(yv) else None
+            fig.update_layout(**lay)
+            fig.update_yaxes(autorange="reversed")
+            return fig
+
+        st.markdown("##### 🔤 키워드(단어)별 평균 성과 — 상위")
+        kdf = keyword_perf(base, mcol, min_n=int(kmin), top=int(ktop))
+        if len(kdf) == 0:
+            st.info("최소 표본을 만족하는 키워드가 없습니다. 표본 기준을 낮춰 보세요.")
+        else:
+            st.plotly_chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
+                                    max(360, 40 + 24 * min(len(kdf), int(ktop)))),
+                            use_container_width=True)
+            sel_kw = st.selectbox("키워드 선택 → 실제 발송 메시지 보기", list(kdf["단어"]), key="p10_kw")
+            if sel_kw:
+                hay = (base["title"].astype(str) + " " + base["body"].astype(str))
+                subk = base[hay.str.contains(re.escape(sel_kw), na=False)]
+                st.caption(f"'{sel_kw}' 포함 {len(subk)}건 — {mlabel} 높은 순")
+                render_messages(subk, mcol, f"p10kw_{sel_kw}")
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 😀 이모지 종류별 평균 성과")
+        emin = st.number_input("이모지 최소 표본(캠페인 수)", value=3, min_value=2, step=1, key="p10_emin")
+        edf = emoji_perf(base, mcol, min_n=int(emin), top=30)
+        if len(edf) == 0:
+            st.info("최소 표본을 만족하는 이모지가 없습니다. (이모지 사용 캠페인이 적을 수 있어요)")
+        else:
+            st.plotly_chart(_barfig(edf, "이모지", f"이모지별 평균 {mlabel}",
+                                    max(320, 40 + 28 * len(edf))), use_container_width=True)
+            eshow = edf.copy()
+            if is_pct:
+                eshow["평균"] = eshow["평균"].map(lambda v: f"{v*100:.2f}%")
+                eshow["차이"] = eshow["차이"].map(lambda v: f"{v*100:+.2f}%p")
+            elif mcol in ("rps", "aov", "amt"):
+                eshow["평균"] = eshow["평균"].map(won); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.0f}")
+            else:
+                eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
+            st.dataframe(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, use_container_width=True)
+        st.markdown('<div class="appendix">단어/이모지 분석은 캠페인 단위 평균이며, 표본(n)이 작으면 우연일 수 있습니다. '
+                    '한 캠페인에서 같은 단어가 여러 번 나와도 1회로 집계합니다. 불용어·날짜/시간 숫자는 제외됩니다.</div>',
+                    unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 11 — 소구 추세·마모 (시계열)
+    # ══════════════════════════════════════════════════════════════
+    elif page.startswith("11"):
+        st.title("소구 추세 · 마모")
+        st.caption("특정 문구 속성(소구)이 시간이 갈수록 효과가 떨어지는지(마모) 봅니다. "
+                   "주차별로 '그 속성 보유 캠페인'의 평균 성과 추이를 보고, 반복 소구의 피로를 진단합니다.")
+        mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p11_metric")
+        mcol, _ms, mclr = METRIC_OPTS[mlabel]
+        is_pct = mcol in ("ord_cr", "infl_cr")
+        base = fdf.dropna(subset=["dt"]).copy()
+        if len(base) < 8:
+            st.info("표본이 부족합니다. 더 많은 주차를 누적하거나 '최소 발송수'를 낮춰 보세요."); st.stop()
+        base["주"] = base["dt"].dt.to_period("W").apply(lambda p: p.start_time)
+
+        sel_attrs = st.multiselect("추세를 볼 속성(소구)", [t for t in TAG_BOOLS if t in base.columns],
+                                   default=[t for t in ["할인율소구", "마감임박"] if t in base.columns],
+                                   key="p11_attrs")
+        if not sel_attrs:
+            st.info("속성을 1개 이상 선택하세요."); st.stop()
+
+        fig = go.Figure()
+        palette = [PALETTE["purple"], PALETTE["green"], PALETTE["amber"], PALETTE["blue"],
+                   PALETTE["red"], PALETTE["teal"], PALETTE["slate"]]
+        weeks = sorted(base["주"].unique())
+        for i, t in enumerate(sel_attrs):
+            ys = []
+            for w in weeks:
+                vv = base[(base["주"] == w) & (base[t])][mcol].dropna()
+                ys.append(vv.mean() * (100 if is_pct else 1) if len(vv) else np.nan)
+            fig.add_trace(go.Scatter(x=list(weeks), y=ys, mode="lines+markers", name=t,
+                                     line=dict(color=palette[i % len(palette)], width=2),
+                                     connectgaps=True))
+        lay = base_layout(h=420, ysuffix=("%" if is_pct else ""),
+                          title=f"속성별 주차 추이 — 평균 {mlabel}")
+        lay["showlegend"] = True
+        lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+        fig.update_layout(**lay)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 마모 진단: 각 속성의 주차 추세 회귀(기울기) + 사용 빈도 추이
+        st.markdown("##### 🔻 마모 진단 (주차 추세 회귀)")
+        diag = []
+        for t in sel_attrs:
+            pts = []
+            for j, w in enumerate(weeks):
+                vv = base[(base["주"] == w) & (base[t])][mcol].dropna()
+                if len(vv):
+                    pts.append((j, float(vv.mean())))
+            if len(pts) >= 4:
+                xs = np.array([p[0] for p in pts]); ys2 = np.array([p[1] for p in pts])
+                sl, ic, rr, pp, _ = stats.linregress(xs, ys2)
+                trend = "마모(하락)" if (rr < 0 and pp < 0.1) else ("상승" if (rr > 0 and pp < 0.1) else "변화 약함")
+                diag.append(dict(속성=t, 주차수=len(pts), 추세=trend,
+                                 상관r=round(float(rr), 2), 유의성=sig_label(pp)))
+            else:
+                diag.append(dict(속성=t, 주차수=len(pts), 추세="표본부족", 상관r=np.nan, 유의성="–"))
+        st.dataframe(pd.DataFrame(diag), hide_index=True, use_container_width=True)
+
+        # 속성 사용 빈도(발송수) 추이 — 너무 자주 쓰면 마모 위험
+        st.markdown("##### 📨 속성 사용 빈도 추이 (캠페인 수)")
+        figf = go.Figure()
+        for i, t in enumerate(sel_attrs):
+            cnts = [int(((base["주"] == w) & (base[t])).sum()) for w in weeks]
+            figf.add_trace(go.Scatter(x=list(weeks), y=cnts, mode="lines+markers", name=t,
+                                      line=dict(color=palette[i % len(palette)], width=2)))
+        layf = base_layout(h=320, title="속성별 주차 사용 빈도(캠페인 수)")
+        layf["showlegend"] = True
+        layf["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+        figf.update_layout(**layf)
+        st.plotly_chart(figf, use_container_width=True)
+        st.markdown('<div class="appendix">추세 회귀의 상관 r이 음수이고 유의하면 "반복 소구로 효과가 마모"되는 신호입니다. '
+                    '사용 빈도가 늘면서 성과가 떨어지면 해당 소구를 잠시 쉬어가는 전략을 고려하세요. '
+                    '단, 카테고리·시즌 구성 변화가 섞일 수 있습니다.</div>', unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════
     # 발송피로도 (전사 MTD) — F1~F4
     # ══════════════════════════════════════════════════════════════
     elif page.startswith("F"):
@@ -1807,6 +2140,25 @@ def main():
         st.download_button("📥 머지 데이터 CSV 다운로드",
                            df.drop(columns=["dt"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
                            file_name="발송성과_머지.csv", mime="text/csv")
+
+        # ── 종합 리포트(엑셀) 내보내기 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📑 종합 리포트(엑셀) 내보내기")
+        st.caption("머지데이터·속성별성과·속성조합·키워드·이모지·카테고리별을 여러 시트로 담은 엑셀. "
+                   "현재 필터·최소발송수가 적용된 분석 표본 기준입니다.")
+        if st.button("📑 리포트 생성", key="gen_report"):
+            try:
+                with st.spinner("리포트 생성 중…"):
+                    st.session_state["report_xlsx"] = build_report_excel(fdf)
+                st.success(f"리포트 생성 완료 — 분석 표본 {len(fdf)}건")
+            except Exception as e:
+                st.error(f"리포트 생성 실패: {e}")
+        if st.session_state.get("report_xlsx"):
+            st.download_button(
+                "📥 종합 리포트(xlsx) 다운로드", st.session_state["report_xlsx"],
+                file_name="발송성과_리포트.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### ⚠️ 매칭 진단 — 실적은 있으나 기획 문구를 못 찾은 건")
         miss = raw[~raw["matched"]][["date", "af", "cat", "brand", "send", "amt"]]
@@ -1849,6 +2201,56 @@ def build_facts(df, with_attr=False, metric_col="ord_cr"):
                              f"미보유 {no.mean()*100:.2f}%(n={len(no)}) "
                              f"→ {(yes.mean()-no.mean())*100:+.2f}%p")
     return "\n".join(lines)
+
+
+def build_report_excel(fdf):
+    """분석 결과를 다중 시트 엑셀(bytes)로 — 머지데이터/속성별/조합/키워드/이모지/카테고리별."""
+    import io as _io
+    import itertools as _it
+    buf = _io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        fdf.drop(columns=["dt"], errors="ignore").to_excel(xw, sheet_name="머지데이터", index=False)
+        # 속성별 성과
+        rows = []
+        for t in TAG_BOOLS:
+            if t not in fdf:
+                continue
+            y = fdf[fdf[t]]; n = fdf[~fdf[t]]
+            if not len(y) or not len(n):
+                continue
+            rows.append(dict(속성=t, 보유n=len(y), 보유_유입CR=y["infl_cr"].mean(),
+                             보유_주문CR=y["ord_cr"].mean(), 보유_RPS=y["rps"].mean(),
+                             미보유n=len(n), 미보유_주문CR=n["ord_cr"].mean(),
+                             주문CR차이=y["ord_cr"].mean() - n["ord_cr"].mean()))
+        if rows:
+            pd.DataFrame(rows).sort_values("주문CR차이", ascending=False).to_excel(
+                xw, sheet_name="속성별성과", index=False)
+        # 속성 2개 조합
+        bm = fdf["ord_cr"].mean() if "ord_cr" in fdf else np.nan
+        crows = []
+        for a, b in _it.combinations([t for t in TAG_BOOLS if t in fdf], 2):
+            mask = fdf[a] & fdf[b]
+            s = fdf[mask]["ord_cr"].dropna()
+            if len(s) < 5:
+                continue
+            crows.append(dict(조합=f"{a}+{b}", 캠페인수=len(s), 주문CR=s.mean(), 차이=s.mean() - bm))
+        if crows:
+            pd.DataFrame(crows).sort_values("주문CR", ascending=False).to_excel(
+                xw, sheet_name="속성조합", index=False)
+        # 키워드 / 이모지
+        kp = keyword_perf(fdf, "ord_cr", min_n=5, top=50)
+        if len(kp):
+            kp.to_excel(xw, sheet_name="키워드성과", index=False)
+        ep = emoji_perf(fdf, "ord_cr", min_n=3, top=50)
+        if len(ep):
+            ep.to_excel(xw, sheet_name="이모지성과", index=False)
+        # 카테고리별
+        if "cat" in fdf and len(fdf):
+            cg = fdf.groupby("cat").agg(캠페인수=("af", "size"), 발송=("send", "sum"),
+                                        유입CR=("infl_cr", "mean"), 주문CR=("ord_cr", "mean"),
+                                        RPS=("rps", "mean"), 거래액=("amt", "sum")).reset_index()
+            cg.rename(columns={"cat": "카테고리"}).to_excel(xw, sheet_name="카테고리별", index=False)
+    return buf.getvalue()
 
 
 if __name__ == "__main__":
