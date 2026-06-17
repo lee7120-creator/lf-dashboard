@@ -650,6 +650,82 @@ def emoji_perf(df, metric_col, min_n=3, top=30):
     return pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
 
 
+# ── 통계 헬퍼: 효과크기 · 다중비교 보정 · 다변량 회귀 ──────────────────────
+def cohen_d(a, b):
+    """두 그룹 평균차의 표준화 효과크기(Cohen's d). |d|≈0.2 작음/0.5 중간/0.8 큼."""
+    a = np.asarray(a, float); b = np.asarray(b, float)
+    a = a[~np.isnan(a)]; b = b[~np.isnan(b)]
+    if len(a) < 2 or len(b) < 2:
+        return np.nan
+    na, nb = len(a), len(b)
+    sp2 = ((na - 1) * a.var(ddof=1) + (nb - 1) * b.var(ddof=1)) / (na + nb - 2)
+    if sp2 <= 0:
+        return np.nan
+    return float((a.mean() - b.mean()) / np.sqrt(sp2))
+
+
+def fdr_bh(pvals):
+    """Benjamini-Hochberg FDR 보정 p값 (NaN은 그대로 통과)."""
+    p = np.asarray(pvals, float)
+    out = np.full(len(p), np.nan)
+    mask = ~np.isnan(p)
+    pv = p[mask]; n = len(pv)
+    if n == 0:
+        return out
+    order = np.argsort(pv)
+    ranked = pv[order]
+    adj = ranked * n / np.arange(1, n + 1)
+    adj = np.minimum.accumulate(adj[::-1])[::-1]
+    adj = np.clip(adj, 0, 1)
+    res = np.empty(n); res[order] = adj
+    out[mask] = res
+    return out
+
+
+def ols_effects(df, attr_cols, ctrl_cols, ycol):
+    """속성(0/1) + 통제변수(카테고리·시간대 등 더미) 다중회귀 → 속성별 '순효과' 계수·표준오차·p값.
+
+    단순 평균비교가 잡아내지 못하는 교란(예: 특정 속성이 특정 카테고리에 몰림)을 통제한다.
+    반환: DataFrame[속성, 순효과(계수), 표준오차, p] — attr_cols 에 대해서만.
+    """
+    from scipy import stats as _stats
+    if df is None or len(df) == 0 or ycol not in df:
+        return pd.DataFrame(columns=["속성", "순효과", "표준오차", "p"])
+    d = df.dropna(subset=[ycol]).copy()
+    use_attrs = [a for a in attr_cols if a in d.columns and d[a].nunique() > 1]
+    if not use_attrs or len(d) < len(use_attrs) + 5:
+        return pd.DataFrame(columns=["속성", "순효과", "표준오차", "p"])
+    parts = [np.ones((len(d), 1))]
+    names = ["intercept"]
+    for a in use_attrs:
+        parts.append(d[a].astype(float).values.reshape(-1, 1)); names.append(a)
+    for c in ctrl_cols:
+        if c in d.columns and d[c].astype(str).nunique() > 1:
+            dum = pd.get_dummies(d[c].astype(str), prefix=c, drop_first=True)
+            if dum.shape[1] > 0:
+                parts.append(dum.values.astype(float)); names.extend(list(dum.columns))
+    X = np.hstack(parts).astype(float)
+    y = d[ycol].astype(float).values
+    n, k = X.shape
+    if n - k <= 0:
+        return pd.DataFrame(columns=["속성", "순효과", "표준오차", "p"])
+    beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ beta
+    dof = n - k
+    sigma2 = float(resid @ resid) / dof
+    XtX_inv = np.linalg.pinv(X.T @ X)
+    se = np.sqrt(np.clip(np.diag(sigma2 * XtX_inv), 0, None))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tvals = np.where(se > 0, beta / se, np.nan)
+    pvals = 2 * (1 - _stats.t.cdf(np.abs(tvals), dof))
+    idx = {nm: i for i, nm in enumerate(names)}
+    rows = []
+    for a in use_attrs:
+        i = idx[a]
+        rows.append(dict(속성=a, 순효과=float(beta[i]), 표준오차=float(se[i]), p=float(pvals[i])))
+    return pd.DataFrame(rows).sort_values("순효과", ascending=False).reset_index(drop=True)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. Streamlit 앱
 # ══════════════════════════════════════════════════════════════════════
@@ -1234,6 +1310,38 @@ def main():
             st.dataframe(los[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, use_container_width=True)
 
+        # ── 주목 캠페인 자동 탐지 (이상치) ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🚩 주목 캠페인 — 평균에서 크게 벗어난 건 (자동 탐지)")
+        st.caption("주문전환율이 전체 평균에서 통계적으로 크게 벗어난(±2σ) 캠페인을 자동으로 찾습니다. "
+                   "급등 건은 '성공 공식', 급락 건은 '점검 대상'입니다.")
+        av = base["ord_cr"].dropna()
+        if len(av) >= 8 and av.std(ddof=0) > 0:
+            mu, sd = float(av.mean()), float(av.std(ddof=0))
+            bz = base.copy()
+            bz["_z"] = (bz["ord_cr"] - mu) / sd
+            hi = bz[bz["_z"] >= 2].sort_values("_z", ascending=False)
+            lo = bz[bz["_z"] <= -2].sort_values("_z")
+            oc1, oc2 = st.columns(2)
+
+            def _show_outliers(d, container, emoji, label):
+                container.markdown(f"**{emoji} {label} ({len(d)}건)**")
+                if len(d) == 0:
+                    container.caption("해당 없음 (±2σ 벗어난 건 없음)"); return
+                v = d.head(8).copy()
+                v["편차σ"] = v["_z"].map(lambda z: f"{z:+.1f}σ")
+                vv = v[["date", "cat", "title", "ord_cr", "send", "편차σ"]].rename(
+                    columns={"date": "날짜", "cat": "카테고리", "title": "제목", "ord_cr": "주문CR", "send": "발송"})
+                container.dataframe(vv.style.format({"주문CR": "{:.2%}", "발송": "{:,.0f}"}),
+                                    hide_index=True, use_container_width=True)
+            _show_outliers(hi, oc1, "🔼", "급등 (성공 공식)")
+            _show_outliers(lo, oc2, "🔽", "급락 (점검 대상)")
+            st.markdown(f'<div class="appendix">기준: 전체 평균 주문CR {mu*100:.2f}% ± 2σ({sd*100:.2f}%p). '
+                        f'급등 건의 문구·오퍼·타이밍을 다음 캠페인에 재사용하고, 급락 건은 원인(타겟·상품·문구)을 점검하세요.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.info("이상치 탐지에는 표본이 더 필요합니다 (8건 이상).")
+
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🤖 AI 핵심 인사이트")
         if st.button("AI 인사이트 생성", key="ai_sum"):
@@ -1270,8 +1378,10 @@ def main():
                 continue
             my, mn = float(np.mean(yes)), float(np.mean(no))
             rows.append(dict(속성=tag, 보유평균=my, 보유n=len(yes), 미보유평균=mn, 미보유n=len(no),
-                             차이=my - mn, p=welch(yes, no)))
+                             차이=my - mn, p=welch(yes, no), d=cohen_d(yes, no)))
         adf = pd.DataFrame(rows).sort_values("차이", ascending=False)
+        if len(adf):
+            adf["p_adj"] = fdr_bh(adf["p"].values)  # 다중비교(FDR) 보정
 
         # Δ 막대
         is_pct = mcol in ("ord_cr", "infl_cr")
@@ -1285,17 +1395,55 @@ def main():
 
         def fmtv(v):
             return f"{v*100:.2f}%" if is_pct else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}")
+        def _dlabel(d):
+            if d is None or (isinstance(d, float) and np.isnan(d)):
+                return "–"
+            mag = "큼" if abs(d) >= 0.8 else ("중간" if abs(d) >= 0.5 else ("작음" if abs(d) >= 0.2 else "미미"))
+            return f"{d:+.2f} ({mag})"
         show = adf.copy()
         show["보유평균"] = show["보유평균"].map(fmtv)
         show["미보유평균"] = show["미보유평균"].map(fmtv)
         show["차이"] = [f"{v:+.2f}%p" if is_pct else f"{v:+,.0f}" for v in delta_disp]
-        show["유의성"] = show["p"].map(sig_label)
-        st.dataframe(show[["속성", "보유평균", "보유n", "미보유평균", "미보유n", "차이", "유의성"]],
+        show["효과크기"] = show["d"].map(_dlabel)
+        show["유의성(보정)"] = show["p_adj"].map(sig_label)
+        st.dataframe(show[["속성", "보유평균", "보유n", "미보유평균", "미보유n", "차이", "효과크기", "유의성(보정)"]],
                      hide_index=True, use_container_width=True)
         st.markdown('<div class="appendix">속성은 제목·본문 문구를 규칙 기반으로 자동 태깅한 결과입니다. '
-                    'n(표본수)이 작으면 차이가 우연일 수 있으니 유의성을 함께 보세요. '
-                    '전환율은 캠페인별 단순 평균이며, 최소 발송수 필터로 소표본을 통제합니다.</div>',
+                    '<b>효과크기</b>(Cohen\'s d)는 차이의 실질 크기(|d| 0.2 작음·0.5 중간·0.8 큼), '
+                    '<b>유의성(보정)</b>은 여러 속성 동시검정의 위양성을 줄인 FDR 보정 p값입니다. '
+                    'n이 작으면 우연일 수 있으니 효과크기·유의성을 함께 보세요.</div>',
                     unsafe_allow_html=True)
+
+        # ── 다변량 회귀: 교란(카테고리·시간대) 통제 후 속성 순효과 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🧮 교란 통제 후 속성 순효과 (다변량 회귀)")
+        st.caption("단순 평균비교는 '속성이 특정 카테고리·시간대에 몰린' 착시를 포함할 수 있습니다. "
+                   "카테고리·발송유형·시간대를 통제했을 때 각 속성이 독립적으로 성과에 주는 순효과입니다.")
+        ctrl_opts = [c for c in ["cat", "stype", "hour", "dow_k", "bpu"] if c in base.columns]
+        ctrl_label = {"cat": "카테고리", "stype": "발송유형", "hour": "시간대", "dow_k": "요일", "bpu": "BPU"}
+        sel_ctrl = st.multiselect("통제할 변수", ctrl_opts, default=[c for c in ["cat", "stype", "hour"] if c in ctrl_opts],
+                                  format_func=lambda c: ctrl_label.get(c, c), key="p02_ctrl")
+        eff = ols_effects(base, TAG_BOOLS, sel_ctrl, mcol)
+        if len(eff) == 0:
+            st.info("표본이 부족해 회귀를 추정할 수 없습니다. 통제 변수를 줄이거나 '최소 발송수'를 낮춰 보세요.")
+        else:
+            eff["p_adj"] = fdr_bh(eff["p"].values)
+            ev = eff["순효과"] * (100 if is_pct else 1)
+            figr = go.Figure(go.Bar(
+                x=ev, y=eff["속성"], orientation="h",
+                marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in eff["순효과"]],
+                text=[f"{v:+.3f}{'%p' if is_pct else ''}" for v in ev], textposition="outside"))
+            figr.update_layout(**base_layout(h=380, title=f"{mlabel} — 속성 순효과 (교란 통제)"))
+            figr.update_yaxes(autorange="reversed")
+            st.plotly_chart(figr, use_container_width=True)
+            er = eff.copy()
+            er["순효과"] = [f"{v*100:+.3f}%p" if is_pct else (f"{v:+,.0f}" if mcol in ("rps", "aov", "amt") else f"{v:+,.3f}")
+                          for v in eff["순효과"]]
+            er["유의성(보정)"] = er["p_adj"].map(sig_label)
+            st.dataframe(er[["속성", "순효과", "유의성(보정)"]], hide_index=True, use_container_width=True)
+            st.markdown('<div class="appendix">순효과가 양(+)이고 유의하면, 다른 조건이 같을 때 그 속성이 성과를 끌어올린다는 '
+                        '근거가 더 강합니다. 단순 비교에선 좋아 보였는데 순효과가 약해지면 '
+                        '카테고리·시간대 같은 외부 요인이 섞였던 것입니다.</div>', unsafe_allow_html=True)
 
         # ── 속성 조합 패턴 분석 (할인율소구+마감임박 등) ──
         import itertools
@@ -1565,6 +1713,56 @@ def main():
                         '낮다는 신호입니다. 단, 발송유형/카테고리 구성 차이가 섞일 수 있습니다.</div>',
                         unsafe_allow_html=True)
 
+        # ── 발송 슬롯 최적 추천 (요일 × 시간) ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🏅 발송 슬롯 최적 추천 (요일 × 시간)")
+        st.caption(f"요일·시간 조합별 평균 {mlabel} 순위. 표본(캠페인 수)이 충분한 슬롯 중 효율이 높은 순으로 '언제 보낼지' 추천합니다.")
+        if "dow_k" in base and "hour" in base:
+            smin = st.number_input("슬롯 최소 표본(캠페인 수)", value=3, min_value=2, step=1, key="p05_smin")
+            g = base.dropna(subset=["hour"]).copy()
+            g["hour"] = pd.to_numeric(g["hour"], errors="coerce")
+            g = g.dropna(subset=["hour"])
+            slot = g.groupby(["dow_k", "hour"]).agg(
+                캠페인수=("af", "size"), 평균=(mcol, "mean"),
+                발송=("send", "sum"), 거래액=("amt", "sum")).reset_index()
+            slot = slot[slot["캠페인수"] >= smin].sort_values("평균", ascending=False)
+            if len(slot) == 0:
+                st.info("최소 표본을 만족하는 슬롯이 없습니다. 기준을 낮춰 보세요.")
+            else:
+                dow_order = ["월", "화", "수", "목", "금", "토", "일"]
+                top = slot.head(10).copy()
+                top["슬롯"] = top["dow_k"].astype(str) + " " + top["hour"].astype(int).astype(str) + "시"
+                yv = top["평균"] * (100 if is_pct else 1)
+                figs = go.Figure(go.Bar(
+                    x=yv, y=top["슬롯"], orientation="h", marker_color=METRIC_OPTS[mlabel][2],
+                    text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, top["캠페인수"])],
+                    textposition="outside"))
+                lay = base_layout(h=380, title=f"효율 상위 발송 슬롯 — 평균 {mlabel}")
+                lay["xaxis"]["range"] = [0, float(yv.max()) * 1.2] if len(yv) else None
+                figs.update_layout(**lay)
+                figs.update_yaxes(autorange="reversed")
+                st.plotly_chart(figs, use_container_width=True)
+                disp = slot.copy()
+                disp["요일"] = disp["dow_k"]
+                disp["시간"] = disp["hour"].astype(int).astype(str) + "시"
+                if is_pct:
+                    disp["평균"] = disp["평균"].map(lambda v: f"{v*100:.2f}%")
+                elif mcol in ("rps", "aov", "amt"):
+                    disp["평균"] = disp["평균"].map(won)
+                else:
+                    disp["평균"] = disp["평균"].map(lambda v: f"{v:,.1f}")
+                disp["_o"] = disp["요일"].map(lambda d: dow_order.index(d) if d in dow_order else 99)
+                st.dataframe(disp.sort_values(["_o", "hour"])[["요일", "시간", "캠페인수", "평균", "발송", "거래액"]]
+                             .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "거래액": "{:,.0f}"}),
+                             hide_index=True, use_container_width=True, height=300)
+                best = slot.iloc[0]
+                bv = best["평균"] * (100 if is_pct else 1)
+                bstr = f"{bv:.2f}%" if is_pct else (won(best["평균"]) if mcol in ("rps", "aov", "amt") else f"{bv:,.1f}")
+                st.markdown(f'<div class="appendix">💡 추천: <b>{best["dow_k"]}요일 {int(best["hour"])}시</b> 슬롯이 '
+                            f'평균 {mlabel} <b>{bstr}</b>(n={int(best["캠페인수"])})로 가장 높습니다. '
+                            f'단, 카테고리·상품 구성 차이가 섞일 수 있으니 표본수와 함께 보세요.</div>',
+                            unsafe_allow_html=True)
+
         # ── 드릴다운: 시간대·요일 선택 → 메시지 목록 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📋 시간대·요일별 발송 메시지 드릴다운")
@@ -1720,6 +1918,95 @@ def main():
             sub8 = g[(g["dt"] >= wk_start) & (g["dt"] < wk_end)]
             st.caption(f"해당 주 캠페인 {len(sub8)}건 — 거래액 높은 순")
             render_messages(sub8, "amt", "p08_drill")
+
+        # ── 퍼널 분해 (발송→UV→VISIT→고객→주문) ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🪜 퍼널 분해 — 어디서 새는가")
+        st.caption("발송 → UV(유입) → VISIT(방문) → 고객수 → 주문 단계별 잔존·전환율. "
+                   "전환율이 급락하는 단계가 개선 레버리지입니다.")
+        steps = [("발송", "send"), ("UV(유입)", "uv"), ("VISIT(방문)", "visit"),
+                 ("고객수", "cust"), ("주문", "oc")]
+        avail = [(lab, c) for lab, c in steps if c in g.columns and g[c].fillna(0).sum() > 0]
+        if len(avail) >= 2:
+            vals = [float(g[c].fillna(0).sum()) for _, c in avail]
+            labs = [lab for lab, _ in avail]
+            base_v = vals[0] if vals[0] else 1
+            figf = go.Figure(go.Funnel(
+                y=labs, x=vals, textposition="inside",
+                texttemplate="%{label}<br>%{value:,.0f} (%{percentInitial:.2%})",
+                marker=dict(color=[PALETTE["slate"], PALETTE["blue"], PALETTE["teal"],
+                                   PALETTE["green"], PALETTE["purple"]][:len(labs)])))
+            figf.update_layout(**base_layout(h=360, title="발송 퍼널 (전체 합산)"))
+            st.plotly_chart(figf, use_container_width=True)
+            # 단계별 전환율 표
+            frows = []
+            for i in range(1, len(avail)):
+                prev_l, prev_c = avail[i - 1]; cur_l, cur_c = avail[i]
+                pv = float(g[prev_c].fillna(0).sum()); cv = float(g[cur_c].fillna(0).sum())
+                frows.append(dict(단계=f"{prev_l} → {cur_l}", 직전대비=f"{(cv/pv if pv else 0)*100:.2f}%",
+                                  발송대비=f"{(cv/base_v)*100:.2f}%"))
+            st.dataframe(pd.DataFrame(frows), hide_index=True, use_container_width=True)
+            st.markdown('<div class="appendix">‘직전대비’가 가장 낮은 단계가 병목입니다. 예: UV→주문이 낮으면 '
+                        '랜딩·오퍼·상품 매력도, 발송→UV가 낮으면 제목·발송시점·타겟이 개선 포인트입니다.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.info("퍼널 단계 컬럼(UV·VISIT·고객수·주문)이 부족합니다.")
+
+        # ── 기간 비교 (직전 대비) ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📈 기간 비교 — 직전 대비 변화")
+        st.caption("기간을 둘로 나눠(최근 vs 직전) 전체 효율과 카테고리별 성과 변화를 봅니다.")
+        gdt = g.dropna(subset=["dt"]).sort_values("dt")
+        if gdt["dt"].nunique() < 2:
+            st.info("기간 비교에는 최소 2개 이상의 발송일이 필요합니다.")
+        else:
+            uniq_days = sorted(gdt["dt"].dt.normalize().unique())
+            mid = uniq_days[len(uniq_days) // 2]
+            prev = gdt[gdt["dt"] < mid]; recent = gdt[gdt["dt"] >= mid]
+            if len(prev) == 0 or len(recent) == 0:
+                st.info("기간 분할 표본이 부족합니다.")
+            else:
+                def _agg(d):
+                    s, u, o, a = d["send"].sum(), d["uv"].sum(), d["oc"].sum(), d["amt"].sum()
+                    return dict(캠페인수=len(d), 발송=s, 거래액=a,
+                                유입전환율=(u / s if s else np.nan), 주문전환율=(o / u if u else np.nan),
+                                RPS=(a / s if s else np.nan))
+                pa, ra = _agg(prev), _agg(recent)
+                p_lab = f"직전 (~{pd.Timestamp(mid).strftime('%m/%d')} 전)"
+                r_lab = f"최근 ({pd.Timestamp(mid).strftime('%m/%d')}~)"
+                cmp_rows = []
+                for k in ["캠페인수", "발송", "거래액", "유입전환율", "주문전환율", "RPS"]:
+                    pv, rv = pa[k], ra[k]
+                    if k in ("유입전환율", "주문전환율"):
+                        pvs = f"{pv*100:.2f}%" if pd.notna(pv) else "–"; rvs = f"{rv*100:.2f}%" if pd.notna(rv) else "–"
+                        chg = f"{(rv-pv)*100:+.2f}%p" if (pd.notna(pv) and pd.notna(rv)) else "–"
+                    elif k in ("발송", "거래액", "RPS"):
+                        pvs, rvs = won(pv), won(rv)
+                        chg = f"{((rv/pv-1)*100):+.1f}%" if (pv and pd.notna(pv) and pd.notna(rv)) else "–"
+                    else:
+                        pvs, rvs = f"{pv:,.0f}", f"{rv:,.0f}"
+                        chg = f"{((rv/pv-1)*100):+.1f}%" if pv else "–"
+                    cmp_rows.append({"지표": k, p_lab: pvs, r_lab: rvs, "변화": chg})
+                st.dataframe(pd.DataFrame(cmp_rows), hide_index=True, use_container_width=True)
+                # 카테고리별 주문전환율 변화 Top
+                if "cat" in gdt.columns:
+                    def _catcr(d):
+                        gg = d.groupby("cat").apply(
+                            lambda x: (x["oc"].sum() / x["uv"].sum()) if x["uv"].sum() else np.nan)
+                        return gg
+                    pc, rc = _catcr(prev), _catcr(recent)
+                    cats_common = [c for c in rc.index if c in pc.index and pd.notna(pc[c]) and pd.notna(rc[c])]
+                    if cats_common:
+                        ch = pd.DataFrame({"카테고리": cats_common,
+                                           "직전_주문CR": [pc[c] for c in cats_common],
+                                           "최근_주문CR": [rc[c] for c in cats_common]})
+                        ch["변화%p"] = (ch["최근_주문CR"] - ch["직전_주문CR"]) * 100
+                        ch = ch.sort_values("변화%p", ascending=False)
+                        ch["직전_주문CR"] = ch["직전_주문CR"].map(lambda v: f"{v*100:.2f}%")
+                        ch["최근_주문CR"] = ch["최근_주문CR"].map(lambda v: f"{v*100:.2f}%")
+                        ch["변화%p"] = ch["변화%p"].map(lambda v: f"{v:+.2f}%p")
+                        st.markdown("**카테고리별 주문전환율 변화 (최근 − 직전)**")
+                        st.dataframe(ch, hide_index=True, use_container_width=True, height=260)
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 09 — BPU·우선순위 효율
