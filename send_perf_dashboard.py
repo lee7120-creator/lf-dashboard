@@ -505,7 +505,8 @@ def _s(v):
 def tag_copy(title, body=""):
     """제목(+본문) → 문구 속성 dict. 분석의 핵심 축."""
     t = _s(title)
-    full = (t + " " + _s(body)).strip()
+    b = _s(body)
+    full = (t + " " + b).strip()
     return {
         "이모지":   bool(EMOJI_RE.search(t)),
         "숫자노출": bool(re.search(r'\d', t)),
@@ -516,7 +517,7 @@ def tag_copy(title, body=""):
         "질문형":   ("?" in t or "？" in t),
         "대괄호":   bool(re.search(r'[\[\]【】（）()]', t)),
         "제목길이": len(t),
-        "본문길이": len(body or ""),
+        "본문길이": len(b),
     }
 
 
@@ -896,7 +897,8 @@ def main():
     st.sidebar.markdown("---")
     CAMPAIGN_PAGES = [
         "01. 종합 요약", "08. 전체 효율·추이", "02. 문구 속성별 성과", "03. 캠페인 리더보드",
-        "04. 카테고리·시간대 매트릭스", "05. 타이밍 패턴", "06. AI 처방", "07. 데이터·다운로드",
+        "04. 카테고리·시간대 매트릭스", "09. BPU·우선순위 효율", "05. 타이밍 패턴",
+        "06. AI 처방", "07. 데이터·다운로드",
     ]
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
@@ -976,6 +978,32 @@ def main():
     }
 
     # 전환율은 캠페인별 단순 평균으로 비교(표본은 사이드바 '최소 발송수'로 통제)
+
+    def render_messages(d, mcol, key, n=200):
+        """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기."""
+        if d is None or len(d) == 0:
+            st.info("해당 조건의 발송 메시지가 없습니다."); return
+        dd = d.sort_values(mcol, ascending=False).head(n).reset_index(drop=True)
+        all_cols = ["date", "cat", "brand", "title", "send", "infl_cr", "ord_cr", "rps", "amt"]
+        cols = [c for c in all_cols if c in dd.columns]
+        ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "send": "발송",
+               "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
+        fmts = {"발송": "{:,.0f}", "유입CR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
+        show = dd[cols].rename(columns=ren)
+        fmts = {k: v for k, v in fmts.items() if k in show.columns}
+        st.dataframe(show.style.format(fmts), hide_index=True, use_container_width=True, height=340)
+        if "title" not in dd.columns:
+            return
+        opts = {}
+        for i, r in dd.iterrows():
+            cr = r["ord_cr"] if ("ord_cr" in dd.columns and pd.notna(r["ord_cr"])) else 0
+            opts[f"[{r['date']}] {str(r['title'])[:44]} (주문CR {cr*100:.2f}%)"] = i
+        if opts:
+            sel = st.selectbox("문구 원문 보기", list(opts.keys()), key=f"msg_{key}")
+            r = dd.loc[opts[sel]]
+            body = str(r["body"]).replace("\n", "<br>") if ("body" in dd.columns and pd.notna(r["body"]) and str(r["body"]).strip()) else "—"
+            st.markdown(f'<div class="vg"><b>제목</b><br>{str(r["title"])}<br><br>'
+                        f'<b>내용</b><br>{body}</div>', unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 01 — 종합 요약
@@ -1075,6 +1103,16 @@ def main():
                     '전환율은 캠페인별 단순 평균이며, 최소 발송수 필터로 소표본을 통제합니다.</div>',
                     unsafe_allow_html=True)
 
+        # ── 속성별 드릴다운: 실제 발송 메시지 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📋 속성별 발송 메시지 드릴다운")
+        avail_tags = [r["속성"] for _, r in adf.iterrows()] if len(adf) else TAG_BOOLS
+        sel_tag = st.selectbox("속성 선택", avail_tags, key="p02_tag")
+        if sel_tag and sel_tag in base.columns:
+            sub = base[base[sel_tag]].copy()
+            st.caption(f"'{sel_tag}' 속성 보유 캠페인 {len(sub)}건 — {mlabel} 높은 순")
+            render_messages(sub, mcol, f"p02_{sel_tag}")
+
     # ══════════════════════════════════════════════════════════════
     # PAGE 03 — 캠페인 리더보드
     # ══════════════════════════════════════════════════════════════
@@ -1132,6 +1170,26 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         heat("hour", "dow_k", f"시간대 × 요일 — 평균 {mlabel}")
 
+        # ── 드릴다운: 카테고리 / 시간대 / 요일 선택 → 메시지 목록 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📋 조건별 발송 메시지 드릴다운")
+        dc1, dc2, dc3 = st.columns(3)
+        cat_opts = sorted(base["cat"].dropna().unique()) if "cat" in base else []
+        hour_opts = sorted(base["hour"].dropna().unique()) if "hour" in base else []
+        dow_opts = [d for d in ["월", "화", "수", "목", "금", "토", "일"] if d in base["dow_k"].values] if "dow_k" in base else []
+        sel_cat_d = dc1.selectbox("카테고리", ["전체"] + [str(c) for c in cat_opts], key="p04_cat")
+        sel_hour_d = dc2.selectbox("시간대", ["전체"] + [str(h) for h in hour_opts], key="p04_hour")
+        sel_dow_d = dc3.selectbox("요일", ["전체"] + dow_opts, key="p04_dow")
+        sub = base.copy()
+        if sel_cat_d != "전체" and "cat" in sub:
+            sub = sub[sub["cat"].astype(str) == sel_cat_d]
+        if sel_hour_d != "전체" and "hour" in sub:
+            sub = sub[sub["hour"].astype(str) == sel_hour_d]
+        if sel_dow_d != "전체" and "dow_k" in sub:
+            sub = sub[sub["dow_k"] == sel_dow_d]
+        st.caption(f"조건 일치 {len(sub)}건 — {mlabel} 높은 순")
+        render_messages(sub, mcol, "p04_drill")
+
     # ══════════════════════════════════════════════════════════════
     # PAGE 05 — 타이밍·피로도
     # ══════════════════════════════════════════════════════════════
@@ -1172,6 +1230,22 @@ def main():
             st.markdown('<div class="appendix">대량 발송 구간(Q5)에서 효율이 떨어진다면 모수 확대의 한계수익이 '
                         '낮다는 신호입니다. 단, 발송유형/카테고리 구성 차이가 섞일 수 있습니다.</div>',
                         unsafe_allow_html=True)
+
+        # ── 드릴다운: 시간대·요일 선택 → 메시지 목록 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📋 시간대·요일별 발송 메시지 드릴다운")
+        tc1, tc2 = st.columns(2)
+        hour_opts5 = sorted(base["hour"].dropna().unique()) if "hour" in base else []
+        dow_opts5 = [d for d in ["월", "화", "수", "목", "금", "토", "일"] if d in base["dow_k"].values] if "dow_k" in base else []
+        sel_h5 = tc1.selectbox("시간대", ["전체"] + [str(h) for h in hour_opts5], key="p05_hour")
+        sel_d5 = tc2.selectbox("요일", ["전체"] + dow_opts5, key="p05_dow")
+        sub5 = base.copy()
+        if sel_h5 != "전체" and "hour" in sub5:
+            sub5 = sub5[sub5["hour"].astype(str) == sel_h5]
+        if sel_d5 != "전체" and "dow_k" in sub5:
+            sub5 = sub5[sub5["dow_k"] == sel_d5]
+        st.caption(f"조건 일치 {len(sub5)}건 — {mlabel} 높은 순")
+        render_messages(sub5, mcol, "p05_drill")
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 06 — AI 처방
@@ -1259,9 +1333,134 @@ def main():
             "발송": "{:,.0f}", "거래액": "{:,.0f}", "캠페인수": "{:,.0f}",
             "유입전환율": "{:.2%}", "주문전환율": "{:.2%}", "RPS": "{:,.0f}"}),
             hide_index=True, use_container_width=True, height=360)
-        st.markdown('<div class="appendix">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산되지 않습니다 '
-                    '— 전사 MTD 발송상세가 필요합니다. 여기서는 캠페인 합산 기준 전체 효율을 봅니다.</div>',
+        st.markdown("<div class=\"appendix\">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산되지 않습니다 "
+                    "— 전사 MTD 발송상세가 필요합니다. 여기서는 캠페인 합산 기준 전체 효율을 봅니다.</div>",
                     unsafe_allow_html=True)
+
+        # ── 주차별 드릴다운: 해당 주의 캠페인 목록 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📋 주차별 캠페인 드릴다운")
+        wk_labels = [f"{r['주'].strftime('%Y-%m-%d')} (캠페인 {r['캠페인수']:.0f}건)" for _, r in wk.iterrows()]
+        if wk_labels:
+            sel_wk = st.selectbox("주차 선택", wk_labels, key="p08_wk")
+            wk_idx = wk_labels.index(sel_wk)
+            wk_start = wk.iloc[wk_idx]["주"]
+            wk_end = wk_start + pd.Timedelta(days=7)
+            sub8 = g[(g["dt"] >= wk_start) & (g["dt"] < wk_end)]
+            st.caption(f"해당 주 캠페인 {len(sub8)}건 — 거래액 높은 순")
+            render_messages(sub8, "amt", "p08_drill")
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 09 — BPU·우선순위 효율
+    # ══════════════════════════════════════════════════════════════
+    elif page.startswith("09"):
+        st.title("BPU · 우선순위 효율")
+        st.caption("BPU(사업부)별 / 우선순위(같은 시간대 발송 순번)별 효율 — 어느 주체·어느 순번이 잘 먹히나. "
+                   "전환율·RPS는 합산 기준 가중 평균입니다.")
+        mlabel = st.selectbox("지표", list(METRIC_OPTS.keys()))
+        mcol, _msuf, mclr = METRIC_OPTS[mlabel]
+        is_pct = mcol in ("ord_cr", "infl_cr")
+        base = fdf
+        if len(base) == 0:
+            st.info("필터 결과가 없습니다. 조건을 완화하세요."); st.stop()
+
+        def agg_eff(d, by):
+            out = []
+            for key, g in d.groupby(by, dropna=True):
+                if str(key).strip() in ("", "nan", "None"):
+                    continue
+                s, u, o, a = g["send"].sum(), g["uv"].sum(), g["oc"].sum(), g["amt"].sum()
+                out.append(dict(_key=key, 캠페인수=len(g), 발송=s, 거래액=a,
+                                infl_cr=(u / s if s else np.nan), ord_cr=(o / u if u else np.nan),
+                                rps=(a / s if s else np.nan), aov=(a / o if o else np.nan), amt=a))
+            return pd.DataFrame(out)
+
+        def eff_table(t, keyname):
+            ren = {"_key": keyname, "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS",
+                   "aov": "객단가", "amt": "거래액"}
+            show = t[["_key", "캠페인수", "발송", "infl_cr", "ord_cr", "rps", "aov", "거래액"]].rename(columns=ren)
+            return show.style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "유입CR": "{:.2%}",
+                                      "주문CR": "{:.2%}", "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"})
+
+        # ── BPU별 ──
+        st.markdown("##### BPU별 효율")
+        bp = agg_eff(base, "bpu")
+        if len(bp):
+            bp = bp.sort_values(mcol, ascending=False)
+            y = bp[mcol] * (100 if is_pct else 1)
+            fig = go.Figure(go.Bar(x=bp["_key"].astype(str), y=y, marker_color=mclr,
+                                   text=[f"{v:.2f}" for v in y], textposition="outside"))
+            fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
+                                            title=f"BPU별 (가중) {mlabel}"))
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(eff_table(bp.sort_values("발송", ascending=False), "BPU"),
+                         hide_index=True, use_container_width=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+        # ── 우선순위별 ──
+        st.markdown("##### 우선순위별 효율 (같은 시간대 발송 순번)")
+        base2 = base.copy()
+        base2["_prio"] = pd.to_numeric(
+            base2["prio"].astype(str).str.replace(r'\.0$', '', regex=True), errors="coerce")
+        pr = agg_eff(base2.dropna(subset=["_prio"]), "_prio")
+        if len(pr):
+            pr["_key"] = pr["_key"].astype(float)
+            pr = pr.sort_values("_key")
+            xlab = pr["_key"].astype(int).astype(str) + "순위"
+            y = pr[mcol] * (100 if is_pct else 1)
+            fig = go.Figure(go.Bar(x=xlab, y=y, marker_color=mclr,
+                                   text=[f"{v:.2f}" for v in y], textposition="outside"))
+            fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
+                                            title=f"우선순위별 (가중) {mlabel}"))
+            st.plotly_chart(fig, use_container_width=True)
+            tshow = pr.copy(); tshow["_key"] = tshow["_key"].astype(int).astype(str) + "순위"
+            st.dataframe(eff_table(tshow, "우선순위"), hide_index=True, use_container_width=True)
+            # 포지션 효과 간단 진단
+            if len(pr) >= 3 and pr[mcol].notna().sum() >= 3:
+                r = float(np.corrcoef(pr["_key"], pr[mcol].fillna(pr[mcol].mean()))[0, 1])
+                msg = ("앞 순번일수록 효율이 높습니다 (노출 우위)." if r < -0.3 else
+                       "뒤 순번일수록 효율이 높습니다." if r > 0.3 else
+                       "순번과 효율의 뚜렷한 관계는 약합니다.")
+                st.markdown(f'<div class="appendix">순번↔{mlabel} 상관 r={r:.2f} → {msg}</div>',
+                            unsafe_allow_html=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+        # ── BPU × 우선순위 히트맵 ──
+        st.markdown(f"##### BPU × 우선순위 — 평균 {mlabel}")
+        hb = base2.dropna(subset=["_prio"]).copy()
+        hb["_prio"] = hb["_prio"].astype(int)
+        pv = hb.pivot_table(index="bpu", columns="_prio", values=mcol, aggfunc="mean")
+        if not pv.empty:
+            z = pv.values * (100 if is_pct else 1)
+            fig = go.Figure(go.Heatmap(z=z, x=[f"{c}순위" for c in pv.columns],
+                                       y=[str(i) for i in pv.index], colorscale="Blues",
+                                       text=np.round(z, 2), texttemplate="%{text}",
+                                       textfont=dict(size=10), colorbar=dict(thickness=10)))
+            fig.update_layout(**base_layout(h=420, title=f"BPU × 우선순위 평균 {mlabel}"))
+            st.plotly_chart(fig, use_container_width=True)
+        st.markdown('<div class="appendix">표본(캠페인 수)이 적은 BPU·순번은 우연이 섞일 수 있으니 캠페인수와 함께 보세요.</div>',
+                    unsafe_allow_html=True)
+
+        # ── BPU·우선순위 드릴다운 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📋 BPU · 우선순위별 발송 메시지 드릴다운")
+        bc1, bc2 = st.columns(2)
+        bpu_opts = sorted(base["bpu"].dropna().astype(str).unique()) if "bpu" in base else []
+        bpu_opts = [b for b in bpu_opts if b.strip() not in ("", "nan", "None")]
+        prio_opts = sorted(base2["_prio"].dropna().unique()) if "_prio" in base2 else []
+        sel_bpu9 = bc1.selectbox("BPU", ["전체"] + bpu_opts, key="p09_bpu")
+        sel_prio9 = bc2.selectbox("우선순위", ["전체"] + [f"{int(p)}순위" for p in prio_opts], key="p09_prio")
+        sub9 = base.copy()
+        if sel_bpu9 != "전체" and "bpu" in sub9:
+            sub9 = sub9[sub9["bpu"].astype(str) == sel_bpu9]
+        if sel_prio9 != "전체" and "prio" in sub9:
+            pval = sel_prio9.replace("순위", "")
+            sub9 = sub9[pd.to_numeric(sub9["prio"].astype(str).str.replace(r'\.0$', '', regex=True),
+                                       errors="coerce") == int(pval)]
+        st.caption(f"조건 일치 {len(sub9)}건 — {mlabel} 높은 순")
+        render_messages(sub9, mcol, "p09_drill")
 
     # ══════════════════════════════════════════════════════════════
     # 발송피로도 (전사 MTD) — F1~F4
