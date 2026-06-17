@@ -44,11 +44,33 @@ st.markdown("""
 .kpi-delta.down{background:#fef2f2;color:#dc2626}
 .kpi-delta.na{background:#f1f5f9;color:#94a3b8}
 @media print {
+  @page { margin: 12mm; }
   [data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"],
-  header, .stButton, .no-print, iframe { display:none !important; }
+  header, .stButton, .no-print, iframe,
+  [data-testid="stExpander"] { display:none !important; }
   [data-testid="stAppViewContainer"], .main, .block-container { background:#fff !important; }
   .block-container { max-width:100% !important; padding-top:0 !important; }
-  .stPlotlyChart, .report-box, table { break-inside:avoid; }
+
+  /* 겹침 방지: 레이아웃 블록을 정적 배치하고 넘침을 그대로 노출 */
+  [data-testid="stVerticalBlock"], [data-testid="stHorizontalBlock"],
+  [data-testid="stVerticalBlockBorderWrapper"], [data-testid="column"],
+  .element-container { position:static !important; transform:none !important;
+    overflow:visible !important; }
+
+  /* 인쇄 시 Plotly 차트 높이 붕괴 → 아래 요소가 제목 위로 밀려 겹치는 문제 차단 */
+  .stPlotlyChart, .js-plotly-plot, [data-testid="stPlotlyChart"] {
+    min-height:240px !important; break-inside:avoid; page-break-inside:avoid; }
+
+  /* 제목이 투명 배경으로 다른 요소와 겹쳐 보이지 않도록 */
+  h1, h2, h3, h4 { background:#fff !important; position:relative; z-index:1;
+    page-break-after:avoid; break-after:avoid; }
+
+  .stPlotlyChart, .report-box, table,
+  [data-testid="stMetric"], [data-testid="column"] {
+    break-inside:avoid; page-break-inside:avoid; }
+
+  /* 증감 색상(빨강/초록) 인쇄에 유지 */
+  * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
 }
 </style>
 """, unsafe_allow_html=True)
