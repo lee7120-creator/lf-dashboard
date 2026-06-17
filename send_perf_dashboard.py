@@ -1226,6 +1226,64 @@ def main():
                     '전환율은 캠페인별 단순 평균이며, 최소 발송수 필터로 소표본을 통제합니다.</div>',
                     unsafe_allow_html=True)
 
+        # ── 속성 조합 패턴 분석 (할인율소구+마감임박 등) ──
+        import itertools
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🔗 속성 조합 패턴 — 어떤 조합이 효율이 높은가")
+        st.caption("문구 속성 2개를 동시에 가진 캠페인의 평균 성과 (예: 할인율소구+마감임박). "
+                   "표본(n)이 작으면 우연일 수 있으니 캠페인 수와 함께 보세요. 전체 평균 대비 차이로 정렬됩니다.")
+        cmin = st.number_input("조합 최소 표본 (캠페인 수)", value=5, min_value=2, step=1, key="p02_cmin")
+        base_mean = float(base[mcol].mean())
+        crows = []
+        for ta, tb in itertools.combinations(TAG_BOOLS, 2):
+            if ta not in base or tb not in base:
+                continue
+            sub = base[base[ta] & base[tb]][mcol].dropna()
+            if len(sub) < cmin:
+                continue
+            crows.append(dict(조합=f"{ta}+{tb}", 캠페인수=len(sub),
+                              평균=float(sub.mean()), 차이=float(sub.mean()) - base_mean))
+        if not crows:
+            st.info("최소 표본을 만족하는 조합이 없습니다. 표본 기준을 낮추거나 사이드바 '최소 발송수'를 낮춰 보세요.")
+        else:
+            cdf = pd.DataFrame(crows).sort_values("평균", ascending=False).reset_index(drop=True)
+            topn = cdf.head(12)
+            yv = topn["평균"] * (100 if is_pct else 1)
+            figc = go.Figure(go.Bar(
+                x=yv, y=topn["조합"], orientation="h", marker_color=mclr,
+                customdata=topn["캠페인수"],
+                text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, topn["캠페인수"])],
+                textposition="outside",
+                hovertemplate="%{y}<br>평균 " + mlabel + ": %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
+            lay = base_layout(h=440, title=f"속성 조합별 평균 {mlabel} (상위 12 · 전체평균 점선)")
+            lay["xaxis"]["range"] = [0, float(yv.max()) * 1.18] if len(yv) else None
+            figc.update_layout(**lay)
+            figc.update_yaxes(autorange="reversed")
+            bm = base_mean * (100 if is_pct else 1)
+            figc.add_vline(x=bm, line_dash="dot", line_color="#94a3b8",
+                           annotation_text=f"전체평균 {bm:.2f}", annotation_position="top")
+            st.plotly_chart(figc, use_container_width=True)
+
+            cshow = cdf.copy()
+            if is_pct:
+                cshow["평균"] = cshow["평균"].map(lambda v: f"{v*100:.2f}%")
+                cshow["차이"] = cshow["차이"].map(lambda v: f"{v*100:+.2f}%p")
+            elif mcol in ("rps", "aov", "amt"):
+                cshow["평균"] = cshow["평균"].map(won)
+                cshow["차이"] = cshow["차이"].map(lambda v: f"{v:+,.0f}")
+            else:
+                cshow["평균"] = cshow["평균"].map(lambda v: f"{v:,.1f}")
+                cshow["차이"] = cshow["차이"].map(lambda v: f"{v:+,.1f}")
+            st.dataframe(cshow[["조합", "캠페인수", "평균", "차이"]].style.format({"캠페인수": "{:,.0f}"}),
+                         hide_index=True, use_container_width=True, height=320)
+
+            sel_combo = st.selectbox("조합 선택 → 실제 발송 메시지 보기", list(cdf["조합"]), key="p02_combo")
+            if sel_combo:
+                ta, tb = sel_combo.split("+")
+                subc = base[base[ta] & base[tb]]
+                st.caption(f"'{sel_combo}' 동시 보유 {len(subc)}건 — {mlabel} 높은 순")
+                render_messages(subc, mcol, f"combo_{sel_combo}")
+
         # ── 속성별 드릴다운: 실제 발송 메시지 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📋 속성별 발송 메시지 드릴다운")
