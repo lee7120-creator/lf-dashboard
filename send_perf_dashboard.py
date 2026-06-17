@@ -816,20 +816,81 @@ def main():
         mtd_work = mtd_stored
     mtd_data = compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
 
-    # ── 필터 ──
+    # ── 필터 (카테고리별) ──
     st.sidebar.markdown("---")
     st.sidebar.markdown("#### 필터")
+
+    def _opts(d, col):
+        if col not in d:
+            return []
+        v = d[col].dropna().astype(str).str.replace(r'\.0$', '', regex=True)
+        return sorted([x for x in v.unique() if x.strip() not in ("", "nan", "NaN", "None")])
+
+    def _apply_in(d, col, sel):
+        if not sel or col not in d:
+            return d
+        return d[d[col].astype(str).str.replace(r'\.0$', '', regex=True).isin(sel)]
+
+    search = st.sidebar.text_input("🔎 문구·브랜드·AF 검색", "")
     only_matched = st.sidebar.checkbox("문구 매칭된 캠페인만", value=True,
                                        help="실적엔 있으나 기획 문구를 못 찾은 건 제외")
-    df = raw[raw["matched"]] if only_matched else raw
-
-    cats = sorted([c for c in df["cat"].dropna().unique()])
-    stypes = sorted([c for c in df["stype"].dropna().unique()])
-    sel_cat = st.sidebar.multiselect("카테고리", cats)
-    sel_st = st.sidebar.multiselect("발송유형", stypes)
     min_send = st.sidebar.number_input("최소 발송수 (분석 표본)", value=5000, step=1000, min_value=0)
-    if sel_cat: df = df[df["cat"].isin(sel_cat)]
-    if sel_st:  df = df[df["stype"].isin(sel_st)]
+
+    base_opt = raw[raw["matched"]] if only_matched else raw
+
+    date_sel = None
+    with st.sidebar.expander("📅 기간"):
+        dts = raw["dt"].dropna()
+        if len(dts):
+            dmin, dmax = dts.min().date(), dts.max().date()
+            if dmin < dmax:
+                date_sel = st.date_input("발송일 범위", value=(dmin, dmax),
+                                         min_value=dmin, max_value=dmax)
+            else:
+                st.caption(f"단일 일자: {dmin}")
+
+    with st.sidebar.expander("📤 발송 속성"):
+        sel_st = st.multiselect("발송유형", _opts(base_opt, "stype"))
+        sel_target = st.multiselect("타겟 구분", _opts(base_opt, "target"))
+        sel_bpu = st.multiselect("BPU", _opts(base_opt, "bpu"))
+        sel_hour = st.multiselect("시간대", _opts(base_opt, "hour"))
+        sel_dow = st.multiselect("요일", _opts(base_opt, "dow_k"))
+        sel_prio = st.multiselect("우선순위", _opts(base_opt, "prio"))
+
+    with st.sidebar.expander("🏷️ 상품·담당"):
+        sel_cat = st.multiselect("카테고리", _opts(base_opt, "cat"))
+        sel_attr = st.multiselect("속성", _opts(base_opt, "attr"))
+        sel_brand = st.multiselect("브랜드", _opts(base_opt, "brand"))
+        sel_owner = st.multiselect("담당자", _opts(base_opt, "owner"))
+
+    with st.sidebar.expander("✍️ 문구 속성"):
+        sel_tags = st.multiselect("포함 속성(모두 충족)", TAG_BOOLS,
+                                  help="선택한 문구 속성을 모두 가진 캠페인만")
+
+    CATSEL = {"stype": sel_st, "target": sel_target, "bpu": sel_bpu, "hour": sel_hour,
+              "dow_k": sel_dow, "prio": sel_prio, "cat": sel_cat, "attr": sel_attr,
+              "brand": sel_brand, "owner": sel_owner}
+
+    def apply_filters(d):
+        d = d.copy()
+        if date_sel and isinstance(date_sel, (tuple, list)) and len(date_sel) == 2 and "dt" in d:
+            lo, hi = pd.Timestamp(date_sel[0]), pd.Timestamp(date_sel[1]) + pd.Timedelta(days=1)
+            d = d[(d["dt"] >= lo) & (d["dt"] < hi)]
+        for col, sel in CATSEL.items():
+            d = _apply_in(d, col, sel)
+        for t in sel_tags:
+            if t in d:
+                d = d[d[t]]
+        if search.strip():
+            q = search.strip().lower()
+            hay = (d["title"].astype(str) + " " + d["body"].astype(str) + " " +
+                   d["brand"].astype(str) + " " + d["af"].astype(str) + " " +
+                   d["cat"].astype(str)).str.lower()
+            d = d[hay.str.contains(q, na=False, regex=False)]
+        return d
+
+    dff_all = apply_filters(raw)
+    df = dff_all[dff_all["matched"]] if only_matched else dff_all
     fdf = df[df["send"].fillna(0) >= min_send].reset_index(drop=True)
 
     st.sidebar.markdown("---")
@@ -1142,10 +1203,8 @@ def main():
     elif page.startswith("08"):
         st.title("전체 효율 · 추이")
         st.caption("누적된 전 발송(문구 매칭 여부 무관)을 주차 단위로 집계한 전체 효율·피로도 관점. "
-                   "필터(최소 발송수)와 무관하게 전체 모수를 사용합니다.")
-        g = raw.dropna(subset=["dt"]).copy()
-        if sel_cat: g = g[g["cat"].isin(sel_cat)]
-        if sel_st:  g = g[g["stype"].isin(sel_st)]
+                   "사이드바 필터(기간·발송속성 등)는 반영되며, '최소 발송수'는 제외됩니다.")
+        g = dff_all.dropna(subset=["dt"]).copy()
         g = g[g["send"].fillna(0) > 0]
         if len(g) < 3:
             st.info("데이터가 부족합니다. 더 많은 주차를 업로드하세요."); st.stop()
