@@ -410,6 +410,69 @@ def compute_mtd(df):
                 quintile=quintile, dow_mean=dow_mean, dow_comp=dow_comp, reg=reg, meta=meta)
 
 
+# ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
+GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store"}
+
+
+def gs_open(creds_dict, spreadsheet):
+    """서비스 계정 자격으로 스프레드시트 열기 (URL/키/제목 모두 허용)."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    scopes = ["https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(dict(creds_dict), scopes=scopes)
+    gc = gspread.authorize(creds)
+    sp = str(spreadsheet).strip()
+    if sp.startswith("http"):
+        return gc.open_by_url(sp)
+    if "/" not in sp and " " not in sp and len(sp) >= 30:
+        return gc.open_by_key(sp)
+    try:
+        return gc.open(sp)
+    except Exception:
+        return gc.open_by_key(sp)
+
+
+def gs_read_ws(sh, title, cols):
+    """워크시트 → DataFrame (모든 값 문자열). 없으면 빈 프레임(cols)."""
+    try:
+        ws = sh.worksheet(title)
+    except Exception:
+        return pd.DataFrame(columns=cols)
+    vals = ws.get_all_values()
+    if not vals or len(vals) < 2:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(vals[1:], columns=vals[0])
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ""
+    return df[cols]
+
+
+def gs_write_ws(sh, title, df, cols):
+    """DataFrame 으로 워크시트 전체 덮어쓰기."""
+    out = df.copy()
+    for c in cols:
+        if c not in out.columns:
+            out[c] = ""
+    out = out[cols].fillna("").astype(str)
+    try:
+        ws = sh.worksheet(title)
+    except Exception:
+        ws = sh.add_worksheet(title=title, rows=max(len(out) + 10, 100), cols=max(len(cols), 10))
+    ws.clear()
+    ws.update(values=[cols] + out.values.tolist(), range_name="A1")
+
+
+def gs_clear_ws(sh, title, cols):
+    try:
+        ws = sh.worksheet(title)
+        ws.clear()
+        ws.update(values=[cols], range_name="A1")
+    except Exception:
+        pass
+
+
 # ── 문구 자동 태깅 ─────────────────────────────────────────────────────
 EMOJI_RE = re.compile(
     "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F000-\U0001F0FF"
@@ -538,6 +601,57 @@ def main():
     @st.cache_data(show_spinner=False)
     def cached_mtd(b): return parse_mtd_bytes(b)
 
+    # ── 저장소 백엔드: 구글시트(설정 시) ↔ 로컬 CSV(폴백) ──
+    @st.cache_resource(show_spinner=False)
+    def _get_sh(_email, spreadsheet):
+        return gs_open(st.secrets["gcp_service_account"], spreadsheet)
+
+    def init_storage():
+        try:
+            has = "gcp_service_account" in st.secrets
+        except Exception:
+            has = False
+        if not has:
+            return {"mode": "local", "status": "💾 로컬 CSV (구글시트 미설정)"}
+        try:
+            sp = None
+            if "gsheets" in st.secrets:
+                sp = st.secrets["gsheets"].get("spreadsheet")
+            sp = sp or st.secrets.get("gsheets_spreadsheet")
+            if not sp:
+                return {"mode": "local", "status": "⚠️ gsheets.spreadsheet 미설정 → 로컬 CSV"}
+            sh = _get_sh(st.secrets["gcp_service_account"].get("client_email", ""), sp)
+            return {"mode": "gsheets", "sh": sh, "status": "☁️ 구글시트 연결됨"}
+        except Exception as e:
+            return {"mode": "local", "status": f"⚠️ 구글시트 연결 실패 → 로컬 CSV ({str(e)[:50]})"}
+
+    def storage_load(bk, kind):
+        cols = STORE_COLS if kind == "campaign" else MTD_STORE_COLS
+        if bk["mode"] == "gsheets":
+            try:
+                return gs_read_ws(bk["sh"], GS_TITLES[kind], cols)
+            except Exception:
+                return pd.DataFrame(columns=cols)
+        return load_store() if kind == "campaign" else load_mtd_store()
+
+    def storage_save(bk, kind, df):
+        cols = STORE_COLS if kind == "campaign" else MTD_STORE_COLS
+        if bk["mode"] == "gsheets":
+            gs_write_ws(bk["sh"], GS_TITLES[kind], df, cols)
+        else:
+            save_store(df) if kind == "campaign" else save_mtd_store(df)
+
+    def storage_clear(bk, kind):
+        cols = STORE_COLS if kind == "campaign" else MTD_STORE_COLS
+        if bk["mode"] == "gsheets":
+            gs_clear_ws(bk["sh"], GS_TITLES[kind], cols)
+        else:
+            f = DATA_STORE if kind == "campaign" else MTD_STORE
+            if os.path.exists(f):
+                os.remove(f)
+
+    BK = init_storage()
+
     AI_MODELS = {
         "Claude Opus 4.8 (최고 품질)": "claude-opus-4-8",
         "Claude Sonnet 4.6 (균형)": "claude-sonnet-4-6",
@@ -594,7 +708,14 @@ def main():
         accept_multiple_files=True, key="mtd_up",
         help="발송피로도(인당발송·CTR) 전사 분석용. 날짜=열, 지표=행 형식. 일자 기준 누적 저장됩니다.")
 
-    stored = load_store()
+    st.sidebar.caption(BK["status"])
+    if st.sidebar.button("🔄 저장소 새로고침", use_container_width=True):
+        for k in ("camp_store", "mtd_store_df"):
+            st.session_state.pop(k, None)
+        st.cache_data.clear()
+    if "camp_store" not in st.session_state:
+        st.session_state.camp_store = storage_load(BK, "campaign")
+    stored = st.session_state.camp_store
     parse_log = []
     new_raw = None
 
@@ -634,8 +755,11 @@ def main():
         st.sidebar.success(f"신규 {len(new_raw)}건 → 누적 {len(work)}건 "
                            f"(추가 {len(kn - ko)} · 갱신 {len(kn & ko)})")
         if st.sidebar.button("💾 저장 (누적 반영)", use_container_width=True):
-            save_store(work); st.cache_data.clear()
-            st.sidebar.success("저장됨 ✓ — 다음 세션에도 유지됩니다.")
+            storage_save(BK, "campaign", work)
+            st.session_state.camp_store = work
+            st.cache_data.clear()
+            tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
+            st.sidebar.success(f"저장됨 ✓ ({tgt}) — 다음 세션에도 유지됩니다.")
         st.sidebar.caption("※ 저장을 눌러야 영구 반영됩니다. (미저장 시 이번 세션만 분석)")
     else:
         work = stored
@@ -661,7 +785,9 @@ def main():
     raw = add_tags(raw)
 
     # ── 전사 MTD (발송피로도) 누적 처리 ──
-    mtd_stored = load_mtd_store()
+    if "mtd_store_df" not in st.session_state:
+        st.session_state.mtd_store_df = storage_load(BK, "mtd")
+    mtd_stored = st.session_state.mtd_store_df
     mtd_new = None
     if mtd_files:
         mframes = []
@@ -681,8 +807,11 @@ def main():
         mtd_work = merge_mtd_store(mtd_stored, mtd_new)
         st.sidebar.success(f"MTD 신규 {len(mtd_new)}일 → 누적 {len(mtd_work)}일 (미리보기)")
         if st.sidebar.button("💾 MTD 저장 (누적 반영)", use_container_width=True, key="save_mtd"):
-            save_mtd_store(mtd_work); st.cache_data.clear()
-            st.sidebar.success("MTD 저장됨 ✓")
+            storage_save(BK, "mtd", mtd_work)
+            st.session_state.mtd_store_df = mtd_work
+            st.cache_data.clear()
+            tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
+            st.sidebar.success(f"MTD 저장됨 ✓ ({tgt})")
     else:
         mtd_work = mtd_stored
     mtd_data = compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
@@ -744,13 +873,16 @@ def main():
         if rest is not None:
             try:
                 d = pd.read_csv(rest, encoding="utf-8-sig", dtype={"date": str, "af": str})
-                save_store(merge_store(load_store(), d)); st.cache_data.clear()
+                merged_restore = merge_store(stored, d)
+                storage_save(BK, "campaign", merged_restore)
+                st.session_state.camp_store = merged_restore
+                st.cache_data.clear()
                 st.success("복원·병합 완료 ✓ 새로고침하세요")
             except Exception as e:
                 st.error(f"복원 실패: {e}")
         if st.button("🗑 누적 초기화", use_container_width=True, key="clear_store"):
-            if os.path.exists(DATA_STORE):
-                os.remove(DATA_STORE)
+            storage_clear(BK, "campaign")
+            st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
             st.cache_data.clear()
             st.success("초기화됨 — 새로고침하세요")
         st.markdown("---")
@@ -762,10 +894,16 @@ def main():
                 file_name="send_perf_mtd_backup.csv", mime="text/csv",
                 use_container_width=True, key="mtd_bak")
         if st.button("🗑 MTD 초기화", use_container_width=True, key="clear_mtd"):
-            if os.path.exists(MTD_STORE):
-                os.remove(MTD_STORE)
+            storage_clear(BK, "mtd")
+            st.session_state.mtd_store_df = pd.DataFrame(columns=MTD_STORE_COLS)
             st.cache_data.clear()
             st.success("MTD 초기화됨 — 새로고침하세요")
+        st.markdown("---")
+        st.caption(f"저장 위치: {BK['status']}")
+        if BK["mode"] != "gsheets":
+            st.caption("구글시트 연동: Secrets에 `gcp_service_account`(서비스계정 JSON)와 "
+                       "`[gsheets] spreadsheet=\"<시트 URL/키>\"`를 넣고, 해당 시트를 "
+                       "서비스계정 이메일과 **편집자**로 공유하세요.")
 
     # 지표 메타
     METRIC_OPTS = {
