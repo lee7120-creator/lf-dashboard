@@ -2137,9 +2137,32 @@ def main():
                     f"({raw['matched'].mean()*100:.0f}%)")
         st.dataframe(df.drop(columns=["dt"], errors="ignore"), hide_index=True,
                      use_container_width=True, height=420)
-        st.download_button("📥 머지 데이터 CSV 다운로드",
-                           df.drop(columns=["dt"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
-                           file_name="발송성과_머지.csv", mime="text/csv")
+        # ── 머지 전체 데이터 다운로드 (기획 문구 + 실적 성과) ──
+        st.markdown("##### 📊 머지 전체 데이터 다운로드 (발송기획 문구 + 발송실적 성과)")
+        st.caption("발송기획(제목·내용)과 발송실적(발송·전환·RPS·거래액)을 합친 머지 데이터입니다. "
+                   "문구 자동분류 속성 컬럼도 포함됩니다.")
+        dl_scope = st.radio("범위", ["전체 (필터 무관 · 매칭+미매칭 포함)", "현재 필터 적용분"],
+                            horizontal=True, key="full_dl_scope")
+        dl_df = raw if dl_scope.startswith("전체") else df
+        dl_df = dl_df.drop(columns=["dt"], errors="ignore")
+        d1, d2 = st.columns(2)
+        d1.download_button(
+            f"📥 CSV 다운로드 ({len(dl_df):,}건)",
+            dl_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="발송성과_머지전체.csv", mime="text/csv", use_container_width=True)
+        if d2.button(f"📊 엑셀 생성 ({len(dl_df):,}건)", key="gen_full_xlsx", use_container_width=True):
+            try:
+                with st.spinner("엑셀 생성 중…"):
+                    st.session_state["full_xlsx"] = df_to_xlsx_bytes(dl_df)
+                    st.session_state["full_xlsx_n"] = len(dl_df)
+                st.success(f"엑셀 생성 완료 — {len(dl_df):,}건")
+            except Exception as e:
+                st.error(f"엑셀 생성 실패: {e}")
+        if st.session_state.get("full_xlsx"):
+            st.download_button(
+                f"📥 머지 전체 데이터 엑셀(xlsx) 다운로드 ({st.session_state.get('full_xlsx_n', 0):,}건)",
+                st.session_state["full_xlsx"], file_name="발송성과_머지전체.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         # ── 종합 리포트(엑셀) 내보내기 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -2201,6 +2224,16 @@ def build_facts(df, with_attr=False, metric_col="ord_cr"):
                              f"미보유 {no.mean()*100:.2f}%(n={len(no)}) "
                              f"→ {(yes.mean()-no.mean())*100:+.2f}%p")
     return "\n".join(lines)
+
+
+def df_to_xlsx_bytes(d, sheet_name="머지데이터"):
+    """DataFrame → 단일 시트 엑셀(bytes). 발송기획+실적 머지 전체 데이터 다운로드용."""
+    import io as _io
+    buf = _io.BytesIO()
+    out = d.drop(columns=["dt"], errors="ignore")
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        out.to_excel(xw, sheet_name=sheet_name, index=False)
+    return buf.getvalue()
 
 
 def build_report_excel(fdf):
