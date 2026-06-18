@@ -993,6 +993,35 @@ def build_report_html(title, blocks):
             f"{''.join(parts)}</body></html>")
 
 
+# 기획전 비교분석 표 — 발송 성과 / 기획전 성과 2단 그룹 헤더 + 서식
+PROMO_TBL_SPECS = [
+    ("", "promo", "기획전번호", None),
+    ("", "pname", "기획전명", None),
+    ("", "발송일시", "발송일시", None),
+    ("", "n_camp", "캠페인수", "{:,.0f}"),
+    ("발송 성과", "send", "발송", "{:,.0f}"),
+    ("발송 성과", "s_uv", "UV", "{:,.0f}"),
+    ("발송 성과", "s_visit", "VISIT", "{:,.0f}"),
+    ("발송 성과", "s_ctr", "CTR", "{:.2%}"),
+    ("발송 성과", "s_cr", "CR", "{:.2%}"),
+    ("발송 성과", "s_amt", "발송추적거래액", "{:,.0f}"),
+    ("발송 성과", "s_rps", "RPS", "{:,.0f}"),
+    ("기획전 성과", "p_pv", "PV", "{:,.0f}"),
+    ("기획전 성과", "p_uv", "UV", "{:,.0f}"),
+    ("기획전 성과", "inf_amt", "유입거래액", "{:,.0f}"),
+    ("", "기여율", "기여율", "{:.1%}"),
+]
+
+
+def promo_perf_table(d):
+    """per-기획전 DataFrame → 발송/기획전 성과를 2단 헤더로 묶은 Styler."""
+    specs = [s for s in PROMO_TBL_SPECS if s[1] in d.columns]
+    sub = d[[c for _, c, _, _ in specs]].copy()
+    sub.columns = pd.MultiIndex.from_tuples([(g, l) for g, _, l, _ in specs])
+    fmtmap = {(g, l): f for g, _, l, f in specs if f}
+    return sub.style.format(fmtmap)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. Streamlit 앱
 # ══════════════════════════════════════════════════════════════════════
@@ -3020,21 +3049,13 @@ def main():
                 fig.update_layout(**lay)
                 fig.update_xaxes(ticksuffix="%")
                 st.plotly_chart(fig, use_container_width=True)
-                cols_t = ["promo", "pname", "발송일시", "send", "s_uv", "s_visit", "s_ctr", "s_cr",
-                          "s_amt", "inf_amt", "기여율", "s_rps"]
-                ren = {"promo": "기획전번호", "pname": "기획전명", "send": "발송",
-                       "s_uv": "UV", "s_visit": "VISIT", "s_ctr": "CTR", "s_cr": "CR",
-                       "s_amt": "발송추적거래액", "inf_amt": "유입거래액", "기여율": "기여율", "s_rps": "RPS"}
-                fmt = {"발송": "{:,.0f}", "UV": "{:,.0f}", "VISIT": "{:,.0f}", "CTR": "{:.2%}", "CR": "{:.2%}",
-                       "발송추적거래액": "{:,.0f}", "유입거래액": "{:,.0f}",
-                       "기여율": "{:.1%}", "RPS": "{:,.0f}"}
                 show = a.sort_values("기여율", ascending=False)
                 st.markdown("**기여율 높은 기획전 — 발송이 매출을 주도**")
-                st.dataframe(show.head(15)[cols_t].rename(columns=ren).style.format(fmt),
+                st.dataframe(promo_perf_table(show.head(15)),
                              hide_index=True, use_container_width=True)
                 lowbase = show[show["inf_amt"] >= show["inf_amt"].median()]
                 st.markdown("**기여율 낮은 기획전 (유입거래액 중앙값 이상) — 자연유입 비중↑, 발송 강화 여지**")
-                st.dataframe(lowbase.sort_values("기여율").head(15)[cols_t].rename(columns=ren).style.format(fmt),
+                st.dataframe(promo_perf_table(lowbase.sort_values("기여율").head(15)),
                              hide_index=True, use_container_width=True)
 
         # ── ② 발송 효율 순위 ──
@@ -3047,23 +3068,15 @@ def main():
             sortmap = {"발송 RPS": "s_rps", "기여율": "기여율", "유입거래액": "inf_amt",
                        "발송수": "send"}
             b = b.sort_values(sortmap[order], ascending=False, na_position="last")
-            cols_t = ["promo", "pname", "발송일시", "n_camp", "send", "s_uv", "s_visit", "s_ctr", "s_cr",
-                      "s_amt", "s_rps", "inf_amt", "기여율"]
-            ren = {"promo": "기획전번호", "pname": "기획전명", "n_camp": "캠페인수", "send": "발송",
-                   "s_uv": "UV", "s_visit": "VISIT", "s_ctr": "CTR", "s_cr": "CR",
-                   "s_amt": "발송추적거래액", "s_rps": "RPS", "inf_amt": "유입거래액",
-                   "기여율": "기여율"}
-            fmt = {"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "UV": "{:,.0f}", "VISIT": "{:,.0f}",
-                   "CTR": "{:.2%}", "CR": "{:.2%}", "발송추적거래액": "{:,.0f}", "RPS": "{:,.0f}",
-                   "유입거래액": "{:,.0f}", "기여율": "{:.1%}"}
-            st.dataframe(b.head(50)[cols_t].rename(columns=ren).style.format(fmt),
+            st.dataframe(promo_perf_table(b.head(50)),
                          hide_index=True, use_container_width=True, height=520)
             st.markdown('<div class="appendix">'
+                        '컬럼은 <b>발송 성과</b>(발송 데이터)와 <b>기획전 성과</b>(기획전 성과시트)로 묶여 있습니다. '
+                        '같은 UV라도 <b>발송 성과·UV</b>=발송 유입 UV, <b>기획전 성과·UV</b>=기획전 시트의 기획전 UV로 출처가 다릅니다.<br>'
                         '<b>지표 정의</b> · CTR(유입전환율)=UV÷발송 · CR(주문전환율)=주문÷UV · '
                         'RPS=발송추적거래액÷발송 · <b>기여율=발송추적거래액÷유입거래액</b>.<br>'
                         '한 기획전에 캠페인이 여러 개면 <b>발송·UV·VISIT·주문·발송추적거래액은 합산</b>, '
-                        'CTR·CR·RPS는 합산값 기준으로 계산하고, 발송일시는 가장 이른 발송 기준입니다. '
-                        'RPS가 높을수록 발송 효율이 좋고, 기여율이 낮은데 유입거래액이 큰 기획전은 발송 강화 여지가 큽니다.</div>',
+                        'CTR·CR·RPS는 합산값 기준으로 계산하고, 발송일시는 가장 이른 발송 기준입니다.</div>',
                         unsafe_allow_html=True)
 
         # ── ③ 발송 유무별 매출 ──
