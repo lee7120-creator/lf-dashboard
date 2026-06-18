@@ -2958,12 +2958,13 @@ def main():
             first_dth=("_dth", "min"),
         ).reset_index()
         g["s_rps"] = np.where(g["send"] > 0, g["s_amt"] / g["send"], 0.0)
+        g["s_ctr"] = np.where(g["send"] > 0, g["s_visit"] / g["send"], np.nan)  # CTR = 방문(VISIT)/발송
 
         def _fmt_when(r):
             t = r.get("first_dth")
             if t is None or pd.isna(t):
                 return "–"
-            s = f"{t.month}월 {t.day}일 {t.hour}시"
+            s = f"{t.year}년 {t.month}월 {t.day}일 {t.hour}시"
             return s + (f" 외 {int(r['n_camp'])-1}건" if r.get("n_camp", 1) > 1 else "")
         g["발송일시"] = g.apply(_fmt_when, axis=1)
 
@@ -3033,18 +3034,22 @@ def main():
             sortmap = {"발송 RPS": "s_rps", "기여율": "기여율", "유입거래액": "inf_amt",
                        "발송수": "send"}
             b = b.sort_values(sortmap[order], ascending=False, na_position="last")
-            cols_t = ["promo", "pname", "발송일시", "n_camp", "send", "s_amt", "s_rps",
-                      "inf_amt", "기여율"]
+            cols_t = ["promo", "pname", "발송일시", "n_camp", "send", "s_uv", "s_visit", "s_ctr",
+                      "s_amt", "s_rps", "inf_amt", "기여율"]
             ren = {"promo": "기획전번호", "pname": "기획전명", "n_camp": "캠페인수", "send": "발송",
+                   "s_uv": "UV", "s_visit": "VISIT", "s_ctr": "CTR",
                    "s_amt": "발송추적거래액", "s_rps": "RPS", "inf_amt": "유입거래액",
                    "기여율": "기여율"}
-            fmt = {"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "발송추적거래액": "{:,.0f}", "RPS": "{:,.0f}",
+            fmt = {"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "UV": "{:,.0f}", "VISIT": "{:,.0f}",
+                   "CTR": "{:.2%}", "발송추적거래액": "{:,.0f}", "RPS": "{:,.0f}",
                    "유입거래액": "{:,.0f}", "기여율": "{:.1%}"}
             st.dataframe(b.head(50)[cols_t].rename(columns=ren).style.format(fmt),
                          hide_index=True, use_container_width=True, height=520)
             st.markdown('<div class="appendix">RPS(발송건당 거래액)가 높을수록 발송 효율이 좋습니다. '
                         '기여율이 낮은데 유입거래액이 큰 기획전은 발송 강화 시 추가 매출 여지가 큽니다. '
-                        '단, 한 기획전에 여러 캠페인이 매핑될 수 있어 발송측은 기획전번호로 합산했습니다.</div>',
+                        '<b>CTR = VISIT(방문) ÷ 발송</b>. '
+                        '한 기획전에 캠페인이 여러 개면 <b>발송·UV·VISIT·발송추적거래액은 합산</b>, '
+                        'RPS·CTR은 합산값 기준으로 계산, 발송일시는 가장 이른 발송 기준입니다.</div>',
                         unsafe_allow_html=True)
 
         # ── ③ 발송 유무별 매출 ──
