@@ -607,7 +607,17 @@ def gs_open(creds_dict, spreadsheet):
     from google.oauth2.service_account import Credentials
     scopes = ["https://www.googleapis.com/auth/spreadsheets",
               "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(dict(creds_dict), scopes=scopes)
+    info = dict(creds_dict)
+    # Streamlit Secrets에서 private_key 줄바꿈이 '\n' 글자로 들어오면 PEM 파싱 실패 →
+    # 실제 줄바꿈으로 보정 ("Unable to load PEM file" 방지). 캐리지리턴/따옴표도 정리.
+    pk = info.get("private_key")
+    if isinstance(pk, str):
+        pk = pk.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
+        pk = pk.strip().strip('"').strip("'").strip()
+        if not pk.endswith("\n"):
+            pk += "\n"
+        info["private_key"] = pk
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
     gc = gspread.authorize(creds)
     sp = str(spreadsheet).strip()
     if sp.startswith("http"):
