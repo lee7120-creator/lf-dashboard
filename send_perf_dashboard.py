@@ -956,6 +956,34 @@ def ols_effects(df, attr_cols, ctrl_cols, ycol):
     return pd.DataFrame(rows).sort_values("순효과", ascending=False).reset_index(drop=True)
 
 
+def fmt_hhmm(h):
+    """발송 시간대(HHMM 또는 H 정수) → '12시' / '08시' / '10시 50분'. 잘못된 값은 '–'."""
+    try:
+        v = int(float(h))
+    except Exception:
+        return "–"
+    if v < 0:
+        return "–"
+    hour, minute = (v, 0) if v <= 23 else divmod(v, 100)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return "–"
+    return f"{hour:02d}시" + (f" {minute:02d}분" if minute else "")
+
+
+def hhmm_to_minutes(h):
+    """HHMM(또는 H) → 자정 기준 분(정렬용). 잘못된 값은 0."""
+    try:
+        v = int(float(h))
+    except Exception:
+        return 0
+    if v < 0:
+        return 0
+    hour, minute = (v, 0) if v <= 23 else divmod(v, 100)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return 0
+    return hour * 60 + minute
+
+
 def build_report_html(title, blocks):
     """페이지에서 캡처한 차트/표 블록 → 인쇄용 자립형 HTML (브라우저 Ctrl+P로 PDF 저장)."""
     import plotly.io as pio
@@ -997,7 +1025,8 @@ def build_report_html(title, blocks):
 PROMO_TBL_SPECS = [
     ("", "promo", "기획전번호", None),
     ("", "pname", "기획전명", None),
-    ("", "발송일시", "발송일시", None),
+    ("", "발송일자", "발송일자", None),
+    ("", "발송시간", "발송시간", None),
     ("", "n_camp", "캠페인수", "{:,.0f}"),
     ("발송 성과", "send", "발송", "{:,.0f}"),
     ("발송 성과", "s_uv", "UV", "{:,.0f}"),
@@ -1812,24 +1841,21 @@ def main():
             if len(_r):
                 recent7 = _r
 
-        def _when(r):
+        def _date_only(r):
             t = r.get("dt")
-            if t is None or pd.isna(t):
-                return "–"
-            try:
-                h = int(r.get("hour"))
-            except Exception:
-                h = None
-            return f"{t.year}년 {t.month}월 {t.day}일" + (f" {h}시" if h is not None else "")
+            return f"{t.year}년 {t.month}월 {t.day}일" if (t is not None and not pd.isna(t)) else "–"
         win = recent7.sort_values("ord_cr", ascending=False).head(8).copy()
         los = recent7.sort_values("ord_cr").head(8).copy()
-        win["발송일시"] = win.apply(_when, axis=1)
-        los["발송일시"] = los.apply(_when, axis=1)
+        for _w in (win, los):
+            _w["발송일자"] = _w.apply(_date_only, axis=1)
+            _w["발송시간"] = _w["hour"].map(fmt_hhmm) if "hour" in _w else "–"
+            _w["_body"] = _w["body"].map(lambda x: " ".join(str(x).split())) if "body" in _w else ""
         _rng = f"{(_last - pd.Timedelta(days=7)).date()} ~ {_last.date()}" if _last is not None else drange
         st.caption(f"최근 7일({_rng}) 기준 · 주문CR(=주문÷UV)은 UV가 적으면 1주문에도 크게 튀므로 "
                    "UV 100 이상 캠페인만 순위에 포함합니다.")
-        _tbcols = ["발송일시", "title", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
-        _tbren = {"발송일시": "발송 년월일시", "title": "제목", "cat": "카테고리", "send": "발송", "infl_cr": "CTR",
+        _tbcols = ["발송일자", "발송시간", "title", "_body", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
+        _tbren = {"발송일자": "발송일자", "발송시간": "발송시간", "title": "제목", "_body": "내용",
+                  "cat": "카테고리", "send": "발송", "infl_cr": "CTR",
                   "ord_cr": "주문CR", "rps": "RPS", "aov": "객단가", "amt": "거래액"}
         _tbfmt = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}",
                   "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"}
@@ -3010,8 +3036,8 @@ def main():
                        "실적시트의 '기획전' 컬럼을 확인하세요. (현재 필터를 넓혀보거나 '11.데이터'에서 promo 열 확인)")
             st.stop()
         # 발송 일시(날짜+시간대) — 같은 기획전에 여러 캠페인이면 가장 이른 발송 기준
-        _hr = pd.to_numeric(sent["hour"], errors="coerce").fillna(0).clip(0, 23) if "hour" in sent else 0
-        sent["_dth"] = sent["dt"] + pd.to_timedelta(_hr, unit="h") if "dt" in sent else pd.NaT
+        _min = sent["hour"].map(hhmm_to_minutes) if "hour" in sent else 0   # 시간대 HHMM→분(정렬·표기)
+        sent["_dth"] = (sent["dt"] + pd.to_timedelta(_min, unit="m")) if "dt" in sent else pd.NaT
         g = sent.groupby("promo").agg(
             n_camp=("af", "size"), send=("send", "sum"), s_amt=("amt", "sum"),
             s_oc=("oc", "sum"), s_uv=("uv", "sum"), s_visit=("visit", "sum"),
@@ -3022,13 +3048,20 @@ def main():
         g["s_ctr"] = np.where(g["send"] > 0, g["s_uv"] / g["send"], np.nan)   # 유입전환율 = UV÷발송
         g["s_cr"] = np.where(g["s_uv"] > 0, g["s_oc"] / g["s_uv"], np.nan)    # 주문전환율 = 주문÷UV
 
-        def _fmt_when(r):
+        def _fmt_date(r):
             t = r.get("first_dth")
             if t is None or pd.isna(t):
                 return "–"
-            s = f"{t.year}년 {t.month}월 {t.day}일 {t.hour}시"
+            s = f"{t.year}년 {t.month}월 {t.day}일"
             return s + (f" 외 {int(r['n_camp'])-1}건" if r.get("n_camp", 1) > 1 else "")
-        g["발송일시"] = g.apply(_fmt_when, axis=1)
+
+        def _fmt_time(r):
+            t = r.get("first_dth")
+            if t is None or pd.isna(t):
+                return "–"
+            return f"{t.hour:02d}시" + (f" {t.minute:02d}분" if t.minute else "")
+        g["발송일자"] = g.apply(_fmt_date, axis=1)
+        g["발송시간"] = g.apply(_fmt_time, axis=1)
 
         # 기획전 매출 조인
         P = promo_df.copy()
@@ -3099,7 +3132,7 @@ def main():
                         '<b>지표 정의</b> · CTR(유입전환율)=UV÷발송 · CR(주문전환율)=주문÷UV · '
                         'RPS=발송추적거래액÷발송 · <b>기여율=발송추적거래액÷유입거래액</b>.<br>'
                         '한 기획전에 캠페인이 여러 개면 <b>발송·UV·VISIT·주문·발송추적거래액은 합산</b>, '
-                        'CTR·CR·RPS는 합산값 기준으로 계산하고, 발송일시는 가장 이른 발송 기준입니다.</div>',
+                        'CTR·CR·RPS는 합산값 기준으로 계산하고, 발송일자·발송시간은 가장 이른 발송 기준입니다.</div>',
                         unsafe_allow_html=True)
 
         # ── ③ 발송 유무별 매출 ──
