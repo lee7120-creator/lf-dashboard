@@ -391,6 +391,159 @@ def merge_mtd_store(old, new):
     return both.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
 
 
+# ── 기획전 성과시트 (기획전번호별 유입/총매출) — 발송 promo 와 조인 ──────────
+PROMO_STORE = "send_perf_promo_store.csv"
+PROMO_STORE_COLS = ["promo", "pname", "pstart", "pend", "p_pv", "p_uv",
+                    "inf_amt", "inf_sales", "inf_oc", "inf_ocust", "inf_qty",
+                    "tot_amt", "tot_sales", "tot_oc", "tot_ocust", "tot_qty"]
+PROMO_NUM_COLS = ["p_pv", "p_uv", "inf_amt", "inf_sales", "inf_oc", "inf_ocust", "inf_qty",
+                  "tot_amt", "tot_sales", "tot_oc", "tot_ocust", "tot_qty"]
+
+
+def norm_promo(v):
+    """기획전번호 정규화 — 발송 promo·기획전시트 번호를 같은 문자열 키로 맞춘다."""
+    if v is None:
+        return ""
+    s = str(v).strip()
+    s = re.sub(r"\.0$", "", s)
+    if s in ("", "nan", "NaN", "None", "0"):
+        return ""
+    return s
+
+
+def _promo_num(v):
+    if v is None:
+        return None
+    s = str(v).replace(",", "").strip()
+    if s in ("", "-", "nan", "None"):
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def parse_promo_bytes(file_bytes):
+    """기획전 성과시트 → 기획전 단위 DataFrame. 2단 헤더(공통 / 유입 / 총매출).
+    '거래액'·'매출액' 등이 유입·총매출 블록에 중복되므로 그룹 헤더(유입/총매출) 위치로 구분 파싱."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    if not rows:
+        return pd.DataFrame(columns=PROMO_STORE_COLS)
+
+    # 헤더(컬럼명) 행 탐색: 첫 칸이 '기획전 번호'
+    hr = None
+    for i, r in enumerate(rows[:12]):
+        c0 = str(r[0]).strip() if (r and r[0] is not None) else ""
+        if c0.replace(" ", "") == "기획전번호":
+            hr = i
+            break
+    if hr is None:
+        raise ValueError("기획전 성과시트 헤더('기획전 번호')를 찾지 못했습니다.")
+
+    grp = rows[hr - 1] if hr > 0 else ()
+    names = [str(x).strip() if x is not None else "" for x in rows[hr]]
+    ncols = len(names)
+    gi = ti = None
+    for j, gv in enumerate(grp):
+        gs = str(gv).strip() if gv is not None else ""
+        if gs == "유입":
+            gi = j
+        elif gs.replace(" ", "") == "총매출":
+            ti = j
+    g_end = gi if gi is not None else ncols
+    i_lo, i_hi = (gi, ti) if gi is not None else (ncols, ncols)
+    t_lo, t_hi = (ti, ncols) if ti is not None else (ncols, ncols)
+
+    def find(nm, lo, hi):
+        key = nm.replace(" ", "")
+        for j in range(lo, min(hi, ncols)):
+            if names[j].replace(" ", "") == key:
+                return j
+        return None
+
+    idx = {
+        "promo": 0, "pname": find("기획전명", 0, g_end),
+        "pstart": find("기획전 시작일", 0, g_end), "pend": find("기획전 종료일", 0, g_end),
+        "p_pv": find("기획전 PV", 0, g_end), "p_uv": find("기획전 UV", 0, g_end),
+        "inf_amt": find("거래액", i_lo, i_hi), "inf_sales": find("매출액", i_lo, i_hi),
+        "inf_oc": find("주문건수", i_lo, i_hi), "inf_ocust": find("주문고객수", i_lo, i_hi),
+        "inf_qty": find("총결제 수량", i_lo, i_hi),
+        "tot_amt": find("거래액", t_lo, t_hi), "tot_sales": find("매출액", t_lo, t_hi),
+        "tot_oc": find("주문건수", t_lo, t_hi), "tot_ocust": find("주문고객수", t_lo, t_hi),
+        "tot_qty": find("총결제 수량", t_lo, t_hi),
+    }
+
+    def cell(r, key):
+        j = idx.get(key)
+        return r[j] if (j is not None and j < len(r)) else None
+
+    recs = []
+    for r in rows[hr + 1:]:
+        if not r or r[0] is None:
+            continue
+        promo = norm_promo(r[0])
+        if not promo:
+            continue
+        rec = {"promo": promo}
+        nm = cell(r, "pname")
+        rec["pname"] = str(nm).strip() if nm is not None else ""
+        for k in ("pstart", "pend"):
+            v = cell(r, k)
+            rec[k] = str(v)[:10] if v is not None else ""
+        for k in PROMO_NUM_COLS:
+            rec[k] = _promo_num(cell(r, k))
+        recs.append(rec)
+    df = pd.DataFrame(recs, columns=PROMO_STORE_COLS)
+    if len(df):
+        df = df.drop_duplicates(subset=["promo"], keep="last").reset_index(drop=True)
+    return df
+
+
+def load_promo_store():
+    if os.path.exists(PROMO_STORE):
+        try:
+            return pd.read_csv(PROMO_STORE, encoding="utf-8-sig", dtype={"promo": str})
+        except Exception:
+            pass
+    return pd.DataFrame(columns=PROMO_STORE_COLS)
+
+
+def save_promo_store(df):
+    df[[c for c in PROMO_STORE_COLS if c in df]].to_csv(PROMO_STORE, index=False, encoding="utf-8-sig")
+
+
+def merge_promo_store(old, new):
+    """기획전번호 기준 병합 — 같은 번호는 신규 우선."""
+    def _pick(d):
+        if d is None or len(d) == 0:
+            return pd.DataFrame(columns=PROMO_STORE_COLS)
+        return d[[c for c in PROMO_STORE_COLS if c in d]].copy()
+    both = pd.concat([_pick(old), _pick(new)], ignore_index=True)
+    if both.empty:
+        return both
+    both["promo"] = both["promo"].map(norm_promo)
+    both = both[both["promo"] != ""]
+    return both.drop_duplicates(subset=["promo"], keep="last").reset_index(drop=True)
+
+
+def finalize_promo(df):
+    """저장소/파싱 로드 공통 — 키 정규화 + 숫자 컬럼 형변환."""
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=PROMO_STORE_COLS)
+    d = df.copy()
+    if "promo" in d:
+        d["promo"] = d["promo"].map(norm_promo)
+        d = d[d["promo"] != ""]
+    for c in PROMO_NUM_COLS:
+        if c in d:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+    return d.reset_index(drop=True)
+
+
 def compute_mtd(df):
     """일자별 MTD → 피로도/효율 집계 (수신동의 제외)."""
     df = df.copy()
@@ -445,7 +598,7 @@ def compute_mtd(df):
 
 
 # ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
-GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store"}
+GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store"}
 
 
 def gs_open(creds_dict, spreadsheet):
@@ -454,7 +607,17 @@ def gs_open(creds_dict, spreadsheet):
     from google.oauth2.service_account import Credentials
     scopes = ["https://www.googleapis.com/auth/spreadsheets",
               "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(dict(creds_dict), scopes=scopes)
+    info = dict(creds_dict)
+    # Streamlit Secrets에서 private_key 줄바꿈이 '\n' 글자로 들어오면 PEM 파싱 실패 →
+    # 실제 줄바꿈으로 보정 ("Unable to load PEM file" 방지). 캐리지리턴/따옴표도 정리.
+    pk = info.get("private_key")
+    if isinstance(pk, str):
+        pk = pk.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
+        pk = pk.strip().strip('"').strip("'").strip()
+        if not pk.endswith("\n"):
+            pk += "\n"
+        info["private_key"] = pk
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
     gc = gspread.authorize(creds)
     sp = str(spreadsheet).strip()
     if sp.startswith("http"):
@@ -796,6 +959,9 @@ def main():
     def cached_mtd(b): return parse_mtd_bytes(b)
 
     @st.cache_data(show_spinner=False)
+    def cached_promo(b): return parse_promo_bytes(b)
+
+    @st.cache_data(show_spinner=False)
     def prepare_raw(work_df):
         """파생 재계산 + 타입정리 + 문구 태깅을 1회만 — 필터·페이지 이동 때 재계산 방지(성능 핵심).
         입력 work_df 가 동일하면(저장 데이터만 볼 때) 캐시 히트하여 무거운 태깅을 건너뛴다."""
@@ -829,28 +995,33 @@ def main():
         except Exception as e:
             return {"mode": "local", "status": f"⚠️ 구글시트 연결 실패 → 로컬 CSV ({str(e)[:50]})"}
 
+    _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS}
+    _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store}
+    _LOCAL_SAVE = {"campaign": save_store, "mtd": save_mtd_store, "promo": save_promo_store}
+    _LOCAL_FILE = {"campaign": DATA_STORE, "mtd": MTD_STORE, "promo": PROMO_STORE}
+
     def storage_load(bk, kind):
-        cols = STORE_COLS if kind == "campaign" else MTD_STORE_COLS
+        cols = _STORE_COLS_BY_KIND[kind]
         if bk["mode"] == "gsheets":
             try:
                 return gs_read_ws(bk["sh"], GS_TITLES[kind], cols)
             except Exception:
                 return pd.DataFrame(columns=cols)
-        return load_store() if kind == "campaign" else load_mtd_store()
+        return _LOCAL_LOAD[kind]()
 
     def storage_save(bk, kind, df):
-        cols = STORE_COLS if kind == "campaign" else MTD_STORE_COLS
+        cols = _STORE_COLS_BY_KIND[kind]
         if bk["mode"] == "gsheets":
             gs_write_ws(bk["sh"], GS_TITLES[kind], df, cols)
         else:
-            save_store(df) if kind == "campaign" else save_mtd_store(df)
+            _LOCAL_SAVE[kind](df)
 
     def storage_clear(bk, kind):
-        cols = STORE_COLS if kind == "campaign" else MTD_STORE_COLS
+        cols = _STORE_COLS_BY_KIND[kind]
         if bk["mode"] == "gsheets":
             gs_clear_ws(bk["sh"], GS_TITLES[kind], cols)
         else:
-            f = DATA_STORE if kind == "campaign" else MTD_STORE
+            f = _LOCAL_FILE[kind]
             if os.path.exists(f):
                 os.remove(f)
 
@@ -955,9 +1126,15 @@ def main():
         accept_multiple_files=True, key="mtd_up",
         help="발송피로도(인당발송·CTR) 전사 분석용. 날짜=열, 지표=행 형식. 일자 기준 누적 저장됩니다.")
 
+    promo_files = st.sidebar.file_uploader(
+        "④ 기획전 성과시트 (선택 · xlsx)", type=["xlsx"],
+        accept_multiple_files=False, key="promo_up",
+        help="기획전번호별 유입/총매출 매출 데이터. 발송 promo(기획전번호)와 조인해 "
+             "'기획전 비교분석' 페이지에서 사용합니다. 기획전번호 기준 누적 저장됩니다.")
+
     st.sidebar.caption(BK["status"])
     if st.sidebar.button("🔄 저장소 새로고침", use_container_width=True):
-        for k in ("camp_store", "mtd_store_df"):
+        for k in ("camp_store", "mtd_store_df", "promo_store_df"):
             st.session_state.pop(k, None)
         st.cache_data.clear()
     if "camp_store" not in st.session_state:
@@ -1068,6 +1245,27 @@ def main():
         mtd_work = mtd_stored
     mtd_data = compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
 
+    # ── 기획전 성과시트 (기획전번호별 매출) 누적 처리 ──
+    if "promo_store_df" not in st.session_state:
+        st.session_state.promo_store_df = storage_load(BK, "promo")
+    promo_stored = st.session_state.promo_store_df
+    promo_work = promo_stored
+    if promo_files is not None:
+        try:
+            pnew = cached_promo(promo_files.getvalue())
+            promo_work = merge_promo_store(promo_stored, pnew)
+            st.sidebar.success(f"기획전 시트 {len(pnew):,}건 파싱 → 누적 {len(promo_work):,}건 (미리보기)")
+            if st.sidebar.button("💾 기획전 저장 (누적 반영)", use_container_width=True, key="save_promo"):
+                storage_save(BK, "promo", promo_work)
+                st.session_state.promo_store_df = promo_work
+                st.cache_data.clear()
+                tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
+                st.sidebar.success(f"기획전 저장됨 ✓ ({tgt})")
+            st.sidebar.caption("※ 저장을 눌러야 영구 반영됩니다.")
+        except Exception as e:
+            st.sidebar.error(f"기획전 시트 파싱 실패: {str(e)[:90]}")
+    promo_df = finalize_promo(promo_work)
+
     # ── 필터 (카테고리별) ──
     st.sidebar.markdown("---")
     st.sidebar.markdown("#### 필터")
@@ -1175,8 +1373,9 @@ def main():
         "7. 타이밍·발송슬롯",
         "8. BPU·우선순위 효율",   # ── 조직·매크로
         "9. 전체 효율·추이",
-        "10. AI 처방·카피",       # ── 액션
-        "11. 데이터·다운로드",    # 추출
+        "10. 기획전 비교분석",    # ── 기획전 매출 연계
+        "11. AI 처방·카피",       # ── 액션
+        "12. 데이터·다운로드",    # 추출
     ]
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
@@ -1239,6 +1438,30 @@ def main():
             st.session_state.mtd_store_df = pd.DataFrame(columns=MTD_STORE_COLS)
             st.cache_data.clear()
             st.success("MTD 초기화됨 — 새로고침하세요")
+        st.markdown("---")
+        st.caption(f"기획전 성과시트 누적 {0 if promo_work is None else len(promo_work):,}건")
+        if promo_work is not None and len(promo_work):
+            st.download_button(
+                "⬇ 기획전 백업 (CSV)",
+                promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"),
+                file_name="send_perf_promo_backup.csv", mime="text/csv",
+                use_container_width=True, key="promo_bak")
+        rest_p = st.file_uploader("기획전 복원/추가 (백업 CSV)", type=["csv"], key="restore_promo")
+        if rest_p is not None:
+            try:
+                dp = pd.read_csv(rest_p, encoding="utf-8-sig", dtype={"promo": str})
+                merged_p = merge_promo_store(st.session_state.get("promo_store_df"), dp)
+                storage_save(BK, "promo", merged_p)
+                st.session_state.promo_store_df = merged_p
+                st.cache_data.clear()
+                st.success("기획전 복원·병합 완료 ✓ 새로고침하세요")
+            except Exception as e:
+                st.error(f"기획전 복원 실패: {e}")
+        if st.button("🗑 기획전 초기화", use_container_width=True, key="clear_promo"):
+            storage_clear(BK, "promo")
+            st.session_state.promo_store_df = pd.DataFrame(columns=PROMO_STORE_COLS)
+            st.cache_data.clear()
+            st.success("기획전 초기화됨 — 새로고침하세요")
         st.markdown("---")
         st.caption(f"저장 위치: {BK['status']}")
         if BK["mode"] != "gsheets":
@@ -2482,6 +2705,189 @@ def main():
                 st.markdown('<div class="appendix">같은 요일 안에서도 발송이 적은 날의 CTR·RPS가 더 높다면, '
                             '발송 강도 자체가 효율을 떨어뜨린다는 (요일 효과를 통제한) 근거입니다.</div>',
                             unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 10 — 기획전 비교분석 (발송 promo × 기획전 매출)
+    # ══════════════════════════════════════════════════════════════
+    elif "기획전 비교분석" in page:
+        st.title("기획전 비교분석")
+        st.caption("발송 데이터의 기획전번호(promo)를 기획전 성과시트와 조인해 "
+                   "① 발송 기여율 ② 발송 효율 순위 ③ 발송 유무별 매출 ④ 매출 추세를 봅니다. "
+                   "발송측은 현재 사이드바 필터(기간·속성 등)가 적용됩니다.")
+        if promo_df is None or len(promo_df) == 0:
+            st.info("좌측 사이드바 **④ 기획전 성과시트(xlsx)**를 업로드하세요. "
+                    "(기획전번호별 유입/총매출 매출 데이터) — 업로드 후 **「💾 기획전 저장」**을 누르면 누적됩니다.")
+            st.stop()
+
+        # 발송측: promo 단위 집계 (현재 필터 적용분 · 매칭 여부 무관)
+        src = dff_all.copy()
+        src["promo"] = src["promo"].map(norm_promo) if "promo" in src else ""
+        sent = src[src["promo"] != ""]
+        if len(sent) == 0:
+            st.warning("발송 데이터에 기획전번호(promo)가 채워진 건이 없습니다. "
+                       "실적시트의 '기획전' 컬럼을 확인하세요. (현재 필터를 넓혀보거나 '11.데이터'에서 promo 열 확인)")
+            st.stop()
+        g = sent.groupby("promo").agg(
+            n_camp=("af", "size"), send=("send", "sum"), s_amt=("amt", "sum"),
+            s_oc=("oc", "sum"), s_uv=("uv", "sum"), s_visit=("visit", "sum"),
+        ).reset_index()
+        g["s_rps"] = np.where(g["send"] > 0, g["s_amt"] / g["send"], 0.0)
+
+        # 기획전 매출 조인
+        P = promo_df.copy()
+        m = g.merge(P, on="promo", how="left")
+        matched = m[m["pname"].notna() & (m["pname"].astype(str).str.strip() != "")].copy()
+        n_unmatched = len(m) - len(matched)
+        sent_ids = set(g["promo"])
+
+        c = st.columns(4)
+        c[0].metric("발송된 기획전 수", f"{g['promo'].nunique():,}")
+        c[1].metric("기획전시트 매칭", f"{len(matched):,}",
+                    delta=(f"미매칭 {n_unmatched}" if n_unmatched else "전건 매칭"),
+                    delta_color="off")
+        c[2].metric("발송 추적 거래액(필터)", won(g["s_amt"].sum()))
+        c[3].metric("매칭 기획전 유입거래액", won(matched["inf_amt"].sum()))
+        if n_unmatched:
+            st.caption(f"⚠️ 발송됐지만 기획전 성과시트에서 번호를 못 찾은 기획전 {n_unmatched}건은 "
+                       "①·②·④(발송기준) 분석에서 매출 비교가 빠집니다. 성과시트 갱신을 권장합니다.")
+
+        tabA, tabB, tabC, tabD = st.tabs(
+            ["① 발송 기여율", "② 발송 효율 순위", "③ 발송 유무별 매출", "④ 매출 추세"])
+
+        # ── ① 발송 기여율 (분모 = 유입 거래액) ──
+        with tabA:
+            st.markdown("##### 발송 기여율 = 발송 추적 거래액 ÷ 기획전 **유입** 거래액")
+            st.caption("‘유입 거래액’은 기획전을 경유해 발생한 매출입니다. 그중 발송이 끌어온 비중을 봅니다. "
+                       "발송 어트리뷰션과 기획전 유입 어트리뷰션 기준이 달라 100%를 넘을 수 있습니다(정상).")
+            a = matched[matched["inf_amt"].fillna(0) > 0].copy()
+            if len(a) == 0:
+                st.info("유입 거래액이 있는 매칭 기획전이 없습니다.")
+            else:
+                a["기여율"] = a["s_amt"] / a["inf_amt"]
+                tot_contrib = a["s_amt"].sum() / a["inf_amt"].sum() if a["inf_amt"].sum() > 0 else np.nan
+                cc = st.columns(3)
+                cc[0].metric("전체 발송 기여율(합산)", f"{tot_contrib*100:.1f}%")
+                cc[1].metric("기획전 중앙값 기여율", f"{a['기여율'].median()*100:.1f}%")
+                cc[2].metric("대상 기획전 수", f"{len(a):,}")
+                clip = (a["기여율"].clip(upper=2.0) * 100)
+                fig = go.Figure(go.Histogram(x=clip, nbinsx=30, marker_color=PALETTE["blue"]))
+                lay = base_layout(h=300, title="기여율 분포 (200% 초과는 200%로 표시)")
+                fig.update_layout(**lay)
+                fig.update_xaxes(ticksuffix="%")
+                st.plotly_chart(fig, use_container_width=True)
+                cols_t = ["promo", "pname", "send", "s_amt", "inf_amt", "기여율", "s_rps"]
+                ren = {"promo": "기획전번호", "pname": "기획전명", "send": "발송", "s_amt": "발송추적거래액",
+                       "inf_amt": "유입거래액", "기여율": "기여율", "s_rps": "RPS"}
+                fmt = {"발송": "{:,.0f}", "발송추적거래액": "{:,.0f}", "유입거래액": "{:,.0f}",
+                       "기여율": "{:.1%}", "RPS": "{:,.0f}"}
+                show = a.sort_values("기여율", ascending=False)
+                st.markdown("**기여율 높은 기획전 — 발송이 매출을 주도**")
+                st.dataframe(show.head(15)[cols_t].rename(columns=ren).style.format(fmt),
+                             hide_index=True, use_container_width=True)
+                lowbase = show[show["inf_amt"] >= show["inf_amt"].median()]
+                st.markdown("**기여율 낮은 기획전 (유입거래액 중앙값 이상) — 자연유입 비중↑, 발송 강화 여지**")
+                st.dataframe(lowbase.sort_values("기여율").head(15)[cols_t].rename(columns=ren).style.format(fmt),
+                             hide_index=True, use_container_width=True)
+
+        # ── ② 발송 효율 순위 ──
+        with tabB:
+            st.markdown("##### 기획전별 발송 효율 — 발송 대비 실매출")
+            b = matched.copy()
+            b["기여율"] = np.where(b["inf_amt"].fillna(0) > 0, b["s_amt"] / b["inf_amt"], np.nan)
+            order = st.radio("정렬 기준", ["발송 RPS", "기여율", "유입거래액", "발송수", "총매출거래액"],
+                             horizontal=True, key="promoB_sort")
+            sortmap = {"발송 RPS": "s_rps", "기여율": "기여율", "유입거래액": "inf_amt",
+                       "발송수": "send", "총매출거래액": "tot_amt"}
+            b = b.sort_values(sortmap[order], ascending=False, na_position="last")
+            cols_t = ["promo", "pname", "n_camp", "send", "s_amt", "s_rps",
+                      "inf_amt", "tot_amt", "기여율"]
+            ren = {"promo": "기획전번호", "pname": "기획전명", "n_camp": "캠페인수", "send": "발송",
+                   "s_amt": "발송추적거래액", "s_rps": "RPS", "inf_amt": "유입거래액",
+                   "tot_amt": "총매출거래액", "기여율": "기여율"}
+            fmt = {"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "발송추적거래액": "{:,.0f}", "RPS": "{:,.0f}",
+                   "유입거래액": "{:,.0f}", "총매출거래액": "{:,.0f}", "기여율": "{:.1%}"}
+            st.dataframe(b.head(50)[cols_t].rename(columns=ren).style.format(fmt),
+                         hide_index=True, use_container_width=True, height=520)
+            st.markdown('<div class="appendix">RPS(발송건당 거래액)가 높을수록 발송 효율이 좋습니다. '
+                        '기여율이 낮은데 유입거래액이 큰 기획전은 발송 강화 시 추가 매출 여지가 큽니다. '
+                        '단, 한 기획전에 여러 캠페인이 매핑될 수 있어 발송측은 기획전번호로 합산했습니다.</div>',
+                        unsafe_allow_html=True)
+
+        # ── ③ 발송 유무별 매출 ──
+        with tabC:
+            st.markdown("##### 발송한 기획전 vs 발송 안 한 기획전 — 매출 비교")
+            st.caption("기획전 성과시트 전체를 발송 여부로 나눠 평균·중앙값 매출을 비교합니다. "
+                       "단, 규모가 큰 기획전 위주로 발송했을 수 있어(규모 교란) 단순 우열로 해석하지 마세요.")
+            base_lbl = st.radio("비교 매출", ["유입 거래액", "총매출 거래액"],
+                                horizontal=True, key="promoC_base")
+            col = "inf_amt" if base_lbl == "유입 거래액" else "tot_amt"
+            allp = P.copy()
+            allp["발송"] = allp["promo"].isin(sent_ids)
+            valid = allp[allp[col].notna()].copy()
+            sset = valid[valid["발송"]][col]
+            uset = valid[~valid["발송"]][col]
+            summary = pd.DataFrame({
+                "구분": ["발송함", "발송안함"],
+                "기획전수": [int(len(sset)), int(len(uset))],
+                "평균매출": [sset.mean(), uset.mean()],
+                "중앙값매출": [sset.median(), uset.median()],
+                "합계매출": [sset.sum(), uset.sum()],
+            })
+            st.dataframe(summary.style.format({"기획전수": "{:,.0f}", "평균매출": "{:,.0f}",
+                         "중앙값매출": "{:,.0f}", "합계매출": "{:,.0f}"}),
+                         hide_index=True, use_container_width=True)
+            fig = go.Figure(go.Bar(x=["발송함", "발송안함"], y=[sset.mean(), uset.mean()],
+                                   marker_color=[PALETTE["green"], PALETTE["slate"]]))
+            fig.update_layout(**base_layout(h=320, title=f"발송 유무별 평균 {base_lbl}"))
+            st.plotly_chart(fig, use_container_width=True)
+            p = welch(sset.dropna().values, uset.dropna().values)
+            st.caption(f"평균 차이 통계 유의성: {sig_label(p)} · 발송 {len(sset):,}건 vs 미발송 {len(uset):,}건")
+            st.markdown('<div class="appendix">평균은 초대형 기획전에 휘둘리므로 중앙값을 함께 보세요. '
+                        '발송 기획전이 더 크다면, 발송이 매출을 키운 것인지 큰 기획전을 골라 발송한 것인지 구분이 어렵습니다.</div>',
+                        unsafe_allow_html=True)
+
+        # ── ④ 매출 추세 ──
+        with tabD:
+            st.markdown("##### 기획전 매출 추세 (기획전 시작월 기준)")
+            P2 = P.copy()
+            P2["dt"] = pd.to_datetime(P2["pstart"], errors="coerce")
+            P2 = P2.dropna(subset=["dt"])
+            if len(P2) == 0:
+                st.info("기획전 시작일 정보가 없어 추세를 그릴 수 없습니다.")
+            else:
+                base_lbl = st.radio("매출 기준", ["유입 거래액", "총매출 거래액"],
+                                    horizontal=True, key="promoD_base")
+                col = "inf_amt" if base_lbl == "유입 거래액" else "tot_amt"
+                P2["발송"] = P2["promo"].isin(sent_ids)
+                P2["월"] = P2["dt"].dt.to_period("M").apply(lambda pp: pp.start_time)
+                gm = P2.groupby(["월", "발송"])[col].sum().reset_index()
+                fig = go.Figure()
+                for flag, name, clr in [(True, "발송 기획전", PALETTE["green"]),
+                                        (False, "미발송 기획전", PALETTE["slate"])]:
+                    sub = gm[gm["발송"] == flag].sort_values("월")
+                    fig.add_trace(go.Scatter(x=sub["월"], y=sub[col], mode="lines+markers",
+                                             name=name, line=dict(color=clr, width=2)))
+                lay = base_layout(h=420, title=f"월별 {base_lbl} 합계 추이 (발송/미발송 기획전)")
+                lay["showlegend"] = True
+                lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+                fig.update_layout(**lay)
+                st.plotly_chart(fig, use_container_width=True)
+                cnt = P2.groupby(["월", "발송"]).size().reset_index(name="기획전수")
+                figc = go.Figure()
+                for flag, name, clr in [(True, "발송 기획전", PALETTE["green"]),
+                                        (False, "미발송 기획전", PALETTE["slate"])]:
+                    sub = cnt[cnt["발송"] == flag].sort_values("월")
+                    figc.add_trace(go.Scatter(x=sub["월"], y=sub["기획전수"], mode="lines+markers",
+                                              name=name, line=dict(color=clr, width=2)))
+                layc = base_layout(h=300, title="월별 기획전 수 (발송/미발송)")
+                layc["showlegend"] = True
+                layc["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+                figc.update_layout(**layc)
+                st.plotly_chart(figc, use_container_width=True)
+                st.caption("기획전 시작월 기준 집계입니다. 발송이 본격화된 시점 전후로 발송 기획전(초록)의 "
+                           "매출 규모가 어떻게 변하는지 함께 살펴보세요.")
+
+        glossary()
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 07 — 데이터·다운로드
