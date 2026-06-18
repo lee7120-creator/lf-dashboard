@@ -1693,7 +1693,7 @@ def main():
     # 지표 메타
     METRIC_OPTS = {
         "주문전환율": ("ord_cr", "%", PALETTE["purple"]),
-        "유입전환율": ("infl_cr", "%", PALETTE["blue"]),
+        "CTR(유입전환율)": ("infl_cr", "%", PALETTE["blue"]),
         "발송건당거래액(RPS)": ("rps", "원", PALETTE["green"]),
         "객단가(AOV)": ("aov", "원", PALETTE["amber"]),
         "거래액": ("amt", "원", PALETTE["teal"]),
@@ -1705,7 +1705,7 @@ def main():
         """비전문가용 지표·통계 용어 설명 (접이식). 통계가 나오는 페이지 하단에 호출."""
         metrics_md = (
             "**📊 성과 지표**\n"
-            "- **유입전환율(유입CR)** = UV ÷ 발송. 메시지를 받은 사람 중 몇 %가 들어왔나. "
+            "- **CTR(유입전환율)** = UV ÷ 발송. 메시지를 받은 사람 중 몇 %가 들어왔나. "
             "제목·발송시점·타겟이 좋을수록 올라갑니다.\n"
             "- **주문전환율(주문CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀나. "
             "오퍼·상품·랜딩이 좋을수록 올라갑니다.\n"
@@ -1742,8 +1742,8 @@ def main():
         all_cols = ["date", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt"]
         cols = [c for c in all_cols if c in dd.columns]
         ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "_bprev": "내용",
-               "send": "발송", "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
-        fmts = {"발송": "{:,.0f}", "유입CR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
+               "send": "발송", "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
+        fmts = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
         show = dd[cols].rename(columns=ren)
         fmts = {k: v for k, v in fmts.items() if k in show.columns}
         st.dataframe(show.style.format(fmts), hide_index=True, use_container_width=True, height=340)
@@ -1796,19 +1796,22 @@ def main():
         c[2].metric("총 거래액", won(base["amt"].sum()))
         c[3].metric("문구 매칭률", f"{raw['matched'].mean()*100:.0f}%")
         c = st.columns(4)
-        c[0].metric("평균 유입전환율", f"{base['infl_cr'].mean()*100:.2f}%")
+        c[0].metric("평균 CTR", f"{base['infl_cr'].mean()*100:.2f}%")
         c[1].metric("평균 주문전환율", f"{base['ord_cr'].mean()*100:.2f}%")
         c[2].metric("평균 RPS(발송건당)", won(base["rps"].mean()))
         c[3].metric("평균 객단가", won(base["aov"].mean()))
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         cc = st.columns(2)
-        win = base.sort_values("ord_cr", ascending=False).head(8)
-        los = base[base["send"] >= min_send].sort_values("ord_cr").head(8)
+        base_cr = base[base["uv"].fillna(0) >= 100] if "uv" in base else base
+        win = base_cr.sort_values("ord_cr", ascending=False).head(8)
+        los = base_cr.sort_values("ord_cr").head(8)
+        st.caption("주문CR(=주문÷UV)은 UV가 너무 적으면 1주문에도 크게 튀므로, "
+                   "UV 100 이상 캠페인만 순위에 포함합니다.")
         _tbcols = ["title", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
-        _tbren = {"title": "제목", "cat": "카테고리", "send": "발송", "infl_cr": "유입CR",
+        _tbren = {"title": "제목", "cat": "카테고리", "send": "발송", "infl_cr": "CTR",
                   "ord_cr": "주문CR", "rps": "RPS", "aov": "객단가", "amt": "거래액"}
-        _tbfmt = {"발송": "{:,.0f}", "유입CR": "{:.2%}", "주문CR": "{:.2%}",
+        _tbfmt = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}",
                   "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"}
         with cc[0]:
             st.markdown("##### 🏆 주문전환율 TOP")
@@ -2088,7 +2091,7 @@ def main():
                    "사이드바에서 **담당자**(또는 카테고리·브랜드)로 필터하면, 본인 성과가 전체 대비 "
                    "높은지(초록)·낮은지(빨강) 한눈에 보입니다.")
         bc = st.columns(4)
-        v, d = _bm("infl_cr"); bc[0].metric("평균 유입CR", v, d)
+        v, d = _bm("infl_cr"); bc[0].metric("평균 CTR", v, d)
         v, d = _bm("ord_cr"); bc[1].metric("평균 주문CR", v, d)
         v, d = _bm("rps", pct=False); bc[2].metric("평균 RPS", v, d)
         bc[3].metric("대상 캠페인 수", f"{len(fdf):,}")
@@ -2103,9 +2106,9 @@ def main():
         view["_bprev"] = view["body"].map(lambda x: " ".join(_s(x).split())[:60]) if "body" in view else ""
         cols = ["date", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt", "속성"]
         ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "_bprev": "내용",
-               "send": "발송", "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
+               "send": "발송", "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
         st.dataframe(view[cols].rename(columns=ren).style.format(
-            {"발송": "{:,.0f}", "유입CR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}),
+            {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}),
             hide_index=True, use_container_width=True, height=560)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -2580,10 +2583,10 @@ def main():
             return pd.DataFrame(out)
 
         def eff_table(t, keyname):
-            ren = {"_key": keyname, "infl_cr": "유입CR", "ord_cr": "주문CR", "rps": "RPS",
+            ren = {"_key": keyname, "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS",
                    "aov": "객단가", "amt": "거래액"}
             show = t[["_key", "캠페인수", "발송", "infl_cr", "ord_cr", "rps", "aov", "거래액"]].rename(columns=ren)
-            return show.style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "유입CR": "{:.2%}",
+            return show.style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "CTR": "{:.2%}",
                                       "주문CR": "{:.2%}", "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"})
 
         # ── BPU별 ──
@@ -3291,7 +3294,7 @@ def build_report_excel(fdf):
             y = fdf[fdf[t]]; n = fdf[~fdf[t]]
             if not len(y) or not len(n):
                 continue
-            rows.append(dict(속성=t, 보유n=len(y), 보유_유입CR=y["infl_cr"].mean(),
+            rows.append(dict(속성=t, 보유n=len(y), 보유_CTR=y["infl_cr"].mean(),
                              보유_주문CR=y["ord_cr"].mean(), 보유_RPS=y["rps"].mean(),
                              미보유n=len(n), 미보유_주문CR=n["ord_cr"].mean(),
                              주문CR차이=y["ord_cr"].mean() - n["ord_cr"].mean()))
@@ -3320,7 +3323,7 @@ def build_report_excel(fdf):
         # 카테고리별
         if "cat" in fdf and len(fdf):
             cg = fdf.groupby("cat").agg(캠페인수=("af", "size"), 발송=("send", "sum"),
-                                        유입CR=("infl_cr", "mean"), 주문CR=("ord_cr", "mean"),
+                                        CTR=("infl_cr", "mean"), 주문CR=("ord_cr", "mean"),
                                         RPS=("rps", "mean"), 거래액=("amt", "sum")).reset_index()
             cg.rename(columns={"cat": "카테고리"}).to_excel(xw, sheet_name="카테고리별", index=False)
     return buf.getvalue()
