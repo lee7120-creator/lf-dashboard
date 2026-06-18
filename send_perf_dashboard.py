@@ -2944,16 +2944,28 @@ def main():
         # 발송측: promo 단위 집계 (현재 필터 적용분 · 매칭 여부 무관)
         src = dff_all.copy()
         src["promo"] = src["promo"].map(norm_promo) if "promo" in src else ""
-        sent = src[src["promo"] != ""]
+        sent = src[src["promo"] != ""].copy()
         if len(sent) == 0:
             st.warning("발송 데이터에 기획전번호(promo)가 채워진 건이 없습니다. "
                        "실적시트의 '기획전' 컬럼을 확인하세요. (현재 필터를 넓혀보거나 '11.데이터'에서 promo 열 확인)")
             st.stop()
+        # 발송 일시(날짜+시간대) — 같은 기획전에 여러 캠페인이면 가장 이른 발송 기준
+        _hr = pd.to_numeric(sent["hour"], errors="coerce").fillna(0).clip(0, 23) if "hour" in sent else 0
+        sent["_dth"] = sent["dt"] + pd.to_timedelta(_hr, unit="h") if "dt" in sent else pd.NaT
         g = sent.groupby("promo").agg(
             n_camp=("af", "size"), send=("send", "sum"), s_amt=("amt", "sum"),
             s_oc=("oc", "sum"), s_uv=("uv", "sum"), s_visit=("visit", "sum"),
+            first_dth=("_dth", "min"),
         ).reset_index()
         g["s_rps"] = np.where(g["send"] > 0, g["s_amt"] / g["send"], 0.0)
+
+        def _fmt_when(r):
+            t = r.get("first_dth")
+            if t is None or pd.isna(t):
+                return "–"
+            s = f"{t.month}월 {t.day}일 {t.hour}시"
+            return s + (f" 외 {int(r['n_camp'])-1}건" if r.get("n_camp", 1) > 1 else "")
+        g["발송일시"] = g.apply(_fmt_when, axis=1)
 
         # 기획전 매출 조인
         P = promo_df.copy()
@@ -2997,7 +3009,7 @@ def main():
                 fig.update_layout(**lay)
                 fig.update_xaxes(ticksuffix="%")
                 st.plotly_chart(fig, use_container_width=True)
-                cols_t = ["promo", "pname", "send", "s_amt", "inf_amt", "기여율", "s_rps"]
+                cols_t = ["promo", "pname", "발송일시", "send", "s_amt", "inf_amt", "기여율", "s_rps"]
                 ren = {"promo": "기획전번호", "pname": "기획전명", "send": "발송", "s_amt": "발송추적거래액",
                        "inf_amt": "유입거래액", "기여율": "기여율", "s_rps": "RPS"}
                 fmt = {"발송": "{:,.0f}", "발송추적거래액": "{:,.0f}", "유입거래액": "{:,.0f}",
@@ -3021,7 +3033,7 @@ def main():
             sortmap = {"발송 RPS": "s_rps", "기여율": "기여율", "유입거래액": "inf_amt",
                        "발송수": "send"}
             b = b.sort_values(sortmap[order], ascending=False, na_position="last")
-            cols_t = ["promo", "pname", "n_camp", "send", "s_amt", "s_rps",
+            cols_t = ["promo", "pname", "발송일시", "n_camp", "send", "s_amt", "s_rps",
                       "inf_amt", "기여율"]
             ren = {"promo": "기획전번호", "pname": "기획전명", "n_camp": "캠페인수", "send": "발송",
                    "s_amt": "발송추적거래액", "s_rps": "RPS", "inf_amt": "유입거래액",
