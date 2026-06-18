@@ -962,6 +962,7 @@ def ols_effects(df, attr_cols, ctrl_cols, ycol):
 def main():
     import streamlit as st
     import plotly.graph_objects as go
+    import streamlit.components.v1 as components
     from scipy import stats
 
     st.set_page_config(page_title="LF몰 발송성과 대시보드", layout="wide",
@@ -1665,6 +1666,27 @@ def main():
             body = str(r["body"]).replace("\n", "<br>") if ("body" in dd.columns and pd.notna(r["body"]) and str(r["body"]).strip()) else "—"
             st.markdown(f'<div class="vg"><b>제목</b><br>{str(r["title"])}<br><br>'
                         f'<b>내용</b><br>{body}</div>', unsafe_allow_html=True)
+
+    # ── 전 페이지 공통: PDF 저장 버튼 (브라우저 인쇄 → PDF, 인쇄 시 사이드바·툴바 자동 숨김) ──
+    components.html("""
+    <script>
+    (function(){
+      var doc = window.parent.document;
+      if (!doc.getElementById('lf-pdf-css')) {
+        var s = doc.createElement('style'); s.id = 'lf-pdf-css';
+        s.textContent = '@media print{[data-testid="stSidebar"],[data-testid="stToolbar"],[data-testid="stHeader"],header,#lf-pdf-btn{display:none!important} [data-testid="stAppViewContainer"] .block-container{max-width:100%!important;padding-top:0!important} .stApp{background:#fff!important}}';
+        doc.head.appendChild(s);
+      }
+      if (!doc.getElementById('lf-pdf-btn')) {
+        var b = doc.createElement('button'); b.id = 'lf-pdf-btn';
+        b.textContent = '📄 PDF로 저장';
+        b.style.cssText = 'position:fixed;top:10px;right:18px;z-index:100000;padding:6px 12px;background:#2E68B0;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.2);';
+        b.onclick = function(){ window.parent.focus(); window.parent.print(); };
+        doc.body.appendChild(b);
+      }
+    })();
+    </script>
+    """, height=0)
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 01 — 종합 요약
