@@ -264,6 +264,73 @@ def expand_uploads(files):
     return out
 
 
+class _UF:
+    """file_uploader 객체 호환 shim — 통합 업로더에서 분류한 (이름, 바이트)를
+    기존 처리 코드(.name / .getvalue())가 그대로 쓰게 한다."""
+    def __init__(self, name, data):
+        self.name = name
+        self._data = data
+
+    def getvalue(self):
+        return self._data
+
+
+def classify_upload(name, file_bytes):
+    """업로드 xlsx 한 개의 종류 자동 판별:
+    perf(발송실적) / plan(발송기획 통합본) / promo(기획전 성과시트) / mtd(전사 MTD) / unknown."""
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:
+        return "unknown"
+    try:
+        names = [str(s) for s in wb.sheetnames]
+        # 1) 발송기획 통합본 — 주차 시트가 여러 개
+        if sum(1 for s in names if WEEK_RE.search(s)) >= 3:
+            return "plan"
+        # 2) 발송실적 — '소재별 실적' 시트
+        if any("소재별 실적" in s for s in names):
+            return "perf"
+        first = wb[wb.sheetnames[0]]
+        head = []
+        for i, r in enumerate(first.iter_rows(min_row=1, max_row=14, values_only=True)):
+            head.append([str(x).strip() if x is not None else "" for x in r])
+        # 3) 기획전 성과시트 — 첫 칸이 '기획전 번호'
+        for r in head:
+            if r and r[0].replace(" ", "") == "기획전번호":
+                return "promo"
+        # 4) AF코드 헤더가 있으면 perf/plan 구분
+        for s in wb.sheetnames[:4]:
+            hdr = next(wb[s].iter_rows(min_row=1, max_row=1, values_only=True), ())
+            hdr = [str(x).strip() if x is not None else "" for x in hdr]
+            if "AF코드" in hdr:
+                if "제목" in hdr or "내용" in hdr:
+                    return "plan"
+                if "주문금액" in hdr or "발송" in hdr or "주문전환율" in hdr:
+                    return "perf"
+        # 5) 전사 MTD — 2번째 행에 날짜 다수 또는 1열에 지표명
+        r1 = head[1] if len(head) > 1 else []
+        date_like = 0
+        for v in r1[1:]:
+            if v in (None, ""):
+                continue
+            try:
+                pd.Timestamp(v); date_like += 1
+            except Exception:
+                pass
+        col0 = [r[0] for r in head if r]
+        mtd_kw = any(any(k in c for k in ("인당발송", "발송건당", "유니크발송", "M당거래", "적립M"))
+                     for c in col0)
+        if mtd_kw or date_like >= 5:
+            return "mtd"
+        # 6) 주차 시트가 1~2개라도 있으면 plan
+        if any(WEEK_RE.search(s) for s in names):
+            return "plan"
+        return "unknown"
+    finally:
+        wb.close()
+
+
 def merge_store(old, new):
     """기존 누적 + 신규 업로드 병합 — 같은 (발송일, AF코드)는 신규 우선."""
     def _pick(d):
@@ -969,6 +1036,9 @@ def main():
     def cached_promo(b): return parse_promo_bytes(b)
 
     @st.cache_data(show_spinner=False)
+    def cached_classify(b): return classify_upload("", b)
+
+    @st.cache_data(show_spinner=False)
     def prepare_raw(work_df):
         """파생 재계산 + 타입정리 + 문구 태깅을 1회만 — 필터·페이지 이동 때 재계산 방지(성능 핵심).
         입력 work_df 가 동일하면(저장 데이터만 볼 때) 캐시 히트하여 무거운 태깅을 건너뛴다."""
@@ -1078,26 +1148,26 @@ def main():
     st.sidebar.markdown("### 📨 발송성과 대시보드")
     st.sidebar.caption("기획(문구) × 실적(성과) 머지 분석")
 
-    perf_files = st.sidebar.file_uploader(
-        "① 발송실적 파일 (주차별 xlsx · 연도별 ZIP 가능)",
-        type=["xlsx", "zip"], accept_multiple_files=True,
-        help="주차별 실적 xlsx 를 여러 개, 또는 연도 폴더를 ZIP 으로 묶어 올리면 전부 풀어 머지합니다.")
     def _has_sa():
         try:
             return "gcp_service_account" in st.secrets
         except Exception:
             return False
 
-    # ── ② 기획(문구) 소스: 엑셀 업로드 ↔ 구글시트 직접연결 ──
+    # ── 통합 업로더: 한 곳에 올리면 자동 인식·분류 ──
+    uni_files = st.sidebar.file_uploader(
+        "📂 파일 업로드 (xlsx/zip · 여러 개 한 번에)",
+        type=["xlsx", "zip"], accept_multiple_files=True, key="uni_up",
+        help="발송실적 · 발송기획(통합본) · 기획전성과 · 전사MTD 를 한 번에 올리면 "
+             "자동으로 종류를 인식해 분류합니다. ZIP(연도 폴더)도 가능합니다.")
+
+    # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
     plan_source = st.sidebar.radio(
-        "② 발송기획(문구) 소스", ["엑셀 업로드", "구글시트 직접연결"], horizontal=True,
-        help="구글시트를 서비스계정에 공유해두면 다운로드 없이 ★APP PUSH 발송 시트를 바로 읽습니다.")
+        "발송기획(문구) 소스", ["업로드 파일", "구글시트 직접연결"], horizontal=True,
+        help="‘업로드 파일’: 위에서 올린 발송기획 통합본을 자동 인식. "
+             "‘구글시트’: 서비스계정에 공유된 ★APP PUSH 발송 시트를 바로 읽습니다.")
     plan_file = None
-    if plan_source == "엑셀 업로드":
-        plan_file = st.sidebar.file_uploader(
-            "발송기획 파일 (통합본 xlsx)", type=["xlsx"],
-            help="새 실적 주차를 추가할 때만 필요합니다. 이미 누적된 데이터만 볼 땐 생략 가능.")
-    else:
+    if plan_source == "구글시트 직접연결":
         try:
             _def_url = (st.secrets.get("gsheets", {}).get("plan_spreadsheet")
                         or st.secrets.get("gsheets_plan_spreadsheet") or "")
@@ -1128,16 +1198,40 @@ def main():
         if st.session_state.get("plan_lookup_gs") is not None:
             st.sidebar.caption(f"✓ 기획(구글시트) 적재됨: {st.session_state.get('plan_lookup_meta','')}")
 
-    mtd_files = st.sidebar.file_uploader(
-        "③ 전사 MTD 발송상세 (선택 · xlsx/zip)", type=["xlsx", "zip"],
-        accept_multiple_files=True, key="mtd_up",
-        help="발송피로도(인당발송·CTR) 전사 분석용. 날짜=열, 지표=행 형식. 일자 기준 누적 저장됩니다.")
-
-    promo_files = st.sidebar.file_uploader(
-        "④ 기획전 성과시트 (선택 · xlsx)", type=["xlsx"],
-        accept_multiple_files=False, key="promo_up",
-        help="기획전번호별 유입/총매출 매출 데이터. 발송 promo(기획전번호)와 조인해 "
-             "'기획전 비교분석' 페이지에서 사용합니다. 기획전번호 기준 누적 저장됩니다.")
+    # ── 통합 업로드 자동 분류 → 기존 처리 변수로 라우팅 ──
+    perf_files, promo_files, mtd_files = [], None, []
+    if uni_files:
+        _LBL = {"perf": "발송실적", "plan": "발송기획", "promo": "기획전성과",
+                "mtd": "전사MTD", "unknown": "❓미인식"}
+        _perf_b, _promo_b, _mtd_b, _cls = [], [], [], []
+        with st.spinner("업로드 파일 종류 인식 중…"):
+            for nm, b in expand_uploads(uni_files):
+                if b is None:
+                    _cls.append((nm, "unknown")); continue
+                k = cached_classify(b)
+                _cls.append((nm, k))
+                if k == "perf":
+                    _perf_b.append((nm, b))
+                elif k == "plan":
+                    if plan_file is None:
+                        plan_file = _UF(nm, b)
+                elif k == "promo":
+                    _promo_b.append((nm, b))
+                elif k == "mtd":
+                    _mtd_b.append((nm, b))
+        perf_files = [_UF(n, b) for n, b in _perf_b]
+        promo_files = _UF(_promo_b[0][0], _promo_b[0][1]) if _promo_b else None
+        mtd_files = [_UF(n, b) for n, b in _mtd_b]
+        from collections import Counter
+        _cnt = Counter(k for _, k in _cls)
+        st.sidebar.success("자동 분류 — " + " · ".join(
+            f"{_LBL[k]} {_cnt[k]}" for k in ("perf", "plan", "promo", "mtd", "unknown") if _cnt.get(k)))
+        with st.sidebar.expander("분류 상세"):
+            for nm, k in _cls:
+                st.caption(f"**{_LBL[k]}** ← {nm[:34]}")
+            if _cnt.get("unknown"):
+                st.caption("❓미인식: 헤더 형식 확인 (발송실적=‘AF코드’ 헤더 · 기획전=‘기획전 번호’ · "
+                           "기획=주차 시트 · MTD=날짜행).")
 
     st.sidebar.caption(BK["status"])
     if st.sidebar.button("🔄 저장소 새로고침", use_container_width=True):
@@ -1151,9 +1245,9 @@ def main():
     new_raw = None
 
     if perf_files:
-        # 기획 lookup 확보: 엑셀 업로드 또는 구글시트 직접연결(세션 적재분)
+        # 기획 lookup 확보: 업로드 파일(자동 인식) 또는 구글시트 직접연결(세션 적재분)
         plan_lookup = None
-        if plan_source == "엑셀 업로드":
+        if plan_source == "업로드 파일":
             if plan_file:
                 try:
                     with st.spinner("기획 파일(통합본) 파싱 중… 최초 1회만 수십 초 소요됩니다."):
@@ -1163,8 +1257,8 @@ def main():
         else:
             plan_lookup = st.session_state.get("plan_lookup_gs")
         if plan_lookup is None:
-            if plan_source == "엑셀 업로드":
-                st.sidebar.warning("새 실적을 머지하려면 기획 파일(②)도 올려주세요.\n(없으면 기존 누적 데이터만 표시)")
+            if plan_source == "업로드 파일":
+                st.sidebar.warning("새 실적을 머지하려면 발송기획 통합본도 함께 올려주세요(자동 인식).\n(없으면 기존 누적 데이터만 표시)")
             else:
                 st.sidebar.warning("새 실적을 머지하려면 먼저 「🔄 구글시트에서 기획 동기화」를 눌러주세요.\n(없으면 기존 누적 데이터만 표시)")
         else:
@@ -1210,7 +1304,7 @@ def main():
         <div class="vg">
         <b>발송기획(문구) 시트</b>와 <b>발송실적(성과) 시트</b>를 <code>(발송일 + AF코드)</code>로 머지해
         <b>어떤 문구·오퍼·타이밍 패턴이 성과를 만드는지</b> 도출합니다.<br><br>
-        왼쪽에서 <b>① 실적 파일(주차별)</b> 과 <b>② 기획 파일(통합본)</b> 을 올린 뒤
+        왼쪽 <b>📂 파일 업로드</b>에 <b>발송실적(주차별)</b> 과 <b>발송기획(통합본)</b> 을 함께 올리면 자동 인식되고,
         <b>「저장」</b>을 누르면 누적됩니다.<br>
         · 조인은 <b>실적 기준</b> — 기획에만 있고 실제 발송 안 된 건은 자동 제외됩니다.<br>
         · 다음부터는 <b>새 주차 실적만</b> 올려 누적하면 되고, 누적된 데이터는 기획 파일 없이도 분석됩니다.
@@ -1393,7 +1487,7 @@ def main():
     else:
         page = st.sidebar.radio("페이지", FATIGUE_PAGES)
         if mtd_data is None:
-            st.sidebar.info("③ 전사 MTD 발송상세 파일을 올리면 활성화됩니다.")
+            st.sidebar.info("전사 MTD 발송상세 파일을 올리면 활성화됩니다 (자동 인식).")
     _model_keys = list(AI_MODELS.keys())
     _default_model = "Claude Sonnet 4.6 (균형)"
     model_name = st.sidebar.selectbox(
@@ -1413,13 +1507,19 @@ def main():
             st.text("\n".join(parse_log))
 
     with st.sidebar.expander("누적 데이터 관리"):
-        st.caption(f"현재 누적(미저장 포함) {len(work)}건")
+        _n_saved = len(stored) if stored is not None else 0
+        _n_new = len(new_raw) if new_raw is not None else 0
+        st.caption(f"전체 {len(work):,}건  =  저장됨(영구) {_n_saved:,}  +  이번 세션 신규/갱신 {_n_new:,}")
+        if _n_new and not _n_saved:
+            st.warning("저장됨이 0건입니다 — 이전 누적이 안 불러와졌어요. 「💾 저장」을 눌러야 "
+                       "구글시트/로컬에 영구 반영되고, 다음 세션·백업에도 포함됩니다.")
         if len(work):
             st.download_button(
-                "⬇ 누적 백업 (CSV)",
+                f"⬇ 누적 백업 (CSV · {len(work):,}건)",
                 work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
                 file_name="send_perf_store_backup.csv", mime="text/csv", use_container_width=True)
-            st.caption("앱 재배포 시 누적이 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 올리면 복원됩니다.")
+            st.caption("백업 파일에는 위 ‘전체’ 건수(저장됨+이번 세션 신규)가 모두 들어갑니다. "
+                       "앱 재배포 시 누적이 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 올리면 복원됩니다.")
         rest = st.file_uploader("복원/추가 (백업 CSV)", type=["csv"], key="restore_store")
         if rest is not None:
             try:
@@ -2608,7 +2708,7 @@ def main():
 
         if mtd_data is None:
             st.title("발송피로도 (전사 MTD)")
-            st.info("③ 전사 MTD 발송상세 파일(날짜=열, 지표=행)을 사이드바에서 올리고 「MTD 저장」을 누르세요.")
+            st.info("전사 MTD 발송상세 파일(날짜=열, 지표=행)을 사이드바 📂 파일 업로드에 올리고 「MTD 저장」을 누르세요.")
             st.stop()
         md = mtd_data["df"]
         st.caption(f"전사 MTD · {mtd_data['meta']['start']} ~ {mtd_data['meta']['end']} "
@@ -2749,7 +2849,7 @@ def main():
                    "① 발송 기여율 ② 발송 효율 순위 ③ 발송 유무별 매출 ④ 매출 추세를 봅니다. "
                    "발송측은 현재 사이드바 필터(기간·속성 등)가 적용됩니다.")
         if promo_df is None or len(promo_df) == 0:
-            st.info("좌측 사이드바 **④ 기획전 성과시트(xlsx)**를 업로드하세요. "
+            st.info("좌측 사이드바 **📂 파일 업로드**에 **기획전 성과시트(xlsx)**를 올리세요(자동 인식). "
                     "(기획전번호별 유입/총매출 매출 데이터) — 업로드 후 **「💾 기획전 저장」**을 누르면 누적됩니다.")
             st.stop()
 
