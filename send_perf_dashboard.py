@@ -2314,19 +2314,27 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### ✍️ AI 카피 초안 생성 — 성과 패턴 기반 다음 메시지")
         st.caption("성과가 좋았던 문구 속성·조합을 근거로 다음 캠페인 PUSH 문구 초안을 작성합니다.")
-        dc1, dc2 = st.columns(2)
+        dc1, dc2, dc3 = st.columns(3)
         brand_opts_ai = ["(전체)"] + [str(b) for b in sorted(base["brand"].dropna().unique())
                                       if str(b).strip() not in ("", "nan", "None")]
+        attr_opts_ai = ["(전체)"] + ([str(x) for x in sorted(base["attr"].dropna().unique())
+                                      if str(x).strip() not in ("", "nan", "None")] if "attr" in base else [])
         draft_brand_sel = dc1.selectbox("대상 브랜드", brand_opts_ai, key="ai_draft_brand_sel")
-        draft_goal = dc2.selectbox("목표 지표", list(METRIC_OPTS.keys()), key="ai_draft_goal")
+        draft_attr_sel = dc2.selectbox("대상 속성", attr_opts_ai, key="ai_draft_attr_sel",
+                                       help="발송 속성(통합·정상·이월·입점·BPU 등)으로 범위를 좁힙니다.")
+        draft_goal = dc3.selectbox("목표 지표", list(METRIC_OPTS.keys()), key="ai_draft_goal")
         draft_extra = st.text_input("상품·키워드 (선택)", key="ai_draft_brand",
                                     placeholder="예: 코트, 겨울 세일")
         draft_n = st.slider("초안 개수", 3, 10, 5, key="ai_draft_n")
         if st.button("✍️ 카피 초안 생성", key="ai_draft_btn"):
             gcol = METRIC_OPTS[draft_goal][0]
-            scope = base if draft_brand_sel == "(전체)" else base[base["brand"].astype(str) == draft_brand_sel]
+            scope = base
+            if draft_brand_sel != "(전체)":
+                scope = scope[scope["brand"].astype(str) == draft_brand_sel]
+            if draft_attr_sel != "(전체)" and "attr" in scope:
+                scope = scope[scope["attr"].astype(str) == draft_attr_sel]
             facts = build_facts(scope, with_attr=True, metric_col=gcol)
-            ctx = f"대상 브랜드: {draft_brand_sel} / 목표 지표: {draft_goal}"
+            ctx = f"대상 브랜드: {draft_brand_sel} / 대상 속성: {draft_attr_sel} / 목표 지표: {draft_goal}"
             if draft_extra.strip():
                 ctx += f" / 상품·키워드: {draft_extra.strip()}"
             system = (
@@ -2958,7 +2966,9 @@ def main():
             first_dth=("_dth", "min"),
         ).reset_index()
         g["s_rps"] = np.where(g["send"] > 0, g["s_amt"] / g["send"], 0.0)
-        g["s_ctr"] = np.where(g["send"] > 0, g["s_visit"] / g["send"], np.nan)  # CTR = 방문(VISIT)/발송
+        # 발송성과 비율 — 대시보드 정의와 동일(가중: 합산÷합산)
+        g["s_ctr"] = np.where(g["send"] > 0, g["s_uv"] / g["send"], np.nan)   # 유입전환율 = UV÷발송
+        g["s_cr"] = np.where(g["s_uv"] > 0, g["s_oc"] / g["s_uv"], np.nan)    # 주문전환율 = 주문÷UV
 
         def _fmt_when(r):
             t = r.get("first_dth")
@@ -3010,10 +3020,13 @@ def main():
                 fig.update_layout(**lay)
                 fig.update_xaxes(ticksuffix="%")
                 st.plotly_chart(fig, use_container_width=True)
-                cols_t = ["promo", "pname", "발송일시", "send", "s_amt", "inf_amt", "기여율", "s_rps"]
-                ren = {"promo": "기획전번호", "pname": "기획전명", "send": "발송", "s_amt": "발송추적거래액",
-                       "inf_amt": "유입거래액", "기여율": "기여율", "s_rps": "RPS"}
-                fmt = {"발송": "{:,.0f}", "발송추적거래액": "{:,.0f}", "유입거래액": "{:,.0f}",
+                cols_t = ["promo", "pname", "발송일시", "send", "s_uv", "s_visit", "s_ctr", "s_cr",
+                          "s_amt", "inf_amt", "기여율", "s_rps"]
+                ren = {"promo": "기획전번호", "pname": "기획전명", "send": "발송",
+                       "s_uv": "UV", "s_visit": "VISIT", "s_ctr": "CTR", "s_cr": "CR",
+                       "s_amt": "발송추적거래액", "inf_amt": "유입거래액", "기여율": "기여율", "s_rps": "RPS"}
+                fmt = {"발송": "{:,.0f}", "UV": "{:,.0f}", "VISIT": "{:,.0f}", "CTR": "{:.2%}", "CR": "{:.2%}",
+                       "발송추적거래액": "{:,.0f}", "유입거래액": "{:,.0f}",
                        "기여율": "{:.1%}", "RPS": "{:,.0f}"}
                 show = a.sort_values("기여율", ascending=False)
                 st.markdown("**기여율 높은 기획전 — 발송이 매출을 주도**")
@@ -3034,22 +3047,23 @@ def main():
             sortmap = {"발송 RPS": "s_rps", "기여율": "기여율", "유입거래액": "inf_amt",
                        "발송수": "send"}
             b = b.sort_values(sortmap[order], ascending=False, na_position="last")
-            cols_t = ["promo", "pname", "발송일시", "n_camp", "send", "s_uv", "s_visit", "s_ctr",
+            cols_t = ["promo", "pname", "발송일시", "n_camp", "send", "s_uv", "s_visit", "s_ctr", "s_cr",
                       "s_amt", "s_rps", "inf_amt", "기여율"]
             ren = {"promo": "기획전번호", "pname": "기획전명", "n_camp": "캠페인수", "send": "발송",
-                   "s_uv": "UV", "s_visit": "VISIT", "s_ctr": "CTR",
+                   "s_uv": "UV", "s_visit": "VISIT", "s_ctr": "CTR", "s_cr": "CR",
                    "s_amt": "발송추적거래액", "s_rps": "RPS", "inf_amt": "유입거래액",
                    "기여율": "기여율"}
             fmt = {"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "UV": "{:,.0f}", "VISIT": "{:,.0f}",
-                   "CTR": "{:.2%}", "발송추적거래액": "{:,.0f}", "RPS": "{:,.0f}",
+                   "CTR": "{:.2%}", "CR": "{:.2%}", "발송추적거래액": "{:,.0f}", "RPS": "{:,.0f}",
                    "유입거래액": "{:,.0f}", "기여율": "{:.1%}"}
             st.dataframe(b.head(50)[cols_t].rename(columns=ren).style.format(fmt),
                          hide_index=True, use_container_width=True, height=520)
-            st.markdown('<div class="appendix">RPS(발송건당 거래액)가 높을수록 발송 효율이 좋습니다. '
-                        '기여율이 낮은데 유입거래액이 큰 기획전은 발송 강화 시 추가 매출 여지가 큽니다. '
-                        '<b>CTR = VISIT(방문) ÷ 발송</b>. '
-                        '한 기획전에 캠페인이 여러 개면 <b>발송·UV·VISIT·발송추적거래액은 합산</b>, '
-                        'RPS·CTR은 합산값 기준으로 계산, 발송일시는 가장 이른 발송 기준입니다.</div>',
+            st.markdown('<div class="appendix">'
+                        '<b>지표 정의</b> · CTR(유입전환율)=UV÷발송 · CR(주문전환율)=주문÷UV · '
+                        'RPS=발송추적거래액÷발송 · <b>기여율=발송추적거래액÷유입거래액</b>.<br>'
+                        '한 기획전에 캠페인이 여러 개면 <b>발송·UV·VISIT·주문·발송추적거래액은 합산</b>, '
+                        'CTR·CR·RPS는 합산값 기준으로 계산하고, 발송일시는 가장 이른 발송 기준입니다. '
+                        'RPS가 높을수록 발송 효율이 좋고, 기여율이 낮은데 유입거래액이 큰 기획전은 발송 강화 여지가 큽니다.</div>',
                         unsafe_allow_html=True)
 
         # ── ③ 발송 유무별 매출 ──
