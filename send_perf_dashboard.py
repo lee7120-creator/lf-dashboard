@@ -2093,20 +2093,20 @@ def main():
         st.markdown("##### ✍️ AI 카피 초안 생성 — 성과 패턴 기반 다음 메시지")
         st.caption("성과가 좋았던 문구 속성·조합을 근거로 다음 캠페인 PUSH 문구 초안을 작성합니다.")
         dc1, dc2 = st.columns(2)
-        cat_opts_ai = ["(전체)"] + [str(c) for c in sorted(base["cat"].dropna().unique())
-                                    if str(c).strip() not in ("", "nan", "None")]
-        draft_cat = dc1.selectbox("대상 카테고리", cat_opts_ai, key="ai_draft_cat")
+        brand_opts_ai = ["(전체)"] + [str(b) for b in sorted(base["brand"].dropna().unique())
+                                      if str(b).strip() not in ("", "nan", "None")]
+        draft_brand_sel = dc1.selectbox("대상 브랜드", brand_opts_ai, key="ai_draft_brand_sel")
         draft_goal = dc2.selectbox("목표 지표", list(METRIC_OPTS.keys()), key="ai_draft_goal")
-        draft_brand = st.text_input("브랜드/상품 (선택)", key="ai_draft_brand",
-                                    placeholder="예: DAKS 코트, 겨울 세일")
+        draft_extra = st.text_input("상품·키워드 (선택)", key="ai_draft_brand",
+                                    placeholder="예: 코트, 겨울 세일")
         draft_n = st.slider("초안 개수", 3, 10, 5, key="ai_draft_n")
         if st.button("✍️ 카피 초안 생성", key="ai_draft_btn"):
             gcol = METRIC_OPTS[draft_goal][0]
-            scope = base if draft_cat == "(전체)" else base[base["cat"].astype(str) == draft_cat]
+            scope = base if draft_brand_sel == "(전체)" else base[base["brand"].astype(str) == draft_brand_sel]
             facts = build_facts(scope, with_attr=True, metric_col=gcol)
-            ctx = f"대상 카테고리: {draft_cat} / 목표 지표: {draft_goal}"
-            if draft_brand.strip():
-                ctx += f" / 브랜드·상품: {draft_brand.strip()}"
+            ctx = f"대상 브랜드: {draft_brand_sel} / 목표 지표: {draft_goal}"
+            if draft_extra.strip():
+                ctx += f" / 상품·키워드: {draft_extra.strip()}"
             system = (
                 "당신은 LF몰 CRM PUSH 카피라이터입니다. 주어진 '문구 속성별 성과'와 상·하위 문구 "
                 "데이터를 근거로, 성과가 높았던 소구·속성 조합을 적용한 새 PUSH 문구 초안을 작성하세요. "
