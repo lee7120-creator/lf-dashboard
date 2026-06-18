@@ -921,10 +921,17 @@ def main():
     }
 
     def base_layout(h=300, ysuffix="", title=""):
+        # 인-차트 제목은 왼쪽 상단에 고정하고, 상단 가로 범례(y≈1.12)와 겹치지 않도록
+        # 제목 영역(top margin)을 충분히 확보한다. (각 차트 위 마크다운 헤더와도 분리)
+        has_title = bool(title)
         return dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#475569", size=11), margin=dict(l=10, r=10, t=40, b=10),
+                    font=dict(color="#475569", size=11),
+                    margin=dict(l=10, r=10, t=(58 if has_title else 30), b=10),
                     height=h, showlegend=False,
-                    title=dict(text=title, font=dict(color="#94a3b8", size=13)),
+                    title=dict(text=title, font=dict(color="#94a3b8", size=13),
+                               x=0, xanchor="left", y=0.99, yanchor="top"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                xanchor="left", x=0, bgcolor="rgba(0,0,0,0)"),
                     xaxis=dict(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
                                tickfont=dict(color="#64748b", size=11)),
                     yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
@@ -1846,6 +1853,29 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "캠페인 리더보드" in page:
         st.title("캠페인 리더보드")
+        # ── 담당자 벤치마크: 현재 필터 평균 vs 전체 평균 ──
+        bench_pop = (raw[raw["matched"]] if only_matched else raw)
+        bench_pop = bench_pop[bench_pop["send"].fillna(0) >= min_send]
+
+        def _bm(col, pct=True):
+            cur = float(fdf[col].mean()) if (col in fdf.columns and len(fdf)) else np.nan
+            allv = float(bench_pop[col].mean()) if (col in bench_pop.columns and len(bench_pop)) else np.nan
+            if np.isnan(cur):
+                return "–", None
+            if pct:
+                d = None if np.isnan(allv) else f"{(cur-allv)*100:+.2f}%p vs 전체"
+                return f"{cur*100:.2f}%", d
+            d = None if np.isnan(allv) else f"{cur-allv:+,.0f} vs 전체"
+            return won(cur), d
+        st.caption(f"현재 필터 {len(fdf):,}건 평균 vs 전체 {len(bench_pop):,}건 평균 — "
+                   "사이드바에서 **담당자**(또는 카테고리·브랜드)로 필터하면, 본인 성과가 전체 대비 "
+                   "높은지(초록)·낮은지(빨강) 한눈에 보입니다.")
+        bc = st.columns(4)
+        v, d = _bm("infl_cr"); bc[0].metric("평균 유입CR", v, d)
+        v, d = _bm("ord_cr"); bc[1].metric("평균 주문CR", v, d)
+        v, d = _bm("rps", pct=False); bc[2].metric("평균 RPS", v, d)
+        bc[3].metric("대상 캠페인 수", f"{len(fdf):,}")
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         mlabel = st.selectbox("정렬 지표", list(METRIC_OPTS.keys()))
         mcol = METRIC_OPTS[mlabel][0]
         asc = st.radio("정렬", ["높은순", "낮은순"], horizontal=True) == "낮은순"
@@ -2165,7 +2195,7 @@ def main():
                                  mode="lines+markers", line=dict(color=PALETTE["green"], width=2), yaxis="y2"))
         lay = base_layout(h=380, title="주차별 총 발송량 vs RPS — 규모를 키울수록 효율이 떨어지나(피로도)")
         lay["showlegend"] = True
-        lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+        lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
         lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
                              tickfont=dict(color="#64748b", size=11))
         fig.update_layout(**lay)
@@ -2518,7 +2548,7 @@ def main():
         lay = base_layout(h=420, ysuffix=("%" if is_pct else ""),
                           title=f"속성별 주차 추이 — 평균 {mlabel}")
         lay["showlegend"] = True
-        lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+        lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
         fig.update_layout(**lay)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -2550,7 +2580,7 @@ def main():
                                       line=dict(color=palette[i % len(palette)], width=2)))
         layf = base_layout(h=320, title="속성별 주차 사용 빈도(캠페인 수)")
         layf["showlegend"] = True
-        layf["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+        layf["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
         figf.update_layout(**layf)
         st.plotly_chart(figf, use_container_width=True)
         st.markdown('<div class="appendix">추세 회귀의 상관 r이 음수이고 유의하면 "반복 소구로 효과가 마모"되는 신호입니다. '
@@ -2601,7 +2631,7 @@ def main():
                                      line=dict(color=MCLR[yc], width=2), yaxis="y2"))
             lay = base_layout(h=380, title=f"인당 발송 건수(좌) vs {ylab}(우)")
             lay["showlegend"] = True
-            lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+            lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
             lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
                                  tickfont=dict(color="#64748b", size=11),
                                  ticksuffix=("%" if yc in MTD_PCT else ""))
@@ -2652,7 +2682,7 @@ def main():
                                          name=l2, mode="lines+markers", line=dict(color=MCLR[m2]), yaxis="y2"))
                 lay = base_layout(h=340, title="발송량 5분위(Q1 소량→Q5 대량)")
                 lay["showlegend"] = True
-                lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+                lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
                 lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
                                      tickfont=dict(color="#64748b", size=11))
                 fig.update_layout(**lay)
@@ -2798,18 +2828,18 @@ def main():
             st.markdown("##### 기획전별 발송 효율 — 발송 대비 실매출")
             b = matched.copy()
             b["기여율"] = np.where(b["inf_amt"].fillna(0) > 0, b["s_amt"] / b["inf_amt"], np.nan)
-            order = st.radio("정렬 기준", ["발송 RPS", "기여율", "유입거래액", "발송수", "총매출거래액"],
+            order = st.radio("정렬 기준", ["발송 RPS", "기여율", "유입거래액", "발송수"],
                              horizontal=True, key="promoB_sort")
             sortmap = {"발송 RPS": "s_rps", "기여율": "기여율", "유입거래액": "inf_amt",
-                       "발송수": "send", "총매출거래액": "tot_amt"}
+                       "발송수": "send"}
             b = b.sort_values(sortmap[order], ascending=False, na_position="last")
             cols_t = ["promo", "pname", "n_camp", "send", "s_amt", "s_rps",
-                      "inf_amt", "tot_amt", "기여율"]
+                      "inf_amt", "기여율"]
             ren = {"promo": "기획전번호", "pname": "기획전명", "n_camp": "캠페인수", "send": "발송",
                    "s_amt": "발송추적거래액", "s_rps": "RPS", "inf_amt": "유입거래액",
-                   "tot_amt": "총매출거래액", "기여율": "기여율"}
+                   "기여율": "기여율"}
             fmt = {"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "발송추적거래액": "{:,.0f}", "RPS": "{:,.0f}",
-                   "유입거래액": "{:,.0f}", "총매출거래액": "{:,.0f}", "기여율": "{:.1%}"}
+                   "유입거래액": "{:,.0f}", "기여율": "{:.1%}"}
             st.dataframe(b.head(50)[cols_t].rename(columns=ren).style.format(fmt),
                          hide_index=True, use_container_width=True, height=520)
             st.markdown('<div class="appendix">RPS(발송건당 거래액)가 높을수록 발송 효율이 좋습니다. '
@@ -2820,11 +2850,10 @@ def main():
         # ── ③ 발송 유무별 매출 ──
         with tabC:
             st.markdown("##### 발송한 기획전 vs 발송 안 한 기획전 — 매출 비교")
-            st.caption("기획전 성과시트 전체를 발송 여부로 나눠 평균·중앙값 매출을 비교합니다. "
+            st.caption("기획전 성과시트 전체를 발송 여부로 나눠 평균·중앙값 유입거래액을 비교합니다. "
                        "단, 규모가 큰 기획전 위주로 발송했을 수 있어(규모 교란) 단순 우열로 해석하지 마세요.")
-            base_lbl = st.radio("비교 매출", ["유입 거래액", "총매출 거래액"],
-                                horizontal=True, key="promoC_base")
-            col = "inf_amt" if base_lbl == "유입 거래액" else "tot_amt"
+            base_lbl = "유입 거래액"
+            col = "inf_amt"
             allp = P.copy()
             allp["발송"] = allp["promo"].isin(sent_ids)
             valid = allp[allp[col].notna()].copy()
@@ -2859,9 +2888,8 @@ def main():
             if len(P2) == 0:
                 st.info("기획전 시작일 정보가 없어 추세를 그릴 수 없습니다.")
             else:
-                base_lbl = st.radio("매출 기준", ["유입 거래액", "총매출 거래액"],
-                                    horizontal=True, key="promoD_base")
-                col = "inf_amt" if base_lbl == "유입 거래액" else "tot_amt"
+                base_lbl = "유입 거래액"
+                col = "inf_amt"
                 P2["발송"] = P2["promo"].isin(sent_ids)
                 P2["월"] = P2["dt"].dt.to_period("M").apply(lambda pp: pp.start_time)
                 gm = P2.groupby(["월", "발송"])[col].sum().reset_index()
@@ -2873,7 +2901,7 @@ def main():
                                              name=name, line=dict(color=clr, width=2)))
                 lay = base_layout(h=420, title=f"월별 {base_lbl} 합계 추이 (발송/미발송 기획전)")
                 lay["showlegend"] = True
-                lay["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+                lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
                 fig.update_layout(**lay)
                 st.plotly_chart(fig, use_container_width=True)
                 cnt = P2.groupby(["월", "발송"]).size().reset_index(name="기획전수")
@@ -2885,7 +2913,7 @@ def main():
                                               name=name, line=dict(color=clr, width=2)))
                 layc = base_layout(h=300, title="월별 기획전 수 (발송/미발송)")
                 layc["showlegend"] = True
-                layc["legend"] = dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)")
+                layc["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
                 figc.update_layout(**layc)
                 st.plotly_chart(figc, use_container_width=True)
                 st.caption("기획전 시작월 기준 집계입니다. 발송이 본격화된 시점 전후로 발송 기획전(초록)의 "
