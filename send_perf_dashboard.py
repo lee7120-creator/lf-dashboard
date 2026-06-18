@@ -956,6 +956,43 @@ def ols_effects(df, attr_cols, ctrl_cols, ycol):
     return pd.DataFrame(rows).sort_values("순효과", ascending=False).reset_index(drop=True)
 
 
+def build_report_html(title, blocks):
+    """페이지에서 캡처한 차트/표 블록 → 인쇄용 자립형 HTML (브라우저 Ctrl+P로 PDF 저장)."""
+    import plotly.io as pio
+
+    def _e(s):
+        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    parts, first_fig = [], True
+    for kind, obj in blocks:
+        try:
+            if kind == "fig":
+                parts.append(pio.to_html(obj, include_plotlyjs=("cdn" if first_fig else False),
+                                         full_html=False, default_width="100%"))
+                first_fig = False
+            elif kind == "table":
+                data = getattr(obj, "data", obj)
+                if hasattr(data, "shape") and getattr(data, "shape", (0,))[0] > 300:
+                    parts.append(data.head(300).to_html(index=False) + "<p>(상위 300행만 표시)</p>")
+                elif hasattr(obj, "to_html"):
+                    try:
+                        parts.append(obj.to_html())
+                    except Exception:
+                        if hasattr(data, "to_html"):
+                            parts.append(data.to_html(index=False))
+        except Exception:
+            pass
+    css = ("body{font-family:'Malgun Gothic','Apple SD Gothic Neo','Nanum Gothic',sans-serif;"
+           "color:#1e293b;margin:24px;} h1{font-size:20px;margin:0 0 4px;} "
+           "table{border-collapse:collapse;font-size:12px;margin:10px 0;} "
+           "th,td{border:1px solid #e2e8f0;padding:4px 8px;text-align:right;} "
+           "th{background:#f1f5f9;} .meta{color:#64748b;font-size:12px;margin-bottom:14px;}")
+    when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    return (f"<!doctype html><html><head><meta charset='utf-8'><title>{_e(title)}</title>"
+            f"<style>{css}</style></head><body><h1>{_e(title)}</h1>"
+            f"<div class='meta'>LF몰 발송성과 대시보드 · 생성 {when}</div>"
+            f"{''.join(parts)}</body></html>")
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. Streamlit 앱
 # ══════════════════════════════════════════════════════════════════════
@@ -964,6 +1001,33 @@ def main():
     import plotly.graph_objects as go
     import streamlit.components.v1 as components
     from scipy import stats
+
+    # ── 페이지 리포트 캡처: st.plotly_chart / st.dataframe 호출을 가로채 기록 ──
+    if not hasattr(st, "_orig_plotly_chart"):
+        st._orig_plotly_chart = st.plotly_chart
+    if not hasattr(st, "_orig_dataframe"):
+        st._orig_dataframe = st.dataframe
+    _REPORT = []
+
+    def _cap_plotly(*a, **k):
+        try:
+            f = a[0] if a else k.get("figure_or_data")
+            if f is not None:
+                _REPORT.append(("fig", f))
+        except Exception:
+            pass
+        return st._orig_plotly_chart(*a, **k)
+
+    def _cap_df(*a, **k):
+        try:
+            d = a[0] if a else k.get("data")
+            if d is not None:
+                _REPORT.append(("table", d))
+        except Exception:
+            pass
+        return st._orig_dataframe(*a, **k)
+    st.plotly_chart = _cap_plotly
+    st.dataframe = _cap_df
 
     st.set_page_config(page_title="LF몰 발송성과 대시보드", layout="wide",
                        initial_sidebar_state="expanded")
@@ -1687,6 +1751,8 @@ def main():
     })();
     </script>
     """, height=0)
+
+    _REPORT.clear()   # 이 지점부터(페이지 본문) 생성되는 차트/표만 리포트에 담는다
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 01 — 종합 요약
@@ -3107,6 +3173,21 @@ def main():
             st.caption("AF코드 오타·기획시트 미등록·날짜 불일치 가능성. 기획 파일의 해당 주차 시트를 확인하세요.")
         else:
             st.success("모든 실적 캠페인에 문구가 매칭되었습니다.")
+
+    # ── 페이지 리포트 다운로드 (HTML → 브라우저 인쇄로 PDF) ──
+    if _REPORT:
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📄 이 페이지 리포트 다운로드")
+        try:
+            _rep_html = build_report_html(str(page), list(_REPORT))
+            _safe = re.sub(r'[^0-9A-Za-z가-힣]+', '_', str(page)).strip('_') or "report"
+            st.download_button(
+                "📄 리포트 다운로드 (HTML)", _rep_html.encode("utf-8"),
+                file_name=f"리포트_{_safe}.html", mime="text/html")
+            st.caption("받은 HTML 파일을 (인터넷 연결 상태에서) 열고 "
+                       "**Ctrl+P → 대상을 ‘PDF로 저장’** 하면 됩니다. (표·차트·한글 그대로 인쇄)")
+        except Exception as e:
+            st.caption(f"리포트 생성 오류: {str(e)[:80]}")
 
 
 def build_facts(df, with_attr=False, metric_col="ord_cr"):
