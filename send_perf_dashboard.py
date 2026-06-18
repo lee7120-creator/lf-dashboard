@@ -1794,7 +1794,7 @@ def main():
         c[0].metric("발송 캠페인 수", f"{len(base):,}")
         c[1].metric("총 발송 건수", won(base["send"].sum()))
         c[2].metric("총 거래액", won(base["amt"].sum()))
-        c[3].metric("문구 매칭률", f"{raw['matched'].mean()*100:.0f}%")
+        c[3].metric("총 주문건수", won(base["oc"].sum()) if "oc" in base else "–")
         c = st.columns(4)
         c[0].metric("평균 CTR", f"{base['infl_cr'].mean()*100:.2f}%")
         c[1].metric("평균 주문전환율", f"{base['ord_cr'].mean()*100:.2f}%")
@@ -1804,21 +1804,41 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         cc = st.columns(2)
         base_cr = base[base["uv"].fillna(0) >= 100] if "uv" in base else base
-        win = base_cr.sort_values("ord_cr", ascending=False).head(8)
-        los = base_cr.sort_values("ord_cr").head(8)
-        st.caption("주문CR(=주문÷UV)은 UV가 너무 적으면 1주문에도 크게 튀므로, "
+        # 최근 7일 (데이터 최신 발송일 기준)
+        recent7 = base_cr
+        _last = base_cr["dt"].max() if "dt" in base_cr and base_cr["dt"].notna().any() else None
+        if _last is not None:
+            _r = base_cr[base_cr["dt"] > (_last - pd.Timedelta(days=7))]
+            if len(_r):
+                recent7 = _r
+
+        def _when(r):
+            t = r.get("dt")
+            if t is None or pd.isna(t):
+                return "–"
+            try:
+                h = int(r.get("hour"))
+            except Exception:
+                h = None
+            return f"{t.year}년 {t.month}월 {t.day}일" + (f" {h}시" if h is not None else "")
+        win = recent7.sort_values("ord_cr", ascending=False).head(8).copy()
+        los = recent7.sort_values("ord_cr").head(8).copy()
+        win["발송일시"] = win.apply(_when, axis=1)
+        los["발송일시"] = los.apply(_when, axis=1)
+        _rng = f"{(_last - pd.Timedelta(days=7)).date()} ~ {_last.date()}" if _last is not None else drange
+        st.caption(f"최근 7일({_rng}) 기준 · 주문CR(=주문÷UV)은 UV가 적으면 1주문에도 크게 튀므로 "
                    "UV 100 이상 캠페인만 순위에 포함합니다.")
-        _tbcols = ["title", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
-        _tbren = {"title": "제목", "cat": "카테고리", "send": "발송", "infl_cr": "CTR",
+        _tbcols = ["발송일시", "title", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
+        _tbren = {"발송일시": "발송 년월일시", "title": "제목", "cat": "카테고리", "send": "발송", "infl_cr": "CTR",
                   "ord_cr": "주문CR", "rps": "RPS", "aov": "객단가", "amt": "거래액"}
         _tbfmt = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}",
                   "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"}
         with cc[0]:
-            st.markdown("##### 🏆 주문전환율 TOP")
+            st.markdown("##### 🏆 주문전환율 TOP (최근 7일)")
             st.dataframe(win[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, use_container_width=True)
         with cc[1]:
-            st.markdown("##### 🧊 주문전환율 BOTTOM")
+            st.markdown("##### 🧊 주문전환율 BOTTOM (최근 7일)")
             st.dataframe(los[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, use_container_width=True)
 
