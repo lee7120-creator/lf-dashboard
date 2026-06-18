@@ -1387,7 +1387,11 @@ def main():
         page = st.sidebar.radio("페이지", FATIGUE_PAGES)
         if mtd_data is None:
             st.sidebar.info("③ 전사 MTD 발송상세 파일을 올리면 활성화됩니다.")
-    model_name = st.sidebar.selectbox("AI 모델", list(AI_MODELS.keys()))
+    _model_keys = list(AI_MODELS.keys())
+    _default_model = "Claude Sonnet 4.6 (균형)"
+    model_name = st.sidebar.selectbox(
+        "AI 모델", _model_keys,
+        index=_model_keys.index(_default_model) if _default_model in _model_keys else 0)
     model = AI_MODELS[model_name]
 
     st.sidebar.markdown("---")
