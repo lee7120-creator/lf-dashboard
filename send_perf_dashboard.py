@@ -2614,7 +2614,7 @@ def main():
         # ── 전사 MTD 발송피로도 시계열 · CTR (인당 발송 강도 vs 효율) ──
         if mtd_data is not None:
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown("##### 🌡️ 발송피로도 시계열 · CTR (전사 MTD)")
+            st.markdown("##### 🌡️ 발송피로도 시계열")
             st.caption("전사 MTD 발송상세 기준 — 인당 발송 건수(발송 강도, 고객 중복 제거)와 효율 지표가 "
                        f"시간에 따라 같이/반대로 움직이는지. ({mtd_data['meta']['start']} ~ {mtd_data['meta']['end']})")
             _MO = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps"}
