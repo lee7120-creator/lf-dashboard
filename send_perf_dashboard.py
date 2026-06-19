@@ -1542,13 +1542,24 @@ def main():
         sel_prio = st.multiselect("우선순위", _opts(base_opt, "prio"),
                                   help="같은 시간대 발송 순번(1=가장 먼저)")
 
+    def _hm_label(v):  # 시간대 HHMM 문자열 → 'HH시MM분' (예: 1030→10시30분, 800→08시00분)
+        try:
+            n = int(float(v))
+        except Exception:
+            return str(v)
+        hh, mm = (n, 0) if n <= 23 else divmod(n, 100)
+        return f"{hh:02d}시{mm:02d}분" if (0 <= hh <= 23 and 0 <= mm <= 59) else str(v)
+
     with st.sidebar.expander("🕒 발송 시점"):
-        sel_hour = st.multiselect("시간대", _opts(base_opt, "hour"))
+        _hour_opts = sorted(_opts(base_opt, "hour"),
+                            key=lambda v: int(float(v)) if str(v).replace(".", "", 1).isdigit() else 10 ** 9)
+        sel_hour = st.multiselect("시간대", _hour_opts, format_func=_hm_label)
         sel_dow = st.multiselect("요일", _opts(base_opt, "dow_k"))
 
     with st.sidebar.expander("🏷️ 상품·담당"):
         sel_cat = st.multiselect("카테고리", _opts(base_opt, "cat"))
-        sel_brand = st.multiselect("브랜드", _opts(base_opt, "brand"))
+        sel_attr = st.multiselect("대상 속성", _opts(base_opt, "attr"),
+                                  help="발송 속성(통합·정상·이월·입점·마케팅·BPU 등)")
         sel_owner = st.multiselect("담당자", _opts(base_opt, "owner"))
 
     with st.sidebar.expander("✍️ 문구 속성"):
@@ -1563,7 +1574,7 @@ def main():
 
     CATSEL = {"stype": sel_st, "target": sel_target, "bpu": sel_bpu, "hour": sel_hour,
               "dow_k": sel_dow, "prio": sel_prio, "cat": sel_cat,
-              "brand": sel_brand, "owner": sel_owner}
+              "attr": sel_attr, "owner": sel_owner}
 
     def apply_filters(d):
         d = d.copy()
