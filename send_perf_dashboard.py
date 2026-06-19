@@ -39,6 +39,20 @@ NUM_COLS = ["hour", "send", "uv", "visit", "cust", "oc", "amt", "infl_cr", "ord_
 ATTR_ALIASES = {"마켸팅": "마케팅"}
 
 
+def _norm_attr(x):
+    """속성 표기 정규화: 공백 정리 + 오타 머지(마켸팅 등 '마○팅' 3글자는 마케팅으로)."""
+    if pd.isna(x):
+        return x
+    s = str(x).strip()
+    if not s:
+        return s
+    if s in ATTR_ALIASES:
+        return ATTR_ALIASES[s]
+    if len(s) == 3 and s[0] == "마" and s[-1] == "팅":
+        return "마케팅"
+    return s
+
+
 def _norm_date(v):
     """엑셀 셀 값 → 'YYYYMMDD' 문자열 또는 None."""
     if v is None:
@@ -101,8 +115,7 @@ def _finalize(df):
     df["date"] = df["date"].astype(str).str.replace(r'\.0$', '', regex=True)
     # 속성(attr) 오타·표기흔들림 머지 (예: 마켸팅→마케팅). 공백도 정리.
     if "attr" in df:
-        df["attr"] = df["attr"].map(
-            lambda x: ATTR_ALIASES.get(str(x).strip(), str(x).strip()) if pd.notna(x) else x)
+        df["attr"] = df["attr"].map(_norm_attr)
     for c in NUM_COLS:
         if c in df:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -2458,7 +2471,7 @@ def main():
         body_len = lc2.number_input("내용 글자수(내외)", min_value=10, max_value=200, value=45, step=5,
                                     key="ai_draft_blen")
         draft_n = lc3.slider("초안 개수", 3, 10, 5, key="ai_draft_n")
-        st.caption("💡 추천: 제목 15~25자 · 내용 40~60자 — 모바일 PUSH 알림에서 잘리지 않는 길이입니다. (참고용)")
+        st.caption("💡 추천: 제목 15–25자 · 내용 40–60자 — 모바일 PUSH 알림에서 잘리지 않는 길이입니다. (참고용)")
         draft_extra = st.text_area(
             "소구 내용·기획전 특성 (선택)", key="ai_draft_brand", height=70,
             placeholder="예: 헤리스 여름 린넨 30% / 한정수량 / 오늘 마감 — 적을수록 자유롭게, "
