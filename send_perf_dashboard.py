@@ -2441,9 +2441,17 @@ def main():
         draft_attr_sel = dc2.selectbox("대상 속성", attr_opts_ai, key="ai_draft_attr_sel",
                                        help="발송 속성(통합·정상·이월·입점·BPU 등)으로 범위를 좁힙니다.")
         draft_goal = dc3.selectbox("목표 지표", list(METRIC_OPTS.keys()), key="ai_draft_goal")
-        draft_extra = st.text_input("상품·키워드 (선택)", key="ai_draft_brand",
-                                    placeholder="예: 코트, 겨울 세일")
-        draft_n = st.slider("초안 개수", 3, 10, 5, key="ai_draft_n")
+        draft_extra = st.text_area(
+            "소구 내용·기획전 특성 (선택)", key="ai_draft_brand", height=70,
+            placeholder="예: 헤리스 여름 린넨 30% / 한정수량 / 오늘 마감 — 적을수록 자유롭게, "
+                        "여기 내용을 카피의 핵심 소재로 반영합니다.",
+            help="기획전 특성·혜택·소구 포인트를 적으면 그 내용을 바탕으로 카피를 구성합니다.")
+        lc1, lc2, lc3 = st.columns(3)
+        title_len = lc1.number_input("제목 글자수(내외)", min_value=5, max_value=60, value=20, step=1,
+                                     key="ai_draft_tlen")
+        body_len = lc2.number_input("내용 글자수(내외)", min_value=10, max_value=200, value=45, step=5,
+                                    key="ai_draft_blen")
+        draft_n = lc3.slider("초안 개수", 3, 10, 5, key="ai_draft_n")
         if st.button("✍️ 카피 초안 생성", key="ai_draft_btn"):
             gcol = METRIC_OPTS[draft_goal][0]
             scope = base
@@ -2453,14 +2461,17 @@ def main():
                 scope = scope[scope["attr"].astype(str) == draft_attr_sel]
             facts = build_facts(scope, with_attr=True, metric_col=gcol)
             ctx = f"대상 카테고리: {draft_cat_sel} / 대상 속성: {draft_attr_sel} / 목표 지표: {draft_goal}"
+            extra_line = ""
             if draft_extra.strip():
-                ctx += f" / 상품·키워드: {draft_extra.strip()}"
+                extra_line = (f"사용자가 제공한 소구 내용·기획전 특성: '{draft_extra.strip()}' "
+                              "— 이 내용을 각 카피의 핵심 소재로 반드시 반영하세요. ")
             system = (
                 "당신은 LF몰 CRM PUSH 카피라이터입니다. 주어진 '문구 속성별 성과'와 상·하위 문구 "
                 "데이터를 근거로, 성과가 높았던 소구·속성 조합을 적용한 새 PUSH 문구 초안을 작성하세요. "
-                f"요청 맥락: {ctx}. "
+                f"요청 맥락: {ctx}. {extra_line}"
                 f"다음을 한국어로: 1) 이 맥락에 권장하는 카피 전략 2~3줄(근거 속성 명시), "
                 f"2) 바로 쓸 수 있는 PUSH 문구 초안 {draft_n}개 — 각 초안은 '제목'과 '내용'을 모두 포함하고 "
+                f"제목은 약 {int(title_len)}자, 내용은 약 {int(body_len)}자 내외(공백 포함)로 길이를 맞추며, "
                 "사용한 소구 속성을 [할인율소구+마감임박]처럼 태그로 표기. "
                 "실제 데이터에 없는 구체 수치(가격·할인율)는 〇〇로 비워두세요. "
                 "출력은 HTML, 소제목 <b>, 항목 <br> 구분.")
