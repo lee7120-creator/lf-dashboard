@@ -2606,6 +2606,57 @@ def main():
                         st.markdown("**카테고리별 주문전환율 변화 (최근 − 직전)**")
                         st.dataframe(ch, hide_index=True, use_container_width=True, height=260)
 
+        # ── 전사 MTD 발송피로도 시계열 · CTR (인당 발송 강도 vs 효율) ──
+        if mtd_data is not None:
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 🌡️ 발송피로도 시계열 · CTR (전사 MTD)")
+            st.caption("전사 MTD 발송상세 기준 — 인당 발송 건수(발송 강도, 고객 중복 제거)와 효율 지표가 "
+                       f"시간에 따라 같이/반대로 움직이는지. ({mtd_data['meta']['start']} ~ {mtd_data['meta']['end']})")
+            _MO = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps"}
+            _PCT = {"ctr", "purchaseRate"}
+            _CLR = {"ctr": PALETTE["red"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"]}
+            mc1, mc2 = st.columns(2)
+            _gran = mc1.radio("집계", ["월별", "분기별"], horizontal=True, key="p08_mtd_gran")
+            _yl = mc2.selectbox("효율 지표(우축)", list(_MO.keys()), key="p08_mtd_metric")
+            _agg = mtd_data["monthly"] if _gran == "월별" else mtd_data["quarterly"]
+            _xc = "month" if _gran == "월별" else "quarter"
+            _yc = _MO[_yl]
+            mfig = go.Figure()
+            mfig.add_bar(x=_agg[_xc], y=_agg["perSend"], name="인당 발송 건수",
+                         marker_color=PALETTE["amber"], opacity=0.5)
+            _ys = _agg[_yc] * (100 if _yc in _PCT else 1)
+            mfig.add_trace(go.Scatter(x=_agg[_xc], y=_ys, name=_yl, mode="lines+markers",
+                                      line=dict(color=_CLR[_yc], width=2), yaxis="y2"))
+            mlay = base_layout(h=380, title=f"인당 발송 건수(좌) vs {_yl}(우)")
+            mlay["showlegend"] = True
+            mlay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                                  bgcolor="rgba(0,0,0,0)")
+            mlay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
+                                  tickfont=dict(color="#64748b", size=11),
+                                  ticksuffix=("%" if _yc in _PCT else ""))
+            mfig.update_layout(**mlay)
+            st.plotly_chart(mfig, use_container_width=True)
+            st.markdown("**추세 회귀 (요일 효과 통제)**")
+            _rows = []
+            for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]:
+                r = mtd_data["reg"][k]
+                unit = "%p/일" if k in _PCT else ("원/일" if k in ("rps", "revenue") else "/일")
+                sl = r["slope"] * (100 if k in _PCT else 1)
+                _rows.append(dict(지표=MTD_LABELS[k], 일변화=f"{sl:+.4g}{unit}",
+                                  R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
+            st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+            st.markdown('<div class="appendix">인당 발송 건수는 상승하는데 CTR·구매전환율·RPS가 하락하면 '
+                        '“발송 강도를 높일수록 효율이 떨어지는” 피로도 신호입니다. '
+                        '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 데이터를 얼마나 잘 설명하는지 — '
+                        '1에 가까울수록 점들이 추세선에 붙어 추세가 뚜렷(예: 0.7이면 값 변동의 약 70%를 추세가 설명), '
+                        '0에 가까우면 들쭉날쭉해 추세가 약함. '
+                        '· <b>유의성</b>: 그 추세가 우연일 가능성(p값) — ‘유의함’이면 우연으로 보기 어렵습니다.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.caption("🌡️ 인당 발송 건수 기반 ‘발송피로도 시계열·CTR’은 전사 MTD 발송상세를 "
+                       "올리면(자동 인식) 여기에 함께 표시됩니다.")
+
         glossary()
 
     # ══════════════════════════════════════════════════════════════
@@ -2928,7 +2979,11 @@ def main():
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
             st.markdown('<div class="appendix">인당 발송 건수는 상승, CTR·구매전환율·RPS는 하락 추세라면 '
                         '“발송 강도를 높일수록 효율이 떨어지는” 피로도 신호입니다. '
-                        'R²는 추세의 뚜렷함(0~1), 유의성은 우연일 가능성입니다.</div>', unsafe_allow_html=True)
+                        '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 데이터를 얼마나 잘 설명하는지 — '
+                        '1에 가까울수록 점들이 추세선에 붙어 추세가 뚜렷(예: 0.7이면 값 변동의 약 70%를 추세가 설명), '
+                        '0에 가까우면 들쭉날쭉해 추세가 약함. '
+                        '· <b>유의성</b>: 그 추세가 우연일 가능성(p값) — ‘유의함’이면 우연으로 보기 어렵습니다.</div>',
+                        unsafe_allow_html=True)
 
         # ── F2. 발송 빈도 효율 ──
         elif page.startswith("F2"):
