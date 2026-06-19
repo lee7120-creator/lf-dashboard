@@ -2441,17 +2441,18 @@ def main():
         draft_attr_sel = dc2.selectbox("대상 속성", attr_opts_ai, key="ai_draft_attr_sel",
                                        help="발송 속성(통합·정상·이월·입점·BPU 등)으로 범위를 좁힙니다.")
         draft_goal = dc3.selectbox("목표 지표", list(METRIC_OPTS.keys()), key="ai_draft_goal")
-        draft_extra = st.text_area(
-            "소구 내용·기획전 특성 (선택)", key="ai_draft_brand", height=70,
-            placeholder="예: 헤리스 여름 린넨 30% / 한정수량 / 오늘 마감 — 적을수록 자유롭게, "
-                        "여기 내용을 카피의 핵심 소재로 반영합니다.",
-            help="기획전 특성·혜택·소구 포인트를 적으면 그 내용을 바탕으로 카피를 구성합니다.")
         lc1, lc2, lc3 = st.columns(3)
         title_len = lc1.number_input("제목 글자수(내외)", min_value=5, max_value=60, value=20, step=1,
                                      key="ai_draft_tlen")
         body_len = lc2.number_input("내용 글자수(내외)", min_value=10, max_value=200, value=45, step=5,
                                     key="ai_draft_blen")
         draft_n = lc3.slider("초안 개수", 3, 10, 5, key="ai_draft_n")
+        st.caption("💡 추천: 제목 15~25자 · 내용 40~60자 — 모바일 PUSH 알림에서 잘리지 않는 길이입니다. (참고용)")
+        draft_extra = st.text_area(
+            "소구 내용·기획전 특성 (선택)", key="ai_draft_brand", height=70,
+            placeholder="예: 헤리스 여름 린넨 30% / 한정수량 / 오늘 마감 — 적을수록 자유롭게, "
+                        "여기 내용을 카피의 핵심 소재로 반영합니다.",
+            help="기획전 특성·혜택·소구 포인트를 적으면 그 내용을 바탕으로 카피를 구성합니다.")
         if st.button("✍️ 카피 초안 생성", key="ai_draft_btn"):
             gcol = METRIC_OPTS[draft_goal][0]
             scope = base
