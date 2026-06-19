@@ -2520,10 +2520,10 @@ def main():
         # ── 퍼널 분해 (발송→UV→VISIT→고객→주문) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🪜 퍼널 분해 — 어디서 새는가")
-        st.caption("발송 → UV(유입) → 고객수 → 주문 단계별 잔존·전환율. "
+        st.caption("발송 → UV(유입) → 주문고객수 → 주문 단계별 잔존·전환율. "
                    "전환율이 급락하는 단계가 개선 레버리지입니다.")
         steps = [("발송", "send"), ("UV(유입)", "uv"),
-                 ("고객수", "cust"), ("주문", "oc")]
+                 ("주문고객수", "cust"), ("주문", "oc")]
         avail = [(lab, c) for lab, c in steps if c in g.columns and g[c].fillna(0).sum() > 0]
         if len(avail) >= 2:
             vals = [float(g[c].fillna(0).sum()) for _, c in avail]
