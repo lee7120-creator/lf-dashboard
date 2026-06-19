@@ -2433,11 +2433,11 @@ def main():
         st.markdown("##### ✍️ AI 카피 초안 생성 — 성과 패턴 기반 다음 메시지")
         st.caption("성과가 좋았던 문구 속성·조합을 근거로 다음 캠페인 PUSH 문구 초안을 작성합니다.")
         dc1, dc2, dc3 = st.columns(3)
-        brand_opts_ai = ["(전체)"] + [str(b) for b in sorted(base["brand"].dropna().unique())
-                                      if str(b).strip() not in ("", "nan", "None")]
+        cat_opts_ai = ["(전체)"] + [str(c) for c in sorted(base["cat"].dropna().unique())
+                                    if str(c).strip() not in ("", "nan", "None")]
         attr_opts_ai = ["(전체)"] + ([str(x) for x in sorted(base["attr"].dropna().unique())
                                       if str(x).strip() not in ("", "nan", "None")] if "attr" in base else [])
-        draft_brand_sel = dc1.selectbox("대상 브랜드", brand_opts_ai, key="ai_draft_brand_sel")
+        draft_cat_sel = dc1.selectbox("대상 카테고리", cat_opts_ai, key="ai_draft_cat_sel")
         draft_attr_sel = dc2.selectbox("대상 속성", attr_opts_ai, key="ai_draft_attr_sel",
                                        help="발송 속성(통합·정상·이월·입점·BPU 등)으로 범위를 좁힙니다.")
         draft_goal = dc3.selectbox("목표 지표", list(METRIC_OPTS.keys()), key="ai_draft_goal")
@@ -2447,12 +2447,12 @@ def main():
         if st.button("✍️ 카피 초안 생성", key="ai_draft_btn"):
             gcol = METRIC_OPTS[draft_goal][0]
             scope = base
-            if draft_brand_sel != "(전체)":
-                scope = scope[scope["brand"].astype(str) == draft_brand_sel]
+            if draft_cat_sel != "(전체)":
+                scope = scope[scope["cat"].astype(str) == draft_cat_sel]
             if draft_attr_sel != "(전체)" and "attr" in scope:
                 scope = scope[scope["attr"].astype(str) == draft_attr_sel]
             facts = build_facts(scope, with_attr=True, metric_col=gcol)
-            ctx = f"대상 브랜드: {draft_brand_sel} / 대상 속성: {draft_attr_sel} / 목표 지표: {draft_goal}"
+            ctx = f"대상 카테고리: {draft_cat_sel} / 대상 속성: {draft_attr_sel} / 목표 지표: {draft_goal}"
             if draft_extra.strip():
                 ctx += f" / 상품·키워드: {draft_extra.strip()}"
             system = (
