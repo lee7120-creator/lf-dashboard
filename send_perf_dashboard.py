@@ -1850,6 +1850,11 @@ def main():
             _w["발송일자"] = _w.apply(_date_only, axis=1)
             _w["발송시간"] = _w["hour"].map(fmt_hhmm) if "hour" in _w else "–"
             _w["_body"] = _w["body"].map(lambda x: " ".join(str(x).split())[:60]) if "body" in _w else ""
+            # 표시는 발송 일시 오름차순(먼 일자 → 가까운 일자)
+            _w["_sortdt"] = _w["dt"] + pd.to_timedelta(
+                _w["hour"].map(hhmm_to_minutes) if "hour" in _w else 0, unit="m")
+        win = win.sort_values("_sortdt", na_position="last")
+        los = los.sort_values("_sortdt", na_position="last")
         _rng = f"{(_last - pd.Timedelta(days=7)).date()} ~ {_last.date()}" if _last is not None else drange
         st.caption(f"최근 7일({_rng}) 기준 · 주문CR(=주문÷UV)은 UV가 적으면 1주문에도 크게 튀므로 "
                    "UV 100 이상 캠페인만 순위에 포함합니다.")
