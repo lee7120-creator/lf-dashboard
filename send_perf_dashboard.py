@@ -35,6 +35,9 @@ PERF_COLMAP = {
 }
 NUM_COLS = ["hour", "send", "uv", "visit", "cust", "oc", "amt", "infl_cr", "ord_cr", "eff"]
 
+# 속성(attr) 표기 오타 통합 — 같은 의미인데 오타/표기가 다른 값을 하나로 머지
+ATTR_ALIASES = {"마켸팅": "마케팅"}
+
 
 def _norm_date(v):
     """엑셀 셀 값 → 'YYYYMMDD' 문자열 또는 None."""
@@ -96,6 +99,10 @@ def _finalize(df):
         return df if df is not None else pd.DataFrame()
     df = df.copy()
     df["date"] = df["date"].astype(str).str.replace(r'\.0$', '', regex=True)
+    # 속성(attr) 오타·표기흔들림 머지 (예: 마켸팅→마케팅). 공백도 정리.
+    if "attr" in df:
+        df["attr"] = df["attr"].map(
+            lambda x: ATTR_ALIASES.get(str(x).strip(), str(x).strip()) if pd.notna(x) else x)
     for c in NUM_COLS:
         if c in df:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -2203,8 +2210,8 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
 
-        def heat(idx, col, title):
-            pv = base.pivot_table(index=idx, columns=col, values=mcol, aggfunc="mean")
+        def heat(df, idx, col, title):
+            pv = df.pivot_table(index=idx, columns=col, values=mcol, aggfunc="mean")
             if pv.empty:
                 st.info("데이터 부족"); return
             z = pv.values * (100 if is_pct else 1)
@@ -2215,9 +2222,18 @@ def main():
             fig.update_layout(**base_layout(h=420, title=title))
             st.plotly_chart(fig, use_container_width=True)
 
-        heat("cat", "stype", f"카테고리 × 발송유형 — 평균 {mlabel}")
+        def _hod(h):  # 시간대 HHMM(800·1050·2200) → '08시'(시 단위로 묶기)
+            try:
+                v = int(float(h))
+            except Exception:
+                return "기타"
+            hh = v if v <= 23 else v // 100
+            return f"{hh:02d}시" if 0 <= hh <= 23 else "기타"
+
+        heat(base, "cat", "stype", f"카테고리 × 발송유형 — 평균 {mlabel}")
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        heat("hour", "dow_k", f"시간대 × 요일 — 평균 {mlabel}")
+        _bh = base.assign(_hod=base["hour"].map(_hod)) if "hour" in base else base
+        heat(_bh, "_hod", "dow_k", f"시간대(시 단위) × 요일 — 평균 {mlabel}")
 
         # ── 카테고리별 최적 문구 전략: 카테고리 × 문구속성 히트맵 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
