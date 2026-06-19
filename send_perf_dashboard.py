@@ -2454,7 +2454,7 @@ def main():
         rows = []
         for wkstart, d in g.groupby("주"):
             s, u, o, a = d["send"].sum(), d["uv"].sum(), d["oc"].sum(), d["amt"].sum()
-            rows.append(dict(주=wkstart, 발송=s, 거래액=a, 캠페인수=len(d),
+            rows.append(dict(주=wkstart, 발송=s, 거래액=a, 캠페인수=len(d), 유입UV=u, 주문건수=o,
                              유입전환율=(u / s if s else np.nan),
                              주문전환율=(o / u if u else np.nan),
                              RPS=(a / s if s else np.nan)))
@@ -2467,30 +2467,43 @@ def main():
                     f"{(g['oc'].sum()/g['uv'].sum())*100:.2f}%" if g["uv"].sum() else "–")
         c[3].metric("전체 RPS", won(g["amt"].sum() / g["send"].sum() if g["send"].sum() else np.nan))
 
-        # 주차별 총 발송량(막대) vs RPS(선) — 이중축
+        # 주차별 이중축 — 좌(막대)/우(선) 지표 선택해 상관관계 확인
+        WKM = {"발송량": ("발송", False), "거래액": ("거래액", False), "캠페인수": ("캠페인수", False),
+               "유입UV": ("유입UV", False), "주문건수": ("주문건수", False),
+               "CTR(유입전환율)": ("유입전환율", True), "주문전환율": ("주문전환율", True),
+               "RPS": ("RPS", False)}
+        _keys = list(WKM.keys())
+        mc1, mc2 = st.columns(2)
+        llab = mc1.selectbox("좌축 (막대)", _keys, index=_keys.index("발송량"), key="p08_wk_left")
+        rlab = mc2.selectbox("우축 (선)", _keys, index=_keys.index("RPS"), key="p08_wk_right")
+        lc, lpct = WKM[llab]; rc, rpct = WKM[rlab]
         fig = go.Figure()
-        fig.add_bar(x=wk["주"], y=wk["발송"], name="발송량", marker_color=PALETTE["slate"], opacity=0.45)
-        fig.add_trace(go.Scatter(x=wk["주"], y=wk["RPS"], name="RPS(발송건당 거래액)",
+        fig.add_bar(x=wk["주"], y=wk[lc] * (100 if lpct else 1), name=llab,
+                    marker_color=PALETTE["slate"], opacity=0.45)
+        fig.add_trace(go.Scatter(x=wk["주"], y=wk[rc] * (100 if rpct else 1), name=rlab,
                                  mode="lines+markers", line=dict(color=PALETTE["green"], width=2), yaxis="y2"))
-        lay = base_layout(h=380, title="주차별 총 발송량 vs RPS — 규모를 키울수록 효율이 떨어지나(피로도)")
+        lay = base_layout(h=380, ysuffix=("%" if lpct else ""), title=f"주차별 {llab}(좌) vs {rlab}(우)")
         lay["showlegend"] = True
         lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
         lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
-                             tickfont=dict(color="#64748b", size=11))
+                             tickfont=dict(color="#64748b", size=11), ticksuffix=("%" if rpct else ""))
         fig.update_layout(**lay)
         st.plotly_chart(fig, use_container_width=True)
 
-        # 발송량 ↔ 가중 주문전환율 회귀 (피로도 통계 검증)
-        x = wk["발송"].values.astype(float)
-        y = (wk["주문전환율"].values.astype(float)) * 100
+        # 선택한 두 지표의 상관관계
+        x = wk[lc].values.astype(float); y = wk[rc].values.astype(float)
         m = ~np.isnan(x) & ~np.isnan(y)
-        if m.sum() >= 5:
-            sl, ic, r, p, _ = stats.linregress(x[m], y[m])
-            arrow = "효율 하락(피로도 신호)" if r < 0 else "효율 동반 상승"
+        if m.sum() >= 5 and np.std(x[m]) > 0 and np.std(y[m]) > 0:
+            r = float(np.corrcoef(x[m], y[m])[0, 1])
+            _, _, _, p, _ = stats.linregress(x[m], y[m])
+            arrow = "같이 움직임(양의 상관)" if r > 0 else "반대로 움직임(음의 상관)"
             st.markdown(
-                f'<div class="appendix"><b>피로도 검증</b> — 주차 발송량 ↔ 가중 주문전환율: '
-                f'상관 r={r:.2f} ({arrow}), {sig_label(p)}. '
-                f'기울기 {sl*1e5:+.4f}%p / 발송 10만건 증가당.</div>', unsafe_allow_html=True)
+                f'<div class="appendix"><b>상관관계</b> — 주차 {llab} ↔ {rlab}: 상관 r={r:.2f} ({arrow}), '
+                f'{sig_label(p)}. r이 +1/−1에 가까울수록 강하고 0이면 무관합니다. '
+                f'단, 상관은 인과가 아니며 시즌·구성 변화가 섞일 수 있습니다 '
+                f'(예: 발송량↑인데 RPS·전환율↓이면 발송 피로도 신호).</div>', unsafe_allow_html=True)
+        elif m.sum() < 5:
+            st.caption("상관 계산에는 주차 표본이 5개 이상 필요합니다.")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 주차별 전체 실적")
