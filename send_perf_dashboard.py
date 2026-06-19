@@ -1819,6 +1819,24 @@ def main():
         st.title("종합 요약")
         st.caption(f"분석 표본: 발송 {min_send:,}건 이상 · {len(fdf)}개 캠페인 · {drange}")
         base = fdf if len(fdf) else df
+        # 주차 선택 필터 (년도 포함 · 최신순). 선택 시 이 페이지 전체가 해당 주차로 좁혀짐.
+        scope_label = "최근 7일"
+        _bp = base.dropna(subset=["dt"]) if "dt" in base else base.iloc[0:0]
+        if len(_bp):
+            _wks = sorted(_bp["dt"].dt.to_period("W").apply(lambda p: p.start_time).unique(),
+                          reverse=True)
+
+            def _wlab(ws):
+                we = ws + pd.Timedelta(days=6)
+                iy, iw, _ = ws.isocalendar()
+                return f"{iy}년 {iw}주차 ({ws.strftime('%m/%d')}~{we.strftime('%m/%d')})"
+            _wopts = ["전체 기간"] + [_wlab(w) for w in _wks]
+            _wsel = st.selectbox("📅 주차 선택", _wopts, index=0, key="p01_week",
+                                 help="특정 주차만 보려면 선택하세요(최신 주차가 위). 선택 시 아래 지표·TOP/BOTTOM이 해당 주차로 좁혀집니다.")
+            if _wsel != "전체 기간":
+                _ws = _wks[_wopts.index(_wsel) - 1]
+                base = base[(base["dt"] >= _ws) & (base["dt"] < _ws + pd.Timedelta(days=7))]
+                scope_label = _wsel
         c = st.columns(4)
         c[0].metric("발송 캠페인 수", f"{len(base):,}")
         c[1].metric("총 발송 건수", won(base["send"].sum()))
@@ -1856,7 +1874,8 @@ def main():
         win = win.sort_values("_sortdt", na_position="last")
         los = los.sort_values("_sortdt", na_position="last")
         _rng = f"{(_last - pd.Timedelta(days=7)).date()} ~ {_last.date()}" if _last is not None else drange
-        st.caption(f"최근 7일({_rng}) 기준 · 주문CR(=주문÷UV)은 UV가 적으면 1주문에도 크게 튀므로 "
+        _scope_txt = f"최근 7일({_rng})" if scope_label == "최근 7일" else scope_label
+        st.caption(f"{_scope_txt} 기준 · 주문CR(=주문÷UV)은 UV가 적으면 1주문에도 크게 튀므로 "
                    "UV 100 이상 캠페인만 순위에 포함합니다.")
         _tbcols = ["발송일자", "발송시간", "title", "_body", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
         _tbren = {"발송일자": "발송일자", "발송시간": "발송시간", "title": "제목", "_body": "내용",
@@ -1865,11 +1884,11 @@ def main():
         _tbfmt = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}",
                   "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"}
         with cc[0]:
-            st.markdown("##### 🏆 주문전환율 TOP (최근 7일)")
+            st.markdown(f"##### 🏆 주문전환율 TOP ({scope_label})")
             st.dataframe(win[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, use_container_width=True)
         with cc[1]:
-            st.markdown("##### 🧊 주문전환율 BOTTOM (최근 7일)")
+            st.markdown(f"##### 🧊 주문전환율 BOTTOM ({scope_label})")
             st.dataframe(los[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, use_container_width=True)
 
