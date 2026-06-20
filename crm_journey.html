@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LF Mall CRM 고객 여정 대시보드</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <style>
 :root{
   --bg:#F5F6FA;--surface:#FFF;--border:#E2E6F0;
@@ -104,6 +105,9 @@ body.sidebar-collapsed .content{margin-left:0}
 .push-badge{font-size:8.5px;padding:2px 6px;border-radius:8px;background:#3A3E46;color:#E8E4DE;font-family:'DM Mono',monospace;white-space:nowrap;flex-shrink:0}
 .status-badge{font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;cursor:pointer;user-select:none;border:1px solid transparent;transition:opacity .1s;white-space:nowrap;flex-shrink:0}
 .status-badge:hover{opacity:.75}
+/* lucide 아이콘 (이모지 대체) */
+.ch-badge,.push-badge,.det-ch{display:inline-flex;align-items:center;gap:3px}
+.lic{width:1.2em;height:1.2em;flex:0 0 auto;vertical-align:-0.15em}
 .card-code{font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);margin-bottom:4px;display:flex;align-items:center;justify-content:space-between}
 .card-actions{display:flex;gap:3px;opacity:0;transition:opacity .15s}
 .card:hover .card-actions{opacity:1}
@@ -210,12 +214,12 @@ body.sidebar-collapsed .content{margin-left:0}
         <div class="fg half"><label>AF코드</label><input id="fCode" type="text" placeholder="예: AF-LL01"></div>
         <div class="fg half"><label>발송 채널</label>
           <select id="fCh">
-            <option value="sms">📱 SMS</option>
-            <option value="alimtok">💬 알림톡</option>
-            <option value="friends">💚 플친메시지</option>
-            <option value="email">✉️ 이메일</option>
-            <option value="inapp">📲 인앱메시지</option>
-            <option value="none">∅ 없음</option>
+            <option value="sms">SMS</option>
+            <option value="alimtok">알림톡</option>
+            <option value="friends">플친메시지</option>
+            <option value="email">이메일</option>
+            <option value="inapp">인앱메시지</option>
+            <option value="none">없음</option>
           </select>
         </div>
       </div>
@@ -223,7 +227,7 @@ body.sidebar-collapsed .content{margin-left:0}
       <div class="form-row">
         <div class="fg half"><label>발송 타이밍</label><input id="fTiming" type="text" placeholder="예: 가입 D+1 · 구매 D+7 · 실시간"></div>
         <div class="fg half"><label>&nbsp;</label>
-          <label class="push-wrap"><input type="checkbox" id="fPush"><span>🔔 PUSH 병행</span></label>
+          <label class="push-wrap"><input type="checkbox" id="fPush"><span><i data-lucide="bell" class="lic"></i> PUSH 병행</span></label>
         </div>
       </div>
       <div class="form-row" id="fStatusRow">
@@ -251,12 +255,12 @@ body.sidebar-collapsed .content{margin-left:0}
 
 <script>
 const CH={
-  sms:    {label:'SMS',    c:'#B83A3A',bg:'#FEF2F2',icon:'📱'},
-  alimtok:{label:'알림톡',c:'#A07010',bg:'#FEF8EA',icon:'💬'},
-  friends:{label:'플친',  c:'#367A4C',bg:'#EEF8F1',icon:'💚'},
-  email:  {label:'이메일',c:'#2E68B0',bg:'#EEF3FA',icon:'✉️'},
-  inapp:  {label:'인앱',  c:'#7B5BC0',bg:'#F3EFFB',icon:'📲'},
-  none:   {label:'없음',  c:'#96938C',bg:'#F2F1EE',icon:'∅'},
+  sms:    {label:'SMS',    c:'#B83A3A',bg:'#FEF2F2',lucide:'message-square-text'},
+  alimtok:{label:'알림톡',c:'#A07010',bg:'#FEF8EA',lucide:'message-circle'},
+  friends:{label:'플친',  c:'#367A4C',bg:'#EEF8F1',lucide:'heart'},
+  email:  {label:'이메일',c:'#2E68B0',bg:'#EEF3FA',lucide:'mail'},
+  inapp:  {label:'인앱',  c:'#7B5BC0',bg:'#F3EFFB',lucide:'app-window'},
+  none:   {label:'없음',  c:'#96938C',bg:'#F2F1EE',lucide:'ban'},
 };
 const ST={
   new:{label:'신규추가',c:'#367A4C',bg:'#EBF8F2',b:'#B4DEC8'},
@@ -266,6 +270,10 @@ const ST={
 };
 const ST_ORDER=['new','mod','kep','del'];
 const STORE_KEY='lfmall_crm_v3';
+
+// ── lucide 아이콘 헬퍼 (이모지 대체) ──
+function licon(n){return `<i data-lucide="${n}" class="lic"></i>`;}
+function refreshIcons(){if(window.lucide&&window.lucide.createIcons){try{lucide.createIcons();}catch(e){}}}
 
 // ── 필터 상태 (빈 Set = 전체) ──
 let FILTERS={search:'',channels:new Set(),statuses:new Set(),views:new Set(),stages:new Set(),pushOnly:false};
@@ -519,6 +527,7 @@ function render(){
     :`<div class="empty-state">조건에 맞는 캠페인이 없습니다.<br><button class="btn btn-ghost" onclick="resetFilters()">필터 초기화</button></div>`;
   const fc=document.getElementById('fcount');
   if(fc)fc.textContent=`표시 ${visibleCount()}건 / 전체 ${CARDS.length}건`;
+  refreshIcons();
 }
 
 function renderStage(stage){
@@ -581,8 +590,9 @@ function renderSidebar(){
     +sec('발송 채널', Object.keys(CH).map(k=>chip('channels',k,CH[k].label,CH[k].c,true)).join(''))
     +sec('변경 유형', Object.keys(ST).map(k=>chip('statuses',k,ST[k].label,ST[k].c,false)).join(''))
     +sec('고객 여정 단계', STAGES.map(s=>chip('stages',String(s.id),s.label,s.color,true)).join(''))
-    +sec('기타', `<button class="fchip${pushOn?' on':''}" onclick="togglePush()"${pushOn?' style="border-color:#3A3E46;background:#3A3E461A;color:#3A3E46"':''}>🔔 PUSH 발송만</button>`)
+    +sec('기타', `<button class="fchip${pushOn?' on':''}" onclick="togglePush()"${pushOn?' style="border-color:#3A3E46;background:#3A3E461A;color:#3A3E46"':''}>${licon('bell')} PUSH 발송만</button>`)
     +`<div class="fcount" id="fcount"></div>`;
+  refreshIcons();
 }
 function toggleSetFilter(key,val){
   const set=FILTERS[key];
@@ -607,8 +617,8 @@ function cardHTML(c){
     ondragstart="dragStart(event,'${c.id}')" ondragend="dragEnd(event)"
     ondragover="dragOverCard(event)" ondragleave="dragLeaveCard(event)" ondrop="dropOnCard(event,'${c.id}')">
     <div class="card-badges">
-      ${c.push?'<span class="push-badge">🔔 PUSH</span>':''}
-      <span class="ch-badge" style="background:${ch.bg};color:${ch.c};border-color:${ch.c}30">${ch.icon} ${ch.label}</span>
+      ${c.push?`<span class="push-badge">${licon('bell')} PUSH</span>`:''}
+      <span class="ch-badge" style="background:${ch.bg};color:${ch.c};border-color:${ch.c}30">${licon(ch.lucide)} ${ch.label}</span>
       ${stBadge}
     </div>
     <div class="card-code"><span>${esc(c.code)}</span>
@@ -633,9 +643,9 @@ function openDet(id){
   document.getElementById('detContent').innerHTML=`
     <div class="det-head">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-        ${c.push?'<span class="push-badge">🔔 PUSH</span>':''}
+        ${c.push?`<span class="push-badge">${licon('bell')} PUSH</span>`:''}
         <span style="width:8px;height:8px;border-radius:50%;background:${ch.c};display:inline-block"></span>
-        <span style="font-family:'DM Mono',monospace;font-size:9px;color:${ch.c};text-transform:uppercase;letter-spacing:.1em">${ch.icon} ${ch.label}</span>
+        <span class="det-ch" style="font-family:'DM Mono',monospace;font-size:9px;color:${ch.c};text-transform:uppercase;letter-spacing:.1em">${licon(ch.lucide)} ${ch.label}</span>
       </div>
       <div class="det-code">${esc(c.code)}</div>
       <div class="det-title">${esc(c.label)}</div>
@@ -653,6 +663,7 @@ function openDet(id){
     </div>`;
   document.getElementById('detPanel').classList.add('on');
   document.getElementById('detOv').classList.add('on');
+  refreshIcons();
 }
 function closeDet(){
   document.getElementById('detPanel').classList.remove('on');
