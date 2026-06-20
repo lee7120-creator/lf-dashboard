@@ -1628,9 +1628,13 @@ def main():
         "7. 타이밍·발송슬롯",
         "8. BPU·우선순위 효율",   # ── 조직·매크로
         "9. 전체 효율·추이",
-        "10. 기획전 비교분석",    # ── 기획전 매출 연계
-        "11. AI 처방·카피",       # ── 액션
-        "12. 데이터·다운로드",    # 추출
+        "10. 세그먼트 분석",        # ── CRM 세그먼트(신규)
+        "11. 전환·AOV 진단",        # ── 진단(신규)
+        "12. 발송유형·브랜드 랭킹",  # ── 미사용 차원(신규)
+        "13. 다음주 발송 플레이북",  # ── 실행(신규)
+        "14. 기획전 비교분석",    # ── 기획전 매출 연계
+        "15. AI 처방·카피",       # ── 액션
+        "16. 데이터·다운로드",    # 추출
     ]
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
@@ -3177,6 +3181,403 @@ def main():
                 st.markdown('<div class="appendix">같은 요일 안에서도 발송이 적은 날의 CTR·RPS가 더 높다면, '
                             '발송 강도 자체가 효율을 떨어뜨린다는 (요일 효과를 통제한) 근거입니다.</div>',
                             unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 13 — 세그먼트 분석 (CRM 마케터 관점: 누구에게)
+    # ══════════════════════════════════════════════════════════════
+    elif "세그먼트 분석" in page:
+        st.title("세그먼트 분석")
+        st.caption("타겟 구분(세그먼트)별 성과 · 카테고리 적합도 · 퍼널 누수 · 소구 마모 — CRM의 '누구에게'를 데이터로.")
+        base = fdf
+        if "target" not in base or base["target"].fillna("").eq("").all():
+            st.info("타겟 구분(target) 데이터가 없습니다. 실적시트의 '타겟 구분' 컬럼을 확인하세요."); st.stop()
+        if len(base) < 6:
+            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+        seg = base.copy()
+        seg["target"] = seg["target"].fillna("(미지정)").replace("", "(미지정)")
+        mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p13_metric")
+        mcol, msuf, mclr = METRIC_OPTS[mlabel]
+        is_pct = mcol in ("ord_cr", "infl_cr")
+
+        # ① 세그먼트 딥다이브
+        st.markdown("##### ① 세그먼트별 성과 요약")
+        g = seg.groupby("target").agg(
+            캠페인수=("target", "size"), 발송=("send", "sum"),
+            CTR=("infl_cr", "mean"), 주문CR=("ord_cr", "mean"),
+            RPS=("rps", "mean"), AOV=("aov", "mean"), 거래액=("amt", "sum"),
+            지표=(mcol, "mean")).reset_index().sort_values("지표", ascending=False)
+        yv = g["지표"] * (100 if is_pct else 1)
+        fig = go.Figure(go.Bar(
+            x=yv, y=g["target"], orientation="h", marker_color=mclr,
+            text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, g["캠페인수"])],
+            textposition="outside"))
+        lay = base_layout(h=max(280, 40 + 30 * len(g)), title=f"세그먼트별 평균 {mlabel}")
+        lay["xaxis"]["range"] = [0, float(yv.max()) * 1.18] if len(yv) else None
+        fig.update_layout(**lay); fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig, use_container_width=True)
+        gshow = g.rename(columns={"target": "세그먼트"}).copy()
+        gshow["CTR"] = gshow["CTR"].map(lambda v: f"{v*100:.2f}%")
+        gshow["주문CR"] = gshow["주문CR"].map(lambda v: f"{v*100:.2f}%")
+        for _c in ("RPS", "AOV", "거래액"):
+            gshow[_c] = gshow[_c].map(won)
+        st.dataframe(gshow[["세그먼트", "캠페인수", "발송", "CTR", "주문CR", "RPS", "AOV", "거래액"]]
+                     .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}"}),
+                     hide_index=True, use_container_width=True)
+
+        st.markdown("##### 세그먼트별 최적 소구 (보유 시 지표 리프트 최대)")
+        recs = []
+        for sname, sg in seg.groupby("target"):
+            best = None
+            for tag in TAG_BOOLS:
+                if tag not in sg:
+                    continue
+                yes = sg.loc[sg[tag] == True, mcol].dropna()
+                no = sg.loc[sg[tag] != True, mcol].dropna()
+                if len(yes) < 3 or len(no) < 3:
+                    continue
+                lift = yes.mean() - no.mean()
+                if best is None or lift > best[1]:
+                    best = (tag, lift, len(yes))
+            if best:
+                recs.append({"세그먼트": sname, "추천 소구": best[0],
+                             "리프트": (f"{best[1]*100:+.2f}%p" if is_pct else f"{best[1]:+,.0f}"),
+                             "보유n": best[2]})
+        if recs:
+            st.dataframe(pd.DataFrame(recs).style.format({"보유n": "{:,.0f}"}),
+                         hide_index=True, use_container_width=True)
+        else:
+            st.caption("세그먼트별 소구 리프트를 낼 표본이 부족합니다.")
+
+        # ② 타겟 × 카테고리 적합도
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ② 타겟 × 카테고리 적합도")
+        if "cat" in seg and seg["cat"].fillna("").ne("").any():
+            sc = seg.copy(); sc["cat"] = sc["cat"].fillna("(미지정)").replace("", "(미지정)")
+            topc = sc["cat"].value_counts().head(12).index.tolist()
+            sc = sc[sc["cat"].isin(topc)]
+            piv = sc.pivot_table(index="target", columns="cat", values=mcol, aggfunc="mean")
+            z = piv.values * (100 if is_pct else 1)
+            fig = go.Figure(go.Heatmap(
+                z=z, x=list(piv.columns), y=list(piv.index), colorscale="Teal",
+                hovertemplate="세그:%{y}<br>카테고리:%{x}<br>" + mlabel + ":%{z:.2f}<extra></extra>"))
+            fig.update_layout(**base_layout(h=max(300, 70 + 30 * len(piv.index)),
+                                            title=f"타겟×카테고리 평균 {mlabel}"))
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("각 세그먼트에서 가장 잘 먹히는 카테고리(행별 최댓값)를 다음 발송 우선순위로. 표본 작은 칸은 신뢰도 낮음.")
+        else:
+            st.caption("카테고리(cat) 데이터가 없어 적합도 매트릭스를 건너뜁니다.")
+
+        # ③ 세그먼트별 퍼널 누수
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ③ 세그먼트별 퍼널 누수 (발송→UV→방문→고객→주문)")
+        _stages = [("발송→UV", "uv", "send"), ("UV→방문", "visit", "uv"),
+                   ("방문→고객", "cust", "visit"), ("고객→주문", "oc", "cust")]
+        _fcols = [c for c in ("send", "uv", "visit", "cust", "oc") if c in seg]
+        if len(_fcols) >= 3:
+            fr = []
+            for sname, sg in seg.groupby("target"):
+                tot = {c: sg[c].sum() for c in _fcols}
+                row = {"세그먼트": sname}
+                for lbl, nu, de in _stages:
+                    if nu in tot and de in tot and tot.get(de, 0) > 0:
+                        row[lbl] = tot[nu] / tot[de]
+                fr.append(row)
+            fdfr = pd.DataFrame(fr)
+            _rate = [c for c in ("발송→UV", "UV→방문", "방문→고객", "고객→주문") if c in fdfr]
+            disp = fdfr.copy()
+            for c in _rate:
+                disp[c] = disp[c].map(lambda v: f"{v*100:.1f}%" if pd.notna(v) else "–")
+            st.dataframe(disp, hide_index=True, use_container_width=True)
+            overall = {}
+            for lbl, nu, de in _stages:
+                if nu in seg and de in seg and seg[de].sum() > 0:
+                    overall[lbl] = seg[nu].sum() / seg[de].sum()
+            if overall:
+                st.caption("전체 평균 단계 전환율 — " + " · ".join(f"{k} {v*100:.1f}%" for k, v in overall.items())
+                           + ". 세그먼트별로 평균보다 크게 낮은 단계가 그 세그먼트의 '새는 곳'입니다.")
+        else:
+            st.caption("퍼널 컬럼(UV/방문/고객/주문)이 부족해 누수 분석을 건너뜁니다.")
+
+        # ④ 세그먼트별 소구 마모
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ④ 세그먼트별 소구 마모 (주차 추세)")
+        if "dt" in seg and seg["dt"].notna().any():
+            _tags = [t for t in TAG_BOOLS if t in seg]
+            tagsel = st.selectbox("소구 선택", _tags, key="p13_tag") if _tags else None
+            if tagsel:
+                wsub = seg[(seg[tagsel] == True) & seg["dt"].notna()].copy()
+                if len(wsub) >= 6:
+                    wsub["주차"] = wsub["dt"].dt.to_period("W").apply(lambda p: p.start_time)
+                    fig = go.Figure(); slopes = []
+                    for sname, sg in wsub.groupby("target"):
+                        wk = sg.groupby("주차")[mcol].mean().reset_index().sort_values("주차")
+                        if len(wk) < 3:
+                            continue
+                        fig.add_trace(go.Scatter(x=wk["주차"], y=wk[mcol] * (100 if is_pct else 1),
+                                                 mode="lines+markers", name=str(sname)))
+                        sl = float(np.polyfit(np.arange(len(wk)), wk[mcol].values, 1)[0])
+                        slopes.append({"세그먼트": sname, "주차수": len(wk),
+                                       "추세": ("🔻 하락(마모)" if sl < 0 else "🔺 상승"),
+                                       "주당변화": (f"{sl*100:+.3f}%p" if is_pct else f"{sl:+,.0f}")})
+                    lay = base_layout(h=340, title=f"'{tagsel}' 보유 캠페인 주차별 {mlabel} — 세그먼트별")
+                    lay["showlegend"] = True
+                    fig.update_layout(**lay)
+                    st.plotly_chart(fig, use_container_width=True)
+                    if slopes:
+                        st.dataframe(pd.DataFrame(slopes).style.format({"주차수": "{:,.0f}"}),
+                                     hide_index=True, use_container_width=True)
+                    st.caption("하락 추세인 세그먼트는 그 소구가 닳고 있다는 신호 — 메시지/오퍼를 교체하세요.")
+                else:
+                    st.caption(f"'{tagsel}' 보유 캠페인 표본이 부족합니다(6건 이상 필요).")
+        else:
+            st.caption("발송일(dt) 데이터가 없어 마모 추세를 건너뜁니다.")
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 14 — 전환·AOV 진단
+    # ══════════════════════════════════════════════════════════════
+    elif "전환·AOV 진단" in page:
+        st.title("전환·AOV 진단")
+        st.caption("발송→UV(CTR)와 UV→주문(주문CR)을 분리 진단하고, 매출이 객단가(AOV)에서 왔는지 주문수에서 왔는지 분해합니다.")
+        base = fdf
+        if len(base) < 6:
+            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+
+        # ① 전환 2단 분해 (사분면)
+        st.markdown("##### ① 전환 2단 분해 — CTR(발송→UV) vs 주문CR(UV→주문)")
+        d = base.dropna(subset=["infl_cr", "ord_cr"]).copy()
+        if "uv" in d:
+            d = d[d["uv"].fillna(0) >= 50]
+        if len(d) >= 6:
+            mx = float(d["infl_cr"].median()); my = float(d["ord_cr"].median())
+
+            def _quad(r):
+                hi_c = r["infl_cr"] >= mx; hi_o = r["ord_cr"] >= my
+                if hi_c and hi_o: return "🟢 둘다 좋음"
+                if hi_c and not hi_o: return "🟡 유입O 주문X(오퍼/랜딩 점검)"
+                if not hi_c and hi_o: return "🔵 유입X 주문O(타겟/제목 점검)"
+                return "🔴 둘다 약함"
+            d["사분면"] = d.apply(_quad, axis=1)
+            cmap = {"🟢 둘다 좋음": PALETTE["green"], "🟡 유입O 주문X(오퍼/랜딩 점검)": PALETTE["amber"],
+                    "🔵 유입X 주문O(타겟/제목 점검)": PALETTE["blue"], "🔴 둘다 약함": PALETTE["red"]}
+            _smax = float(d["send"].max() or 1) if "send" in d else 1.0
+            fig = go.Figure()
+            for q, sub in d.groupby("사분면"):
+                _sz = 8 + (sub["send"].fillna(0) / _smax * 22) if "send" in sub else 10
+                fig.add_trace(go.Scatter(
+                    x=sub["infl_cr"] * 100, y=sub["ord_cr"] * 100, mode="markers", name=q,
+                    marker=dict(color=cmap.get(q, PALETTE["slate"]), size=_sz),
+                    text=sub.get("title", ""),
+                    hovertemplate="%{text}<br>CTR:%{x:.2f}%<br>주문CR:%{y:.2f}%<extra></extra>"))
+            fig.add_vline(x=mx * 100, line_dash="dash", line_color="#cbd5e1")
+            fig.add_hline(y=my * 100, line_dash="dash", line_color="#cbd5e1")
+            lay = base_layout(h=420, title="캠페인 전환 사분면 (점 크기=발송량)")
+            lay["showlegend"] = True
+            lay["xaxis"]["ticksuffix"] = "%"; lay["yaxis"]["ticksuffix"] = "%"
+            fig.update_layout(**lay)
+            st.plotly_chart(fig, use_container_width=True)
+            qsum = d["사분면"].value_counts().reset_index()
+            qsum.columns = ["사분면", "캠페인수"]
+            st.dataframe(qsum.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, use_container_width=True)
+            st.caption(f"기준선: CTR 중앙값 {mx*100:.2f}% · 주문CR 중앙값 {my*100:.2f}%. "
+                       "🟡는 들어왔는데 안 산 케이스 — 오퍼/상품/랜딩을, 🔵는 적게 들어왔지만 잘 산 케이스 — 제목/타겟 확대를 권장.")
+            qpick = st.selectbox("사분면 선택 → 캠페인 보기", list(qsum["사분면"]), key="p14_quad")
+            render_messages(d[d["사분면"] == qpick], "ord_cr", f"p14_{qpick}")
+        else:
+            st.info("UV 50 이상 캠페인이 6건 이상 필요합니다.")
+
+        # ② AOV vs 전환 기여
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ② AOV vs 전환 기여 분해 — 매출은 '많이 팔아서'인가 '비싸게 팔아서'인가")
+        _dim = {"카테고리": "cat", "세그먼트": "target", "브랜드": "brand"}
+        _dim = {k: v for k, v in _dim.items() if v in base.columns and base[v].fillna("").ne("").any()}
+        if not _dim:
+            _dim = {"카테고리": "cat"}
+        dimname = st.radio("기준 차원", list(_dim.keys()), horizontal=True, key="p14_dim")
+        dcol = _dim[dimname]
+        a = base.copy(); a[dcol] = a[dcol].fillna("(미지정)").replace("", "(미지정)")
+        gg = a.groupby(dcol).agg(주문CR=("ord_cr", "mean"), AOV=("aov", "mean"),
+                                 거래액=("amt", "sum"), 캠페인수=(dcol, "size")).reset_index()
+        gg = gg[gg["캠페인수"] >= 3]
+        if len(gg) >= 2:
+            mcr = float(gg["주문CR"].median()); mav = float(gg["AOV"].median())
+            _amax = float(gg["거래액"].max() or 1)
+            fig = go.Figure(go.Scatter(
+                x=gg["주문CR"] * 100, y=gg["AOV"], mode="markers+text",
+                text=gg[dcol], textposition="top center",
+                marker=dict(size=10 + gg["거래액"] / _amax * 26, color=PALETTE["teal"]),
+                hovertemplate="%{text}<br>주문CR:%{x:.2f}%<br>AOV:%{y:,.0f}<extra></extra>"))
+            fig.add_vline(x=mcr * 100, line_dash="dash", line_color="#cbd5e1")
+            fig.add_hline(y=mav, line_dash="dash", line_color="#cbd5e1")
+            lay = base_layout(h=420, title="주문CR(많이) × AOV(비싸게) — 점 크기=거래액")
+            lay["xaxis"]["ticksuffix"] = "%"
+            fig.update_layout(**lay)
+            st.plotly_chart(fig, use_container_width=True)
+            gs = gg.sort_values("거래액", ascending=False).copy()
+            gs["전략"] = [("박리다매(전환↑·객단↓)" if cr >= mcr and av < mav else
+                          "고가저빈도(전환↓·객단↑)" if cr < mcr and av >= mav else
+                          "올라운더(둘다↑)" if cr >= mcr and av >= mav else "약세(둘다↓)")
+                         for cr, av in zip(gs["주문CR"], gs["AOV"])]
+            gs["주문CR"] = gs["주문CR"].map(lambda v: f"{v*100:.2f}%")
+            gs["AOV"] = gs["AOV"].map(won); gs["거래액"] = gs["거래액"].map(won)
+            st.dataframe(gs.rename(columns={dcol: dimname})[[dimname, "캠페인수", "주문CR", "AOV", "거래액", "전략"]]
+                         .style.format({"캠페인수": "{:,.0f}"}),
+                         hide_index=True, use_container_width=True)
+            st.caption("올라운더는 더 밀고, '박리다매'는 업셀/세트로 AOV를, '고가저빈도'는 전환(오퍼/타겟)을 보완하세요.")
+        else:
+            st.caption("표본이 부족합니다(차원별 3캠페인 이상 필요).")
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 15 — 발송유형·브랜드 랭킹 (미사용 차원)
+    # ══════════════════════════════════════════════════════════════
+    elif "발송유형·브랜드" in page:
+        st.title("발송유형·브랜드 랭킹")
+        st.caption("그동안 화면에 없던 차원 — 발송유형(stype)·브랜드(brand)별 성과를 비교합니다.")
+        base = fdf
+        if len(base) < 6:
+            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+        mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p15_metric")
+        mcol, msuf, mclr = METRIC_OPTS[mlabel]
+        is_pct = mcol in ("ord_cr", "infl_cr")
+
+        def _rank(dimcol, title, minn, topn):
+            if dimcol not in base or base[dimcol].fillna("").eq("").all():
+                st.caption(f"{title}: 데이터 없음"); return
+            a = base.copy(); a[dimcol] = a[dimcol].fillna("(미지정)").replace("", "(미지정)")
+            g = a.groupby(dimcol).agg(캠페인수=(dimcol, "size"), 발송=("send", "sum"),
+                                      지표=(mcol, "mean"), 거래액=("amt", "sum")).reset_index()
+            g = g[g["캠페인수"] >= minn].sort_values("지표", ascending=False)
+            if len(g) == 0:
+                st.caption(f"{title}: 최소 표본 미달"); return
+            g = g.head(topn)
+            yv = g["지표"] * (100 if is_pct else 1)
+            overall = base[mcol].mean() * (100 if is_pct else 1)
+            fig = go.Figure(go.Bar(
+                x=yv, y=g[dimcol], orientation="h",
+                marker_color=[PALETTE["green"] if v >= overall else PALETTE["slate"] for v in yv],
+                text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, g["캠페인수"])],
+                textposition="outside"))
+            fig.add_vline(x=overall, line_dash="dash", line_color=PALETTE["red"])
+            lay = base_layout(h=max(280, 40 + 28 * len(g)), title=f"{title} — 평균 {mlabel} (빨간선=전체평균)")
+            lay["xaxis"]["range"] = [0, float(yv.max()) * 1.22] if len(yv) else None
+            fig.update_layout(**lay); fig.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig, use_container_width=True)
+            gs = g.copy()
+            gs["지표"] = gs["지표"].map(lambda v: f"{v*100:.2f}%" if is_pct else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}"))
+            gs["거래액"] = gs["거래액"].map(won)
+            st.dataframe(gs.rename(columns={dimcol: title})[[title, "캠페인수", "발송", "지표", "거래액"]]
+                         .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}"}),
+                         hide_index=True, use_container_width=True)
+
+        st.markdown("##### ① 발송유형별 성과")
+        _rank("stype", "발송유형", minn=3, topn=15)
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            bminn = st.number_input("브랜드 최소 캠페인수", value=4, min_value=2, step=1, key="p15_bminn")
+        with c2:
+            btopn = st.number_input("브랜드 표시 상위", value=20, min_value=5, step=5, key="p15_btopn")
+        st.markdown("##### ② 브랜드별 성과 (상위)")
+        _rank("brand", "브랜드", minn=int(bminn), topn=int(btopn))
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 16 — 다음주 발송 플레이북 (실행)
+    # ══════════════════════════════════════════════════════════════
+    elif "다음주 발송 플레이북" in page or "플레이북" in page:
+        st.title("다음주 발송 플레이북")
+        st.caption("성과 패턴을 모아 '다음 주 무엇을·누구에게·언제·어떤 소구로 보낼지' 실행안을 자동 생성합니다. (기존 데이터 기반)")
+        base = fdf
+        if len(base) < 8:
+            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+        goal = st.selectbox("최적화 목표 지표", list(METRIC_OPTS.keys()), key="p16_goal")
+        gcol = METRIC_OPTS[goal][0]; is_pct = gcol in ("ord_cr", "infl_cr")
+
+        def _fmtv(v):
+            return f"{v*100:.2f}%" if is_pct else (won(v) if gcol in ("rps", "aov", "amt") else f"{v:,.1f}")
+
+        st.markdown("##### 🕒 추천 발송 슬롯 (요일 × 시간 — 목표 지표 상위)")
+        if "dow_k" in base and "hour" in base:
+            slot = base.dropna(subset=["hour"]).groupby(["dow_k", "hour"]).agg(
+                캠페인수=("hour", "size"), 지표=(gcol, "mean"), 발송=("send", "sum")).reset_index()
+            slot = slot[slot["캠페인수"] >= 2].sort_values("지표", ascending=False).head(8)
+            if len(slot):
+                sshow = slot.copy()
+                sshow["시간"] = sshow["hour"].map(fmt_hhmm)
+                sshow["지표"] = sshow["지표"].map(_fmtv)
+                st.dataframe(sshow.rename(columns={"dow_k": "요일"})[["요일", "시간", "캠페인수", "지표", "발송"]]
+                             .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}"}),
+                             hide_index=True, use_container_width=True)
+            else:
+                st.caption("슬롯 표본이 부족합니다.")
+
+        st.markdown("##### 🏷️ 추천 소구 (보유 시 목표 지표 리프트 상위)")
+        trows = []
+        for tag in TAG_BOOLS:
+            if tag not in base:
+                continue
+            yes = base.loc[base[tag] == True, gcol].dropna()
+            no = base.loc[base[tag] != True, gcol].dropna()
+            if len(yes) < 3 or len(no) < 3:
+                continue
+            _l = yes.mean() - no.mean()
+            trows.append({"소구": tag, "보유평균": _fmtv(yes.mean()),
+                          "리프트": (f"{_l*100:+.2f}%p" if is_pct else f"{_l:+,.0f}"),
+                          "_l": _l, "보유n": len(yes), "유의성": sig_label(welch(yes.values, no.values))})
+        top_tags = []
+        if trows:
+            tdf = pd.DataFrame(trows).sort_values("_l", ascending=False)
+            st.dataframe(tdf[["소구", "보유평균", "리프트", "보유n", "유의성"]].head(6)
+                         .style.format({"보유n": "{:,.0f}"}), hide_index=True, use_container_width=True)
+            top_tags = tdf.head(3)["소구"].tolist()
+        else:
+            st.caption("소구 리프트 표본 부족.")
+
+        st.markdown("##### 🎯 세그먼트별 추천 카테고리 + 소구 + 슬롯 (실행 플레이북)")
+        play = []
+        if "target" in base and base["target"].fillna("").ne("").any():
+            bp = base.copy(); bp["target"] = bp["target"].fillna("(미지정)").replace("", "(미지정)")
+            for sname, sg in bp.groupby("target"):
+                if len(sg) < 3:
+                    continue
+                row = {"세그먼트": sname}
+                if "cat" in sg and sg["cat"].fillna("").ne("").any():
+                    cm = sg.groupby("cat")[gcol].mean()
+                    cn = sg.groupby("cat").size()
+                    cm = cm[cn >= 2]
+                    if len(cm):
+                        row["추천 카테고리"] = cm.idxmax()
+                best = None
+                for tag in TAG_BOOLS:
+                    if tag not in sg:
+                        continue
+                    yes = sg.loc[sg[tag] == True, gcol].dropna()
+                    no = sg.loc[sg[tag] != True, gcol].dropna()
+                    if len(yes) < 2 or len(no) < 2:
+                        continue
+                    lift = yes.mean() - no.mean()
+                    if best is None or lift > best[1]:
+                        best = (tag, lift)
+                if best:
+                    row["추천 소구"] = best[0]
+                if "dow_k" in sg and "hour" in sg and sg["hour"].notna().any():
+                    sl = sg.dropna(subset=["hour"]).groupby(["dow_k", "hour"])[gcol].mean()
+                    if len(sl):
+                        bd, bh = sl.idxmax()
+                        row["추천 슬롯"] = f"{bd} {fmt_hhmm(bh)}"
+                row["기대 " + goal] = _fmtv(sg[gcol].mean())
+                play.append(row)
+        if play:
+            st.dataframe(pd.DataFrame(play), hide_index=True, use_container_width=True)
+            st.caption("위 조합은 과거 성과 평균이 높았던 패턴입니다. 다음 주 캘린더에 세그먼트×슬롯×카테고리×소구로 배치하세요.")
+        else:
+            st.caption("세그먼트(target) 데이터가 없어 조합 추천을 건너뜁니다.")
+        if top_tags:
+            _rec = " · ".join(top_tags)
+            st.markdown(f'<div class="appendix">추천 소구: {_rec} → 「AI 처방·카피」 페이지에서 '
+                        f'이 소구로 문구 초안을 생성할 수 있습니다.</div>', unsafe_allow_html=True)
+        glossary()
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 10 — 기획전 비교분석 (발송 promo × 기획전 매출)
