@@ -1202,18 +1202,18 @@ def main():
         except Exception:
             has = False
         if not has:
-            return {"mode": "local", "status": "💾 로컬 CSV (구글시트 미설정)"}
+            return {"mode": "local", "status": "💾 로컬 CSV로 저장해요 (구글시트 미설정)"}
         try:
             sp = None
             if "gsheets" in st.secrets:
                 sp = st.secrets["gsheets"].get("spreadsheet")
             sp = sp or st.secrets.get("gsheets_spreadsheet")
             if not sp:
-                return {"mode": "local", "status": "⚠️ gsheets.spreadsheet 미설정 → 로컬 CSV"}
+                return {"mode": "local", "status": "⚠️ gsheets.spreadsheet 미설정 → 로컬에 저장해요"}
             sh = _get_sh(st.secrets["gcp_service_account"].get("client_email", ""), sp)
-            return {"mode": "gsheets", "sh": sh, "status": "☁️ 구글시트 연결됨"}
+            return {"mode": "gsheets", "sh": sh, "status": "☁️ 구글시트에 연결됐어요"}
         except Exception as e:
-            return {"mode": "local", "status": f"⚠️ 구글시트 연결 실패 → 로컬 CSV ({str(e)[:50]})"}
+            return {"mode": "local", "status": f"⚠️ 구글시트 연결 실패 → 로컬에 저장해요 ({str(e)[:50]})"}
 
     _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS}
     _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store}
@@ -1289,7 +1289,7 @@ def main():
     # 사이드바 — 업로드 / 필터 / 페이지
     # ══════════════════════════════════════════════════════════════
     st.sidebar.markdown("### 📨 발송성과 대시보드")
-    st.sidebar.caption("기획(문구) × 실적(성과) 머지 분석")
+    st.sidebar.caption("문구와 성과를 합쳐서 분석해요")
 
     def _has_sa():
         try:
@@ -1299,47 +1299,47 @@ def main():
 
     # ── 통합 업로더: 한 곳에 올리면 자동 인식·분류 ──
     uni_files = st.sidebar.file_uploader(
-        "📂 파일 업로드 (xlsx/zip · 여러 개 한 번에)",
+        "📂 파일 올리기 (xlsx/zip · 한 번에 여러 개 가능)",
         type=["xlsx", "zip"], accept_multiple_files=True, key="uni_up",
-        help="발송실적 · 발송기획(통합본) · 기획전성과 · 전사MTD 를 한 번에 올리면 "
-             "자동으로 종류를 인식해 분류합니다. ZIP(연도 폴더)도 가능합니다.")
+        help="발송실적·기획·기획전성과·전사MTD 파일을 한 번에 올리면 "
+             "자동으로 분류돼요. ZIP 파일도 돼요.")
 
     # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
     plan_source = st.sidebar.radio(
-        "발송기획(문구) 소스", ["업로드 파일", "구글시트 직접연결"], horizontal=True,
-        help="‘업로드 파일’: 위에서 올린 발송기획 통합본을 자동 인식. "
-             "‘구글시트’: 서비스계정에 공유된 ★APP PUSH 발송 시트를 바로 읽습니다.")
+        "기획 문구 가져오기", ["파일 올리기", "구글시트 연결"], horizontal=True,
+        help="’파일 올리기’: 위에서 올린 기획 통합본을 자동 인식해요. "
+             "’구글시트 연결’: 공유된 ★APP PUSH 시트에서 바로 읽어와요.")
     plan_file = None
-    if plan_source == "구글시트 직접연결":
+    if plan_source == "구글시트 연결":
         try:
             _def_url = (st.secrets.get("gsheets", {}).get("plan_spreadsheet")
                         or st.secrets.get("gsheets_plan_spreadsheet") or "")
         except Exception:
             _def_url = ""
-        plan_url = st.sidebar.text_input("기획 구글시트 URL / 키", value=_def_url,
+        plan_url = st.sidebar.text_input("구글시트 URL 또는 키", value=_def_url,
                                          placeholder="https://docs.google.com/spreadsheets/d/…")
-        recent_n = st.sidebar.number_input("동기화할 최근 주차 수 (0=전체)", value=12, min_value=0, step=1,
-                                           help="시트가 많으면 전체(0)는 느리고 API 한도에 걸릴 수 있어요. 보통 새 주차만 받으면 12면 충분합니다.")
-        if st.sidebar.button("🔄 구글시트에서 기획 동기화", use_container_width=True):
+        recent_n = st.sidebar.number_input("가져올 최근 주차 수 (0이면 전부)", value=12, min_value=0, step=1,
+                                           help="시트가 많으면 전부(0)는 느리고 API 한도에 걸릴 수 있어요. 보통 12주면 충분해요.")
+        if st.sidebar.button("🔄 구글시트에서 가져오기", use_container_width=True):
             if not _has_sa():
-                st.sidebar.error("서비스계정 미설정 — Secrets에 gcp_service_account 추가 후 사용하세요.")
+                st.sidebar.error("서비스계정이 없어요. Secrets에 gcp_service_account를 추가해 주세요.")
             elif not str(plan_url).strip():
-                st.sidebar.error("기획 구글시트 URL/키를 입력하세요.")
+                st.sidebar.error("구글시트 URL이나 키를 입력해 주세요.")
             else:
                 try:
                     sh_plan = gs_open(st.secrets["gcp_service_account"], plan_url)
-                    prog = st.sidebar.progress(0.0, text="기획 시트 읽는 중…")
+                    prog = st.sidebar.progress(0.0, text="기획 시트를 읽고 있어요…")
                     def _cb(i, total, title):
-                        prog.progress(i / max(total, 1), text=f"기획 동기화 {i}/{total} — {title[:16]}")
+                        prog.progress(i / max(total, 1), text=f"가져오는 중 {i}/{total} — {title[:16]}")
                     lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_cb)
                     prog.empty()
                     st.session_state.plan_lookup_gs = lk
                     st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
-                    st.sidebar.success(f"기획 동기화 완료 — {st.session_state.plan_lookup_meta}")
+                    st.sidebar.success(f"기획 가져오기 완료 — {st.session_state.plan_lookup_meta}")
                 except Exception as e:
-                    st.sidebar.error(f"기획 동기화 실패: {str(e)[:90]}")
+                    st.sidebar.error(f"가져오기에 실패했어요: {str(e)[:90]}")
         if st.session_state.get("plan_lookup_gs") is not None:
-            st.sidebar.caption(f"✓ 기획(구글시트) 적재됨: {st.session_state.get('plan_lookup_meta','')}")
+            st.sidebar.caption(f"✓ 구글시트 기획 불러옴: {st.session_state.get('plan_lookup_meta','')}")
 
     # ── 통합 업로드 자동 분류 → 기존 처리 변수로 라우팅 ──
     perf_files, promo_files, mtd_files = [], None, []
@@ -1347,7 +1347,7 @@ def main():
         _LBL = {"perf": "발송실적", "plan": "발송기획", "promo": "기획전성과",
                 "mtd": "전사MTD", "unknown": "❓미인식"}
         _perf_b, _promo_b, _mtd_b, _cls = [], [], [], []
-        with st.spinner("업로드 파일 종류 인식 중…"):
+        with st.spinner("파일 종류를 파악하고 있어요…"):
             for nm, b in expand_uploads(uni_files):
                 if b is None:
                     _cls.append((nm, "unknown")); continue
@@ -1373,11 +1373,11 @@ def main():
             for nm, k in _cls:
                 st.caption(f"**{_LBL[k]}** ← {nm[:34]}")
             if _cnt.get("unknown"):
-                st.caption("❓미인식: 헤더 형식 확인 (발송실적=‘AF코드’ 헤더 · 기획전=‘기획전 번호’ · "
-                           "기획=주차 시트 · MTD=날짜행).")
+                st.caption("❓인식 못 한 파일이 있어요. 헤더를 확인해 주세요 (실적=’AF코드’ · "
+                           "기획전=’기획전 번호’ · 기획=주차 시트 · MTD=날짜행).")
 
     st.sidebar.caption(BK["status"])
-    if st.sidebar.button("🔄 저장소 새로고침", use_container_width=True):
+    if st.sidebar.button("🔄 새로 불러오기", use_container_width=True):
         for k in ("camp_store", "mtd_store_df", "promo_store_df"):
             st.session_state.pop(k, None)
         st.cache_data.clear()
@@ -1390,26 +1390,26 @@ def main():
     if perf_files:
         # 기획 lookup 확보: 업로드 파일(자동 인식) 또는 구글시트 직접연결(세션 적재분)
         plan_lookup = None
-        if plan_source == "업로드 파일":
+        if plan_source == "파일 올리기":
             if plan_file:
                 try:
-                    with st.spinner("기획 파일(통합본) 파싱 중… 최초 1회만 수십 초 소요됩니다."):
+                    with st.spinner("기획 파일을 읽고 있어요… 처음에만 수십 초 걸려요."):
                         plan_lookup = cached_plan(plan_file.getvalue())
                 except Exception as e:
-                    st.error(f"기획 파일 파싱 실패: {e}"); st.stop()
+                    st.error(f"기획 파일을 읽지 못했어요: {e}"); st.stop()
         else:
             plan_lookup = st.session_state.get("plan_lookup_gs")
         if plan_lookup is None:
-            if plan_source == "업로드 파일":
-                st.sidebar.warning("새 실적을 머지하려면 발송기획 통합본도 함께 올려주세요(자동 인식).\n(없으면 기존 누적 데이터만 표시)")
+            if plan_source == "파일 올리기":
+                st.sidebar.warning("실적과 문구를 합치려면 기획 통합본도 같이 올려 주세요.\n(없으면 기존 데이터만 보여요)")
             else:
-                st.sidebar.warning("새 실적을 머지하려면 먼저 「🔄 구글시트에서 기획 동기화」를 눌러주세요.\n(없으면 기존 누적 데이터만 표시)")
+                st.sidebar.warning("먼저 「🔄 구글시트에서 가져오기」를 눌러 주세요.\n(없으면 기존 데이터만 보여요)")
         else:
             frames = []
             expanded = expand_uploads(perf_files)
-            prog = st.sidebar.progress(0.0, text="실적 파일 머지 중…")
+            prog = st.sidebar.progress(0.0, text="실적 파일을 합치고 있어요…")
             for k, (nm, b) in enumerate(expanded):
-                prog.progress((k + 1) / max(len(expanded), 1), text=f"머지 중… {nm[:24]}")
+                prog.progress((k + 1) / max(len(expanded), 1), text=f"합치는 중… {nm[:24]}")
                 if b is None:
                     parse_log.append(f"· {nm}"); continue
                 try:
@@ -1431,13 +1431,13 @@ def main():
         kn = set(zip(new_raw["date"].astype(str), new_raw["af"]))
         st.sidebar.success(f"신규 {len(new_raw)}건 → 누적 {len(work)}건 "
                            f"(추가 {len(kn - ko)} · 갱신 {len(kn & ko)})")
-        if st.sidebar.button("💾 저장 (누적 반영)", use_container_width=True):
+        if st.sidebar.button("💾 저장하기", use_container_width=True):
             storage_save(BK, "campaign", work)
             st.session_state.camp_store = work
             st.cache_data.clear()
             tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-            st.sidebar.success(f"저장됨 ✓ ({tgt}) — 다음 세션에도 유지됩니다.")
-        st.sidebar.caption("※ 저장을 눌러야 영구 반영됩니다. (미저장 시 이번 세션만 분석)")
+            st.sidebar.success(f"저장했어요 ✓ ({tgt}) — 다음에도 유지돼요.")
+        st.sidebar.caption("※ 저장을 눌러야 반영돼요. 안 누르면 이번 세션에서만 볼 수 있어요.")
     else:
         work = stored
 
@@ -1445,12 +1445,11 @@ def main():
         st.title("LF몰 CRM 발송성과 대시보드")
         st.markdown("""
         <div class="vg">
-        <b>발송기획(문구) 시트</b>와 <b>발송실적(성과) 시트</b>를 <code>(발송일 + AF코드)</code>로 머지해
-        <b>어떤 문구·오퍼·타이밍 패턴이 성과를 만드는지</b> 도출합니다.<br><br>
-        왼쪽 <b>📂 파일 업로드</b>에 <b>발송실적(주차별)</b> 과 <b>발송기획(통합본)</b> 을 함께 올리면 자동 인식되고,
-        <b>「저장」</b>을 누르면 누적됩니다.<br>
-        · 조인은 <b>실적 기준</b> — 기획에만 있고 실제 발송 안 된 건은 자동 제외됩니다.<br>
-        · 다음부터는 <b>새 주차 실적만</b> 올려 누적하면 되고, 누적된 데이터는 기획 파일 없이도 분석됩니다.
+        <b>기획 문구</b>와 <b>발송 실적</b>을 합쳐서 <b>어떤 문구·오퍼·타이밍이 성과를 만드는지</b> 알 수 있어요.<br><br>
+        왼쪽 <b>📂 파일 올리기</b>에 <b>발송실적</b>과 <b>기획 통합본</b>을 같이 올리면 자동으로 인식돼요.
+        <b>「저장하기」</b>를 누르면 쌓여요.<br>
+        · 실제로 발송한 건만 분석해요. 기획만 있고 발송 안 한 건은 빠져요.<br>
+        · 한 번 저장하면 다음부터는 <b>새 주차 실적만</b> 올리면 돼요.
         </div>""", unsafe_allow_html=True)
         st.stop()
 
@@ -1478,13 +1477,13 @@ def main():
             mtd_new = pd.concat(mframes, ignore_index=True)
     if mtd_new is not None and len(mtd_new):
         mtd_work = merge_mtd_store(mtd_stored, mtd_new)
-        st.sidebar.success(f"MTD 신규 {len(mtd_new)}일 → 누적 {len(mtd_work)}일 (미리보기)")
-        if st.sidebar.button("💾 MTD 저장 (누적 반영)", use_container_width=True, key="save_mtd"):
+        st.sidebar.success(f"MTD 새로 {len(mtd_new)}일 → 합쳐서 {len(mtd_work)}일 (미리보기)")
+        if st.sidebar.button("💾 MTD 저장하기", use_container_width=True, key="save_mtd"):
             storage_save(BK, "mtd", mtd_work)
             st.session_state.mtd_store_df = mtd_work
             st.cache_data.clear()
             tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-            st.sidebar.success(f"MTD 저장됨 ✓ ({tgt})")
+            st.sidebar.success(f"MTD 저장했어요 ✓ ({tgt})")
     else:
         mtd_work = mtd_stored
     mtd_data = compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
@@ -1498,21 +1497,21 @@ def main():
         try:
             pnew = cached_promo(promo_files.getvalue())
             promo_work = merge_promo_store(promo_stored, pnew)
-            st.sidebar.success(f"기획전 시트 {len(pnew):,}건 파싱 → 누적 {len(promo_work):,}건 (미리보기)")
-            if st.sidebar.button("💾 기획전 저장 (누적 반영)", use_container_width=True, key="save_promo"):
+            st.sidebar.success(f"기획전 시트 {len(pnew):,}건 → 합쳐서 {len(promo_work):,}건 (미리보기)")
+            if st.sidebar.button("💾 기획전 저장하기", use_container_width=True, key="save_promo"):
                 storage_save(BK, "promo", promo_work)
                 st.session_state.promo_store_df = promo_work
                 st.cache_data.clear()
                 tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-                st.sidebar.success(f"기획전 저장됨 ✓ ({tgt})")
-            st.sidebar.caption("※ 저장을 눌러야 영구 반영됩니다.")
+                st.sidebar.success(f"기획전 저장했어요 ✓ ({tgt})")
+            st.sidebar.caption("※ 저장을 눌러야 반영돼요.")
         except Exception as e:
-            st.sidebar.error(f"기획전 시트 파싱 실패: {str(e)[:90]}")
+            st.sidebar.error(f"기획전 시트를 읽지 못했어요: {str(e)[:90]}")
     promo_df = finalize_promo(promo_work)
 
     # ── 필터 (카테고리별) ──
     st.sidebar.markdown("---")
-    st.sidebar.markdown("#### 필터")
+    st.sidebar.markdown("#### 조건 설정")
 
     def _opts(d, col):
         if col not in d:
@@ -1525,14 +1524,14 @@ def main():
             return d
         return d[d[col].astype(str).str.replace(r'\.0$', '', regex=True).isin(sel)]
 
-    search = st.sidebar.text_input("🔎 문구·브랜드·AF 검색", "",
-                                   help="제목·내용·브랜드·AF코드·카테고리에서 입력어를 포함한 캠페인만 표시")
-    only_matched = st.sidebar.checkbox("문구 매칭된 캠페인만", value=True,
-                                       help="실적엔 있으나 기획시트에서 문구(제목·내용)를 못 찾은 건 제외합니다")
+    search = st.sidebar.text_input("🔎 검색", "",
+                                   help="제목·내용·브랜드·AF코드·카테고리에서 찾아요")
+    only_matched = st.sidebar.checkbox("문구 매칭된 것만", value=True,
+                                       help="문구(제목·내용)를 못 찾은 건 빼요")
     min_send = st.sidebar.number_input(
-        "최소 발송수 (분석 표본)", value=5000, step=1000, min_value=0,
-        help="이 발송수 미만의 캠페인은 분석에서 제외합니다. 발송이 너무 적으면 전환율이 우연에 좌우돼 "
-             "비교가 왜곡되기 때문입니다(소표본 통제). 값을 낮추면 더 많은 캠페인이 포함됩니다.")
+        "최소 발송수", value=5000, step=1000, min_value=0,
+        help="이 숫자 미만의 캠페인은 분석에서 빠져요. 발송이 너무 적으면 우연에 흔들리거든요. "
+             "낮추면 더 많은 캠페인이 포함돼요.")
 
     base_opt = raw[raw["matched"]] if only_matched else raw
 
@@ -1550,10 +1549,10 @@ def main():
     with st.sidebar.expander("📤 발송 속성"):
         sel_st = st.multiselect("발송유형", _opts(base_opt, "stype"))
         sel_target = st.multiselect("타겟 구분", _opts(base_opt, "target"),
-                                    help="신규·휴면·전체 등 발송 대상")
+                                    help="신규·휴면·전체 등 누구에게 보냈는지")
         sel_bpu = st.multiselect("BPU(사업부)", _opts(base_opt, "bpu"))
         sel_prio = st.multiselect("우선순위", _opts(base_opt, "prio"),
-                                  help="같은 시간대 발송 순번(1=가장 먼저)")
+                                  help="같은 시간에 몇 번째로 보냈는지 (1=가장 먼저)")
 
     def _hm_label(v):  # 시간대 HHMM 문자열 → 'HH시MM분' (예: 1030→10시30분, 800→08시00분)
         try:
@@ -1572,17 +1571,17 @@ def main():
     with st.sidebar.expander("🏷️ 상품·담당"):
         sel_cat = st.multiselect("카테고리", _opts(base_opt, "cat"))
         sel_attr = st.multiselect("대상 속성", _opts(base_opt, "attr"),
-                                  help="발송 속성(통합·정상·이월·입점·마케팅·BPU 등)")
+                                  help="통합·정상·이월·입점·마케팅 등")
         sel_owner = st.multiselect("담당자", _opts(base_opt, "owner"))
 
     with st.sidebar.expander("✍️ 문구 속성"):
-        sel_tags = st.multiselect("문구 소구 속성", TAG_BOOLS,
-                                  help="할인율소구·마감임박 등 제목+내용에서 자동 분류된 속성")
+        sel_tags = st.multiselect("소구 속성", TAG_BOOLS,
+                                  help="할인율·마감임박 등 제목+내용에서 자동으로 분류한 속성이에요")
         tags_and = True
         if sel_tags:
             tags_and = st.radio("조건", ["모두 충족(AND)", "하나라도(OR)"], horizontal=True,
                                 key="tags_mode",
-                                help="AND: 선택 속성을 모두 가진 캠페인 / OR: 하나라도 가진 캠페인") \
+                                help="AND: 선택한 속성을 다 가진 것만 / OR: 하나라도 가진 것") \
                 == "모두 충족(AND)"
 
     CATSEL = {"stype": sel_st, "target": sel_target, "bpu": sel_bpu, "hour": sel_hour,
@@ -1633,7 +1632,7 @@ def main():
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
     ]
-    cat = st.sidebar.radio("분석 영역", ["📊 발송성과 (문구×성과)", "😮‍💨 발송피로도 (전사 MTD)"])
+    cat = st.sidebar.radio("분석 영역", ["📊 발송성과", "😮‍💨 발송피로도"])
     if cat.startswith("📊"):
         _grp = st.sidebar.radio("페이지", list(CAMPAIGN_GROUPS))
         _subs = CAMPAIGN_GROUPS[_grp]
@@ -1647,7 +1646,7 @@ def main():
     else:
         page = st.sidebar.radio("페이지", FATIGUE_PAGES)
         if mtd_data is None:
-            st.sidebar.info("전사 MTD 발송상세 파일을 올리면 활성화됩니다 (자동 인식).")
+            st.sidebar.info("전사 MTD 파일을 올리면 볼 수 있어요.")
     _model_keys = list(AI_MODELS.keys())
     _default_model = "Claude Sonnet 4.6 (균형)"
     model_name = st.sidebar.selectbox(
@@ -1656,31 +1655,30 @@ def main():
     model = AI_MODELS[model_name]
 
     st.sidebar.markdown("---")
-    st.sidebar.markdown("#### 처리 현황")
+    st.sidebar.markdown("#### 현황")
     drange = "—"
     if df["date"].notna().any():
         ds = sorted(df["date"].dropna().unique())
         drange = f"{ds[0]} ~ {ds[-1]}"
-    st.sidebar.caption(f"전체 {len(raw)}건 · 매칭 {raw['matched'].mean()*100:.0f}% · 분석표본 {len(fdf)}건\n\n기간 {drange}")
+    st.sidebar.caption(f"전체 {len(raw)}건 · 매칭 {raw['matched'].mean()*100:.0f}% · 분석 {len(fdf)}건\n\n{drange}")
     if parse_log:
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))
 
-    with st.sidebar.expander("누적 데이터 관리"):
+    with st.sidebar.expander("데이터 관리"):
         _n_saved = len(stored) if stored is not None else 0
         _n_new = len(new_raw) if new_raw is not None else 0
-        st.caption(f"전체 {len(work):,}건  =  저장됨(영구) {_n_saved:,}  +  이번 세션 신규/갱신 {_n_new:,}")
+        st.caption(f"전체 {len(work):,}건 = 저장됨 {_n_saved:,} + 이번 세션 {_n_new:,}")
         if _n_new and not _n_saved:
-            st.warning("저장됨이 0건입니다 — 이전 누적이 안 불러와졌어요. 「💾 저장」을 눌러야 "
-                       "구글시트/로컬에 영구 반영되고, 다음 세션·백업에도 포함됩니다.")
+            st.warning("저장된 데이터가 0건이에요. 「💾 저장하기」를 눌러야 다음에도 유지돼요.")
         if len(work):
             st.download_button(
                 f"⬇ 누적 백업 (CSV · {len(work):,}건)",
                 work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
                 file_name="send_perf_store_backup.csv", mime="text/csv", use_container_width=True)
-            st.caption("백업 파일에는 위 ‘전체’ 건수(저장됨+이번 세션 신규)가 모두 들어갑니다. "
-                       "앱 재배포 시 누적이 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 올리면 복원됩니다.")
-        rest = st.file_uploader("복원/추가 (백업 CSV)", type=["csv"], key="restore_store")
+            st.caption("전체 데이터가 백업에 포함돼요. "
+                       "재배포하면 초기화될 수 있으니 가끔 백업해 주세요. 이 CSV를 다시 올리면 복원돼요.")
+        rest = st.file_uploader("백업 CSV로 복원하기", type=["csv"], key="restore_store")
         if rest is not None:
             try:
                 d = pd.read_csv(rest, encoding="utf-8-sig", dtype={"date": str, "af": str})
@@ -1688,36 +1686,36 @@ def main():
                 storage_save(BK, "campaign", merged_restore)
                 st.session_state.camp_store = merged_restore
                 st.cache_data.clear()
-                st.success("복원·병합 완료 ✓ 새로고침하세요")
+                st.success("복원했어요 ✓ 새로고침해 주세요")
             except Exception as e:
-                st.error(f"복원 실패: {e}")
-        if st.button("🗑 누적 초기화", use_container_width=True, key="clear_store"):
+                st.error(f"복원하지 못했어요: {e}")
+        if st.button("🗑 전부 지우기", use_container_width=True, key="clear_store"):
             storage_clear(BK, "campaign")
             st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
             st.cache_data.clear()
-            st.success("초기화됨 — 새로고침하세요")
+            st.success("지웠어요. 새로고침해 주세요.")
         st.markdown("---")
-        st.caption(f"전사 MTD 누적 {0 if mtd_work is None else len(mtd_work)}일")
+        st.caption(f"전사 MTD {0 if mtd_work is None else len(mtd_work)}일치")
         if mtd_work is not None and len(mtd_work):
             st.download_button(
                 "⬇ MTD 백업 (CSV)",
                 mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"),
                 file_name="send_perf_mtd_backup.csv", mime="text/csv",
                 use_container_width=True, key="mtd_bak")
-        if st.button("🗑 MTD 초기화", use_container_width=True, key="clear_mtd"):
+        if st.button("🗑 MTD 지우기", use_container_width=True, key="clear_mtd"):
             storage_clear(BK, "mtd")
             st.session_state.mtd_store_df = pd.DataFrame(columns=MTD_STORE_COLS)
             st.cache_data.clear()
-            st.success("MTD 초기화됨 — 새로고침하세요")
+            st.success("MTD를 지웠어요. 새로고침해 주세요.")
         st.markdown("---")
-        st.caption(f"기획전 성과시트 누적 {0 if promo_work is None else len(promo_work):,}건")
+        st.caption(f"기획전 성과 {0 if promo_work is None else len(promo_work):,}건")
         if promo_work is not None and len(promo_work):
             st.download_button(
                 "⬇ 기획전 백업 (CSV)",
                 promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"),
                 file_name="send_perf_promo_backup.csv", mime="text/csv",
                 use_container_width=True, key="promo_bak")
-        rest_p = st.file_uploader("기획전 복원/추가 (백업 CSV)", type=["csv"], key="restore_promo")
+        rest_p = st.file_uploader("기획전 백업 CSV로 복원하기", type=["csv"], key="restore_promo")
         if rest_p is not None:
             try:
                 dp = pd.read_csv(rest_p, encoding="utf-8-sig", dtype={"promo": str})
@@ -1725,35 +1723,31 @@ def main():
                 storage_save(BK, "promo", merged_p)
                 st.session_state.promo_store_df = merged_p
                 st.cache_data.clear()
-                st.success("기획전 복원·병합 완료 ✓ 새로고침하세요")
+                st.success("기획전 복원했어요 ✓ 새로고침해 주세요")
             except Exception as e:
-                st.error(f"기획전 복원 실패: {e}")
-        if st.button("🗑 기획전 초기화", use_container_width=True, key="clear_promo"):
+                st.error(f"기획전 복원하지 못했어요: {e}")
+        if st.button("🗑 기획전 지우기", use_container_width=True, key="clear_promo"):
             storage_clear(BK, "promo")
             st.session_state.promo_store_df = pd.DataFrame(columns=PROMO_STORE_COLS)
             st.cache_data.clear()
-            st.success("기획전 초기화됨 — 새로고침하세요")
+            st.success("기획전을 지웠어요. 새로고침해 주세요.")
         st.markdown("---")
         st.caption(f"저장 위치: {BK['status']}")
         if BK["mode"] != "gsheets":
-            st.caption("구글시트 연동: Secrets에 `gcp_service_account`(서비스계정 JSON)와 "
-                       "`[gsheets] spreadsheet=\"<시트 URL/키>\"`를 넣고, 해당 시트를 "
-                       "서비스계정 이메일과 **편집자**로 공유하세요.")
-        st.markdown("##### 📥 기획(문구) 구글시트 직접연결")
+            st.caption("구글시트를 쓰려면 Secrets에 `gcp_service_account`와 "
+                       "`[gsheets] spreadsheet`를 넣고, 시트를 서비스계정 이메일에 **편집자**로 공유해 주세요.")
+        st.markdown("##### 📥 기획 문구 구글시트 연결")
         try:
             _sa_email = st.secrets["gcp_service_account"].get("client_email", "(secrets 확인)")
         except Exception:
             _sa_email = "(서비스계정 미설정)"
         st.markdown(
-            "★APP PUSH 발송 시트를 다운로드 없이 바로 읽으려면:<br>"
-            f"1) 그 구글시트를 서비스계정 이메일 <code>{_sa_email}</code> 에 "
-            "**뷰어**로 공유<br>"
-            "2) (선택) Secrets에 <code>[gsheets] plan_spreadsheet=\"&lt;기획시트 URL&gt;\"</code> "
-            "추가 → 사이드바에 URL 자동 입력<br>"
-            "3) 사이드바에서 <b>② 기획 소스 → 구글시트 직접연결</b> 선택 후 "
-            "<b>🔄 동기화</b> → ① 실적 파일과 함께 <b>저장</b><br>"
-            "<span style='color:#94a3b8'>※ 시트가 165개처럼 많으면 '최근 주차 수'로 제한하세요 "
-            "(API 한도·속도). 보통 새 주차만 받으면 충분합니다.</span>",
+            "★APP PUSH 시트를 바로 읽으려면:<br>"
+            f"1) 구글시트를 <code>{_sa_email}</code>에 **뷰어**로 공유해 주세요<br>"
+            "2) Secrets에 <code>[gsheets] plan_spreadsheet</code>를 넣으면 URL이 자동으로 채워져요<br>"
+            "3) 사이드바에서 <b>구글시트 연결</b> → <b>🔄 가져오기</b> → <b>저장하기</b><br>"
+            "<span style='color:#94a3b8'>※ 시트가 많으면 '최근 주차 수'로 줄여 주세요. "
+            "보통 새 주차만 가져오면 충분해요.</span>",
             unsafe_allow_html=True)
 
     # 지표 메타
@@ -1771,37 +1765,32 @@ def main():
         """비전문가용 지표·통계 용어 설명 (접이식). 통계가 나오는 페이지 하단에 호출."""
         metrics_md = (
             "**📊 성과 지표**\n"
-            "- **CTR(유입전환율)** = UV ÷ 발송. 메시지를 받은 사람 중 몇 %가 들어왔나. "
-            "제목·발송시점·타겟이 좋을수록 올라갑니다.\n"
-            "- **주문전환율(주문CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀나. "
-            "오퍼·상품·랜딩이 좋을수록 올라갑니다.\n"
-            "- **RPS(발송건당 거래액)** = 거래액 ÷ 발송. 한 건 보낼 때 평균 얼마를 벌었나(종합 효율).\n"
-            "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건당 평균 결제금액.\n")
+            "- **CTR** = 들어온 사람 ÷ 보낸 수. 메시지를 보고 몇 %가 들어왔는지예요.\n"
+            "- **주문전환율** = 주문 ÷ 들어온 사람. 들어온 사람 중 몇 %가 샀는지예요.\n"
+            "- **RPS** = 거래액 ÷ 보낸 수. 1건 보냈을 때 평균 매출이에요.\n"
+            "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건에 얼마를 냈는지예요.\n")
         stats_md = (
-            "**🔬 통계 용어 (쉽게)**\n"
-            "- **유의성 / p값**: 이 차이가 '우연'일 가능성. 작을수록 진짜 차이. "
-            "보통 p<0.05면 '우연으로 보기 어렵다(유의)'고 판단합니다.\n"
-            "- **효과크기(Cohen's d)**: 차이가 *실제로 얼마나 큰지*. |d| 0.2 작음·0.5 중간·0.8 큼. "
-            "(p값은 '차이가 있나 없나', 효과크기는 '얼마나 크냐'를 봅니다.)\n"
-            "- **유의성(보정) / FDR**: 여러 항목을 한꺼번에 비교하면 우연히 '유의'가 섞이기 쉬워서, "
-            "이를 더 엄격하게 바로잡은 값입니다.\n"
-            "- **순효과(다변량 회귀)**: 카테고리·시간대 등 다른 조건을 똑같이 맞췄을 때 "
-            "그 요소 *하나만의* 순수 기여. 단순 평균이 주는 착시(예: 특정 카테고리에 몰림)를 걷어냅니다.\n"
-            "- **상관 r**: 두 값이 함께 움직이는 정도(−1~+1). +면 같이 오르고, −면 반대, 0이면 무관계.\n"
-            "- **±2σ(시그마)**: 평균에서 표준편차의 2배 넘게 벗어남 = '평소와 매우 다름'(상·하위 약 2.5%).\n")
+            "**🔬 통계 용어**\n"
+            "- **p값**: 이 차이가 우연일 가능성이에요. 작을수록 진짜예요. "
+            "보통 0.05 미만이면 '진짜 차이'로 봐요.\n"
+            "- **효과크기(d)**: 차이가 실제로 얼마나 큰지예요. 0.2 작음 · 0.5 중간 · 0.8 큼.\n"
+            "- **보정(FDR)**: 한꺼번에 여러 개를 비교하면 우연히 '유의'가 나오기 쉬워서, "
+            "더 엄격하게 걸러낸 값이에요.\n"
+            "- **순효과**: 다른 조건(카테고리·시간 등)을 맞춘 뒤 그 요소만의 진짜 기여예요.\n"
+            "- **상관 r**: 둘이 같이 움직이는 정도예요. +면 같이, −면 반대, 0이면 관계 없어요.\n"
+            "- **±2σ**: 평균에서 아주 많이 벗어난 거예요. 상·하위 약 2.5%에 해당해요.\n")
         criteria_md = (
             "**📐 기준**\n"
-            "- **최소 발송수 / 표본 수(n)**: 건수가 너무 적으면 우연이 커서, 일정 수 이상만 분석에 넣습니다. "
-            "표(n)가 작으면 결과를 신중히 보세요.\n"
-            "- **가중 평균**: 발송량이 큰 캠페인에 비중을 더 둔 평균(합산÷합산). 전체 실제 효율에 가깝습니다.\n"
-            "- **단순 평균**: 캠페인 1건을 1표로 본 평균. 작은 캠페인도 동등하게 반영됩니다.\n")
-        with st.expander("📖 지표·통계 용어 쉽게 보기 (처음이면 클릭)"):
+            "- **최소 발송수**: 너무 적으면 우연이 커서, 일정 수 이상만 분석에 넣어요.\n"
+            "- **가중 평균**: 발송이 많은 캠페인에 비중을 더 둬요. 실제 효율에 가까워요.\n"
+            "- **단순 평균**: 캠페인 1건을 1표로 봐요. 작은 캠페인도 동등하게 들어가요.\n")
+        with st.expander("📖 용어가 어려우면 여기를 눌러 보세요"):
             st.markdown(metrics_md + "\n" + stats_md + "\n" + criteria_md)
 
     def render_messages(d, mcol, key, n=200):
         """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기."""
         if d is None or len(d) == 0:
-            st.info("해당 조건의 발송 메시지가 없습니다."); return
+            st.info("해당 조건에 맞는 메시지가 없어요."); return
         dd = d.sort_values(mcol, ascending=False).head(n).reset_index(drop=True).copy()
         if "body" in dd.columns:
             dd["_bprev"] = dd["body"].map(lambda x: " ".join(_s(x).split())[:60])
@@ -1854,7 +1843,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     if "종합 요약" in page:
         st.title("종합 요약")
-        st.caption(f"분석 표본: 발송 {min_send:,}건 이상 · {len(fdf)}개 캠페인 · {drange}")
+        st.caption(f"발송 {min_send:,}건 이상 · {len(fdf)}개 캠페인 · {drange}")
         base = fdf if len(fdf) else df
         # 주차 선택 필터 (년도 포함 · 최신순). 선택 시 이 페이지 전체가 해당 주차로 좁혀짐.
         scope_label = "최근 7일"
@@ -1869,7 +1858,7 @@ def main():
                 return f"{iy}년 {iw}주차 ({ws.strftime('%m/%d')}~{we.strftime('%m/%d')})"
             _wopts = ["전체 기간"] + [_wlab(w) for w in _wks]
             _wsel = st.selectbox("📅 주차 선택", _wopts, index=0, key="p01_week",
-                                 help="특정 주차만 보려면 선택하세요(최신 주차가 위). 선택 시 아래 지표·TOP/BOTTOM이 해당 주차로 좁혀집니다.")
+                                 help="특정 주차만 보려면 선택해 주세요. 최신 주차가 위에 있어요.")
             if _wsel != "전체 기간":
                 _ws = _wks[_wopts.index(_wsel) - 1]
                 base = base[(base["dt"] >= _ws) & (base["dt"] < _ws + pd.Timedelta(days=7))]
@@ -1912,8 +1901,8 @@ def main():
         los = los.sort_values("_sortdt", na_position="last")
         _rng = f"{(_last - pd.Timedelta(days=7)).date()} ~ {_last.date()}" if _last is not None else drange
         _scope_txt = f"최근 7일({_rng})" if scope_label == "최근 7일" else scope_label
-        st.caption(f"{_scope_txt} 기준 · 주문CR(=주문÷UV)은 UV가 적으면 1주문에도 크게 튀므로 "
-                   "UV 100 이상 캠페인만 순위에 포함합니다.")
+        st.caption(f"{_scope_txt} 기준 · UV가 적으면 1건만 주문해도 전환율이 크게 튀어서, "
+                   "UV 100 이상인 캠페인만 순위에 넣었어요.")
         _tbcols = ["발송일자", "발송시간", "title", "_body", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
         _tbren = {"발송일자": "발송일자", "발송시간": "발송시간", "title": "제목", "_body": "내용",
                   "cat": "카테고리", "send": "발송", "infl_cr": "CTR",
@@ -1931,9 +1920,9 @@ def main():
 
         # ── 주목 캠페인 자동 탐지 (이상치) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🚩 주목 캠페인 — 평균에서 크게 벗어난 건 (자동 탐지)")
-        st.caption("주문전환율이 전체 평균에서 통계적으로 크게 벗어난(±2σ) 캠페인을 자동으로 찾습니다. "
-                   "급등 건은 '성공 공식', 급락 건은 '점검 대상'입니다.")
+        st.markdown("##### 🚩 눈여겨볼 캠페인")
+        st.caption("전환율이 평균에서 크게 벗어난 캠페인을 자동으로 찾았어요. "
+                   "급등은 '성공 공식', 급락은 '점검 대상'이에요.")
         av = base["ord_cr"].dropna()
         if len(av) >= 8 and av.std(ddof=0) > 0:
             mu, sd = float(av.mean()), float(av.std(ddof=0))
@@ -1955,15 +1944,15 @@ def main():
                                     hide_index=True, use_container_width=True)
             _show_outliers(hi, oc1, "🔼", "급등 (성공 공식)")
             _show_outliers(lo, oc2, "🔽", "급락 (점검 대상)")
-            st.markdown(f'<div class="appendix">기준: 전체 평균 주문CR {mu*100:.2f}% ± 2σ({sd*100:.2f}%p). '
-                        f'급등 건의 문구·오퍼·타이밍을 다음 캠페인에 재사용하고, 급락 건은 원인(타겟·상품·문구)을 점검하세요.</div>',
+            st.markdown(f'<div class="appendix">기준: 평균 주문CR {mu*100:.2f}% ± 2σ({sd*100:.2f}%p). '
+                        f'급등 건의 문구·오퍼·타이밍을 다음에 써 보고, 급락 건은 원인을 확인해 보세요.</div>',
                         unsafe_allow_html=True)
         else:
-            st.info("이상치 탐지에는 표본이 더 필요합니다 (8건 이상).")
+            st.info("8건 이상 있어야 찾을 수 있어요.")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🤖 AI 핵심 인사이트")
-        if st.button("AI 인사이트 생성", key="ai_sum"):
+        st.markdown("##### 🤖 AI가 찾은 핵심 포인트")
+        if st.button("AI 인사이트 만들기", key="ai_sum"):
             facts = build_facts(base)
             system = ("당신은 LF몰 CRM PUSH 발송 분석가입니다. 주어진 데이터만 근거로 "
                       "핵심 인사이트 3~5개를 한국어 불릿으로 작성하세요. 수치를 지어내지 말고 "
@@ -1984,12 +1973,12 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "문구 속성별" in page:
         st.title("문구 속성별 성과")
-        st.caption("각 문구 속성 보유/미보유 그룹의 평균 성과 차이 + 통계 유의성(Welch t-검정)")
+        st.caption("각 소구 속성이 있을 때와 없을 때 성과가 얼마나 다른지 비교해요.")
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()))
         mcol, msuf, mclr = METRIC_OPTS[mlabel]
         base = fdf
         if len(base) < 6:
-            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+            st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
 
         rows = []
         for tag in TAG_BOOLS:
@@ -2029,24 +2018,24 @@ def main():
         show["유의성(보정)"] = show["p_adj"].map(sig_label)
         st.dataframe(show[["속성", "보유평균", "보유n", "미보유평균", "미보유n", "차이", "효과크기", "유의성(보정)"]],
                      hide_index=True, use_container_width=True)
-        st.markdown('<div class="appendix">속성은 제목·본문 문구를 규칙 기반으로 자동 태깅한 결과입니다. '
-                    '<b>효과크기</b>(Cohen\'s d)는 차이의 실질 크기(|d| 0.2 작음·0.5 중간·0.8 큼), '
-                    '<b>유의성(보정)</b>은 여러 속성 동시검정의 위양성을 줄인 FDR 보정 p값입니다. '
-                    'n이 작으면 우연일 수 있으니 효과크기·유의성을 함께 보세요.</div>',
+        st.markdown('<div class="appendix">속성은 제목·본문에서 자동으로 분류한 거예요. '
+                    '<b>효과크기</b>(d)는 차이가 실제로 얼마나 큰지(0.2 작음·0.5 중간·0.8 큼), '
+                    '<b>유의성(보정)</b>은 여러 개를 한꺼번에 비교할 때 우연을 걸러낸 값이에요. '
+                    '건수(n)가 적으면 우연일 수 있으니 함께 봐 주세요.</div>',
                     unsafe_allow_html=True)
 
         # ── 다변량 회귀: 교란(카테고리·시간대) 통제 후 속성 순효과 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🧮 교란 통제 후 속성 순효과 (다변량 회귀)")
-        st.caption("단순 평균비교는 '속성이 특정 카테고리·시간대에 몰린' 착시를 포함할 수 있습니다. "
-                   "카테고리·발송유형·시간대를 통제했을 때 각 속성이 독립적으로 성과에 주는 순효과입니다.")
+        st.markdown("##### 🧮 다른 조건을 맞춘 뒤 속성의 진짜 효과")
+        st.caption("단순 비교는 '특정 카테고리에 몰린' 착시가 섞일 수 있어요. "
+                   "카테고리·발송유형·시간대를 맞춘 뒤 각 속성만의 순수 효과를 봐요.")
         ctrl_opts = [c for c in ["cat", "stype", "hour", "dow_k", "bpu"] if c in base.columns]
         ctrl_label = {"cat": "카테고리", "stype": "발송유형", "hour": "시간대", "dow_k": "요일", "bpu": "BPU"}
         sel_ctrl = st.multiselect("통제할 변수", ctrl_opts, default=[c for c in ["cat", "stype", "hour"] if c in ctrl_opts],
                                   format_func=lambda c: ctrl_label.get(c, c), key="p02_ctrl")
         eff = ols_effects(base, TAG_BOOLS, sel_ctrl, mcol)
         if len(eff) == 0:
-            st.info("표본이 부족해 회귀를 추정할 수 없습니다. 통제 변수를 줄이거나 '최소 발송수'를 낮춰 보세요.")
+            st.info("데이터가 부족해서 분석할 수 없어요. '최소 발송수'를 낮춰 보세요.")
         else:
             eff["p_adj"] = fdr_bh(eff["p"].values)
             ev = eff["순효과"] * (100 if is_pct else 1)
@@ -2062,16 +2051,15 @@ def main():
                           for v in eff["순효과"]]
             er["유의성(보정)"] = er["p_adj"].map(sig_label)
             st.dataframe(er[["속성", "순효과", "유의성(보정)"]], hide_index=True, use_container_width=True)
-            st.markdown('<div class="appendix">순효과가 양(+)이고 유의하면, 다른 조건이 같을 때 그 속성이 성과를 끌어올린다는 '
-                        '근거가 더 강합니다. 단순 비교에선 좋아 보였는데 순효과가 약해지면 '
-                        '카테고리·시간대 같은 외부 요인이 섞였던 것입니다.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="appendix">순효과가 +이고 유의하면, 다른 조건이 같아도 그 속성이 성과를 끌어올려요. '
+                        '단순 비교에선 좋아 보였는데 여기서 약하면 다른 요인이 섞인 거예요.</div>', unsafe_allow_html=True)
 
         # ── 속성 조합 패턴 분석 (할인율소구+마감임박 등) ──
         import itertools
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🔗 속성 조합 패턴 — 어떤 조합이 효율이 높은가")
-        st.caption("문구 속성 2개를 동시에 가진 캠페인의 평균 성과 (예: 할인율소구+마감임박). "
-                   "표본(n)이 작으면 우연일 수 있으니 캠페인 수와 함께 보세요. 전체 평균 대비 차이로 정렬됩니다.")
+        st.markdown("##### 🔗 속성 조합 — 어떤 조합이 잘 먹힐까")
+        st.caption("소구 속성 2~3개를 동시에 쓴 캠페인의 평균 성과예요. "
+                   "건수가 적으면 우연일 수 있으니 캠페인 수도 같이 봐 주세요.")
         cc1, cc2 = st.columns([2, 1])
         cmin = cc1.number_input("조합 최소 표본 (캠페인 수)", value=5, min_value=2, step=1, key="p02_cmin")
         ksize = cc2.radio("조합 크기", [2, 3], horizontal=True, key="p02_ksize")
@@ -2089,7 +2077,7 @@ def main():
             crows.append(dict(조합="+".join(combo), 캠페인수=len(sub),
                               평균=float(sub.mean()), 차이=float(sub.mean()) - base_mean, p=p))
         if not crows:
-            st.info("최소 표본을 만족하는 조합이 없습니다. 표본 기준을 낮추거나 사이드바 '최소 발송수'를 낮춰 보세요.")
+            st.info("조건에 맞는 조합이 없어요. 기준을 낮추거나 '최소 발송수'를 줄여 보세요.")
         else:
             cdf = pd.DataFrame(crows).sort_values("평균", ascending=False).reset_index(drop=True)
             topn = cdf.head(12)
@@ -2122,11 +2110,11 @@ def main():
             cshow["유의성"] = cdf["p"].map(sig_label)
             st.dataframe(cshow[["조합", "캠페인수", "평균", "차이", "유의성"]].style.format({"캠페인수": "{:,.0f}"}),
                          hide_index=True, use_container_width=True, height=320)
-            st.markdown('<div class="appendix">유의성은 해당 조합 보유 vs 미보유 그룹의 Welch t-검정 결과입니다. '
-                        'n이 작으면 평균이 높아도 우연일 수 있으니 유의성을 함께 보세요.</div>',
+            st.markdown('<div class="appendix">유의성은 해당 조합이 있는 그룹과 없는 그룹의 차이를 검정한 결과예요. '
+                        '건수가 적으면 우연일 수 있어요.</div>',
                         unsafe_allow_html=True)
 
-            sel_combo = st.selectbox("조합 선택 → 실제 발송 메시지 보기", list(cdf["조합"]), key="p02_combo")
+            sel_combo = st.selectbox("조합을 골라 실제 메시지를 확인해 보세요", list(cdf["조합"]), key="p02_combo")
             if sel_combo:
                 parts = sel_combo.split("+")
                 mask = np.logical_and.reduce([base[t].values for t in parts])
@@ -2136,8 +2124,8 @@ def main():
 
         # ── 문구 길이 최적 구간 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📏 문구 길이 최적 구간")
-        st.caption("제목/본문 글자수 구간별 평균 성과. 어느 길이대가 가장 효율적인지 — 너무 짧거나 길면 떨어지는지 확인.")
+        st.markdown("##### 📏 문구 길이별 성과")
+        st.caption("제목/본문 글자수 구간별 평균 성과예요. 어느 길이가 가장 잘 먹히는지 확인해 보세요.")
         lc1, lc2 = st.columns(2)
 
         def len_bins(colname, label, container):
@@ -2165,7 +2153,7 @@ def main():
 
         # ── 속성별 드릴다운: 실제 발송 메시지 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📋 속성별 발송 메시지 드릴다운")
+        st.markdown("##### 📋 속성별 실제 메시지 보기")
         avail_tags = [r["속성"] for _, r in adf.iterrows()] if len(adf) else TAG_BOOLS
         sel_tag = st.selectbox("속성 선택", avail_tags, key="p02_tag")
         if sel_tag and sel_tag in base.columns:
@@ -2194,9 +2182,9 @@ def main():
                 return f"{cur*100:.2f}%", d
             d = None if np.isnan(allv) else f"{cur-allv:+,.0f} vs 전체"
             return won(cur), d
-        st.caption(f"현재 필터 {len(fdf):,}건 평균 vs 전체 {len(bench_pop):,}건 평균 — "
+        st.caption(f"현재 조건 {len(fdf):,}건 vs 전체 {len(bench_pop):,}건 평균 — "
                    "사이드바에서 **담당자**(또는 카테고리·브랜드)로 필터하면, 본인 성과가 전체 대비 "
-                   "높은지(초록)·낮은지(빨강) 한눈에 보입니다.")
+                   "높은지(초록)·낮은지(빨강) 한눈에 볼 수 있어요.")
         bc = st.columns(4)
         v, d = _bm("infl_cr"); bc[0].metric("평균 CTR", v, d)
         v, d = _bm("ord_cr"); bc[1].metric("평균 주문CR", v, d)
@@ -2219,7 +2207,7 @@ def main():
             hide_index=True, use_container_width=True, height=560)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🔍 문구 원문 확인")
+        st.markdown("##### 🔍 실제 문구 확인")
         opts = {f"[{r['date']}] {r['title'][:40]} (CR {r['ord_cr']*100:.2f}%)": i
                 for i, r in base.head(40).reset_index(drop=True).iterrows()}
         bb = base.head(40).reset_index(drop=True)
@@ -2234,7 +2222,7 @@ def main():
     # PAGE 04 — 카테고리·시간대 매트릭스
     # ══════════════════════════════════════════════════════════════
     elif "카테고리" in page:
-        st.title("카테고리·시간대 매트릭스")
+        st.title("카테고리·시간대")
         mlabel = st.selectbox("지표", list(METRIC_OPTS.keys()))
         mcol = METRIC_OPTS[mlabel][0]
         is_pct = mcol in ("ord_cr", "infl_cr")
@@ -2243,7 +2231,7 @@ def main():
         def heat(df, idx, col, title):
             pv = df.pivot_table(index=idx, columns=col, values=mcol, aggfunc="mean")
             if pv.empty:
-                st.info("데이터 부족"); return
+                st.info("데이터가 부족해요"); return
             z = pv.values * (100 if is_pct else 1)
             fig = go.Figure(go.Heatmap(
                 z=z, x=[str(c) for c in pv.columns], y=[str(i) for i in pv.index],
@@ -2267,8 +2255,8 @@ def main():
 
         # ── 카테고리별 최적 문구 전략: 카테고리 × 문구속성 히트맵 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🎯 카테고리별 최적 문구 전략 (카테고리 × 문구속성)")
-        st.caption("카테고리마다 잘 먹히는 소구가 다릅니다. 칸이 진할수록 그 카테고리에서 해당 속성의 평균 성과가 높습니다.")
+        st.markdown("##### 🎯 카테고리별 잘 먹히는 소구")
+        st.caption("카테고리마다 효과 좋은 소구가 달라요. 색이 진할수록 성과가 높아요.")
         present_tags = [t for t in TAG_BOOLS if t in base.columns]
         cat_rows = []
         cat_list = [c for c in base["cat"].dropna().unique() if str(c).strip() not in ("", "nan", "None")]
@@ -2305,11 +2293,11 @@ def main():
                 st.markdown("**카테고리별 추천 소구**")
                 st.dataframe(pd.DataFrame(recs), hide_index=True, use_container_width=True)
         else:
-            st.info("카테고리별 표본이 부족합니다.")
+            st.info("카테고리별 데이터가 부족해요.")
 
         # ── 드릴다운: 카테고리 / 시간대 / 요일 선택 → 메시지 목록 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📋 조건별 발송 메시지 드릴다운")
+        st.markdown("##### 📋 조건별 실제 메시지 보기")
         dc1, dc2, dc3 = st.columns(3)
         cat_opts = sorted(base["cat"].dropna().unique()) if "cat" in base else []
         hour_opts = sorted(base["hour"].dropna().unique()) if "hour" in base else []
@@ -2331,7 +2319,7 @@ def main():
     # PAGE 05 — 타이밍·피로도
     # ══════════════════════════════════════════════════════════════
     elif "타이밍" in page:
-        st.title("타이밍 패턴")
+        st.title("타이밍·발송슬롯")
         mlabel = st.selectbox("지표", list(METRIC_OPTS.keys()))
         mcol = METRIC_OPTS[mlabel][0]
         is_pct = mcol in ("ord_cr", "infl_cr")
@@ -2352,7 +2340,7 @@ def main():
         with cc[1]: barby("dow_k", f"요일별 평균 {mlabel}", order=["월", "화", "수", "목", "금", "토", "일"])
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 발송량 구간별 성과 (피로도 — 한 캠페인 발송 규모 vs 효율)")
+        st.markdown("##### 발송량 구간별 성과")
         b = base[base["send"] > 0].copy()
         if len(b) >= 10:
             b["bin"] = pd.qcut(b["send"], q=5, labels=False, duplicates="drop")
@@ -2364,14 +2352,14 @@ def main():
             fig.update_layout(**base_layout(h=320, ysuffix=("%" if is_pct else ""),
                                             title=f"발송 규모 5분위(Q1 소량→Q5 대량)별 평균 {mlabel}"))
             st.plotly_chart(fig, use_container_width=True)
-            st.markdown('<div class="appendix">대량 발송 구간(Q5)에서 효율이 떨어진다면 모수 확대의 한계수익이 '
-                        '낮다는 신호입니다. 단, 발송유형/카테고리 구성 차이가 섞일 수 있습니다.</div>',
+            st.markdown('<div class="appendix">대량 발송 구간(Q5)에서 효율이 떨어지면 더 보내는 게 오히려 '
+                        '낮다는 신호예요. 단, 발송유형/카테고리 구성 차이가 섞일 수 있어요.</div>',
                         unsafe_allow_html=True)
 
         # ── 발송 슬롯 최적 추천 (요일 × 시간) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🏅 발송 슬롯 최적 추천 (요일 × 시간)")
-        st.caption(f"요일·시간 조합별 평균 {mlabel} 순위. 표본(캠페인 수)이 충분한 슬롯 중 효율이 높은 순으로 '언제 보낼지' 추천합니다.")
+        st.markdown("##### 🏅 언제 보내면 좋을까 (요일 × 시간)")
+        st.caption(f"요일·시간 조합별 평균 {mlabel}이에요. 충분한 건수가 있는 슬롯 중 효율이 높은 순이에요.")
         if "dow_k" in base and "hour" in base:
             smin = st.number_input("슬롯 최소 표본(캠페인 수)", value=3, min_value=2, step=1, key="p05_smin")
             g = base.dropna(subset=["hour"]).copy()
@@ -2382,7 +2370,7 @@ def main():
                 발송=("send", "sum"), 거래액=("amt", "sum")).reset_index()
             slot = slot[slot["캠페인수"] >= smin].sort_values("평균", ascending=False)
             if len(slot) == 0:
-                st.info("최소 표본을 만족하는 슬롯이 없습니다. 기준을 낮춰 보세요.")
+                st.info("조건에 맞는 슬롯이 없어요. 기준을 낮춰 보세요.")
             else:
                 dow_order = ["월", "화", "수", "목", "금", "토", "일"]
                 top = slot.head(10).copy()
@@ -2414,13 +2402,13 @@ def main():
                 bv = best["평균"] * (100 if is_pct else 1)
                 bstr = f"{bv:.2f}%" if is_pct else (won(best["평균"]) if mcol in ("rps", "aov", "amt") else f"{bv:,.1f}")
                 st.markdown(f'<div class="appendix">💡 추천: <b>{best["dow_k"]}요일 {int(best["hour"])}시</b> 슬롯이 '
-                            f'평균 {mlabel} <b>{bstr}</b>(n={int(best["캠페인수"])})로 가장 높습니다. '
-                            f'단, 카테고리·상품 구성 차이가 섞일 수 있으니 표본수와 함께 보세요.</div>',
+                            f'평균 {mlabel} <b>{bstr}</b>(n={int(best["캠페인수"])})로 가장 높아요. '
+                            f'카테고리·상품 구성 차이가 섞일 수 있으니 표본수와 함께 보세요.</div>',
                             unsafe_allow_html=True)
 
         # ── 드릴다운: 시간대·요일 선택 → 메시지 목록 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📋 시간대·요일별 발송 메시지 드릴다운")
+        st.markdown("##### 📋 시간대·요일별 실제 메시지 보기")
         tc1, tc2 = st.columns(2)
         hour_opts5 = sorted(base["hour"].dropna().unique()) if "hour" in base else []
         dow_opts5 = [d for d in ["월", "화", "수", "목", "금", "토", "일"] if d in base["dow_k"].values] if "dow_k" in base else []
@@ -2438,10 +2426,10 @@ def main():
     # PAGE 06 — AI 처방
     # ══════════════════════════════════════════════════════════════
     elif "AI 처방" in page:
-        st.title("AI 처방 — 다음 캠페인 카피 가이드")
-        st.caption("머지 데이터(문구 속성 × 성과)를 근거로 Claude가 패턴 종합 + 실행 가이드를 작성합니다.")
+        st.title("AI 처방·카피")
+        st.caption("성과 데이터를 바탕으로 AI가 다음 캠페인 가이드를 만들어 드려요.")
         base = fdf
-        if st.button("AI 처방 생성", key="ai_rx"):
+        if st.button("AI 처방 만들기", key="ai_rx"):
             facts = build_facts(base, with_attr=True)
             system = ("당신은 LF몰 CRM PUSH 카피라이팅 전략가입니다. 주어진 '문구 속성별 성과'와 "
                       "'상·하위 캠페인 문구'를 근거로 다음을 한국어로 작성하세요: "
@@ -2460,8 +2448,8 @@ def main():
 
         # ── AI 카피 초안 생성 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ✍️ AI 카피 초안 생성 — 성과 패턴 기반 다음 메시지")
-        st.caption("성과가 좋았던 문구 속성·조합을 근거로 다음 캠페인 PUSH 문구 초안을 작성합니다.")
+        st.markdown("##### ✍️ AI 카피 초안 — 성과 기반 다음 메시지")
+        st.caption("성과 좋았던 속성·조합을 참고해서 다음 PUSH 문구 초안을 만들어요.")
         dc1, dc2, dc3 = st.columns(3)
         cat_opts_ai = ["(전체)"] + [str(c) for c in sorted(base["cat"].dropna().unique())
                                     if str(c).strip() not in ("", "nan", "None")]
@@ -2477,13 +2465,13 @@ def main():
         body_len = lc2.number_input("내용 글자수(내외)", min_value=10, max_value=200, value=45, step=5,
                                     key="ai_draft_blen")
         draft_n = lc3.slider("초안 개수", 3, 10, 5, key="ai_draft_n")
-        st.caption("💡 추천: 제목 15–25자 · 내용 40–60자 — 모바일 PUSH 알림에서 잘리지 않는 길이입니다. (참고용)")
+        st.caption("💡 추천: 제목 15~25자 · 내용 40~60자 — 모바일 PUSH에서 안 잘리는 길이예요.")
         draft_extra = st.text_area(
             "소구 내용·기획전 특성 (선택)", key="ai_draft_brand", height=70,
             placeholder="예: 헤리스 여름 린넨 30% / 한정수량 / 오늘 마감 — 적을수록 자유롭게, "
-                        "여기 내용을 카피의 핵심 소재로 반영합니다.",
-            help="기획전 특성·혜택·소구 포인트를 적으면 그 내용을 바탕으로 카피를 구성합니다.")
-        if st.button("✍️ 카피 초안 생성", key="ai_draft_btn"):
+                        "여기 내용을 카피의 핵심 소재로 반영해요.",
+            help="기획전 특성·혜택·소구 포인트를 적으면 그 내용을 바탕으로 카피를 만들어요.")
+        if st.button("✍️ 카피 초안 만들기", key="ai_draft_btn"):
             gcol = METRIC_OPTS[draft_goal][0]
             scope = base
             if draft_cat_sel != "(전체)":
@@ -2517,30 +2505,30 @@ def main():
 
         with st.expander("ℹ️ 카피 초안은 어떻게 만들어지나요? (참고)", expanded=False):
             st.markdown(
-                "1. **선택값으로 분석 범위를 좁힘** — `대상 카테고리`+`대상 속성`에 맞는 캠페인만 분석, "
-                "`목표 지표`(주문전환율·CTR·RPS 등) 기준으로 성과 좋았던/나빴던 문구를 가려냅니다.\n"
-                "2. **그 범위의 성과 패턴을 근거로 정리** — 기간·평균 지표, 목표 지표 **상위/하위 문구**, "
-                "**문구 소구 속성별 성과**(할인율소구·마감임박·쿠폰적립 등 보유 vs 미보유)를 요약해 AI에 전달합니다.\n"
-                "3. **소구 내용·기획전 특성 입력 반영** — 입력란에 적은 혜택·소구 포인트·기획전 특성을 "
-                "**카피의 핵심 소재로 반드시 반영**합니다(비워두면 성과 패턴만으로 작성).\n"
-                "4. **성과 높았던 소구·속성 조합을 적용한 새 PUSH 문구 초안**을 생성합니다 "
-                "(전략 + 제목/내용 + 사용 소구 태그). **제목·내용 글자수** 입력값에 맞춰 길이를 조정하고, "
-                "데이터에 있는 사실만 쓰도록 지시해 없는 가격·할인율은 〇〇로 비워둡니다(수치 지어내기 방지).\n\n"
-                "> **구분** · `대상 속성`(통합·정상·이월·마케팅·BPU 등)은 분석 **범위를 거르는 필터**이고, "
-                "실제로 조합되는 건 **문구 소구 속성**(제목·내용에서 자동 태깅된 할인율소구·마감임박 등)입니다. "
-                "즉 ‘이 범위에서 목표를 잘 낸 문구 패턴 + 입력한 소구 내용’을 근거로 카피를 만듭니다.")
+                "1. **선택값으로 분석 범위를 좁혀요** — `대상 카테고리`+`대상 속성`에 맞는 캠페인만 분석하고, "
+                "`목표 지표` 기준으로 성과 좋았던/나빴던 문구를 가려내요.\n"
+                "2. **성과 패턴을 정리해요** — 기간·평균 지표, **상위/하위 문구**, "
+                "**소구 속성별 성과**(할인율소구·마감임박·쿠폰적립 등)를 요약해 AI에 전달해요.\n"
+                "3. **소구 내용·기획전 특성을 반영해요** — 입력란에 적은 혜택·소구 포인트를 "
+                "카피의 핵심 소재로 반영해요(비워두면 성과 패턴만으로 작성).\n"
+                "4. **성과 높았던 소구 조합으로 새 PUSH 문구 초안**을 만들어요 "
+                "(전략 + 제목/내용 + 소구 태그). 글자수에 맞춰 길이를 조정하고, "
+                "데이터에 없는 가격·할인율은 〇〇로 비워둬요.\n\n"
+                "> **구분** · `대상 속성`(통합·정상·이월 등)은 분석 **범위를 거르는 필터**이고, "
+                "실제로 조합되는 건 **문구 소구 속성**(자동 태깅된 할인율소구·마감임박 등)이에요. "
+                "’이 범위에서 목표를 잘 낸 패턴 + 입력한 소구 내용’을 근거로 카피를 만들어요.")
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 08 — 전체 효율·추이 (send_dashboard 피로도 관점 계승)
     # ══════════════════════════════════════════════════════════════
     elif "전체 효율" in page:
-        st.title("전체 효율 · 추이")
-        st.caption("누적된 전 발송(문구 매칭 여부 무관)을 주차 단위로 집계한 전체 효율·피로도 관점. "
-                   "사이드바 필터(기간·발송속성 등)는 반영되며, '최소 발송수'는 제외됩니다.")
+        st.title("전체 효율·추이")
+        st.caption("전체 발송을 주차 단위로 집계한 효율 흐름이에요. "
+                   "사이드바 필터는 반영되고, '최소 발송수'는 제외돼요.")
         g = dff_all.dropna(subset=["dt"]).copy()
         g = g[g["send"].fillna(0) > 0]
         if len(g) < 3:
-            st.info("데이터가 부족합니다. 더 많은 주차를 업로드하세요."); st.stop()
+            st.info("데이터가 부족해요. 더 많은 주차를 올려 주세요."); st.stop()
 
         g["주"] = g["dt"].dt.to_period("W").apply(lambda p: p.start_time)
         rows = []
@@ -2591,14 +2579,14 @@ def main():
             arrow = "같이 움직임(양의 상관)" if r > 0 else "반대로 움직임(음의 상관)"
             st.markdown(
                 f'<div class="appendix"><b>상관관계</b> — 주차 {llab} ↔ {rlab}: 상관 r={r:.2f} ({arrow}), '
-                f'{sig_label(p)}. r이 +1/−1에 가까울수록 강하고 0이면 무관합니다. '
-                f'단, 상관은 인과가 아니며 시즌·구성 변화가 섞일 수 있습니다 '
+                f'{sig_label(p)}. r이 +1/−1에 가까울수록 강하고 0이면 관계가 없어요. '
+                f'상관은 인과가 아니며 시즌·구성 변화가 섞일 수 있어요 '
                 f'(예: 발송량↑인데 RPS·전환율↓이면 발송 피로도 신호).</div>', unsafe_allow_html=True)
         elif m.sum() < 5:
-            st.caption("상관 계산에는 주차 표본이 5개 이상 필요합니다.")
+            st.caption("상관을 계산하려면 5주차 이상 필요해요.")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 주차별 전체 실적")
+        st.markdown("##### 주차별 실적")
         show = wk.copy()
         show["주"] = show["주"].dt.strftime("%Y-%m-%d")
         st.dataframe(show.style.format({
@@ -2606,12 +2594,12 @@ def main():
             "유입전환율": "{:.2%}", "주문전환율": "{:.2%}", "RPS": "{:,.0f}"}),
             hide_index=True, use_container_width=True, height=360)
         st.markdown("<div class=\"appendix\">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산되지 않습니다 "
-                    "— 전사 MTD 발송상세가 필요합니다. 여기서는 캠페인 합산 기준 전체 효율을 봅니다.</div>",
+                    "— 전사 MTD 발송상세가 필요해요. 여기서는 캠페인 합산 기준 전체 효율을 봐요.</div>",
                     unsafe_allow_html=True)
 
         # ── 주차별 드릴다운: 해당 주의 캠페인 목록 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📋 주차별 캠페인 드릴다운")
+        st.markdown("##### 📋 주차별 캠페인 보기")
         wk_labels = [f"{r['주'].strftime('%Y-%m-%d')} (캠페인 {r['캠페인수']:.0f}건)" for _, r in wk.iterrows()]
         if wk_labels:
             sel_wk = st.selectbox("주차 선택", wk_labels, key="p08_wk")
@@ -2624,9 +2612,9 @@ def main():
 
         # ── 퍼널 분해 (발송→UV→VISIT→고객→주문) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🪜 퍼널 분해 — 어디서 새는가")
-        st.caption("발송 → UV(유입) → 주문고객수 → 주문 단계별 잔존·전환율. "
-                   "전환율이 급락하는 단계가 개선 레버리지입니다.")
+        st.markdown("##### 🪜 퍼널 분석 — 어디서 빠질까")
+        st.caption("발송 → UV → 주문고객 → 주문 단계별 전환율이에요. "
+                   "전환율이 급락하는 단계가 개선 포인트예요.")
         steps = [("발송", "send"), ("UV(유입)", "uv"),
                  ("주문고객수", "cust"), ("주문", "oc")]
         avail = [(lab, c) for lab, c in steps if c in g.columns and g[c].fillna(0).sum() > 0]
@@ -2644,8 +2632,8 @@ def main():
             figf.update_layout(**base_layout(h=360, title="발송 퍼널 — 막대=로그 스케일, 라벨=실제 값·비율"))
             figf.update_xaxes(visible=False)
             st.plotly_chart(figf, use_container_width=True)
-            st.caption("발송이 수억 단위라 막대 너비는 로그 스케일로 표시했습니다(하위 단계 가독성). "
-                       "실제 값·비율은 막대 라벨과 아래 표를 보세요.")
+            st.caption("발송이 수억 단위라 막대 너비는 로그로 줄여서 보여드려요. "
+                       "실제 값·비율은 막대 라벨과 아래 표에서 확인하세요.")
             # 단계별 전환율 표
             frows = []
             for i in range(1, len(avail)):
@@ -2654,25 +2642,25 @@ def main():
                 frows.append(dict(단계=f"{prev_l} → {cur_l}", 직전대비=f"{(cv/pv if pv else 0)*100:.2f}%",
                                   발송대비=f"{(cv/base_v)*100:.2f}%"))
             st.dataframe(pd.DataFrame(frows), hide_index=True, use_container_width=True)
-            st.markdown('<div class="appendix">‘직전대비’가 가장 낮은 단계가 병목입니다. 예: UV→주문이 낮으면 '
-                        '랜딩·오퍼·상품 매력도, 발송→UV가 낮으면 제목·발송시점·타겟이 개선 포인트입니다.</div>',
+            st.markdown("<div class=\"appendix\">’직전대비’가 가장 낮은 단계가 병목이에요. UV→주문이 낮으면 "
+                        "랜딩·오퍼·상품 매력도, 발송→UV가 낮으면 제목·발송시점·타겟이 개선 포인트예요.</div>",
                         unsafe_allow_html=True)
         else:
-            st.info("퍼널 단계 컬럼(UV·VISIT·고객수·주문)이 부족합니다.")
+            st.info("퍼널 분석에 필요한 데이터(UV·방문·고객·주문)가 부족해요.")
 
         # ── 기간 비교 (직전 대비) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📈 기간 비교 — 직전 대비 변화")
-        st.caption("기간을 둘로 나눠(최근 vs 직전) 전체 효율과 카테고리별 성과 변화를 봅니다.")
+        st.markdown("##### 📈 기간 비교 — 최근 vs 직전")
+        st.caption("기간을 둘로 나눠서 효율이 어떻게 바뀌었는지 봐요.")
         gdt = g.dropna(subset=["dt"]).sort_values("dt")
         if gdt["dt"].nunique() < 2:
-            st.info("기간 비교에는 최소 2개 이상의 발송일이 필요합니다.")
+            st.info("발송일이 2일 이상 있어야 비교할 수 있어요.")
         else:
             uniq_days = sorted(gdt["dt"].dt.normalize().unique())
             mid = uniq_days[len(uniq_days) // 2]
             prev = gdt[gdt["dt"] < mid]; recent = gdt[gdt["dt"] >= mid]
             if len(prev) == 0 or len(recent) == 0:
-                st.info("기간 분할 표본이 부족합니다.")
+                st.info("기간을 나누기에 데이터가 부족해요.")
             else:
                 def _agg(d):
                     s, u, o, a = d["send"].sum(), d["uv"].sum(), d["oc"].sum(), d["amt"].sum()
@@ -2746,7 +2734,7 @@ def main():
                                   ticksuffix=("%" if _yc in _PCT else ""))
             mfig.update_layout(**mlay)
             st.plotly_chart(mfig, use_container_width=True)
-            st.markdown("**추세 회귀 (요일 효과 통제)**")
+            st.markdown("**추세 분석**")
             _rows = []
             for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]:
                 r = mtd_data["reg"][k]
@@ -2755,17 +2743,16 @@ def main():
                 _rows.append(dict(지표=MTD_LABELS[k], 일변화=f"{sl:+.4g}{unit}",
                                   R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
             st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
-            st.markdown('<div class="appendix">인당 발송 건수는 상승하는데 CTR·구매전환율·RPS가 하락하면 '
-                        '“발송 강도를 높일수록 효율이 떨어지는” 피로도 신호입니다. '
+            st.markdown('<div class=”appendix”>인당 발송 건수는 상승하는데 CTR·구매전환율·RPS가 하락하면 '
+                        '”발송 강도를 높일수록 효율이 떨어지는” 피로도 신호예요. '
                         '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 데이터를 얼마나 잘 설명하는지 — '
-                        '1에 가까울수록 점들이 추세선에 붙어 추세가 뚜렷(예: 0.7이면 값 변동의 약 70%를 추세가 설명), '
-                        '0에 가까우면 들쭉날쭉해 추세가 약함. '
-                        '· <b>유의성</b>: 그 추세가 우연일 가능성(p값) — ‘유의함’이면 우연으로 보기 어렵습니다.</div>',
+                        '1에 가까울수록 추세가 뚜렷하고, 0에 가까우면 들쭉날쭉해요. '
+                        "· <b>유의성</b>: 그 추세가 우연일 가능성(p값) — ‘유의함’이면 우연으로 보기 어려워요.</div>",
                         unsafe_allow_html=True)
         else:
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
             st.caption("🌡️ 인당 발송 건수 기반 ‘발송피로도 시계열·CTR’은 전사 MTD 발송상세를 "
-                       "올리면(자동 인식) 여기에 함께 표시됩니다.")
+                       "올리면(자동 인식) 여기에 함께 표시돼요.")
 
         glossary()
 
@@ -2773,15 +2760,15 @@ def main():
     # PAGE 09 — BPU·우선순위 효율
     # ══════════════════════════════════════════════════════════════
     elif "BPU" in page:
-        st.title("BPU · 우선순위 효율")
-        st.caption("BPU(사업부)별 / 우선순위(같은 시간대 발송 순번)별 효율 — 어느 주체·어느 순번이 잘 먹히나. "
-                   "전환율·RPS는 합산 기준 가중 평균입니다.")
+        st.title("BPU·우선순위 효율")
+        st.caption("사업부별, 발송 순번별 효율을 비교해요. 어디서, 몇 번째로 보냈을 때 잘 먹히는지 알 수 있어요. "
+                   "전환율·RPS는 합산 기준 가중 평균이에요.")
         mlabel = st.selectbox("지표", list(METRIC_OPTS.keys()))
         mcol, _msuf, mclr = METRIC_OPTS[mlabel]
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
         if len(base) == 0:
-            st.info("필터 결과가 없습니다. 조건을 완화하세요."); st.stop()
+            st.info("조건에 맞는 결과가 없어요. 조건을 넓혀 보세요."); st.stop()
 
         def agg_eff(d, by):
             out = []
@@ -2818,7 +2805,7 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # ── 우선순위별 ──
-        st.markdown("##### 우선순위별 효율 (같은 시간대 발송 순번)")
+        st.markdown("##### 우선순위별 효율")
         base2 = base.copy()
         base2["_prio"] = pd.to_numeric(
             base2["prio"].astype(str).str.replace(r'\.0$', '', regex=True), errors="coerce")
@@ -2839,8 +2826,8 @@ def main():
             if len(pr) >= 3 and pr[mcol].notna().sum() >= 3:
                 r = float(np.corrcoef(pr["_key"], pr[mcol].fillna(pr[mcol].mean()))[0, 1])
                 msg = ("앞 순번일수록 효율이 높습니다 (노출 우위)." if r < -0.3 else
-                       "뒤 순번일수록 효율이 높습니다." if r > 0.3 else
-                       "순번과 효율의 뚜렷한 관계는 약합니다.")
+                       "뒤 순번일수록 효율이 높아요." if r > 0.3 else
+                       "순번과 효율 사이에 뚜렷한 관계는 약해요.")
                 st.markdown(f'<div class="appendix">순번↔{mlabel} 상관 r={r:.2f} → {msg}</div>',
                             unsafe_allow_html=True)
 
@@ -2859,12 +2846,12 @@ def main():
                                        textfont=dict(size=10), colorbar=dict(thickness=10)))
             fig.update_layout(**base_layout(h=420, title=f"BPU × 우선순위 평균 {mlabel}"))
             st.plotly_chart(fig, use_container_width=True)
-        st.markdown('<div class="appendix">표본(캠페인 수)이 적은 BPU·순번은 우연이 섞일 수 있으니 캠페인수와 함께 보세요.</div>',
+        st.markdown('<div class="appendix">캠페인 수가 적은 BPU·순번은 우연일 수 있으니 건수도 같이 확인해 주세요.</div>',
                     unsafe_allow_html=True)
 
         # ── BPU·우선순위 드릴다운 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📋 BPU · 우선순위별 발송 메시지 드릴다운")
+        st.markdown("##### 📋 BPU·우선순위별 실제 메시지 보기")
         bc1, bc2 = st.columns(2)
         bpu_opts = sorted(base["bpu"].dropna().astype(str).unique()) if "bpu" in base else []
         bpu_opts = [b for b in bpu_opts if b.strip() not in ("", "nan", "None")]
@@ -2887,15 +2874,15 @@ def main():
     # PAGE 10 — 키워드·이모지 성과
     # ══════════════════════════════════════════════════════════════
     elif "키워드" in page:
-        st.title("키워드 · 이모지 성과")
-        st.caption("규칙 분류를 넘어, 실제 문구의 '단어'와 '이모지'를 쪼개 성과를 봅니다. "
-                   "각 단어/이모지를 포함한 캠페인의 평균 성과(전체 평균 대비)입니다.")
+        st.title("키워드·이모지 성과")
+        st.caption("실제 문구에 쓰인 단어와 이모지를 하나씩 뜯어서 성과를 봐요. "
+                   "각 단어/이모지를 포함한 캠페인의 평균 성과(전체 평균 대비)예요.")
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p10_metric")
         mcol, _ms, mclr = METRIC_OPTS[mlabel]
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
         if len(base) < 5:
-            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+            st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
 
         c1, c2 = st.columns(2)
         kmin = c1.number_input("키워드 최소 표본(캠페인 수)", value=5, min_value=2, step=1, key="p10_kmin")
@@ -2915,15 +2902,15 @@ def main():
             fig.update_yaxes(autorange="reversed")
             return fig
 
-        st.markdown("##### 🔤 키워드(단어)별 평균 성과 — 상위")
+        st.markdown("##### 🔤 키워드별 성과 상위")
         kdf = keyword_perf(base, mcol, min_n=int(kmin), top=int(ktop))
         if len(kdf) == 0:
-            st.info("최소 표본을 만족하는 키워드가 없습니다. 표본 기준을 낮춰 보세요.")
+            st.info("조건에 맞는 키워드가 없어요. 기준을 낮춰 보세요.")
         else:
             st.plotly_chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
                                     max(360, 40 + 24 * min(len(kdf), int(ktop)))),
                             use_container_width=True)
-            sel_kw = st.selectbox("키워드 선택 → 실제 발송 메시지 보기", list(kdf["단어"]), key="p10_kw")
+            sel_kw = st.selectbox("키워드를 골라 실제 메시지를 확인해 보세요", list(kdf["단어"]), key="p10_kw")
             if sel_kw:
                 hay = (base["title"].astype(str) + " " + base["body"].astype(str))
                 subk = base[hay.str.contains(re.escape(sel_kw), na=False)]
@@ -2931,11 +2918,11 @@ def main():
                 render_messages(subk, mcol, f"p10kw_{sel_kw}")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 😀 이모지 종류별 평균 성과")
+        st.markdown("##### 😀 이모지별 성과")
         emin = st.number_input("이모지 최소 표본(캠페인 수)", value=3, min_value=2, step=1, key="p10_emin")
         edf = emoji_perf(base, mcol, min_n=int(emin), top=30)
         if len(edf) == 0:
-            st.info("최소 표본을 만족하는 이모지가 없습니다. (이모지 사용 캠페인이 적을 수 있어요)")
+            st.info("조건에 맞는 이모지가 없어요. 이모지를 쓴 캠페인이 적을 수 있어요.")
         else:
             st.plotly_chart(_barfig(edf, "이모지", f"이모지별 평균 {mlabel}",
                                     max(320, 40 + 28 * len(edf))), use_container_width=True)
@@ -2948,30 +2935,30 @@ def main():
             else:
                 eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
             st.dataframe(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, use_container_width=True)
-        st.markdown('<div class="appendix">단어/이모지 분석은 캠페인 단위 평균이며, 표본(n)이 작으면 우연일 수 있습니다. '
-                    '한 캠페인에서 같은 단어가 여러 번 나와도 1회로 집계합니다. 불용어·날짜/시간 숫자는 제외됩니다.</div>',
+        st.markdown('<div class="appendix">단어/이모지 분석은 캠페인 단위 평균이에요. 건수(n)가 적으면 우연일 수 있어요. '
+                    '한 캠페인에서 같은 단어가 여러 번 나와도 1회로 집계해요. 불용어·날짜/시간 숫자는 제외돼요.</div>',
                     unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 11 — 소구 추세·마모 (시계열)
     # ══════════════════════════════════════════════════════════════
     elif "소구 추세" in page:
-        st.title("소구 추세 · 마모")
-        st.caption("특정 문구 속성(소구)이 시간이 갈수록 효과가 떨어지는지(마모) 봅니다. "
-                   "주차별로 '그 속성 보유 캠페인'의 평균 성과 추이를 보고, 반복 소구의 피로를 진단합니다.")
+        st.title("소구 추세·마모")
+        st.caption("같은 소구를 계속 쓰면 효과가 떨어질까요? 시간에 따른 변화를 봐요. "
+                   "주차별로 '그 속성 보유 캠페인'의 평균 성과 추이를 보고, 반복 소구의 피로를 진단해요.")
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p11_metric")
         mcol, _ms, mclr = METRIC_OPTS[mlabel]
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf.dropna(subset=["dt"]).copy()
         if len(base) < 8:
-            st.info("표본이 부족합니다. 더 많은 주차를 누적하거나 '최소 발송수'를 낮춰 보세요."); st.stop()
+            st.info("데이터가 부족해요. 더 많은 주차를 쌓거나 '최소 발송수'를 낮춰 보세요."); st.stop()
         base["주"] = base["dt"].dt.to_period("W").apply(lambda p: p.start_time)
 
         sel_attrs = st.multiselect("추세를 볼 속성(소구)", [t for t in TAG_BOOLS if t in base.columns],
                                    default=[t for t in ["할인율소구", "마감임박"] if t in base.columns],
                                    key="p11_attrs")
         if not sel_attrs:
-            st.info("속성을 1개 이상 선택하세요."); st.stop()
+            st.info("속성을 하나 이상 골라 주세요."); st.stop()
 
         fig = go.Figure()
         palette = [PALETTE["purple"], PALETTE["green"], PALETTE["amber"], PALETTE["blue"],
@@ -2993,7 +2980,7 @@ def main():
         st.plotly_chart(fig, use_container_width=True)
 
         # 마모 진단: 각 속성의 주차 추세 회귀(기울기) + 사용 빈도 추이
-        st.markdown("##### 🔻 마모 진단 (주차 추세 회귀)")
+        st.markdown("##### 🔻 마모 진단")
         diag = []
         for t in sel_attrs:
             pts = []
@@ -3012,7 +2999,7 @@ def main():
         st.dataframe(pd.DataFrame(diag), hide_index=True, use_container_width=True)
 
         # 속성 사용 빈도(발송수) 추이 — 너무 자주 쓰면 마모 위험
-        st.markdown("##### 📨 속성 사용 빈도 추이 (캠페인 수)")
+        st.markdown("##### 📨 속성 사용 빈도 추이")
         figf = go.Figure()
         for i, t in enumerate(sel_attrs):
             cnts = [int(((base["주"] == w) & (base[t])).sum()) for w in weeks]
@@ -3023,9 +3010,9 @@ def main():
         layf["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
         figf.update_layout(**layf)
         st.plotly_chart(figf, use_container_width=True)
-        st.markdown('<div class="appendix">추세 회귀의 상관 r이 음수이고 유의하면 "반복 소구로 효과가 마모"되는 신호입니다. '
-                    '사용 빈도가 늘면서 성과가 떨어지면 해당 소구를 잠시 쉬어가는 전략을 고려하세요. '
-                    '단, 카테고리·시즌 구성 변화가 섞일 수 있습니다.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="appendix">상관 r이 음수이고 유의하면 "반복 소구로 효과가 닳고 있다"는 신호예요. '
+                    '사용 빈도가 늘면서 성과가 떨어지면 해당 소구를 잠시 쉬는 전략을 고려해 보세요. '
+                    '카테고리·시즌 구성 변화가 섞일 수 있어요.</div>', unsafe_allow_html=True)
 
         glossary()
 
@@ -3047,8 +3034,8 @@ def main():
             return f"{v:,.0f}"
 
         if mtd_data is None:
-            st.title("발송피로도 (전사 MTD)")
-            st.info("전사 MTD 발송상세 파일(날짜=열, 지표=행)을 사이드바 📂 파일 업로드에 올리고 「MTD 저장」을 누르세요.")
+            st.title("발송피로도")
+            st.info("전사 MTD 파일을 왼쪽 📂 파일 올리기에 올리고 「MTD 저장하기」를 눌러 주세요.")
             st.stop()
         md = mtd_data["df"]
         st.caption(f"전사 MTD · {mtd_data['meta']['start']} ~ {mtd_data['meta']['end']} "
@@ -3056,8 +3043,8 @@ def main():
 
         # ── F1. 피로도 시계열·CTR ──
         if page.startswith("F1"):
-            st.title("피로도 시계열 · CTR")
-            st.markdown("인당 발송 건수(발송 강도)와 효율 지표가 시간에 따라 어떻게 같이/반대로 움직이는지.")
+            st.title("피로도 시계열·CTR")
+            st.markdown("인당 발송 건수와 효율이 시간에 따라 어떻게 움직이는지 봐요.")
             gran = st.radio("집계", ["월별", "분기별"], horizontal=True)
             agg = mtd_data["monthly"] if gran == "월별" else mtd_data["quarterly"]
             xcol = "month" if gran == "월별" else "quarter"
@@ -3078,7 +3065,7 @@ def main():
             fig.update_layout(**lay)
             st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown("##### 추세 회귀 (요일 효과 통제)")
+            st.markdown("##### 추세 분석")
             rows = []
             for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]:
                 r = mtd_data["reg"][k]
@@ -3088,17 +3075,16 @@ def main():
                                  R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
             st.markdown('<div class="appendix">인당 발송 건수는 상승, CTR·구매전환율·RPS는 하락 추세라면 '
-                        '“발송 강도를 높일수록 효율이 떨어지는” 피로도 신호입니다. '
+                        '”발송 강도를 높일수록 효율이 떨어지는” 피로도 신호예요. '
                         '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 데이터를 얼마나 잘 설명하는지 — '
-                        '1에 가까울수록 점들이 추세선에 붙어 추세가 뚜렷(예: 0.7이면 값 변동의 약 70%를 추세가 설명), '
-                        '0에 가까우면 들쭉날쭉해 추세가 약함. '
-                        '· <b>유의성</b>: 그 추세가 우연일 가능성(p값) — ‘유의함’이면 우연으로 보기 어렵습니다.</div>',
+                        '1에 가까울수록 추세가 뚜렷하고, 0에 가까우면 들쭉날쭉해요. '
+                        '· <b>유의성</b>: 그 추세가 우연일 가능성(p값) — ‘유의함’이면 우연으로 보기 어려워요.</div>',
                         unsafe_allow_html=True)
 
         # ── F2. 발송 빈도 효율 ──
         elif page.startswith("F2"):
             st.title("발송 빈도 효율")
-            st.markdown("인당 발송 건수 구간별 평균 효율 — 어느 강도까지가 효율적인가.")
+            st.markdown("인당 발송 건수별 효율이에요. 어느 정도까지 보내는 게 효율적인지 봐요.")
             lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "객단가"])
             mc = MTDOPT[lab]
             b = mtd_data["buckets"]
@@ -3135,7 +3121,7 @@ def main():
         # ── F3. 한계수익 ──
         elif page.startswith("F3"):
             st.title("한계수익")
-            st.markdown("발송 강도 구간을 한 단계 올릴 때 효율이 얼마나 더/덜 나오는가 (구간 간 변화).")
+            st.markdown("발송을 한 단계 더 늘리면 효율이 어떻게 바뀌는지 봐요.")
             lab = st.selectbox("지표", ["발송건당거래액(RPS)", "CTR", "구매전환율(CR)", "거래액"])
             mc = MTDOPT[lab]
             b = mtd_data["buckets"].reset_index(drop=True)
@@ -3149,10 +3135,10 @@ def main():
                                        text=[f"{v:+.2f}" for v in diff], textposition="outside"))
                 fig.update_layout(**base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
                 st.plotly_chart(fig, use_container_width=True)
-                st.markdown('<div class="appendix">값이 음(−)이면 그 구간부터는 발송을 더 늘릴수록 '
-                            '효율이 오히려 줄어드는 역효과 구간입니다.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="appendix">값이 마이너스면 그 구간부터는 더 보낼수록 '
+                            '효율이 오히려 줄어드는 역효과 구간이에요.</div>', unsafe_allow_html=True)
             else:
-                st.info("구간 표본이 부족합니다.")
+                st.info("구간별 데이터가 부족해요.")
 
         # ── F4. 요일 패턴 ──
         else:
@@ -3171,7 +3157,7 @@ def main():
             dc = pd.DataFrame(mtd_data["dow_comp"])
             if len(dc):
                 st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-                st.markdown("##### 요일 내 ‘저발송일 vs 고발송일’ 효율 (요일 효과 통제)")
+                st.markdown("##### 같은 요일에서 적게 보낸 날 vs 많이 보낸 날")
                 show = pd.DataFrame({
                     "요일": dc["요일"],
                     "저발송일 CTR": (dc["lowCtr"] * 100).map("{:.2f}%".format),
@@ -3180,8 +3166,8 @@ def main():
                     "고발송일 RPS": dc["highRps"].map("{:,.0f}".format),
                 })
                 st.dataframe(show, hide_index=True, use_container_width=True)
-                st.markdown('<div class="appendix">같은 요일 안에서도 발송이 적은 날의 CTR·RPS가 더 높다면, '
-                            '발송 강도 자체가 효율을 떨어뜨린다는 (요일 효과를 통제한) 근거입니다.</div>',
+                st.markdown('<div class="appendix">같은 요일인데 발송이 적은 날의 CTR·RPS가 더 높다면, '
+                            '발송 강도 자체가 효율을 떨어뜨린다는 (요일 효과를 통제한) 근거예요.</div>',
                             unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════
@@ -3189,12 +3175,12 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "세그먼트 분석" in page:
         st.title("세그먼트 분석")
-        st.caption("타겟 구분(세그먼트)별 성과 · 카테고리 적합도 · 퍼널 누수 · 소구 마모 — CRM의 '누구에게'를 데이터로.")
+        st.caption("누구에게 보냈을 때 성과가 좋은지, 세그먼트별로 봐요.")
         base = fdf
         if "target" not in base or base["target"].fillna("").eq("").all():
-            st.info("타겟 구분(target) 데이터가 없습니다. 실적시트의 '타겟 구분' 컬럼을 확인하세요."); st.stop()
+            st.info("타겟 구분 데이터가 없어요. 실적시트에 '타겟 구분' 컬럼이 있는지 확인해 주세요."); st.stop()
         if len(base) < 6:
-            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+            st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
         seg = base.copy()
         seg["target"] = seg["target"].fillna("(미지정)").replace("", "(미지정)")
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p13_metric")
@@ -3202,7 +3188,7 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
 
         # ① 세그먼트 딥다이브
-        st.markdown("##### ① 세그먼트별 성과 요약")
+        st.markdown("##### ① 세그먼트별 성과")
         g = seg.groupby("target").agg(
             캠페인수=("target", "size"), 발송=("send", "sum"),
             CTR=("infl_cr", "mean"), 주문CR=("ord_cr", "mean"),
@@ -3226,7 +3212,7 @@ def main():
                      .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}"}),
                      hide_index=True, use_container_width=True)
 
-        st.markdown("##### 세그먼트별 최적 소구 (보유 시 지표 리프트 최대)")
+        st.markdown("##### 세그먼트별 잘 먹히는 소구")
         recs = []
         for sname, sg in seg.groupby("target"):
             best = None
@@ -3248,11 +3234,11 @@ def main():
             st.dataframe(pd.DataFrame(recs).style.format({"보유n": "{:,.0f}"}),
                          hide_index=True, use_container_width=True)
         else:
-            st.caption("세그먼트별 소구 리프트를 낼 표본이 부족합니다.")
+            st.caption("세그먼트별 데이터가 부족해요.")
 
         # ② 타겟 × 카테고리 적합도
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ② 타겟 × 카테고리 적합도")
+        st.markdown("##### ② 세그먼트 × 카테고리")
         if "cat" in seg and seg["cat"].fillna("").ne("").any():
             sc = seg.copy(); sc["cat"] = sc["cat"].fillna("(미지정)").replace("", "(미지정)")
             topc = sc["cat"].value_counts().head(12).index.tolist()
@@ -3265,13 +3251,13 @@ def main():
             fig.update_layout(**base_layout(h=max(300, 70 + 30 * len(piv.index)),
                                             title=f"타겟×카테고리 평균 {mlabel}"))
             st.plotly_chart(fig, use_container_width=True)
-            st.caption("각 세그먼트에서 가장 잘 먹히는 카테고리(행별 최댓값)를 다음 발송 우선순위로. 표본 작은 칸은 신뢰도 낮음.")
+            st.caption("각 세그먼트에서 잘 먹히는 카테고리를 다음 발송에 써 보세요. 건수 적은 칸은 참고용이에요.")
         else:
-            st.caption("카테고리(cat) 데이터가 없어 적합도 매트릭스를 건너뜁니다.")
+            st.caption("카테고리 데이터가 없어서 건너뛸게요.")
 
         # ③ 세그먼트별 퍼널 누수
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ③ 세그먼트별 퍼널 누수 (발송→UV→방문→고객→주문)")
+        st.markdown("##### ③ 세그먼트별 퍼널 분석")
         _stages = [("발송→UV", "uv", "send"), ("UV→방문", "visit", "uv"),
                    ("방문→고객", "cust", "visit"), ("고객→주문", "oc", "cust")]
         _fcols = [c for c in ("send", "uv", "visit", "cust", "oc") if c in seg]
@@ -3296,13 +3282,13 @@ def main():
                     overall[lbl] = seg[nu].sum() / seg[de].sum()
             if overall:
                 st.caption("전체 평균 단계 전환율 — " + " · ".join(f"{k} {v*100:.1f}%" for k, v in overall.items())
-                           + ". 세그먼트별로 평균보다 크게 낮은 단계가 그 세그먼트의 '새는 곳'입니다.")
+                           + ". 세그먼트별로 평균보다 크게 낮은 단계가 그 세그먼트의 '새는 곳'이에요.")
         else:
-            st.caption("퍼널 컬럼(UV/방문/고객/주문)이 부족해 누수 분석을 건너뜁니다.")
+            st.caption("퍼널 데이터(UV/방문/고객/주문)가 부족해서 건너뛸게요.")
 
         # ④ 세그먼트별 소구 마모
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ④ 세그먼트별 소구 마모 (주차 추세)")
+        st.markdown("##### ④ 세그먼트별 소구 마모")
         if "dt" in seg and seg["dt"].notna().any():
             _tags = [t for t in TAG_BOOLS if t in seg]
             tagsel = st.selectbox("소구 선택", _tags, key="p13_tag") if _tags else None
@@ -3328,11 +3314,11 @@ def main():
                     if slopes:
                         st.dataframe(pd.DataFrame(slopes).style.format({"주차수": "{:,.0f}"}),
                                      hide_index=True, use_container_width=True)
-                    st.caption("하락 추세인 세그먼트는 그 소구가 닳고 있다는 신호 — 메시지/오퍼를 교체하세요.")
+                    st.caption("하락 추세인 세그먼트는 그 소구가 닳고 있다는 신호예요. 메시지나 오퍼를 바꿔 보세요.")
                 else:
-                    st.caption(f"'{tagsel}' 보유 캠페인 표본이 부족합니다(6건 이상 필요).")
+                    st.caption(f"'{tagsel}' 캠페인이 6건 이상 있어야 해요.")
         else:
-            st.caption("발송일(dt) 데이터가 없어 마모 추세를 건너뜁니다.")
+            st.caption("발송일 데이터가 없어서 건너뛸게요.")
         glossary()
 
     # ══════════════════════════════════════════════════════════════
@@ -3340,13 +3326,13 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "전환·AOV 진단" in page:
         st.title("전환·AOV 진단")
-        st.caption("발송→UV(CTR)와 UV→주문(주문CR)을 분리 진단하고, 매출이 객단가(AOV)에서 왔는지 주문수에서 왔는지 분해합니다.")
+        st.caption("CTR과 주문전환율을 따로 보고, 매출이 '비싸게 팔아서'인지 '많이 팔아서'인지 분석해요.")
         base = fdf
         if len(base) < 6:
-            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+            st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
 
         # ① 전환 2단 분해 (사분면)
-        st.markdown("##### ① 전환 2단 분해 — CTR(발송→UV) vs 주문CR(UV→주문)")
+        st.markdown("##### ① CTR vs 주문전환율")
         d = base.dropna(subset=["infl_cr", "ord_cr"]).copy()
         if "uv" in d:
             d = d[d["uv"].fillna(0) >= 50]
@@ -3386,11 +3372,11 @@ def main():
             qpick = st.selectbox("사분면 선택 → 캠페인 보기", list(qsum["사분면"]), key="p14_quad")
             render_messages(d[d["사분면"] == qpick], "ord_cr", f"p14_{qpick}")
         else:
-            st.info("UV 50 이상 캠페인이 6건 이상 필요합니다.")
+            st.info("UV 50 이상인 캠페인이 6건 이상 있어야 해요.")
 
         # ② AOV vs 전환 기여
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ② AOV vs 전환 기여 분해 — 매출은 '많이 팔아서'인가 '비싸게 팔아서'인가")
+        st.markdown("##### ② 매출 = 많이 팔아서? 비싸게 팔아서?")
         _dim = {"카테고리": "cat", "세그먼트": "target", "브랜드": "brand"}
         _dim = {k: v for k, v in _dim.items() if v in base.columns and base[v].fillna("").ne("").any()}
         if not _dim:
@@ -3425,9 +3411,9 @@ def main():
             st.dataframe(gs.rename(columns={dcol: dimname})[[dimname, "캠페인수", "주문CR", "AOV", "거래액", "전략"]]
                          .style.format({"캠페인수": "{:,.0f}"}),
                          hide_index=True, use_container_width=True)
-            st.caption("올라운더는 더 밀고, '박리다매'는 업셀/세트로 AOV를, '고가저빈도'는 전환(오퍼/타겟)을 보완하세요.")
+            st.caption("올라운더는 더 밀고, 박리다매는 업셀로 객단가를, 고가저빈도는 전환을 보완해 보세요.")
         else:
-            st.caption("표본이 부족합니다(차원별 3캠페인 이상 필요).")
+            st.caption("차원별 3캠페인 이상 있어야 해요.")
         glossary()
 
     # ══════════════════════════════════════════════════════════════
@@ -3435,10 +3421,10 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "발송유형·브랜드" in page:
         st.title("발송유형·브랜드 랭킹")
-        st.caption("그동안 화면에 없던 차원 — 발송유형(stype)·브랜드(brand)별 성과를 비교합니다.")
+        st.caption("발송유형별, 브랜드별 성과를 비교해요.")
         base = fdf
         if len(base) < 6:
-            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+            st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p15_metric")
         mcol, msuf, mclr = METRIC_OPTS[mlabel]
         is_pct = mcol in ("ord_cr", "infl_cr")
@@ -3488,18 +3474,18 @@ def main():
     # PAGE 16 — 다음주 발송 플레이북 (실행)
     # ══════════════════════════════════════════════════════════════
     elif "다음주 발송 플레이북" in page or "플레이북" in page:
-        st.title("다음주 발송 플레이북")
-        st.caption("성과 패턴을 모아 '다음 주 무엇을·누구에게·언제·어떤 소구로 보낼지' 실행안을 자동 생성합니다. (기존 데이터 기반)")
+        st.title("다음 주 발송 플레이북")
+        st.caption("데이터를 바탕으로 다음 주에 뭘, 누구에게, 언제, 어떤 소구로 보내면 좋을지 알려드려요.")
         base = fdf
         if len(base) < 8:
-            st.info("표본이 부족합니다. 사이드바 '최소 발송수'를 낮춰 보세요."); st.stop()
+            st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
         goal = st.selectbox("최적화 목표 지표", list(METRIC_OPTS.keys()), key="p16_goal")
         gcol = METRIC_OPTS[goal][0]; is_pct = gcol in ("ord_cr", "infl_cr")
 
         def _fmtv(v):
             return f"{v*100:.2f}%" if is_pct else (won(v) if gcol in ("rps", "aov", "amt") else f"{v:,.1f}")
 
-        st.markdown("##### 🕒 추천 발송 슬롯 (요일 × 시간 — 목표 지표 상위)")
+        st.markdown("##### 🕒 추천 슬롯 (요일 × 시간)")
         if "dow_k" in base and "hour" in base:
             slot = base.dropna(subset=["hour"]).groupby(["dow_k", "hour"]).agg(
                 캠페인수=("hour", "size"), 지표=(gcol, "mean"), 발송=("send", "sum")).reset_index()
@@ -3512,7 +3498,7 @@ def main():
                              .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}"}),
                              hide_index=True, use_container_width=True)
             else:
-                st.caption("슬롯 표본이 부족합니다.")
+                st.caption("슬롯 데이터가 부족해요.")
 
         st.markdown("##### 🏷️ 추천 소구 (보유 시 목표 지표 리프트 상위)")
         trows = []
@@ -3572,13 +3558,13 @@ def main():
                 play.append(row)
         if play:
             st.dataframe(pd.DataFrame(play), hide_index=True, use_container_width=True)
-            st.caption("위 조합은 과거 성과 평균이 높았던 패턴입니다. 다음 주 캘린더에 세그먼트×슬롯×카테고리×소구로 배치하세요.")
+            st.caption("위 조합은 과거 성과가 좋았던 패턴이에요. 다음 주 캘린더에 세그먼트×슬롯×카테고리×소구로 배치해 보세요.")
         else:
             st.caption("세그먼트(target) 데이터가 없어 조합 추천을 건너뜁니다.")
         if top_tags:
             _rec = " · ".join(top_tags)
             st.markdown(f'<div class="appendix">추천 소구: {_rec} → 「AI 처방·카피」 페이지에서 '
-                        f'이 소구로 문구 초안을 생성할 수 있습니다.</div>', unsafe_allow_html=True)
+                        f'이 소구로 문구 초안을 만들 수 있어요.</div>', unsafe_allow_html=True)
         glossary()
 
     # ══════════════════════════════════════════════════════════════
@@ -3588,10 +3574,10 @@ def main():
         st.title("기획전 비교분석")
         st.caption("발송 데이터의 기획전번호(promo)를 기획전 성과시트와 조인해 "
                    "① 발송 기여율 ② 발송 효율 순위 ③ 발송 유무별 매출 ④ 매출 추세를 봅니다. "
-                   "발송측은 현재 사이드바 필터(기간·속성 등)가 적용됩니다.")
+                   "발송측은 현재 사이드바 필터가 적용돼요.")
         if promo_df is None or len(promo_df) == 0:
-            st.info("좌측 사이드바 **📂 파일 업로드**에 **기획전 성과시트(xlsx)**를 올리세요(자동 인식). "
-                    "(기획전번호별 유입/총매출 매출 데이터) — 업로드 후 **「💾 기획전 저장」**을 누르면 누적됩니다.")
+            st.info("사이드바 **📂 파일 업로드**에 **기획전 성과시트(xlsx)**를 올려 주세요(자동 인식). "
+                    "업로드 후 **「💾 기획전 저장」**을 누르면 누적돼요.")
             st.stop()
 
         # 발송측: promo 단위 집계 (현재 필터 적용분 · 매칭 여부 무관)
@@ -3599,8 +3585,8 @@ def main():
         src["promo"] = src["promo"].map(norm_promo) if "promo" in src else ""
         sent = src[src["promo"] != ""].copy()
         if len(sent) == 0:
-            st.warning("발송 데이터에 기획전번호(promo)가 채워진 건이 없습니다. "
-                       "실적시트의 '기획전' 컬럼을 확인하세요. (현재 필터를 넓혀보거나 '11.데이터'에서 promo 열 확인)")
+            st.warning("발송 데이터에 기획전번호(promo)가 채워진 건이 없어요. "
+                       "실적시트의 '기획전' 컬럼을 확인해 보세요.")
             st.stop()
         # 발송 일시(날짜+시간대) — 같은 기획전에 여러 캠페인이면 가장 이른 발송 기준
         _min = sent["hour"].map(hhmm_to_minutes) if "hour" in sent else 0   # 시간대 HHMM→분(정렬·표기)
@@ -3645,8 +3631,8 @@ def main():
         c[2].metric("발송 추적 거래액(필터)", won(g["s_amt"].sum()))
         c[3].metric("매칭 기획전 유입거래액", won(matched["inf_amt"].sum()))
         if n_unmatched:
-            st.caption(f"⚠️ 발송됐지만 기획전 성과시트에서 번호를 못 찾은 기획전 {n_unmatched}건은 "
-                       "①·②·④(발송기준) 분석에서 매출 비교가 빠집니다. 성과시트 갱신을 권장합니다.")
+            st.caption(f"⚠️ 성과시트에서 번호를 못 찾은 기획전 {n_unmatched}건은 "
+                       "①·②·④ 분석에서 빠져요. 성과시트를 업데이트해 주세요.")
 
         tabA, tabB, tabC, tabD = st.tabs(
             ["① 발송 기여율", "② 발송 효율 순위", "③ 발송 유무별 매출", "④ 매출 추세"])
@@ -3654,11 +3640,11 @@ def main():
         # ── ① 발송 기여율 (분모 = 유입 거래액) ──
         with tabA:
             st.markdown("##### 발송 기여율 = 발송 추적 거래액 ÷ 기획전 **유입** 거래액")
-            st.caption("‘유입 거래액’은 기획전을 경유해 발생한 매출입니다. 그중 발송이 끌어온 비중을 봅니다. "
-                       "발송 어트리뷰션과 기획전 유입 어트리뷰션 기준이 달라 100%를 넘을 수 있습니다(정상).")
+            st.caption("’유입 거래액’은 기획전을 통해 생긴 매출이에요. 그중 발송이 끌어온 비중을 봐요. "
+                       "어트리뷰션 기준이 달라 100%를 넘을 수 있어요(정상).")
             a = matched[matched["inf_amt"].fillna(0) > 0].copy()
             if len(a) == 0:
-                st.info("유입 거래액이 있는 매칭 기획전이 없습니다.")
+                st.info("유입 거래액이 있는 매칭 기획전이 없어요.")
             else:
                 a["기여율"] = a["s_amt"] / a["inf_amt"]
                 tot_contrib = a["s_amt"].sum() / a["inf_amt"].sum() if a["inf_amt"].sum() > 0 else np.nan
@@ -3694,19 +3680,19 @@ def main():
             st.dataframe(promo_perf_table(b.head(50)),
                          hide_index=True, use_container_width=True, height=520)
             st.markdown('<div class="appendix">'
-                        '컬럼은 <b>발송 성과</b>(발송 데이터)와 <b>기획전 성과</b>(기획전 성과시트)로 묶여 있습니다. '
-                        '같은 UV라도 <b>발송 성과·UV</b>=발송 유입 UV, <b>기획전 성과·UV</b>=기획전 시트의 기획전 UV로 출처가 다릅니다.<br>'
-                        '<b>지표 정의</b> · CTR(유입전환율)=UV÷발송 · CR(주문전환율)=주문÷UV · '
+                        '컬럼은 <b>발송 성과</b>(발송 데이터)와 <b>기획전 성과</b>(기획전 성과시트)로 나뉘어요. '
+                        '같은 UV라도 <b>발송 성과·UV</b>=발송 유입 UV, <b>기획전 성과·UV</b>=기획전 시트의 기획전 UV로 출처가 달라요.<br>'
+                        '<b>지표</b> · CTR=UV÷발송 · CR=주문÷UV · '
                         'RPS=발송추적거래액÷발송 · <b>기여율=발송추적거래액÷유입거래액</b>.<br>'
                         '한 기획전에 캠페인이 여러 개면 <b>발송·UV·VISIT·주문·발송추적거래액은 합산</b>, '
-                        'CTR·CR·RPS는 합산값 기준으로 계산하고, 발송일자·발송시간은 가장 이른 발송 기준입니다.</div>',
+                        'CTR·CR·RPS는 합산값 기준으로 계산해요. 발송일시는 가장 이른 기준이에요.</div>',
                         unsafe_allow_html=True)
 
         # ── ③ 발송 유무별 매출 ──
         with tabC:
             st.markdown("##### 발송한 기획전 vs 발송 안 한 기획전 — 매출 비교")
-            st.caption("기획전 성과시트 전체를 발송 여부로 나눠 평균·중앙값 유입거래액을 비교합니다. "
-                       "단, 규모가 큰 기획전 위주로 발송했을 수 있어(규모 교란) 단순 우열로 해석하지 마세요.")
+            st.caption("기획전 성과시트 전체를 발송 여부로 나눠 평균·중앙값을 비교해요. "
+                       "규모가 큰 기획전 위주로 발송했을 수 있어서, 단순 우열로 보기는 어려워요.")
             base_lbl = "유입 거래액"
             col = "inf_amt"
             allp = P.copy()
@@ -3730,8 +3716,8 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
             p = welch(sset.dropna().values, uset.dropna().values)
             st.caption(f"평균 차이 통계 유의성: {sig_label(p)} · 발송 {len(sset):,}건 vs 미발송 {len(uset):,}건")
-            st.markdown('<div class="appendix">평균은 초대형 기획전에 휘둘리므로 중앙값을 함께 보세요. '
-                        '발송 기획전이 더 크다면, 발송이 매출을 키운 것인지 큰 기획전을 골라 발송한 것인지 구분이 어렵습니다.</div>',
+            st.markdown('<div class="appendix">평균은 초대형 기획전에 휘둘리니 중앙값도 함께 보세요. '
+                        '발송 기획전이 더 크다면, 발송이 매출을 키운 건지 큰 기획전을 골라 발송한 건지 구분이 어려워요.</div>',
                         unsafe_allow_html=True)
 
         # ── ④ 매출 추세 ──
@@ -3741,7 +3727,7 @@ def main():
             P2["dt"] = pd.to_datetime(P2["pstart"], errors="coerce")
             P2 = P2.dropna(subset=["dt"])
             if len(P2) == 0:
-                st.info("기획전 시작일 정보가 없어 추세를 그릴 수 없습니다.")
+                st.info("기획전 시작일 정보가 없어서 추세를 그릴 수 없어요.")
             else:
                 base_lbl = "유입 거래액"
                 col = "inf_amt"
@@ -3771,8 +3757,8 @@ def main():
                 layc["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
                 figc.update_layout(**layc)
                 st.plotly_chart(figc, use_container_width=True)
-                st.caption("기획전 시작월 기준 집계입니다. 발송이 본격화된 시점 전후로 발송 기획전(초록)의 "
-                           "매출 규모가 어떻게 변하는지 함께 살펴보세요.")
+                st.caption("기획전 시작월 기준 집계예요. 발송이 본격화된 시점 전후로 초록 선의 "
+                           "매출 규모가 어떻게 변했는지 살펴보세요.")
 
         glossary()
 
@@ -3786,9 +3772,8 @@ def main():
         st.dataframe(df.drop(columns=["dt"], errors="ignore"), hide_index=True,
                      use_container_width=True, height=420)
         # ── 머지 전체 데이터 다운로드 (기획 문구 + 실적 성과) ──
-        st.markdown("##### 📊 머지 전체 데이터 다운로드 (발송기획 문구 + 발송실적 성과)")
-        st.caption("발송기획(제목·내용)과 발송실적(발송·전환·RPS·거래액)을 합친 머지 데이터입니다. "
-                   "문구 자동분류 속성 컬럼도 포함됩니다.")
+        st.markdown("##### 📊 머지 전체 데이터 다운로드")
+        st.caption("문구와 성과를 합친 전체 데이터예요. 자동분류 속성 컬럼도 포함돼요.")
         dl_scope = st.radio("범위", ["전체 (필터 무관 · 매칭+미매칭 포함)", "현재 필터 적용분"],
                             horizontal=True, key="full_dl_scope")
         dl_df = raw if dl_scope.startswith("전체") else df
@@ -3803,9 +3788,9 @@ def main():
                 with st.spinner("엑셀 생성 중…"):
                     st.session_state["full_xlsx"] = df_to_xlsx_bytes(dl_df)
                     st.session_state["full_xlsx_n"] = len(dl_df)
-                st.success(f"엑셀 생성 완료 — {len(dl_df):,}건")
+                st.success(f"엑셀을 만들었어요 — {len(dl_df):,}건")
             except Exception as e:
-                st.error(f"엑셀 생성 실패: {e}")
+                st.error(f"엑셀 생성에 실패했어요: {e}")
         if st.session_state.get("full_xlsx"):
             st.download_button(
                 f"📥 머지 전체 데이터 엑셀(xlsx) 다운로드 ({st.session_state.get('full_xlsx_n', 0):,}건)",
@@ -3814,16 +3799,15 @@ def main():
 
         # ── 종합 리포트(엑셀) 내보내기 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📑 종합 리포트(엑셀) 내보내기")
-        st.caption("머지데이터·속성별성과·속성조합·키워드·이모지·카테고리별을 여러 시트로 담은 엑셀. "
-                   "현재 필터·최소발송수가 적용된 분석 표본 기준입니다.")
+        st.markdown("##### 📑 종합 리포트 내보내기")
+        st.caption("분석 결과를 여러 시트로 담은 엑셀이에요. 현재 필터가 적용된 표본 기준이에요.")
         if st.button("📑 리포트 생성", key="gen_report"):
             try:
                 with st.spinner("리포트 생성 중…"):
                     st.session_state["report_xlsx"] = build_report_excel(fdf)
-                st.success(f"리포트 생성 완료 — 분석 표본 {len(fdf)}건")
+                st.success(f"리포트를 만들었어요 — {len(fdf)}건 기준")
             except Exception as e:
-                st.error(f"리포트 생성 실패: {e}")
+                st.error(f"리포트 생성에 실패했어요: {e}")
         if st.session_state.get("report_xlsx"):
             st.download_button(
                 "📥 종합 리포트(xlsx) 다운로드", st.session_state["report_xlsx"],
@@ -3831,15 +3815,15 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ⚠️ 매칭 진단 — 실적은 있으나 기획 문구를 못 찾은 건")
+        st.markdown("##### ⚠️ 매칭 진단 — 실적은 있지만 문구를 못 찾은 건")
         miss = raw[~raw["matched"]][["date", "af", "cat", "brand", "send", "amt"]]
         if len(miss):
             st.dataframe(miss.rename(columns={"date": "날짜", "af": "AF코드", "cat": "카테고리",
                                               "brand": "브랜드", "send": "발송", "amt": "거래액"}),
                          hide_index=True, use_container_width=True)
-            st.caption("AF코드 오타·기획시트 미등록·날짜 불일치 가능성. 기획 파일의 해당 주차 시트를 확인하세요.")
+            st.caption("AF코드 오타·미등록·날짜 불일치 가능성이 있어요. 기획 파일을 확인해 보세요.")
         else:
-            st.success("모든 실적 캠페인에 문구가 매칭되었습니다.")
+            st.success("모든 실적 캠페인에 문구가 매칭됐어요.")
 
     # ── 페이지 리포트 다운로드 (HTML → 브라우저 인쇄로 PDF) ──
     if _REPORT:
@@ -3851,8 +3835,7 @@ def main():
             st.download_button(
                 "📄 리포트 다운로드 (HTML)", _rep_html.encode("utf-8"),
                 file_name=f"리포트_{_safe}.html", mime="text/html")
-            st.caption("받은 HTML 파일을 (인터넷 연결 상태에서) 열고 "
-                       "**Ctrl+P → 대상을 ‘PDF로 저장’** 하면 됩니다. (표·차트·한글 그대로 인쇄)")
+            st.caption("받은 HTML 파일을 열고 **Ctrl+P → PDF로 저장**하면 돼요.")
         except Exception as e:
             st.caption(f"리포트 생성 오류: {str(e)[:80]}")
 
