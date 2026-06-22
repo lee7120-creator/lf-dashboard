@@ -166,10 +166,25 @@ def main():
             except (ValueError, IndexError):
                 pass
 
+    # 네이버 지표(있으면 병합): 검색량을 네이버값으로 우선 사용 → 한국 실수요 반영
+    naver = {}
+    npath = os.path.join(ROOT, "data", "naver_keyword_metrics.csv")
+    if os.path.exists(npath):
+        with open(npath, encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                try:
+                    nv = int(r.get("네이버검색량") or 0)
+                except ValueError:
+                    nv = 0
+                naver[norm(r["키워드"])] = (nv, r.get("추이", ""))
+        print(f"네이버 데이터 병합: {npath} ({len(naver)}개)")
+
     posn = {norm(k): v for k, v in POS.items()}
     rows = []
     for kw in uniq:
         msv = vol.get(kw, 0)
+        nv, ntrend = naver.get(norm(kw), (0, ""))
+        score_vol = nv if nv > 0 else msv      # 네이버값 있으면 우선
         p = posn.get(norm(kw))
         if p:
             lf, wc, th, ssf, si, kd = p
@@ -199,14 +214,16 @@ def main():
             sf = 0.5
         sec = section_of(kw)
         rows.append({
-            "키워드": kw, "검색량": msv, "난이도": kd, "섹션": sec,
+            "키워드": kw, "검색량": msv, "네이버검색량": nv, "추이": ntrend,
+            "난이도": kd, "섹션": sec,
             "패션": "Y" if sec in FASHION_SECTIONS else "N",
             "LF몰": lf, "W컨셉": wc, "한섬": th, "SSF샵": ssf, "SI빌리지": si,
-            "Status": status, "_score": (msv ** 0.5) * diff * sf,
+            "Status": status, "_score": (score_vol ** 0.5) * diff * sf,
         })
 
-    # 패션 카테고리 + 검색량>0 키워드에만 우선순위(서수) 부여. 점수 내림차순 = 1순위.
-    fashion = sorted([r for r in rows if r["패션"] == "Y" and r["검색량"] > 0],
+    # 패션 카테고리 + 검색량(네이버/Semrush)>0 키워드에만 우선순위(서수) 부여.
+    fashion = sorted([r for r in rows if r["패션"] == "Y"
+                      and (r["검색량"] > 0 or r["네이버검색량"] > 0)],
                      key=lambda r: r["_score"], reverse=True)
     rank_map = {r["키워드"]: i for i, r in enumerate(fashion, 1)}
     for r in rows:
@@ -217,8 +234,8 @@ def main():
 
     os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
     out = os.path.join(ROOT, "data", "lfmall_keyword_research.csv")
-    cols = ["키워드", "검색량", "난이도", "섹션", "패션", "LF몰", "W컨셉", "한섬", "SSF샵",
-            "SI빌리지", "Status", "순위", "우선순위"]
+    cols = ["키워드", "검색량", "네이버검색량", "추이", "난이도", "섹션", "패션",
+            "LF몰", "W컨셉", "한섬", "SSF샵", "SI빌리지", "Status", "순위", "우선순위"]
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
