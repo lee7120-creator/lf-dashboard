@@ -1450,7 +1450,6 @@ def main():
         if st.sidebar.button("💾 저장하기", use_container_width=True):
             storage_save(BK, "campaign", work)
             st.session_state.camp_store = work
-            st.cache_data.clear()
             tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
             st.sidebar.success(f"저장했어요 ✓ ({tgt}) — 다음에도 유지돼요.")
         st.sidebar.caption("※ 저장을 눌러야 반영돼요. 안 누르면 이번 세션에서만 볼 수 있어요.")
@@ -1497,7 +1496,6 @@ def main():
         if st.sidebar.button("💾 MTD 저장하기", use_container_width=True, key="save_mtd"):
             storage_save(BK, "mtd", mtd_work)
             st.session_state.mtd_store_df = mtd_work
-            st.cache_data.clear()
             tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
             st.sidebar.success(f"MTD 저장했어요 ✓ ({tgt})")
     else:
@@ -1517,7 +1515,6 @@ def main():
             if st.sidebar.button("💾 기획전 저장하기", use_container_width=True, key="save_promo"):
                 storage_save(BK, "promo", promo_work)
                 st.session_state.promo_store_df = promo_work
-                st.cache_data.clear()
                 tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
                 st.sidebar.success(f"기획전 저장했어요 ✓ ({tgt})")
             st.sidebar.caption("※ 저장을 눌러야 반영돼요.")
