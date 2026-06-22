@@ -421,7 +421,15 @@ def render_naver():
     k[3].metric("📈 상승 키워드", f"{rising}개")
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 
-    t1, t2, t3 = st.tabs(["📈 네이버 검색량 TOP", "🔥 상승 키워드", "📋 전체(엑셀)"])
+    has_monthly = "월별추이" in nv.columns and nv["월별추이"].astype(str).str.len().gt(0).any()
+
+    def parse_series(s):
+        try:
+            return [float(x) for x in str(s).split("|") if x != ""]
+        except ValueError:
+            return []
+
+    t1, t2, t3 = st.tabs(["📈 검색량 TOP", "📅 기간 추이", "📋 전체(엑셀)"])
 
     with t1:
         topn = st.slider("상위 N개", 10, 60, 30, step=5, key="nv_topn")
@@ -436,13 +444,40 @@ def render_naver():
         st.caption("PC+모바일 합산 월간 검색수. Semrush(구글)와 비교하면 한국 실수요 차이를 알 수 있습니다.")
 
     with t2:
-        if not has_trend:
-            st.info("데이터랩 키(CLIENT_ID/SECRET)가 없어 추이가 비어 있습니다. 키 추가 후 재수집하세요.")
+        if not has_monthly:
+            st.info("데이터랩 키(CLIENT_ID/SECRET) 추가 후 재수집하면 **기간 슬라이더 + 추이 라인차트**가 "
+                    "활성화됩니다. (검색광고 키만으로는 절대 검색량만 수집)")
         else:
-            up = nv[nv["추이"].isin(["상승", "급상승"])].sort_values("네이버검색량", ascending=False)
-            st.markdown(f"##### 최근 12개월 상승 키워드 ({len(up)}개)")
-            st.dataframe(up[["키워드", "네이버검색량", "추이지수", "추이"]].head(60),
-                         use_container_width=True, hide_index=True, height=460,
+            months = st.slider("📅 기간 (최근 N개월)", 3, 12, 12, step=1, key="nv_months")
+            nv2 = nv.copy()
+            nv2["_s"] = nv2["월별추이"].map(parse_series)
+
+            def grow(s):
+                w = s[-months:]
+                if len(w) < 2:
+                    return 0
+                n = max(1, len(w) // 3)
+                e = sum(w[:n]) / n
+                l = sum(w[-n:]) / n
+                return round((l - e) / e * 100) if e else 0
+
+            nv2["기간성장%"] = nv2["_s"].map(grow)
+            up = nv2[nv2["기간성장%"] >= 5].sort_values("기간성장%", ascending=False)
+            st.markdown(f"##### 최근 {months}개월 상승 키워드 ({len(up)}개)")
+            sel = st.multiselect("추이 비교 키워드", nv2["키워드"].tolist(),
+                                 default=up["키워드"].head(6).tolist(), key="nv_sel")
+            if sel:
+                fig = go.Figure()
+                for kw in sel:
+                    s = nv2.loc[nv2["키워드"] == kw, "_s"].iloc[0][-months:]
+                    fig.add_trace(go.Scatter(y=s, x=list(range(-len(s) + 1, 1)),
+                                             mode="lines+markers", name=kw))
+                fig.update_layout(**base_layout(h=360, showlegend=True,
+                                                title=f"최근 {months}개월 상대 검색추이(데이터랩 지수)"))
+                fig.update_xaxes(title="개월 전 (0 = 최근月)")
+                st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(up[["키워드", "네이버검색량", "기간성장%", "추이지수"]].head(60),
+                         use_container_width=True, hide_index=True, height=320,
                          column_config={"네이버검색량": st.column_config.NumberColumn("네이버검색량", format="%d")})
 
     with t3:

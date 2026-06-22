@@ -176,7 +176,8 @@ def fetch_datalab_trends(keywords):
                     early = sum(pts[:3]) / max(1, len(pts[:3]))
                     late = sum(pts[-3:]) / max(1, len(pts[-3:]))
                     growth = round((late - early) / early * 100) if early else 0
-                    out[norm(res["title"])] = (round(pts[-1], 1), growth)
+                    out[norm(res["title"])] = (round(pts[-1], 1), growth,
+                                               [round(p, 1) for p in pts])
                 break
             except requests.RequestException as e:
                 if attempt == 3:
@@ -236,7 +237,7 @@ def main():
 
     os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
     out = os.path.join(ROOT, "data", "naver_keyword_metrics.csv")
-    cols = ["키워드", "네이버검색량", "PC", "모바일", "경쟁정도", "추이지수", "추이"]
+    cols = ["키워드", "네이버검색량", "PC", "모바일", "경쟁정도", "추이지수", "추이", "월별추이"]
     n_hit = 0
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
@@ -246,7 +247,7 @@ def main():
             t = trends.get(norm(kw))
             if v:
                 n_hit += 1
-            idx, growth = (t if t else (None, None))
+            idx, growth, series = (t if t else (None, None, []))
             w.writerow({
                 "키워드": kw,
                 "네이버검색량": v["total"] if v else 0,
@@ -255,6 +256,7 @@ def main():
                 "경쟁정도": v["comp"] if v else "",
                 "추이지수": idx if idx is not None else "",
                 "추이": trend_label(growth),
+                "월별추이": "|".join(str(x) for x in series),   # 12개월 상대지수
             })
     print(f"완료 → {out}  (검색량 매칭 {n_hit}/{len(keywords)})")
     print("다음: python build_keyword_data.py  (네이버 데이터 자동 병합)")
