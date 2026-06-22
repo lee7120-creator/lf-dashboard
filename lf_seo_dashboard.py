@@ -159,7 +159,9 @@ def render_competitor():
     k[4].metric("🥇 즉시 선점", f"{len(prime)}개", "고MSV·저난이도")
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 
-    t1, t2, t3, t4 = st.tabs(["🎯 기회 매트릭스", "🚀 선점 타겟", "🔍 도메인 커버리지", "📋 진단"])
+    t1, t2, t3, t4, t5, t6 = st.tabs(
+        ["🎯 기회 매트릭스", "🚀 선점 타겟", "🗂️ 카테고리 클러스터",
+         "📊 Status 분석", "🔍 도메인 커버리지", "📋 진단"])
 
     with t1:
         st.markdown("##### 기회 매트릭스 — 좌상단(고검색량·저난이도)이 황금존")
@@ -204,8 +206,74 @@ def render_competitor():
             st.dataframe(rk[["키워드", "타겟 등급", "MSV", "KD", SUBJECT, "Status", "우선순위"]],
                          use_container_width=True, hide_index=True, height=max(420, topn * 17),
                          column_config={"MSV": st.column_config.NumberColumn("MSV", format="%d")})
+        tier_order = ["🥇 즉시 선점", "🥈 선점 후보", "🥉 롱테일 선점",
+                      "🔧 최적화(탈환)", "🔧 최적화(순위↑)", "✅ 방어"]
+        summ = (df.groupby("타겟 등급").agg(키워드수=("키워드", "count"), 총MSV=("MSV", "sum"))
+                  .reindex([t for t in tier_order if t in df["타겟 등급"].values]).reset_index())
+        st.markdown("##### 타겟 등급별 요약")
+        st.dataframe(summ, use_container_width=True, hide_index=True,
+                     column_config={"총MSV": st.column_config.NumberColumn("총MSV", format="%d")})
 
     with t3:
+        st.markdown("##### 카테고리 클러스터 — 허브·스포크 페이지 아키텍처")
+        st.caption("블록 크기=MSV, 색=Status. 빨간(Missing) 블록이 많은 카테고리 = 선점 여지 큰 클러스터.")
+        fig = px.treemap(df, path=[px.Constant("전체"), "카테고리", "키워드"], values="MSV",
+                         color="Status", color_discrete_map=STATUS_COLOR, custom_data=["KD", SUBJECT])
+        fig.update_traces(marker=dict(line=dict(color="white", width=1)),
+                          hovertemplate="<b>%{label}</b><br>MSV %{value:,}<br>KD %{customdata[0]}<extra></extra>")
+        fig.update_layout(margin=dict(l=8, r=8, t=10, b=8), height=460)
+        st.plotly_chart(fig, use_container_width=True)
+        cat = (df.groupby("카테고리").agg(
+                   키워드수=("키워드", "count"), 총MSV=("MSV", "sum"), 평균KD=("KD", "mean"),
+                   Missing=("Status", lambda s: (s == "Missing").sum()),
+                   Weak=("Status", lambda s: (s == "Weak").sum()),
+                   Strong=("Status", lambda s: (s == "Strong").sum()))
+               .reset_index().sort_values("총MSV", ascending=False))
+        cat["평균KD"] = cat["평균KD"].round(0).astype(int)
+        cat["선점여지%"] = ((cat["Missing"] + cat["Weak"]) / cat["키워드수"] * 100).round(0).astype(int)
+        st.markdown("##### 카테고리별 선점 여지")
+        st.dataframe(cat, use_container_width=True, hide_index=True,
+                     column_config={
+                         "총MSV": st.column_config.ProgressColumn("총MSV", format="%d",
+                                                                  min_value=0, max_value=int(cat["총MSV"].max())),
+                         "선점여지%": st.column_config.ProgressColumn("선점여지%", format="%d%%",
+                                                                    min_value=0, max_value=100)})
+
+    with t4:
+        st.markdown("##### Status 분석 (필터 + 다운로드)")
+        c0, c1, c2, c3 = st.columns([1.2, 1.2, 1, 1])
+        sel_status = c0.multiselect("Status", ["Strong", "Weak", "Missing"],
+                                    default=["Missing", "Weak", "Strong"], key="comp_st")
+        sel_cat = c1.multiselect("카테고리", sorted(df["카테고리"].unique()), key="comp_cat")
+        min_msv = c2.slider("최소 MSV", 0, int(df["MSV"].max()), 0, step=1000, key="comp_msv")
+        max_kd = c3.slider("최대 KD", 0, 40, 40, step=1, key="comp_kd")
+        fdf = df[df["Status"].isin(sel_status) & (df["MSV"] >= min_msv) & (df["KD"] <= max_kd)]
+        if sel_cat:
+            fdf = fdf[fdf["카테고리"].isin(sel_cat)]
+        cc1, cc2 = st.columns(2)
+        sc = df["Status"].value_counts().reindex(["Strong", "Weak", "Missing"]).fillna(0)
+        sm = df.groupby("Status")["MSV"].sum().reindex(["Strong", "Weak", "Missing"]).fillna(0)
+        with cc1:
+            fig = go.Figure(go.Bar(x=sc.index, y=sc.values,
+                                   marker_color=[STATUS_COLOR[s] for s in sc.index],
+                                   text=sc.values.astype(int), textposition="outside"))
+            fig.update_layout(**base_layout(h=260, title="Status별 키워드 수"))
+            st.plotly_chart(fig, use_container_width=True)
+        with cc2:
+            fig = go.Figure(go.Bar(x=sm.index, y=sm.values,
+                                   marker_color=[STATUS_COLOR[s] for s in sm.index],
+                                   text=[f"{int(v):,}" for v in sm.values], textposition="outside"))
+            fig.update_layout(**base_layout(h=260, title="Status별 총 MSV"))
+            st.plotly_chart(fig, use_container_width=True)
+        st.markdown(f"##### 키워드 상세 ({len(fdf)}개)")
+        st.dataframe(fdf[["키워드", "카테고리", "MSV", "KD"] + SITES + ["Status", "타겟 등급"]]
+                     .sort_values("MSV", ascending=False),
+                     use_container_width=True, hide_index=True, height=420,
+                     column_config={"MSV": st.column_config.NumberColumn("MSV", format="%d")})
+        st.download_button("⬇️ CSV 다운로드", fdf.to_csv(index=False).encode("utf-8-sig"),
+                           "competitor_keywords.csv", "text/csv")
+
+    with t5:
         st.markdown("##### 도메인별 커버리지 (이 62개 패션 키워드 기준)")
         rows = []
         for c in SITES:
@@ -228,16 +296,69 @@ def render_competitor():
             st.dataframe(cov, use_container_width=True, hide_index=True, height=230)
             st.caption("SSF샵·W컨셉이 패션 일반 키워드를 가장 넓게 선점. LF몰은 노출이 적어 "
                        "**Missing 선점 여지가 큼**.")
+        st.markdown("##### LF몰 vs 최강 경쟁사 — 키워드별 맞대결")
+        duel = df.copy()
 
-    with t4:
+        def _bestcomp(r):
+            rk = [(r[c], c) for c in COMPETITORS if r[c] > 0]
+            return min(rk) if rk else (0, "-")
+
+        bc = duel.apply(_bestcomp, axis=1, result_type="expand")
+        duel["경쟁사 최고순위"] = bc[0]
+        duel["경쟁사"] = bc[1]
+
+        def _win(r):
+            lf, b = r[SUBJECT], r["경쟁사 최고순위"]
+            if lf > 0 and (b == 0 or lf < b):
+                return "LF몰 우위"
+            return "경쟁사 우위" if b > 0 else "-"
+
+        duel["우위"] = duel.apply(_win, axis=1)
+        w = int((duel["우위"] == "LF몰 우위").sum())
+        lose = int((duel["우위"] == "경쟁사 우위").sum())
+        st.caption(f"전체 {len(duel)}개 중 LF몰 우위 **{w}개** / 경쟁사 우위 **{lose}개** "
+                   "(Missing 다수 → 선점 기회).")
+        st.dataframe(duel[["키워드", "MSV", "KD", SUBJECT, "경쟁사", "경쟁사 최고순위", "Status", "우위"]]
+                     .sort_values("MSV", ascending=False),
+                     use_container_width=True, hide_index=True, height=320,
+                     column_config={"MSV": st.column_config.NumberColumn("MSV", format="%d"),
+                                    SUBJECT: st.column_config.NumberColumn("LF몰 순위")})
+
+    with t6:
+        st.markdown("##### 한 줄 결론")
         st.markdown(
             "<div class='card'>🏆 <b>SSF샵</b>이 SEO 리더, <b>W컨셉</b>이 효율왕, "
             "<b>LF몰</b>은 키워드는 많은데 순위가 낮은 '잠자는 거인'. → 이미 5~20위에 걸린 키워드를 "
-            "상위로 끌어올리는 것이 가장 빠른 ROI.</div>"
-            "<div class='card'><b>Status</b> — "
-            f"<span class='tag' style='background:{STATUS_COLOR['Strong']}'>Strong</span> 경쟁사보다 앞섬 / "
-            f"<span class='tag' style='background:{STATUS_COLOR['Weak']}'>Weak</span> 열위 / "
-            f"<span class='tag' style='background:{STATUS_COLOR['Missing']}'>Missing</span> 경쟁사만 보유(선점기회)</div>",
+            "상위로 끌어올리는 것이 가장 빠른 ROI.</div>", unsafe_allow_html=True)
+        cards = [
+            ("SSF샵", "red", "SEO·PPC 최강",
+             "트래픽 1위. 입점 브랜드(에잇세컨즈·빈폴·구호·비이커·띠어리)마다 1위 다수 + "
+             "일반 키워드(아디다스·청바지·바지·코트)까지 침투. 광고비도 압도적."),
+            ("W컨셉", "amber", "적은 키워드로 고효율",
+             "적은 키워드로 높은 트래픽. 브랜드명 + 여성 카테고리(비키니·니트·가방) 장악. "
+             "단 '늑대닷컴' 등 스팸 키워드 트래픽이 섞여 실제 체급엔 거품."),
+            ("LF몰", "blue", "키워드 多 · 순위 下",
+             "키워드는 많지만 순위가 하단. 이미 5~20위에 걸린 키워드를 상위로 끌어올리면 업사이드 최대."),
+            ("한섬", "purple", "브랜드 의존형",
+             "트래픽 대부분이 자사·취급 브랜드명(한섬·무스너클·타임·DKNY·클럽모나코). "
+             "일반 카테고리 키워드 거의 없음. 명품/디자이너 SEO 집중."),
+            ("SI빌리지", "slate", "최약체 · 추월 1순위",
+             "키워드·PPC 최소. 브랜드명(sivillage·자주·어그) 위주. LF가 가장 쉽게 앞설 수 있는 상대."),
+        ]
+        for name, col, headline, body in cards:
+            c = PALETTE[col]
+            st.markdown(
+                f"<div class='card'><span class='tag' style='background:{c}'>{name}</span>"
+                f"<b>{headline}</b><br><span style='color:#475569'>{body}</span></div>",
+                unsafe_allow_html=True)
+        st.markdown("##### 추천 액션")
+        st.markdown(
+            "<div class='card'>"
+            "1️⃣ <b>황금존 Missing 선점</b> — 청바지·바지·코트·셔츠·블라우스·티셔츠·후드집업 등 "
+            "고MSV·저KD 미보유 키워드 카테고리 페이지 생성<br>"
+            "2️⃣ <b>Weak 탈환</b> — 니트·크롭티·카드지갑 등 순위는 있으나 경쟁사에 밀리는 키워드 강화<br>"
+            "3️⃣ <b>Strong 방어·순위↑</b> — 드레스·모피·세미정장 등 10위 밖 Strong 온페이지 최적화<br>"
+            "4️⃣ <b>SI빌리지부터 추월</b> + 주간 순위 추적(Position Tracking)</div>",
             unsafe_allow_html=True)
 
 
