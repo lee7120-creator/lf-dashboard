@@ -249,11 +249,16 @@ def main():
             "Status": status, "_score": (score_vol ** 0.5) * diff * sf,
         })
 
-    # 패션 카테고리 + 검색량(네이버/Semrush)>0 키워드에만 우선순위(서수) 부여.
-    fashion = sorted([r for r in rows if r["패션"] == "Y"
-                      and (r["검색량"] > 0 or r["네이버검색량"] > 0)],
-                     key=lambda r: r["_score"], reverse=True)
-    rank_map = {r["키워드"]: i for i, r in enumerate(fashion, 1)}
+    # 각 패션 카테고리(섹션) "내부"에서 점수 내림차순으로 1순위~ 부여 (섹션별 독립 순위)
+    from collections import defaultdict
+    by_sec = defaultdict(list)
+    for r in rows:
+        if r["패션"] == "Y" and (r["검색량"] > 0 or r["네이버검색량"] > 0):
+            by_sec[r["섹션"]].append(r)
+    rank_map = {}
+    for sec, items in by_sec.items():
+        for i, r in enumerate(sorted(items, key=lambda x: x["_score"], reverse=True), 1):
+            rank_map[r["키워드"]] = i
     for r in rows:
         rnk = rank_map.get(r["키워드"], 0)
         r["순위"] = rnk
@@ -272,10 +277,13 @@ def main():
     # 요약
     from collections import Counter
     sc = Counter(r["Status"] for r in rows)
+    ranked_n = sum(1 for r in rows if r["순위"] > 0)
     print(f"총 {len(rows)}개 → {out}")
     print("Status:", dict(sc))
-    print("패션 우선순위 부여:", len(fashion), "개")
-    print("상위 12:", [f"{r['우선순위']} {r['키워드']}({r['검색량']:,})" for r in fashion[:12]])
+    print(f"우선순위 부여(카테고리별): {ranked_n}개 / {len(by_sec)}개 섹션")
+    for sec in sorted(by_sec, key=lambda s: -sum(x["검색량"] for x in by_sec[s]))[:8]:
+        top1 = next((r for r in rows if r["섹션"] == sec and r["순위"] == 1), None)
+        print(f"  {sec} 1순위: {top1['키워드']}({top1['검색량']:,})" if top1 else f"  {sec}: -")
 
 if __name__ == "__main__":
     main()

@@ -271,30 +271,38 @@ def render_keyword():
         ["🚀 우선순위", "🗂️ 섹션 분석", "🎯 경쟁사 Status", "📋 전체 데이터(엑셀)", "📖 가이드"])
 
     with t1:
-        st.markdown("##### 패션 카테고리 선점 우선순위 (1순위 = 최우선)")
-        st.caption("패션·뷰티·골프 키워드 대상, √검색량·난이도·경쟁상태 종합 서수. "
-                   "가전·리빙·식품 등 비패션 일반어는 제외.")
+        st.markdown("##### 카테고리별 선점 우선순위 (각 카테고리 안에서 1순위 = 최우선)")
+        st.caption("패션·뷰티·골프 각 카테고리 '내부'에서 √검색량·난이도·경쟁상태로 1순위부터 부여. "
+                   "카테고리를 선택하면 그 안의 순위가 나옵니다.")
         rank_df = df[df["순위"] > 0]
-        c0, c1 = st.columns(2)
-        sec_f = c0.multiselect("섹션 필터", sorted(rank_df["섹션"].unique()), key="kw_secf")
-        topn = c1.slider("상위 N개", 10, 60, 30, step=5, key="kw_topn")
-        d = (rank_df if not sec_f else rank_df[rank_df["섹션"].isin(sec_f)]).sort_values("순위").head(topn)
+        cats = rank_df.groupby("섹션")["검색량"].sum().sort_values(ascending=False).index.tolist()
+        c0, c1 = st.columns([1.5, 1])
+        sec_sel = c0.selectbox("카테고리 선택", cats, key="kw_secsel")
+        topn = c1.slider("상위 N개", 5, 40, 20, step=5, key="kw_topn")
+        d = rank_df[rank_df["섹션"] == sec_sel].sort_values("순위").head(topn)
         c1a, c2a = st.columns([1.1, 1])
         with c1a:
             dd = d.sort_values("순위", ascending=False)
-            fig = go.Figure(go.Bar(x=dd["검색량"], y=dd["키워드"], orientation="h",
-                                   marker=dict(color=[STATUS_COLOR.get(s, "#cbd5e1") for s in dd["Status"]]),
-                                   text=dd["우선순위"], textposition="outside",
-                                   customdata=dd[["우선순위", "섹션", "Status"]],
-                                   hovertemplate="<b>%{y}</b><br>%{customdata[0]}·검색량 %{x:,}<br>"
-                                   "%{customdata[1]}·%{customdata[2]}<extra></extra>"))
-            fig.update_layout(**base_layout(h=max(420, topn * 16), title="패션 우선순위(막대=검색량)"))
+            fig = go.Figure(go.Bar(
+                x=dd["검색량"], y=dd["키워드"], orientation="h",
+                marker=dict(color=[STATUS_COLOR.get(s, "#cbd5e1") for s in dd["Status"]]),
+                text=dd["우선순위"], textposition="outside",
+                customdata=dd[["우선순위", "Status"]],
+                hovertemplate="<b>%{y}</b><br>%{customdata[0]} · 검색량 %{x:,} · "
+                              "%{customdata[1]}<extra></extra>"))
+            fig.update_layout(**base_layout(h=max(380, len(d) * 24),
+                                            title=f"{sec_sel} 카테고리 내 우선순위 (막대=검색량)"))
             fig.update_xaxes(range=[0, dd["검색량"].max() * 1.18])
             st.plotly_chart(fig, use_container_width=True)
         with c2a:
-            st.dataframe(d[["우선순위", "키워드", "섹션", "검색량", "Status"]],
-                         use_container_width=True, hide_index=True, height=max(420, topn * 16),
+            st.dataframe(d[["우선순위", "키워드", "검색량", "Status"]],
+                         use_container_width=True, hide_index=True, height=max(380, len(d) * 24),
                          column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d")})
+        st.markdown("##### 각 카테고리 1순위 (TOP1 모음)")
+        top1 = rank_df[rank_df["순위"] == 1].sort_values("검색량", ascending=False)
+        st.dataframe(top1[["섹션", "키워드", "검색량", "Status"]],
+                     use_container_width=True, hide_index=True,
+                     column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d")})
 
     with t2:
         st.markdown("##### 섹션별 검색 수요 & 분포")
