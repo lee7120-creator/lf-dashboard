@@ -114,8 +114,8 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
 # ──────────────────────────────────────────────────────
 with tab1:
     st.markdown("##### 패션 카테고리 선점 우선순위 (1순위 = 최우선)")
-    st.caption("패션 카테고리 키워드만 대상으로, 검색량·난이도·경쟁상태를 종합해 "
-               "1순위부터 서수로 부여. 비패션·일반어(가전·뷰티·리빙 등)는 제외됩니다.")
+    st.caption("패션·뷰티·골프 카테고리 키워드를 대상으로, √검색량·난이도·경쟁상태를 종합해 "
+               "1순위부터 서수로 부여. 가전·리빙·식품 등 비패션 일반어는 제외됩니다.")
     rank_df = df[df["순위"] > 0]
     c0, c1 = st.columns([1, 1])
     sec_f = c0.multiselect("섹션 필터", sorted(rank_df["섹션"].unique()))
@@ -229,30 +229,65 @@ with tab4:
 # TAB 5 — 가이드
 # ──────────────────────────────────────────────────────
 with tab5:
+    st.markdown("##### 📅 데이터 기간 기준")
     st.markdown(
         "<div class='card'>"
-        "<b>분석 대상</b> — LF몰(lfmall.co.kr)의 전체 카테고리 분류 키워드 919개를 "
-        "Semrush 한국(kr) DB로 검색량 실측하고, 경쟁 4사(W컨셉·한섬·SSF샵·SI빌리지)와 "
-        "비교했습니다.</div>"
-        "<div class='card'>"
-        "<b>지표</b><br>"
-        "• 검색량(MSV) = Google 월별 검색량 · 도메인 숫자 = 순위(1~100, 0=없음)<br>"
-        f"• <span class='tag' style='background:{STATUS_COLOR['Strong']}'>Strong</span> LF몰이 경쟁사보다 앞섬 · "
-        f"<span class='tag' style='background:{STATUS_COLOR['Weak']}'>Weak</span> 열위 · "
-        f"<span class='tag' style='background:{STATUS_COLOR['Missing']}'>Missing</span> 경쟁사만 보유<br>"
-        f"• <span class='tag' style='background:{STATUS_COLOR['공백']}'>공백</span> 5사 모두 미보유(무경쟁 선점지) · "
-        f"<span class='tag' style='background:{STATUS_COLOR['미수집']};color:#475569'>미수집</span> 순위 미집계</div>"
-        "<div class='card'>"
-        "<b>우선순위(1순위~)</b> — <b>패션 카테고리 키워드</b>(의류·언더웨어·수영·가방·신발·"
-        "액세서리·주얼리/시계·지갑벨트)만 대상으로, 검색량×난이도할인×경쟁상태가중 점수를 "
-        "매겨 높은 순서대로 1순위·2순위… 서수를 부여합니다. 가전·뷰티·리빙·식품 등 "
-        "비패션·일반어는 우선순위에서 제외됩니다(예: '야구' 같은 광범위 일반어 거품 제거).</div>"
-        "<div class='card'>"
-        "<b>프로그래매틱 SEO 활용</b> — 1순위부터 허브-스포크 템플릿 페이지를 만들어 선점. "
-        "특히 경쟁사가 미보유(Missing/공백)인 상위 키워드가 가장 빠른 선점 기회입니다.</div>",
+        "• <b>출처/시점</b> — Semrush 한국(<b>kr</b>) DB, <b>2026-06-22 스냅샷</b>. "
+        "별도 기간을 지정하지 않아 <b>가장 최신 가용 데이터</b>가 반영됨.<br>"
+        "• <b>검색량은 단일 월이 아니라 \"최근 12개월 평균 월간 검색량\"</b>(rolling 12-month average)입니다. "
+        "즉 한 달에 평균 몇 번 검색되는지를 직전 1년으로 평균낸 값.<br>"
+        "• 순위·난이도도 같은 2026-06-22 시점 기준.<br>"
+        "• ⚠️ <b>계절 키워드 주의</b> — 패딩·수영복처럼 시즌성이 강한 키워드는 성수기 단월 검색량이 "
+        "연평균보다 훨씬 큽니다(현재 값은 연평균).</div>",
         unsafe_allow_html=True)
-    st.caption("*검색량은 Semrush 추정치. 순위/난이도는 5사 키워드갭에서 확보된 패션 키워드 위주로 "
-               "병합되어 일부 비패션 키워드는 '미수집'입니다.")
+
+    st.markdown("##### 📖 용어 설명")
+    st.markdown(
+        "<div class='card'>"
+        "• <b>검색량(MSV, Monthly Search Volume)</b> — 한 달 평균 검색 횟수(최근 12개월 평균)<br>"
+        "• <b>난이도(KD, Keyword Difficulty)</b> — 0~100, 상위노출 난이도. <b>낮을수록 쉬움</b>. 빈칸 = 미집계<br>"
+        "• <b>도메인 순위(LF몰/W컨셉/한섬/SSF샵/SI빌리지)</b> — 그 키워드 검색 시 해당 사이트의 순위(1~100위). "
+        "<b>0 = 100위 밖(노출 없음)</b><br>"
+        "• <b>섹션</b> — 키워드를 카테고리 그룹(의류·가방·뷰티…)으로 자동 분류한 것<br>"
+        "• <b>우선순위(N순위)</b> — 페이지를 만들어 공략할 순서. <b>1순위 = 최우선</b><br>"
+        f"• <b>Status</b> — "
+        f"<span class='tag' style='background:{STATUS_COLOR['Strong']}'>Strong</span> 경쟁사보다 앞섬 / "
+        f"<span class='tag' style='background:{STATUS_COLOR['Weak']}'>Weak</span> 열위 / "
+        f"<span class='tag' style='background:{STATUS_COLOR['Missing']}'>Missing</span> 경쟁사만 보유(선점기회) / "
+        f"<span class='tag' style='background:{STATUS_COLOR['공백']}'>공백</span> 5사 모두 미보유(무경쟁) / "
+        f"<span class='tag' style='background:{STATUS_COLOR['미수집']};color:#475569'>미수집</span> 순위 미집계"
+        "</div>",
+        unsafe_allow_html=True)
+
+    st.markdown("##### 🧮 연산 기준")
+    st.markdown(
+        "<div class='card'>"
+        "<b>① 우선순위 점수</b><br>"
+        "<code>점수 = √(검색량) × 난이도할인 × 상태가중</code><br>"
+        "• <b>√(검색량)</b> — 제곱근. 검색량이 매우 큰 키워드(뮬·시계·크림 등)가 점수를 독점하지 않도록 "
+        "영향력을 <b>완화</b>합니다.<br>"
+        "• <b>난이도할인 = (100 − KD) / 100</b> — 쉬울수록 1에 가까움. 난이도 미상은 40으로 가정(→0.6).<br>"
+        "• <b>상태가중</b> — Missing 1.0 · 공백 0.9 · 미수집 0.65 · Weak 0.6 · Strong 0.4(10위 밖이면 0.5). "
+        "선점기회일수록 우대.<br>"
+        "• 이 점수 내림차순으로 <b>1순위·2순위…</b> 부여. 대상은 <b>패션 + 뷰티 + 골프 섹션 & 검색량&gt;0</b> "
+        "키워드뿐(가전·리빙·식품 등 비패션 일반어는 제외 — '야구' 같은 거품 방지).</div>"
+        "<div class='card'>"
+        "<b>② Status 판정(LF몰 기준)</b><br>"
+        "• LF몰=0 &amp; 경쟁사도 모두 0 → <b>공백</b><br>"
+        "• LF몰=0 &amp; 경쟁사 중 하나라도 순위 있음 → <b>Missing</b><br>"
+        "• LF몰 순위 &lt; 경쟁사 최고순위(또는 경쟁사 없음) → <b>Strong</b><br>"
+        "• 그 외(경쟁사가 더 앞섬) → <b>Weak</b> · 순위 데이터 자체가 없으면 → <b>미수집</b></div>",
+        unsafe_allow_html=True)
+
+    st.markdown("##### 🎯 활용 & 한계")
+    st.markdown(
+        "<div class='card'>"
+        "• <b>활용</b> — 1순위부터 허브-스포크 템플릿 페이지를 만들어 선점. 특히 경쟁사 미보유"
+        "(Missing/공백) 상위 키워드가 가장 빠른 선점 기회.<br>"
+        "• <b>한계</b> — 순위/난이도는 5사 키워드갭에서 확보된 키워드에 한해 병합되어, 비패션 등 "
+        "상당수는 <b>미수집</b>입니다. 전체 919개의 5사 SERP 순위를 모두 채우려면 Semrush 추가 수집이 "
+        "필요합니다. 검색량은 Semrush 추정치로 실제와 차이가 있을 수 있습니다.</div>",
+        unsafe_allow_html=True)
 
 st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 st.caption(f"카테고리 키워드 {len(df):,}개 · LF몰 vs W컨셉·한섬·SSF샵·SI빌리지 · Semrush kr DB")
