@@ -48,7 +48,7 @@ POS = {
     "스니커즈": (0, 55, 0, 0, 0, 23), "선글라스": (0, 18, 0, 0, 0, 20),
     "양말": (0, 5, 0, 0, 0, 18), "스타킹": (0, 0, 0, 0, 20, 24),
     "레깅스": (0, 12, 0, 41, 0, 31), "크로스백": (0, 16, 0, 0, 0, 16),
-    "스카프": (0, 56, 0, 0, 0, 23), "안경": (0, 0, 0, 0, 0, 0),
+    "스카프": (0, 56, 0, 0, 0, 23),
 }
 
 # ── 섹션 분류 규칙 (구체 도메인 먼저, 패션 의류는 마지막, 기타 fallback) ──
@@ -131,10 +131,20 @@ SECTION_RULES = [
              "맥시", "미디", "미니", "플레어", "점프수트", "민소매", "반팔", "긴팔", "맨투맨",
              "스웻", "후드티", "크롭", "베스트", "터틀넥", "카라", "헨리넥", "스트라이프",
              "체크", "린넨", "리넨", "코튼", "실크", "쉬폰", "울", "모직", "코듀로이", "가죽",
-             "치노", "솔리드", "밴딩", "셋업", "우비", "레인", "롱", "하프", "숏", "플리츠"]),
+             "치노", "솔리드", "밴딩", "셋업", "우비", "레인", "롱", "하프", "숏", "플리츠",
+             "레깅스"]),
 ]
 
+# 우선순위를 부여할 '패션 카테고리' 섹션 (비패션·일반어는 우선순위에서 제외)
+FASHION_SECTIONS = {"의류", "언더웨어", "수영/비치", "가방", "신발",
+                    "액세서리", "주얼리/시계", "지갑/벨트", "뷰티/향수", "골프"}
+
+# 분류 오버라이드 (오분류 교정: 비패션 일반어가 패션 섹션으로 새는 것 방지)
+SECTION_OVERRIDE = {"명함": "문구", "카드": "문구", "배치": "기타", "배지": "기타"}
+
 def section_of(kw):
+    if kw in SECTION_OVERRIDE:
+        return SECTION_OVERRIDE[kw]
     for name, toks in SECTION_RULES:
         for t in toks:
             if t in kw:
@@ -177,24 +187,38 @@ def main():
             status = "Strong"
         else:
             status = "Weak"
-        # 우선순위: 검색량 가중 (난이도 알면 할인). 선점/공백/Missing 가산
+        # 내부 점수 = √검색량 × 난이도할인 × 상태가중
+        #  · √(제곱근): 검색량 큰 항목(뮬·시계 등)의 지배력을 완화
+        #  · 난이도할인 = (100 - KD)/100  (난이도 미상은 40 가정)
+        #  · 상태가중: 선점기회(Missing/공백) 우대, 미집계는 낮춤
         kdv = kd if isinstance(kd, int) else 40
         diff = (100 - kdv) / 100
         sf = {"Missing": 1.0, "공백": 0.9, "Weak": 0.6,
-              "Strong": 0.4, "미수집": 0.8}.get(status, 0.7)
+              "Strong": 0.4, "미수집": 0.65}.get(status, 0.7)
         if status == "Strong" and lf > 10:
             sf = 0.5
-        priority = int(round(msv * diff * sf))
+        sec = section_of(kw)
         rows.append({
-            "키워드": kw, "검색량": msv, "난이도": kd, "섹션": section_of(kw),
+            "키워드": kw, "검색량": msv, "난이도": kd, "섹션": sec,
+            "패션": "Y" if sec in FASHION_SECTIONS else "N",
             "LF몰": lf, "W컨셉": wc, "한섬": th, "SSF샵": ssf, "SI빌리지": si,
-            "Status": status, "우선순위": priority,
+            "Status": status, "_score": (msv ** 0.5) * diff * sf,
         })
+
+    # 패션 카테고리 + 검색량>0 키워드에만 우선순위(서수) 부여. 점수 내림차순 = 1순위.
+    fashion = sorted([r for r in rows if r["패션"] == "Y" and r["검색량"] > 0],
+                     key=lambda r: r["_score"], reverse=True)
+    rank_map = {r["키워드"]: i for i, r in enumerate(fashion, 1)}
+    for r in rows:
+        rnk = rank_map.get(r["키워드"], 0)
+        r["순위"] = rnk
+        r["우선순위"] = f"{rnk}순위" if rnk else ""
+        del r["_score"]
 
     os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
     out = os.path.join(ROOT, "data", "lfmall_keyword_research.csv")
-    cols = ["키워드", "검색량", "난이도", "섹션", "LF몰", "W컨셉", "한섬", "SSF샵",
-            "SI빌리지", "Status", "우선순위"]
+    cols = ["키워드", "검색량", "난이도", "섹션", "패션", "LF몰", "W컨셉", "한섬", "SSF샵",
+            "SI빌리지", "Status", "순위", "우선순위"]
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
@@ -203,11 +227,10 @@ def main():
     # 요약
     from collections import Counter
     sc = Counter(r["Status"] for r in rows)
-    sec = Counter(r["섹션"] for r in rows)
     print(f"총 {len(rows)}개 → {out}")
     print("Status:", dict(sc))
-    print("검색량 보유:", sum(1 for r in rows if r['검색량'] > 0), "개")
-    print("섹션:", dict(sec.most_common()))
+    print("패션 우선순위 부여:", len(fashion), "개")
+    print("상위 12:", [f"{r['우선순위']} {r['키워드']}({r['검색량']:,})" for r in fashion[:12]])
 
 if __name__ == "__main__":
     main()
