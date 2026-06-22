@@ -118,9 +118,10 @@ SECTION_RULES = [
                   "브로치", "귀찌", "팬던트", "순금", "실버", "골드바", "와인더", "커프스",
                   "돌반지", "키홀더"]),
     ("액세서리", ["모자", "캡", "비니", "스카프", "머플러", "장갑", "양말", "스타킹", "넥타이",
-                "선글라스", "안경", "키링", "워머", "두건", "우산", "양산", "썬캡", "썬바이저",
-                "버킷햇", "헌팅캡", "군모", "스냅백", "넥워머", "타이", "숄", "헤어", "와펜",
-                "손수건", "멜빵", "서스펜더", "귀마개", "안대", "장식", "ACC", "스트랩"]),
+                "선글라스", "안경", "아이웨어", "키링", "워머", "두건", "우산", "양산", "썬캡",
+                "썬바이저", "버킷햇", "헌팅캡", "군모", "스냅백", "넥워머", "타이", "숄", "헤어",
+                "와펜", "손수건", "멜빵", "서스펜더", "귀마개", "안대", "장식", "ACC", "스트랩",
+                "반다나", "목도리", "토시", "쿨토시"]),
     ("언더웨어", ["브라", "팬티", "속옷", "잠옷", "언더웨어", "슬립", "캐미솔", "런닝", "내복",
                 "내의", "보정", "드로즈", "브리프", "트렁크", "라운지", "속바지", "속치마",
                 "와이어", "계절내의", "타이즈"]),
@@ -129,10 +130,14 @@ SECTION_RULES = [
              "점퍼", "후드", "조끼", "정장", "데님", "슬랙스", "와이드", "배기", "조거",
              "블레이저", "블루종", "다운", "밍크", "레더", "트위드", "퀄팅", "플리스", "사파리",
              "맥시", "미디", "미니", "플레어", "점프수트", "민소매", "반팔", "긴팔", "맨투맨",
-             "스웻", "후드티", "크롭", "베스트", "터틀넥", "카라", "헨리넥", "스트라이프",
-             "체크", "린넨", "리넨", "코튼", "실크", "쉬폰", "울", "모직", "코듀로이", "가죽",
-             "치노", "솔리드", "밴딩", "셋업", "우비", "레인", "롱", "하프", "숏", "플리츠",
-             "레깅스"]),
+             "스웻", "스웨트", "후드티", "크롭", "베스트", "터틀넥", "카라", "헨리넥", "넥",
+             "스트라이프", "체크", "린넨", "리넨", "코튼", "실크", "쉬폰", "울", "모직",
+             "코듀로이", "가죽", "치노", "솔리드", "밴딩", "셋업", "우비", "레인", "롱",
+             "하프", "숏", "플리츠", "레깅스",
+             # 보강: 상위어·핏·소재·스타일
+             "의류", "아우터", "상의", "하의", "트렌치", "바람막이", "슬리브", "슬림",
+             "보이프렌드", "라인", "캐주얼", "면", "나시", "탱크", "오프숄더", "언더레이어",
+             "모시", "롱코트", "롱패딩"]),
 ]
 
 # 우선순위를 부여할 '패션 카테고리' 섹션 (비패션·일반어는 우선순위에서 제외)
@@ -166,10 +171,25 @@ def main():
             except (ValueError, IndexError):
                 pass
 
+    # 네이버 지표(있으면 병합): 검색량을 네이버값으로 우선 사용 → 한국 실수요 반영
+    naver = {}
+    npath = os.path.join(ROOT, "data", "naver_keyword_metrics.csv")
+    if os.path.exists(npath):
+        with open(npath, encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                try:
+                    nv = int(r.get("네이버검색량") or 0)
+                except ValueError:
+                    nv = 0
+                naver[norm(r["키워드"])] = (nv, r.get("추이", ""))
+        print(f"네이버 데이터 병합: {npath} ({len(naver)}개)")
+
     posn = {norm(k): v for k, v in POS.items()}
     rows = []
     for kw in uniq:
         msv = vol.get(kw, 0)
+        nv, ntrend = naver.get(norm(kw), (0, ""))
+        score_vol = nv if nv > 0 else msv      # 네이버값 있으면 우선
         p = posn.get(norm(kw))
         if p:
             lf, wc, th, ssf, si, kd = p
@@ -199,14 +219,16 @@ def main():
             sf = 0.5
         sec = section_of(kw)
         rows.append({
-            "키워드": kw, "검색량": msv, "난이도": kd, "섹션": sec,
+            "키워드": kw, "검색량": msv, "네이버검색량": nv, "추이": ntrend,
+            "난이도": kd, "섹션": sec,
             "패션": "Y" if sec in FASHION_SECTIONS else "N",
             "LF몰": lf, "W컨셉": wc, "한섬": th, "SSF샵": ssf, "SI빌리지": si,
-            "Status": status, "_score": (msv ** 0.5) * diff * sf,
+            "Status": status, "_score": (score_vol ** 0.5) * diff * sf,
         })
 
-    # 패션 카테고리 + 검색량>0 키워드에만 우선순위(서수) 부여. 점수 내림차순 = 1순위.
-    fashion = sorted([r for r in rows if r["패션"] == "Y" and r["검색량"] > 0],
+    # 패션 카테고리 + 검색량(네이버/Semrush)>0 키워드에만 우선순위(서수) 부여.
+    fashion = sorted([r for r in rows if r["패션"] == "Y"
+                      and (r["검색량"] > 0 or r["네이버검색량"] > 0)],
                      key=lambda r: r["_score"], reverse=True)
     rank_map = {r["키워드"]: i for i, r in enumerate(fashion, 1)}
     for r in rows:
@@ -217,8 +239,8 @@ def main():
 
     os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
     out = os.path.join(ROOT, "data", "lfmall_keyword_research.csv")
-    cols = ["키워드", "검색량", "난이도", "섹션", "패션", "LF몰", "W컨셉", "한섬", "SSF샵",
-            "SI빌리지", "Status", "순위", "우선순위"]
+    cols = ["키워드", "검색량", "네이버검색량", "추이", "난이도", "섹션", "패션",
+            "LF몰", "W컨셉", "한섬", "SSF샵", "SI빌리지", "Status", "순위", "우선순위"]
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
