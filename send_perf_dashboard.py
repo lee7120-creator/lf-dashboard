@@ -1670,9 +1670,11 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("#### 현황")
     drange = "—"
-    if df["date"].notna().any():
-        ds = sorted(df["date"].dropna().unique())
-        drange = f"{ds[0]} ~ {ds[-1]}"
+    _ds = [x for x in raw["date"].dropna().astype(str).str.strip().unique()
+           if x and x.lower() not in ("nan", "none")]
+    if _ds:
+        _ds = sorted(_ds)
+        drange = f"{_ds[0]} ~ {_ds[-1]}"
     st.sidebar.caption(f"전체 {len(raw)}건 · 매칭 {raw['matched'].mean()*100:.0f}% · 분석 {len(fdf)}건\n\n{drange}")
     if parse_log:
         with st.sidebar.expander("파싱 로그"):
