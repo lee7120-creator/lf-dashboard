@@ -1,7 +1,8 @@
-"""굿웨어몰 프로그래매틱 SEO 키워드 선점 분석 대시보드
+"""LF몰 프로그래매틱 SEO 키워드 선점 분석 대시보드
 
-대상       : goodwearmall.com (굿웨어몰)
-경쟁사     : uniqlo.com(유니클로) · lfmall.co.kr(LF몰) · elandmall.co.kr(이랜드몰)
+대상       : lfmall.co.kr (LF몰)
+경쟁사     : wconcept.co.kr(W컨셉) · thehandsome.com(한섬) ·
+             ssfshop.com(SSF샵) · sivillage.com(SI빌리지)
 관점       : Programmatic SEO — 경쟁사 대비 미보유(Missing)·열위(Weak) 키워드를
              고MSV·저Difficulty 우선순위로 선점할 타겟 도출
 
@@ -10,15 +11,17 @@
   · Keyword Difficulty : 키워드 선점 난이도 0~100 (낮을수록 유리)
   · 도메인 컬럼 숫자     : 검색 시 순위(1~100). 0 = 순위 없음
   · Status
-      - Strong  : 굿웨어몰 순위가 경쟁 3사보다 높음(앞섬)
-      - Weak    : 굿웨어몰이 순위는 있으나 경쟁사보다 낮음
-      - Missing : 굿웨어몰 순위 없음(0) → 신규 페이지 선점 기회
+      - Strong  : LF몰 순위가 경쟁 4사보다 높음(앞섬)
+      - Weak    : LF몰이 순위는 있으나 경쟁사보다 낮음
+      - Missing : LF몰 순위 없음(0) → 신규 페이지 선점 기회
       - ※ Strong이라도 순위가 10위 밖이면 SEO 최적화 필요
 
 데이터 출처
-  · 키워드 보유량/순위는 내부 SEO 툴 추정치 (실제 수치와 차이 있을 수 있음)
-  · 갱신 시: 동일 포맷(키워드, MSV, KD, 4개 도메인 순위)으로 아래 DATA 교체
-    Semrush MCP로 확장하려면 organic_research → domain_organic / domain_domains 활용
+  · Semrush 한국(kr) DB 실데이터 (organic_research / domain_domains 키워드 갭)
+  · 스냅샷 2026-06-22, 검색량순 상위에서 패션 카테고리 키워드만 선별
+  · 브랜드명·가전·뷰티·주얼리·골프 등 비(非)패션 키워드는 제외
+  · 갱신 시: Semrush MCP로 domain_domains 재실행
+    domains='*|or|lfmall.co.kr|+|or|wconcept.co.kr|+|or|thehandsome.com|+|or|ssfshop.com|+|or|sivillage.com'
 
 실행: streamlit run programmatic_seo_dashboard.py
 """
@@ -31,7 +34,7 @@ import streamlit as st
 # ══════════════════════════════════════════════════════
 # CONFIG
 # ══════════════════════════════════════════════════════
-st.set_page_config(page_title="굿웨어몰 프로그래매틱 SEO 선점 분석", page_icon="🎯",
+st.set_page_config(page_title="LF몰 프로그래매틱 SEO 선점 분석", page_icon="🎯",
                    layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -49,15 +52,16 @@ h1,h2,h3{color:#1e293b}
 </style>
 """, unsafe_allow_html=True)
 
-DOMAINS = ["goodwearmall.com", "uniqlo.com", "lfmall.co.kr", "elandmall.co.kr"]
-DOMAIN_KR = {"goodwearmall.com": "굿웨어몰", "uniqlo.com": "유니클로",
-             "lfmall.co.kr": "LF몰", "elandmall.co.kr": "이랜드몰"}
+SUBJECT = "LF몰"
+COMPETITORS = ["W컨셉", "한섬", "SSF샵", "SI빌리지"]
+ALL_SITES = [SUBJECT] + COMPETITORS
 STATUS_COLOR = {"Strong": "#48bb78", "Weak": "#ed8936", "Missing": "#f56565"}
-
 PALETTE = {"blue": "#4f8fff", "red": "#f56565", "amber": "#ed8936",
            "green": "#48bb78", "purple": "#9f7aea", "slate": "#64748b"}
+SITE_COLOR = {"LF몰": PALETTE["blue"], "W컨셉": PALETTE["amber"], "한섬": PALETTE["purple"],
+              "SSF샵": PALETTE["red"], "SI빌리지": PALETTE["slate"]}
 
-def base_layout(h=320, ysuffix="", xsuffix="", title="", showlegend=False):
+def base_layout(h=320, title="", showlegend=False):
     return dict(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#475569", size=12), margin=dict(l=10, r=10, t=44, b=10),
@@ -66,124 +70,104 @@ def base_layout(h=320, ysuffix="", xsuffix="", title="", showlegend=False):
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1,
                     font=dict(size=11)),
         xaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
-                   tickfont=dict(color="#64748b", size=11), ticksuffix=xsuffix),
+                   tickfont=dict(color="#64748b", size=11)),
         yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
-                   tickfont=dict(color="#64748b", size=11), ticksuffix=ysuffix),
+                   tickfont=dict(color="#64748b", size=11)),
     )
 
 # ══════════════════════════════════════════════════════
-# DATA — 오가닉 키워드 상세 리포트 (내부 SEO 툴 추정치)
-# (키워드, MSV, Difficulty, 굿웨어몰, 유니클로, LF몰, 이랜드몰, 카테고리)
+# DATA — Semrush kr DB 실데이터 (패션 카테고리 키워드만 선별, 2026-06-22)
+# (키워드, MSV, KD, LF몰, W컨셉, 한섬, SSF샵, SI빌리지, 카테고리)  순위 0=없음
 # ══════════════════════════════════════════════════════
 DATA = [
-    ("청바지", 33100, 22, 0, 18, 0, 0, "하의"),
-    ("패딩", 33100, 25, 43, 14, 0, 0, "아우터"),
-    ("바지", 27100, 17, 0, 8, 0, 0, "하의"),
-    ("수영복", 27100, 32, 7, 0, 0, 0, "수영/비치"),
-    ("미니 스커트", 22200, 21, 0, 24, 0, 0, "하의"),
-    ("스니커즈", 22200, 23, 0, 55, 0, 0, "신발"),
-    ("스타킹", 22200, 24, 0, 0, 0, 20, "언더웨어"),
-    ("레깅스", 18100, 31, 0, 12, 0, 41, "하의"),
-    ("버뮤다 팬츠", 18100, 27, 23, 4, 0, 0, "하의"),
-    ("코트", 18100, 20, 0, 18, 0, 0, "아우터"),
-    ("후드 티", 18100, 19, 57, 33, 0, 0, "상의"),
-    ("흰색", 18100, 40, 0, 78, 0, 0, "컬러"),
-    ("래쉬 가드", 14800, 18, 15, 0, 0, 0, "수영/비치"),
-    ("모자", 14800, 19, 0, 18, 0, 0, "액세서리"),
-    ("선글라스", 14800, 20, 0, 18, 0, 0, "액세서리"),
-    ("셔츠", 14800, 15, 0, 5, 0, 0, "상의"),
-    ("정장", 14800, 20, 10, 6, 0, 0, "정장/포멀"),
-    ("치마", 14800, 23, 0, 31, 0, 0, "하의"),
-    ("파카", 14800, 37, 0, 7, 0, 0, "아우터"),
-    ("니트", 12100, 17, 18, 6, 0, 0, "상의"),
-    ("블라우스", 12100, 18, 12, 13, 0, 0, "상의"),
-    ("크로스 백", 12100, 19, 0, 16, 0, 0, "가방"),
-    ("크롭 컷", 12100, 29, 0, 30, 0, 0, "상의"),
-    ("티셔츠", 12100, 17, 9, 1, 0, 0, "상의"),
-    ("가디건", 9900, 24, 0, 5, 0, 0, "아우터"),
-    ("구두", 9900, 22, 0, 15, 0, 0, "신발"),
-    ("네이비", 9900, 39, 0, 0, 44, 0, "컬러"),
-    ("데님", 9900, 19, 33, 14, 0, 0, "하의"),
-    ("맨투맨", 9900, 23, 5, 0, 0, 0, "상의"),
-    ("바람막이", 9900, 16, 69, 0, 0, 0, "아우터"),
-    ("반바지", 9900, 17, 0, 1, 0, 0, "하의"),
-    ("백팩", 9900, 15, 0, 22, 0, 0, "가방"),
-    ("브랜드", 9900, 36, 49, 0, 0, 0, "일반"),
-    ("블레이저", 9900, 22, 0, 13, 0, 0, "아우터"),
-    ("슬랙스", 9900, 19, 5, 7, 0, 0, "하의"),
-    ("양말", 9900, 18, 0, 5, 0, 0, "언더웨어"),
-    ("여자 수영복", 9900, 19, 44, 43, 0, 0, "수영/비치"),
-    ("크롭 티", 9900, 19, 6, 36, 0, 0, "상의"),
-    ("후 리스", 9900, 23, 41, 4, 0, 0, "아우터"),
-    ("후드 집업", 9900, 15, 0, 14, 0, 0, "상의"),
-    ("나시", 8100, 20, 72, 69, 0, 0, "상의"),
-    ("남자 패션", 8100, 25, 62, 0, 0, 0, "일반"),
-    ("명품", 8100, 46, 0, 0, 0, 36, "일반"),
-    ("버건디", 8100, 34, 0, 75, 6, 0, "컬러"),
-    ("베레모", 8100, 27, 0, 0, 14, 0, "액세서리"),
-    ("여자 속옷", 8100, 17, 72, 0, 10, 0, "언더웨어"),
-    ("잠옷", 8100, 21, 55, 0, 0, 0, "언더웨어"),
-    ("조거 팬츠", 8100, 19, 19, 12, 0, 0, "하의"),
-    ("트렌치 코트", 8100, 25, 0, 15, 0, 0, "아우터"),
-    ("후드", 8100, 20, 0, 16, 0, 0, "상의"),
-    ("남자 셔츠", 6600, 17, 4, 7, 0, 0, "상의"),
-    ("남자 쇼핑몰", 6600, 27, 80, 70, 0, 65, "일반"),
-    ("남자 수영복", 6600, 16, 47, 49, 0, 0, "수영/비치"),
-    ("롱 패딩", 6600, 19, 16, 0, 0, 0, "아우터"),
-    ("반팔 티", 6600, 14, 73, 27, 0, 0, "상의"),
-    ("베이지 색", 6600, 35, 0, 91, 0, 0, "컬러"),
-    ("벨트", 6600, 23, 5, 4, 0, 0, "액세서리"),
-    ("샌들", 6600, 25, 0, 53, 0, 0, "신발"),
-    ("세미 정장", 6600, 19, 7, 32, 5, 0, "정장/포멀"),
-    ("스웨터", 6600, 21, 15, 8, 0, 0, "상의"),
-    ("슬링 백", 6600, 14, 0, 60, 0, 0, "가방"),
-    ("와이드 팬츠", 6600, 14, 0, 3, 0, 0, "하의"),
-    ("청자켓 코디", 6600, 27, 45, 0, 0, 0, "아우터"),
-    ("카고 바지", 6600, 19, 19, 8, 0, 0, "하의"),
-    ("탱크 탑", 6600, 21, 75, 11, 0, 0, "상의"),
-    ("토트 백", 6600, 23, 0, 89, 0, 0, "가방"),
-    ("회색", 6600, 32, 0, 82, 0, 0, "컬러"),
-    ("경량 패딩", 5400, 19, 0, 6, 0, 0, "아우터"),
-    ("나일론", 5400, 27, 0, 8, 0, 0, "소재"),
-    ("남자 옷", 5400, 27, 67, 61, 0, 50, "일반"),
-    ("무테 안경", 5400, 21, 0, 0, 19, 0, "액세서리"),
-    ("브라 탑", 5400, 16, 3, 1, 0, 0, "언더웨어"),
-    ("블루종", 5400, 24, 7, 5, 0, 0, "아우터"),
-    ("어그 부츠", 5400, 23, 0, 0, 0, 14, "신발"),
-    ("자켓", 5400, 15, 80, 0, 0, 0, "아우터"),
-    ("조끼", 5400, 22, 0, 22, 0, 0, "상의"),
-    ("차콜", 5400, 13, 0, 0, 22, 0, "컬러"),
-    ("청자켓", 5400, 19, 1, 0, 0, 0, "아우터"),
-    ("코르셋", 5400, 30, 0, 0, 8, 0, "언더웨어"),
-    ("항공 점퍼", 5400, 17, 8, 0, 0, 0, "아우터"),
-    ("등산화", 4400, 14, 0, 0, 0, 40, "신발"),
-    ("러닝 플러스", 4400, 21, 73, 0, 0, 0, "일반"),
-    ("린넨", 4400, 14, 0, 3, 0, 0, "소재"),
-    ("린넨 셔츠", 4400, 19, 20, 6, 0, 0, "상의"),
-    ("민소매", 4400, 22, 5, 0, 15, 0, "상의"),
-    ("반팔 셔츠", 4400, 15, 10, 16, 0, 0, "상의"),
-    ("버뮤다", 4400, 17, 4, 16, 60, 0, "하의"),
-    ("뷔스티에", 4400, 22, 10, 0, 0, 0, "상의"),
-    ("스웨이드", 4400, 24, 0, 26, 0, 0, "소재"),
-    ("스카프", 4400, 23, 0, 56, 0, 0, "액세서리"),
+    # 아우터
+    ("패딩", 33100, 21, 0, 11, 0, 0, 0, "아우터"),
+    ("코트", 27100, 23, 0, 0, 0, 18, 0, "아우터"),
+    ("재킷", 22200, 32, 0, 0, 49, 8, 0, "아우터"),
+    ("모피", 22200, 29, 5, 0, 0, 0, 0, "아우터"),
+    ("가디건", 12100, 20, 0, 0, 0, 14, 0, "아우터"),
+    ("무스탕", 12100, 20, 13, 2, 0, 0, 0, "아우터"),
+    ("트렌치 코트", 12100, 27, 0, 0, 0, 7, 0, "아우터"),
+    ("경량 패딩", 12100, 16, 5, 0, 0, 20, 0, "아우터"),
+    ("바람막이", 14800, 19, 0, 0, 0, 20, 0, "아우터"),
+    ("블레이저", 12100, 28, 0, 0, 0, 29, 0, "아우터"),
+    ("블루종", 6600, 28, 15, 5, 65, 9, 0, "아우터"),
+    # 상의
+    ("블라우스", 22200, 24, 0, 2, 0, 16, 0, "상의"),
+    ("셔츠", 22200, 29, 0, 23, 0, 24, 0, "상의"),
+    ("니트", 18100, 19, 43, 2, 0, 8, 0, "상의"),
+    ("시스루", 18100, 27, 0, 0, 0, 9, 0, "상의"),
+    ("티셔츠", 12100, 16, 0, 5, 0, 32, 0, "상의"),
+    ("후드 집업", 12100, 14, 0, 5, 0, 23, 0, "상의"),
+    ("크롭 티", 9900, 17, 32, 2, 0, 3, 0, "상의"),
+    ("탱크 탑", 8100, 23, 0, 0, 0, 21, 0, "상의"),
+    ("오프 숄더", 8100, 17, 0, 3, 0, 0, 0, "상의"),
+    # 하의
+    ("청바지", 74000, 23, 0, 0, 0, 27, 0, "하의"),
+    ("바지", 40500, 19, 0, 0, 0, 14, 0, "하의"),
+    ("돌핀 팬츠", 22200, 27, 0, 0, 0, 5, 0, "하의"),
+    ("데님", 22200, 22, 0, 0, 0, 46, 0, "하의"),
+    ("미니 스커트", 14800, 31, 18, 0, 0, 19, 0, "하의"),
+    ("버뮤다 팬츠", 14800, 18, 20, 0, 0, 24, 0, "하의"),
+    ("슬랙스", 14800, 16, 0, 14, 0, 0, 0, "하의"),
+    ("치마", 14800, 24, 0, 0, 0, 43, 0, "하의"),
+    ("반바지", 8100, 16, 0, 0, 0, 24, 0, "하의"),
+    # 드레스/수영
+    ("드레스", 22200, 31, 35, 0, 0, 0, 0, "드레스/수영"),
+    ("비키니", 60500, 35, 0, 5, 0, 0, 0, "드레스/수영"),
+    ("모노 키니", 12100, 12, 23, 2, 0, 0, 0, "드레스/수영"),
+    # 신발
+    ("부츠", 12100, 26, 0, 3, 0, 48, 0, "신발"),
+    ("구두", 9900, 39, 0, 0, 0, 30, 0, "신발"),
+    ("로퍼", 12100, 20, 0, 19, 0, 0, 0, "신발"),
+    ("샌들", 6600, 21, 30, 11, 0, 0, 0, "신발"),
+    ("더비 슈즈", 8100, 17, 10, 6, 0, 0, 0, "신발"),
+    # 가방
+    ("가방", 33100, 35, 0, 5, 0, 0, 0, "가방"),
+    ("크로스 백", 12100, 16, 0, 2, 0, 0, 0, "가방"),
+    ("백팩", 9900, 20, 0, 0, 0, 24, 0, "가방"),
+    ("토트 백", 9900, 19, 0, 2, 0, 46, 0, "가방"),
+    ("메신저 백", 6600, 23, 0, 20, 0, 29, 0, "가방"),
+    ("에코 백", 8100, 10, 26, 3, 0, 0, 0, "가방"),
+    # 액세서리
+    ("모자", 18100, 18, 0, 0, 0, 12, 0, "액세서리"),
+    ("지갑", 14800, 20, 0, 0, 0, 30, 0, "액세서리"),
+    ("키링", 14800, 18, 0, 0, 0, 49, 0, "액세서리"),
+    ("넥타이", 9900, 32, 0, 0, 0, 21, 0, "액세서리"),
+    ("벨트", 6600, 26, 0, 0, 67, 0, 0, "액세서리"),
+    ("뿔테 안경", 9900, 20, 17, 0, 0, 19, 0, "액세서리"),
+    ("반다나", 9900, 23, 12, 6, 0, 24, 0, "액세서리"),
+    ("목도리", 8100, 20, 8, 3, 0, 0, 0, "액세서리"),
+    ("비니", 8100, 27, 0, 0, 0, 23, 0, "액세서리"),
+    ("카드 지갑", 8100, 19, 23, 11, 0, 42, 0, "액세서리"),
+    ("니삭스", 6600, 31, 0, 2, 0, 12, 0, "액세서리"),
+    # 언더웨어
+    ("속옷", 18100, 23, 0, 0, 0, 19, 0, "언더웨어"),
+    ("여자 속옷", 8100, 14, 9, 26, 0, 0, 0, "언더웨어"),
+    ("여자 팬티", 9900, 20, 2, 0, 0, 0, 0, "언더웨어"),
+    ("티 팬티", 12100, 29, 23, 0, 0, 19, 0, "언더웨어"),
+    ("잠옷", 8100, 19, 19, 0, 0, 0, 0, "언더웨어"),
+    # 정장/포멀
+    ("정장", 18100, 20, 0, 0, 26, 15, 0, "정장/포멀"),
+    ("세미 정장", 6600, 21, 41, 0, 0, 0, 0, "정장/포멀"),
+    # 컬러
+    ("버건디", 9900, 29, 0, 7, 0, 0, 0, "컬러"),
 ]
 
-df = pd.DataFrame(DATA, columns=["키워드", "MSV", "KD", "굿웨어몰", "유니클로",
-                                 "LF몰", "이랜드몰", "카테고리"])
+df = pd.DataFrame(DATA, columns=["키워드", "MSV", "KD"] + ALL_SITES + ["카테고리"])
 
-# ── Status / 등급 / 우선순위 점수 계산 ──
+# ── Status / 등급 / 우선순위 ──
 def calc_status(row):
-    gw = row["굿웨어몰"]
+    gw = row[SUBJECT]
     if gw == 0:
         return "Missing"
-    comps = [row["유니클로"], row["LF몰"], row["이랜드몰"]]
-    ranked = [c for c in comps if c > 0]
+    ranked = [row[c] for c in COMPETITORS if row[c] > 0]
     if not ranked or gw < min(ranked):
         return "Strong"
     return "Weak"
 
 def calc_tier(row):
-    s, kd, msv, gw = row["Status"], row["KD"], row["MSV"], row["굿웨어몰"]
+    s, kd, msv, gw = row["Status"], row["KD"], row["MSV"], row[SUBJECT]
     if s == "Missing":
         if kd <= 25 and msv >= 10000:
             return "🥇 즉시 선점"
@@ -197,32 +181,29 @@ def calc_tier(row):
     return "✅ 방어"
 
 def calc_priority(row):
-    # 프로그래매틱 SEO 우선순위 = MSV × 난이도할인 × 상태가중
     diff_factor = (100 - row["KD"]) / 100
-    s, gw = row["Status"], row["굿웨어몰"]
-    if s == "Missing":
-        sf = 1.0
-    elif s == "Weak":
-        sf = 0.65
-    elif s == "Strong" and gw > 10:
-        sf = 0.45
-    else:
-        sf = 0.15
+    s, gw = row["Status"], row[SUBJECT]
+    sf = (1.0 if s == "Missing" else 0.65 if s == "Weak"
+          else 0.45 if (s == "Strong" and gw > 10) else 0.15)
     return int(round(row["MSV"] * diff_factor * sf))
+
+def best_competitor(row):
+    ranked = [(row[c], c) for c in COMPETITORS if row[c] > 0]
+    return min(ranked) if ranked else (0, "-")
 
 df["Status"] = df.apply(calc_status, axis=1)
 df["타겟 등급"] = df.apply(calc_tier, axis=1)
 df["우선순위"] = df.apply(calc_priority, axis=1)
-df["굿_1P"] = df["굿웨어몰"].between(1, 10)  # 굿웨어몰 1페이지(1~10위) 여부
+df["LF_1P"] = df[SUBJECT].between(1, 10)
 
 # ══════════════════════════════════════════════════════
 # HEADER + KPI
 # ══════════════════════════════════════════════════════
-st.markdown("## 🎯 굿웨어몰 프로그래매틱 SEO 키워드 선점 분석")
+st.markdown("## 🎯 LF몰 프로그래매틱 SEO 키워드 선점 분석")
 st.markdown(
-    "<div class='cap'>대상 <b>goodwearmall.com</b> · 경쟁사 "
-    "<b>유니클로 · LF몰 · 이랜드몰</b> · 패션 카테고리 오가닉 키워드 "
-    f"<b>{len(df)}</b>개 · 내부 SEO 툴 추정치</div>",
+    "<div class='cap'>대상 <b>lfmall.co.kr</b> · 경쟁사 "
+    "<b>W컨셉 · 한섬 · SSF샵 · SI빌리지</b> · 패션 카테고리 키워드 "
+    f"<b>{len(df)}</b>개 · Semrush 한국(kr) DB 실데이터</div>",
     unsafe_allow_html=True,
 )
 st.write("")
@@ -246,9 +227,9 @@ st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### 🎯 프로그래매틱 SEO")
-    st.caption("굿웨어몰 키워드 선점 분석")
+    st.caption("LF몰 키워드 선점 분석")
     st.markdown("---")
-    st.markdown("**Status 정의**")
+    st.markdown("**Status 정의** (LF몰 기준)")
     st.markdown(
         f"<span class='tag' style='background:{STATUS_COLOR['Strong']}'>Strong</span> 경쟁사보다 앞섬<br>"
         f"<span class='tag' style='background:{STATUS_COLOR['Weak']}'>Weak</span> 순위 있으나 열위<br>"
@@ -256,12 +237,13 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown("---")
-    st.markdown("**선점 공식**")
-    st.caption("MSV ↑ × Difficulty ↓ × Missing/Weak = 최우선. "
-               "Strong이라도 10위 밖이면 최적화 필요.")
+    st.markdown("**비교 대상**")
+    for s in ALL_SITES:
+        st.markdown(f"<span style='color:{SITE_COLOR[s]};font-size:18px'>●</span> <b>{s}</b>",
+                    unsafe_allow_html=True)
     st.markdown("---")
-    st.caption("순위/보유량은 내부 SEO 툴 추정치. Semrush MCP "
-               "(domain_organic / domain_domains)로 키워드 유니버스 확장 가능.")
+    st.caption("Semrush kr DB 실데이터 · 패션 카테고리 키워드만 선별. "
+               "브랜드명·가전·뷰티 등 비패션 키워드는 제외.")
 
 # ══════════════════════════════════════════════════════
 # 탭
@@ -272,12 +254,11 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
 )
 
 # ──────────────────────────────────────────────────────
-# TAB 1 — 기회 매트릭스 (Difficulty × MSV)
+# TAB 1 — 기회 매트릭스
 # ──────────────────────────────────────────────────────
 with tab1:
     st.markdown("##### 키워드 기회 매트릭스 — 좌상단(고검색량·저난이도)이 황금존")
     fig = go.Figure()
-    # 황금존 음영
     fig.add_shape(type="rect", x0=0, x1=25, y0=10000, y1=df["MSV"].max() * 1.05,
                   fillcolor="rgba(72,187,120,0.08)", line=dict(width=0), layer="below")
     fig.add_annotation(x=12.5, y=df["MSV"].max(), text="🥇 황금존 (선점 우선)",
@@ -286,11 +267,11 @@ with tab1:
         d = df[df["Status"] == s]
         fig.add_trace(go.Scatter(
             x=d["KD"], y=d["MSV"], mode="markers", name=s,
-            marker=dict(size=(d["MSV"] / 1200 + 8), color=STATUS_COLOR[s],
+            marker=dict(size=(d["MSV"] / 1800 + 8), color=STATUS_COLOR[s],
                         opacity=0.78, line=dict(color="white", width=1)),
-            customdata=d[["키워드", "타겟 등급", "굿웨어몰"]],
+            customdata=d[["키워드", "타겟 등급", SUBJECT]],
             hovertemplate=("<b>%{customdata[0]}</b><br>MSV %{y:,} · KD %{x}"
-                           "<br>굿웨어몰 순위 %{customdata[2]}<br>%{customdata[1]}<extra></extra>"),
+                           "<br>LF몰 순위 %{customdata[2]}<br>%{customdata[1]}<extra></extra>"),
         ))
     fig.update_layout(**base_layout(h=440, showlegend=True))
     fig.update_xaxes(title="Keyword Difficulty (낮을수록 쉬움) →", autorange="reversed")
@@ -302,18 +283,17 @@ with tab1:
     st.markdown("##### 🥇 즉시 선점 타겟 (Missing · KD≤25 · MSV≥10,000)")
     st.dataframe(
         prime.sort_values("MSV", ascending=False)[
-            ["키워드", "카테고리", "MSV", "KD", "유니클로", "LF몰", "이랜드몰"]],
+            ["키워드", "카테고리", "MSV", "KD"] + COMPETITORS],
         use_container_width=True, hide_index=True,
         column_config={"MSV": st.column_config.NumberColumn("MSV", format="%d")},
     )
 
 # ──────────────────────────────────────────────────────
-# TAB 2 — 선점 타겟 (우선순위 점수)
+# TAB 2 — 선점 타겟
 # ──────────────────────────────────────────────────────
 with tab2:
     st.markdown("##### 프로그래매틱 SEO 선점 우선순위")
-    st.caption("우선순위 = MSV × (난이도 할인) × 상태가중(Missing 1.0 / Weak 0.65 / Strong>10위 0.45). "
-               "신규 페이지로 선점하거나 기존 페이지를 최적화할 순서.")
+    st.caption("우선순위 = MSV × (난이도 할인) × 상태가중(Missing 1.0 / Weak 0.65 / Strong>10위 0.45).")
     topn = st.slider("상위 N개", 10, 50, 25, step=5)
     ranked = df.sort_values("우선순위", ascending=False).head(topn)
 
@@ -331,7 +311,7 @@ with tab2:
         st.plotly_chart(fig, use_container_width=True)
     with c2:
         st.dataframe(
-            ranked[["키워드", "타겟 등급", "MSV", "KD", "굿웨어몰", "Status", "우선순위"]],
+            ranked[["키워드", "타겟 등급", "MSV", "KD", SUBJECT, "Status", "우선순위"]],
             use_container_width=True, hide_index=True, height=max(420, topn * 17),
             column_config={
                 "MSV": st.column_config.NumberColumn("MSV", format="%d"),
@@ -340,7 +320,6 @@ with tab2:
                     max_value=int(df["우선순위"].max())),
             },
         )
-    # 등급 요약
     tier_order = ["🥇 즉시 선점", "🥈 선점 후보", "🥉 롱테일 선점",
                   "🔧 최적화(탈환)", "🔧 최적화(순위↑)", "✅ 방어"]
     summ = (df.groupby("타겟 등급")
@@ -352,7 +331,7 @@ with tab2:
                  column_config={"총MSV": st.column_config.NumberColumn("총MSV", format="%d")})
 
 # ──────────────────────────────────────────────────────
-# TAB 3 — 카테고리 클러스터 (허브-스포크 페이지 설계)
+# TAB 3 — 카테고리 클러스터
 # ──────────────────────────────────────────────────────
 with tab3:
     st.markdown("##### 카테고리 클러스터 — 허브·스포크 페이지 아키텍처")
@@ -361,7 +340,7 @@ with tab3:
     fig = px.treemap(
         df, path=[px.Constant("전체"), "카테고리", "키워드"], values="MSV",
         color="Status", color_discrete_map={**STATUS_COLOR, "(?)": "#cbd5e1"},
-        custom_data=["KD", "굿웨어몰"],
+        custom_data=["KD", SUBJECT],
     )
     fig.update_traces(
         marker=dict(line=dict(color="white", width=1)),
@@ -371,8 +350,7 @@ with tab3:
     st.plotly_chart(fig, use_container_width=True)
 
     cat = (df.groupby("카테고리")
-             .agg(키워드수=("키워드", "count"), 총MSV=("MSV", "sum"),
-                  평균KD=("KD", "mean"),
+             .agg(키워드수=("키워드", "count"), 총MSV=("MSV", "sum"), 평균KD=("KD", "mean"),
                   Missing=("Status", lambda s: (s == "Missing").sum()),
                   Weak=("Status", lambda s: (s == "Weak").sum()),
                   Strong=("Status", lambda s: (s == "Strong").sum()))
@@ -391,7 +369,7 @@ with tab3:
     )
 
 # ──────────────────────────────────────────────────────
-# TAB 4 — Status 분석 (필터 가능 전체 테이블)
+# TAB 4 — Status 분석
 # ──────────────────────────────────────────────────────
 with tab4:
     c0, c1, c2, c3 = st.columns([1.2, 1.2, 1, 1])
@@ -408,7 +386,6 @@ with tab4:
     if q:
         fdf = fdf[fdf["키워드"].str.contains(q, case=False, na=False)]
 
-    # Status 분포 (개수 + 총 MSV)
     cc1, cc2 = st.columns(2)
     sc = df["Status"].value_counts().reindex(["Strong", "Weak", "Missing"]).fillna(0)
     sm = df.groupby("Status")["MSV"].sum().reindex(["Strong", "Weak", "Missing"]).fillna(0)
@@ -427,27 +404,26 @@ with tab4:
 
     st.markdown(f"##### 키워드 상세 ({len(fdf)}개)")
     st.dataframe(
-        fdf[["키워드", "카테고리", "MSV", "KD", "굿웨어몰", "유니클로", "LF몰",
-             "이랜드몰", "Status", "타겟 등급"]].sort_values("MSV", ascending=False),
+        fdf[["키워드", "카테고리", "MSV", "KD"] + ALL_SITES + ["Status", "타겟 등급"]]
+        .sort_values("MSV", ascending=False),
         use_container_width=True, hide_index=True, height=460,
         column_config={"MSV": st.column_config.NumberColumn("MSV", format="%d")},
     )
     st.download_button("⬇️ 필터된 키워드 CSV 내려받기",
                        fdf.to_csv(index=False).encode("utf-8-sig"),
-                       "goodwearmall_keywords.csv", "text/csv")
+                       "lfmall_keywords.csv", "text/csv")
 
 # ──────────────────────────────────────────────────────
 # TAB 5 — 도메인 커버리지
 # ──────────────────────────────────────────────────────
 with tab5:
-    st.markdown("##### 도메인별 커버리지 — 이 키워드셋에서 누가 얼마나 노출되나")
+    st.markdown("##### 도메인별 커버리지 — 이 패션 키워드셋에서 누가 얼마나 노출되나")
     rows = []
-    for col in ["굿웨어몰", "유니클로", "LF몰", "이랜드몰"]:
+    for col in ALL_SITES:
         ranked_mask = df[col] > 0
-        p1 = df[col].between(1, 10).sum()
+        p1 = int(df[col].between(1, 10).sum())
         avg = df.loc[ranked_mask, col].mean()
-        rows.append((col, int(ranked_mask.sum()), int(p1),
-                     round(avg, 1) if ranked_mask.any() else 0))
+        rows.append((col, int(ranked_mask.sum()), p1, round(avg, 1) if ranked_mask.any() else 0))
     cov = pd.DataFrame(rows, columns=["도메인", "노출 키워드", "1페이지(1~10위)", "평균 순위"])
 
     c1, c2 = st.columns([1.2, 1])
@@ -462,24 +438,34 @@ with tab5:
         fig.update_layout(**base_layout(h=340, showlegend=True), barmode="group")
         st.plotly_chart(fig, use_container_width=True)
     with c2:
-        st.dataframe(cov, use_container_width=True, hide_index=True, height=200)
-        st.caption("유니클로가 패션 일반 키워드를 가장 넓게 선점 → 핵심 경쟁자. "
-                   "**LF몰·이랜드몰은 이 키워드셋에서 노출이 거의 없음** → "
-                   "굿웨어몰이 유니클로만 넘으면 선점 가능한 영역이 넓음.")
+        st.dataframe(cov, use_container_width=True, hide_index=True, height=230)
+        st.caption("**SSF샵·W컨셉이 패션 일반 키워드를 가장 넓게 선점** → 핵심 경쟁자. "
+                   "한섬·SI빌리지는 이 키워드셋 노출이 적음. LF몰은 노출 자체가 적어 "
+                   "**Missing 선점 여지가 매우 큼**.")
 
-    # 굿웨어몰 vs 유니클로 직접 비교 (둘 중 하나라도 순위 있는 키워드)
-    st.markdown("##### 굿웨어몰 vs 유니클로 — 직접 맞대결 키워드")
-    duel = df[(df["굿웨어몰"] > 0) | (df["유니클로"] > 0)].copy()
-    duel["우위"] = duel.apply(
-        lambda r: "굿웨어몰" if (r["굿웨어몰"] > 0 and (r["유니클로"] == 0 or r["굿웨어몰"] < r["유니클로"]))
-        else ("유니클로" if r["유니클로"] > 0 else "굿웨어몰"), axis=1)
-    win = (duel["우위"] == "굿웨어몰").sum()
-    st.caption(f"맞대결 {len(duel)}개 중 굿웨어몰 우위 **{win}개** / 유니클로 우위 **{len(duel) - win}개**")
+    st.markdown("##### LF몰 vs 최강 경쟁사 — 키워드별 맞대결")
+    duel = df.copy()
+    bc = duel.apply(best_competitor, axis=1, result_type="expand")
+    duel["경쟁사 최고순위"] = bc[0]
+    duel["경쟁사"] = bc[1]
+    def winner(r):
+        lf, bcr = r[SUBJECT], r["경쟁사 최고순위"]
+        if lf > 0 and (bcr == 0 or lf < bcr):
+            return "LF몰 우위"
+        if bcr > 0:
+            return "경쟁사 우위"
+        return "-"
+    duel["우위"] = duel.apply(winner, axis=1)
+    win = int((duel["우위"] == "LF몰 우위").sum())
+    lose = int((duel["우위"] == "경쟁사 우위").sum())
+    st.caption(f"전체 {len(duel)}개 중 LF몰 우위 **{win}개** / 경쟁사 우위 **{lose}개** "
+               "(Missing 다수 → 경쟁사 우위가 많음 = 선점 기회).")
     st.dataframe(
-        duel[["키워드", "MSV", "KD", "굿웨어몰", "유니클로", "Status"]]
+        duel[["키워드", "MSV", "KD", SUBJECT, "경쟁사", "경쟁사 최고순위", "Status", "우위"]]
         .sort_values("MSV", ascending=False),
-        use_container_width=True, hide_index=True, height=320,
-        column_config={"MSV": st.column_config.NumberColumn("MSV", format="%d")},
+        use_container_width=True, hide_index=True, height=340,
+        column_config={"MSV": st.column_config.NumberColumn("MSV", format="%d"),
+                       SUBJECT: st.column_config.NumberColumn("LF몰 순위")},
     )
 
 # ──────────────────────────────────────────────────────
@@ -488,8 +474,9 @@ with tab5:
 with tab6:
     st.markdown("##### 분석 대상")
     st.markdown(
-        "<div class='card'>굿웨어몰(goodwearmall.com)과 경쟁 3사(유니클로·LF몰·이랜드몰)가 "
-        "보유한 키워드 중 <b>패션 관련 키워드</b>만 선별해 정리했습니다.</div>",
+        "<div class='card'>LF몰(lfmall.co.kr)과 경쟁 4사(W컨셉·한섬·SSF샵·SI빌리지)가 "
+        "보유한 키워드 중 <b>패션 관련 키워드</b>만 선별해 정리했습니다. "
+        "(Semrush kr DB 실데이터, 브랜드명·가전·뷰티·주얼리 등 비패션 키워드 제외)</div>",
         unsafe_allow_html=True,
     )
     st.markdown("##### 지표 설명")
@@ -500,7 +487,7 @@ with tab6:
         "• 각 도메인 숫자 = 검색 시 순위(1~100). <b>0 = 순위 없음</b><br>"
         "• 1~10위를 선점해 SERP 1페이지 노출이 이상적 목표<br>"
         f"• <span class='tag' style='background:{STATUS_COLOR['Strong']}'>Strong</span> "
-        "굿웨어몰 순위가 경쟁 3사보다 높음 / "
+        "LF몰 순위가 경쟁 4사보다 높음 / "
         f"<span class='tag' style='background:{STATUS_COLOR['Weak']}'>Weak</span> 경쟁사보다 낮음 / "
         f"<span class='tag' style='background:{STATUS_COLOR['Missing']}'>Missing</span> 순위 없음<br>"
         "• <b>Strong이라도 순위가 10위 밖이면 SEO 최적화 필요</b>"
@@ -510,17 +497,17 @@ with tab6:
     st.markdown("##### 프로그래매틱 SEO 실행 로드맵")
     st.markdown(
         "<div class='card'>"
-        "1️⃣ <b>황금존 Missing 선점</b> — 청바지·바지·셔츠·반바지·후드집업·와이드팬츠 등 "
+        "1️⃣ <b>황금존 Missing 선점</b> — 청바지·바지·코트·셔츠·블라우스·티셔츠·후드집업 등 "
         "고MSV·저KD·미보유 키워드부터 카테고리 템플릿 페이지 생성<br>"
         "2️⃣ <b>허브-스포크 구조</b> — 카테고리(하의/아우터/상의…) 허브 아래 키워드별 페이지 연결, "
         "서브폴더 URL(`/category/`)로 도메인 권위 집중<br>"
-        "3️⃣ <b>Weak 탈환</b> — 데님·니트·후드티 등 순위는 있으나 유니클로에 밀리는 키워드 콘텐츠 강화<br>"
-        "4️⃣ <b>Strong 방어·순위↑</b> — 바람막이·브랜드 등 10위 밖 Strong 키워드 온페이지 최적화<br>"
+        "3️⃣ <b>Weak 탈환</b> — 니트·크롭티·카드지갑 등 순위는 있으나 경쟁사에 밀리는 키워드 콘텐츠 강화<br>"
+        "4️⃣ <b>Strong 방어·순위↑</b> — 드레스·모피·세미정장 등 10위 밖 Strong 키워드 온페이지 최적화<br>"
         "5️⃣ <b>품질 관리</b> — 페이지마다 고유 가치(상품 큐레이션·코디·사이즈 가이드)로 thin content 회피"
         "</div>",
         unsafe_allow_html=True,
     )
-    st.caption("*키워드 보유량/순위는 내부 SEO 툴 추정치로 실제 수치와 차이가 있을 수 있습니다.")
+    st.caption("*순위/검색량은 Semrush 추정치로 실제 수치와 차이가 있을 수 있습니다.")
 
 st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
-st.caption(f"패션 키워드 {len(df)}개 · 굿웨어몰 vs 유니클로·LF몰·이랜드몰 · 내부 SEO 툴 추정치 기반")
+st.caption(f"패션 키워드 {len(df)}개 · LF몰 vs W컨셉·한섬·SSF샵·SI빌리지 · Semrush kr DB 실데이터 (2026-06-22)")
