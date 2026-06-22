@@ -39,9 +39,15 @@ STATUS_COLOR = {"Strong": "#48bb78", "Weak": "#ed8936", "Missing": "#f56565",
                 "공백": "#4f8fff", "미수집": "#cbd5e1"}
 SITES = ["LF몰", "W컨셉", "한섬", "SSF샵", "SI빌리지"]
 
-@st.cache_data
 def load():
-    df = pd.read_csv("data/lfmall_keyword_research.csv")
+    # 캐시 미사용: @st.cache_data가 이전 배포의 구버전 DataFrame을 물려주면
+    # 신규 컬럼(순위 등)이 없어 KeyError가 나므로, 매 실행 새로 읽는다.
+    df = pd.read_csv("data/lfmall_keyword_research.csv", encoding="utf-8-sig")
+    # 구버전 CSV 호환 방어: 컬럼 누락 시 기본값 채움
+    for col, default in [("순위", 0), ("우선순위", ""), ("패션", "N"),
+                         ("섹션", "기타"), ("Status", "미수집")]:
+        if col not in df.columns:
+            df[col] = default
     return df
 
 df = load()
