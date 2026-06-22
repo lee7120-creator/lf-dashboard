@@ -351,8 +351,23 @@ def classify_upload(name, file_bytes):
         wb.close()
 
 
+# 발송 1건 식별 키 — 같은 날 같은 AF라도 시간대/타겟 다르면 별개 발송으로 본다
+STORE_KEY_COLS = ["date", "af", "hour", "target"]
+
+
+def store_key_frame(d):
+    """중복 판정용 정규화 키(문자열) DataFrame. gsheets(문자열)·신규(숫자) 혼재에도 일치하게 맞춘다."""
+    k = pd.DataFrame(index=d.index)
+    for c in STORE_KEY_COLS:
+        if c in d.columns:
+            k[c] = d[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+        else:
+            k[c] = ""
+    return k
+
+
 def merge_store(old, new):
-    """기존 누적 + 신규 업로드 병합 — 같은 (발송일, AF코드)는 신규 우선."""
+    """기존 누적 + 신규 업로드 병합 — 같은 발송키(STORE_KEY_COLS)는 신규 우선."""
     def _pick(d):
         if d is None or len(d) == 0:
             return pd.DataFrame(columns=STORE_COLS)
@@ -361,7 +376,8 @@ def merge_store(old, new):
     if both.empty:
         return both
     both["date"] = both["date"].astype(str).str.replace(r'\.0$', '', regex=True)
-    return both.drop_duplicates(subset=["date", "af"], keep="last").reset_index(drop=True)
+    keep = ~store_key_frame(both).duplicated(keep="last")
+    return both.loc[keep].reset_index(drop=True)
 
 
 # ── 전사 MTD 발송상세 (인당발송 피로도·CTR) — send_dashboard 분석 이식 ──────
@@ -1427,8 +1443,8 @@ def main():
     # 누적 병합 — 저장 전까지는 미리보기(영구 반영 X)
     if new_raw is not None and len(new_raw):
         work = merge_store(stored, new_raw)
-        ko = set(zip(stored["date"].astype(str), stored["af"])) if len(stored) else set()
-        kn = set(zip(new_raw["date"].astype(str), new_raw["af"]))
+        ko = set(map(tuple, store_key_frame(stored).values)) if len(stored) else set()
+        kn = set(map(tuple, store_key_frame(new_raw).values))
         st.sidebar.success(f"신규 {len(new_raw)}건 → 누적 {len(work)}건 "
                            f"(추가 {len(kn - ko)} · 갱신 {len(kn & ko)})")
         if st.sidebar.button("💾 저장하기", use_container_width=True):
