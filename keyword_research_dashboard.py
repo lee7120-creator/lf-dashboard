@@ -77,16 +77,15 @@ st.markdown(
 st.write("")
 
 have_vol = int((df["검색량"] > 0).sum())
-have_pos = int((df["Status"] != "미수집").sum())
 n_missing = int((df["Status"] == "Missing").sum())
-n_white = int((df["Status"] == "공백").sum())
+n_fashion = int((df["순위"] > 0).sum())
 
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("카테고리 키워드", f"{len(df):,}개", f"검색량 보유 {have_vol}개")
 k2.metric("총 검색량(MSV)", f"{int(df['검색량'].sum()):,}", "월 합계")
 k3.metric("섹션", f"{df['섹션'].nunique()}개", "카테고리 그룹")
 k4.metric("🔴 Missing(선점)", f"{n_missing}개", "경쟁사만 보유")
-k5.metric("🔵 공백(화이트스페이스)", f"{n_white}개", "5사 모두 미보유")
+k5.metric("🎯 패션 우선순위", f"{n_fashion}개", "1순위~ 부여")
 
 st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 
@@ -114,34 +113,35 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
 # TAB 1 — 우선순위 타겟
 # ──────────────────────────────────────────────────────
 with tab1:
-    st.markdown("##### 검색량 기반 선점 우선순위")
-    st.caption("우선순위 = 검색량 × 난이도할인 × 상태가중(Missing/공백 우대). "
-               "고검색량·미보유 카테고리부터 페이지를 만들어 선점.")
+    st.markdown("##### 패션 카테고리 선점 우선순위 (1순위 = 최우선)")
+    st.caption("패션 카테고리 키워드만 대상으로, 검색량·난이도·경쟁상태를 종합해 "
+               "1순위부터 서수로 부여. 비패션·일반어(가전·뷰티·리빙 등)는 제외됩니다.")
+    rank_df = df[df["순위"] > 0]
     c0, c1 = st.columns([1, 1])
-    sec_f = c0.multiselect("섹션 필터", sorted(df["섹션"].unique()))
+    sec_f = c0.multiselect("섹션 필터", sorted(rank_df["섹션"].unique()))
     topn = c1.slider("상위 N개", 10, 60, 30, step=5)
-    d = df if not sec_f else df[df["섹션"].isin(sec_f)]
-    d = d.sort_values("우선순위", ascending=False).head(topn)
+    d = rank_df if not sec_f else rank_df[rank_df["섹션"].isin(sec_f)]
+    d = d.sort_values("순위").head(topn)
 
     cc1, cc2 = st.columns([1.1, 1])
     with cc1:
-        dd = d.sort_values("우선순위", ascending=True)
+        dd = d.sort_values("순위", ascending=False)
         fig = go.Figure(go.Bar(
-            x=dd["우선순위"], y=dd["키워드"], orientation="h",
+            x=dd["검색량"], y=dd["키워드"], orientation="h",
             marker=dict(color=[STATUS_COLOR.get(s, "#cbd5e1") for s in dd["Status"]]),
-            customdata=dd[["검색량", "섹션", "Status"]],
-            hovertemplate="<b>%{y}</b><br>우선순위 %{x:,}<br>검색량 %{customdata[0]:,} · "
+            text=dd["우선순위"], textposition="outside",
+            customdata=dd[["우선순위", "섹션", "Status"]],
+            hovertemplate="<b>%{y}</b><br>%{customdata[0]} · 검색량 %{x:,}<br>"
                           "%{customdata[1]} · %{customdata[2]}<extra></extra>"))
-        fig.update_layout(**base_layout(h=max(420, topn * 16), title="우선순위 (색=Status)"))
+        fig.update_layout(**base_layout(h=max(420, topn * 16),
+                                        title="패션 우선순위 (막대=검색량, 색=Status)"))
+        fig.update_xaxes(range=[0, dd["검색량"].max() * 1.18])
         st.plotly_chart(fig, use_container_width=True)
     with cc2:
         st.dataframe(
-            d[["키워드", "섹션", "검색량", "Status", "우선순위"]],
+            d[["우선순위", "키워드", "섹션", "검색량", "Status"]],
             use_container_width=True, hide_index=True, height=max(420, topn * 16),
-            column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d"),
-                           "우선순위": st.column_config.ProgressColumn(
-                               "우선순위", format="%d", min_value=0,
-                               max_value=int(df["우선순위"].max()))})
+            column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d")})
 
 # ──────────────────────────────────────────────────────
 # TAB 2 — 섹션 분석
@@ -223,8 +223,7 @@ with tab4:
     st.dataframe(
         fdf[["키워드", "섹션", "검색량", "난이도"] + SITES + ["Status", "우선순위"]],
         use_container_width=True, hide_index=True, height=520,
-        column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d"),
-                       "우선순위": st.column_config.NumberColumn("우선순위", format="%d")})
+        column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d")})
 
 # ──────────────────────────────────────────────────────
 # TAB 5 — 가이드
@@ -244,8 +243,13 @@ with tab5:
         f"• <span class='tag' style='background:{STATUS_COLOR['공백']}'>공백</span> 5사 모두 미보유(무경쟁 선점지) · "
         f"<span class='tag' style='background:{STATUS_COLOR['미수집']};color:#475569'>미수집</span> 순위 미집계</div>"
         "<div class='card'>"
-        "<b>프로그래매틱 SEO 활용</b> — 검색량이 크고 경쟁사가 미보유(Missing/공백)인 "
-        "카테고리부터 허브-스포크 템플릿 페이지를 만들어 선점. 우선순위 탭이 그 순서를 제시합니다.</div>",
+        "<b>우선순위(1순위~)</b> — <b>패션 카테고리 키워드</b>(의류·언더웨어·수영·가방·신발·"
+        "액세서리·주얼리/시계·지갑벨트)만 대상으로, 검색량×난이도할인×경쟁상태가중 점수를 "
+        "매겨 높은 순서대로 1순위·2순위… 서수를 부여합니다. 가전·뷰티·리빙·식품 등 "
+        "비패션·일반어는 우선순위에서 제외됩니다(예: '야구' 같은 광범위 일반어 거품 제거).</div>"
+        "<div class='card'>"
+        "<b>프로그래매틱 SEO 활용</b> — 1순위부터 허브-스포크 템플릿 페이지를 만들어 선점. "
+        "특히 경쟁사가 미보유(Missing/공백)인 상위 키워드가 가장 빠른 선점 기회입니다.</div>",
         unsafe_allow_html=True)
     st.caption("*검색량은 Semrush 추정치. 순위/난이도는 5사 키워드갭에서 확보된 패션 키워드 위주로 "
                "병합되어 일부 비패션 키워드는 '미수집'입니다.")
