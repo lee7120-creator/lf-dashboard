@@ -334,6 +334,67 @@ git push -u origin claude/compassionate-gauss-JC2F7
 
 ---
 
+## 구글시트 연동 (발송성과 대시보드)
+
+### 개요
+`send_perf_dashboard.py`는 구글시트를 영속 저장소로 사용한다.
+`gspread` + `google-auth` 서비스 계정 방식이며, 키는 Streamlit Cloud Secrets에 TOML로 저장한다.
+
+### Streamlit Secrets 설정 위치
+Streamlit Cloud → 앱 **Settings** → **Secrets** 탭
+
+### Secrets TOML 형식
+```toml
+[gcp_service_account]
+type = "service_account"
+project_id = "quick-doodad-397006"
+private_key_id = "키ID"
+private_key = "-----BEGIN PRIVATE KEY-----\nMIIEv...base64...==\n-----END PRIVATE KEY-----\n"
+client_email = "googlesheet@quick-doodad-397006.iam.gserviceaccount.com"
+client_id = "116048104131558945028"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/googlesheet%40quick-doodad-397006.iam.gserviceaccount.com"
+universe_domain = "googleapis.com"
+```
+
+### private_key 주의사항
+- Streamlit TOML이 `\n`을 깨뜨리거나 `-----BEGIN/END-----` 마커를 누락시킬 수 있음
+- `_fix_pem()` 함수가 자동 복구: 마커 없이 base64만 있어도 표준 PEM으로 재구성
+- `_pem_diag()` 함수가 진단: `BEGIN:있음/없음 END:있음/없음 본문:N자` 형태로 에러 원인 표시
+- **키는 절대 코드나 깃에 넣지 말 것** — `.gitignore`에 `.streamlit/secrets.toml` 등록됨
+
+### 코드 구조
+```python
+# 스프레드시트 제목 매핑
+GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store"}
+
+# 키 로드 → PEM 복구 → 인증 → 시트 열기
+def gs_open(creds_dict, spreadsheet):
+    info["private_key"] = _fix_pem(info.get("private_key"))
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    gc = gspread.authorize(creds)
+    return gc.open(spreadsheet)  # URL/키/제목 모두 허용
+
+# 저장/로드 — 구글시트 실패 시 로컬 CSV 폴백
+_save_gs(kind, df)   # 시트에 덮어쓰기
+_load_gs(kind)       # 시트에서 DataFrame 로드
+```
+
+### 구글시트 공유 설정
+스프레드시트를 서비스 계정 이메일(`client_email`)에 **편집자** 권한으로 공유해야 함.
+
+### 흔한 에러
+| 에러 | 원인 | 해결 |
+|------|------|------|
+| Unable to load PEM file | `private_key`의 마커/줄바꿈 깨짐 | `_fix_pem()`이 자동 복구 (PR #108) |
+| BEGIN:없음 END:없음 | Secrets TOML이 마커를 날림 | 코드가 자동으로 마커 추가 |
+| 본문:0자 | `private_key`가 비어있음 | Secrets에 키 값 재입력 |
+| 403 Forbidden | 시트 공유 안 됨 | `client_email`에 편집자 권한 공유 |
+
+---
+
 ## Streamlit 배포 주의사항
 
 - `height=920` — 대시보드가 잘리면 이 값 키워야 함

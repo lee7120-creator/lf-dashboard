@@ -1349,41 +1349,29 @@ def main():
              "자동으로 분류돼요. ZIP 파일도 돼요.")
 
     # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
-    plan_source = st.sidebar.radio(
-        "기획 문구 가져오기", ["파일 올리기", "구글시트 연결"], horizontal=True,
-        help="’파일 올리기’: 위에서 올린 기획 통합본을 자동 인식해요. "
-             "’구글시트 연결’: 공유된 ★APP PUSH 시트에서 바로 읽어와요.")
+    _PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1xqlaRnHa5HMLz3ASUn-H7AvMkUsvQw6l7aw1rWLqfjw"
     plan_file = None
-    if plan_source == "구글시트 연결":
-        try:
-            _def_url = (st.secrets.get("gsheets", {}).get("plan_spreadsheet")
-                        or st.secrets.get("gsheets_plan_spreadsheet") or "")
-        except Exception:
-            _def_url = ""
-        plan_url = st.sidebar.text_input("구글시트 URL 또는 키", value=_def_url,
-                                         placeholder="https://docs.google.com/spreadsheets/d/…")
-        recent_n = st.sidebar.number_input("가져올 최근 주차 수 (0이면 전부)", value=12, min_value=0, step=1,
-                                           help="시트가 많으면 전부(0)는 느리고 API 한도에 걸릴 수 있어요. 보통 12주면 충분해요.")
-        if st.sidebar.button("🔄 구글시트에서 가져오기", use_container_width=True):
-            if not _has_sa():
-                st.sidebar.error("서비스계정이 없어요. Secrets에 gcp_service_account를 추가해 주세요.")
-            elif not str(plan_url).strip():
-                st.sidebar.error("구글시트 URL이나 키를 입력해 주세요.")
-            else:
-                try:
-                    sh_plan = gs_open(st.secrets["gcp_service_account"], plan_url)
-                    prog = st.sidebar.progress(0.0, text="기획 시트를 읽고 있어요…")
-                    def _cb(i, total, title):
-                        prog.progress(i / max(total, 1), text=f"가져오는 중 {i}/{total} — {title[:16]}")
-                    lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_cb)
-                    prog.empty()
-                    st.session_state.plan_lookup_gs = lk
-                    st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
-                    st.sidebar.success(f"기획 가져오기 완료 — {st.session_state.plan_lookup_meta}")
-                except Exception as e:
-                    st.sidebar.error(f"가져오기에 실패했어요: {str(e)[:90]}")
-        if st.session_state.get("plan_lookup_gs") is not None:
-            st.sidebar.caption(f"✓ 구글시트 기획 불러옴: {st.session_state.get('plan_lookup_meta','')}")
+    st.sidebar.markdown("---")
+    recent_n = st.sidebar.number_input("가져올 최근 주차 수 (0이면 전부)", value=12, min_value=0, step=1,
+                                       help="시트가 많으면 전부(0)는 느리고 API 한도에 걸릴 수 있어요. 보통 12주면 충분해요.")
+    if st.sidebar.button("📥 기획 문구 가져오기", use_container_width=True):
+        if not _has_sa():
+            st.sidebar.error("서비스계정이 없어요. Secrets에 gcp_service_account를 추가해 주세요.")
+        else:
+            try:
+                sh_plan = gs_open(st.secrets["gcp_service_account"], _PLAN_SHEET_URL)
+                prog = st.sidebar.progress(0.0, text="기획 시트를 읽고 있어요…")
+                def _cb(i, total, title):
+                    prog.progress(i / max(total, 1), text=f"가져오는 중 {i}/{total} — {title[:16]}")
+                lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_cb)
+                prog.empty()
+                st.session_state.plan_lookup_gs = lk
+                st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
+                st.sidebar.success(f"기획 가져오기 완료 — {st.session_state.plan_lookup_meta}")
+            except Exception as e:
+                st.sidebar.error(f"가져오기에 실패했어요: {str(e)[:90]}")
+    if st.session_state.get("plan_lookup_gs") is not None:
+        st.sidebar.caption(f"✓ 기획 불러옴: {st.session_state.get(‘plan_lookup_meta’,’’)}")
 
     # ── 통합 업로드 자동 분류 → 기존 처리 변수로 라우팅 ──
     perf_files, promo_files, mtd_files = [], None, []
@@ -1434,20 +1422,16 @@ def main():
     if perf_files:
         # 기획 lookup 확보: 업로드 파일(자동 인식) 또는 구글시트 직접연결(세션 적재분)
         plan_lookup = None
-        if plan_source == "파일 올리기":
-            if plan_file:
-                try:
-                    with st.spinner("기획 파일을 읽고 있어요… 처음에만 수십 초 걸려요."):
-                        plan_lookup = cached_plan(plan_file.getvalue())
-                except Exception as e:
-                    st.error(f"기획 파일을 읽지 못했어요: {e}"); st.stop()
-        else:
+        if plan_file:
+            try:
+                with st.spinner("기획 파일을 읽고 있어요… 처음에만 수십 초 걸려요."):
+                    plan_lookup = cached_plan(plan_file.getvalue())
+            except Exception as e:
+                st.error(f"기획 파일을 읽지 못했어요: {e}"); st.stop()
+        if plan_lookup is None:
             plan_lookup = st.session_state.get("plan_lookup_gs")
         if plan_lookup is None:
-            if plan_source == "파일 올리기":
-                st.sidebar.warning("실적과 문구를 합치려면 기획 통합본도 같이 올려 주세요.\n(없으면 기존 데이터만 보여요)")
-            else:
-                st.sidebar.warning("먼저 「🔄 구글시트에서 가져오기」를 눌러 주세요.\n(없으면 기존 데이터만 보여요)")
+            st.sidebar.warning("기획 문구가 없어요. 「📥 기획 문구 가져오기」를 눌러 주세요.\n(없으면 기존 데이터만 보여요)")
         else:
             frames = []
             expanded = expand_uploads(perf_files)
@@ -1804,10 +1788,9 @@ def main():
         except Exception:
             _sa_email = "(서비스계정 미설정)"
         st.markdown(
-            "★APP PUSH 시트를 바로 읽으려면:<br>"
-            f"1) 구글시트를 <code>{_sa_email}</code>에 **뷰어**로 공유해 주세요<br>"
-            "2) Secrets에 <code>[gsheets] plan_spreadsheet</code>를 넣으면 URL이 자동으로 채워져요<br>"
-            "3) 사이드바에서 <b>구글시트 연결</b> → <b>🔄 가져오기</b> → <b>저장하기</b><br>"
+            "★APP PUSH 시트에서 기획 문구를 바로 읽어와요:<br>"
+            f"1) 구글시트가 <code>{_sa_email}</code>에 **뷰어**로 공유되어 있어야 해요<br>"
+            "2) 사이드바에서 <b>📥 기획 문구 가져오기</b> 버튼만 누르면 끝!<br>"
             "<span style='color:#94a3b8'>※ 시트가 많으면 '최근 주차 수'로 줄여 주세요. "
             "보통 새 주차만 가져오면 충분해요.</span>",
             unsafe_allow_html=True)
