@@ -712,9 +712,13 @@ def _fix_pem(pk):
     s = pk.strip().strip('"').strip("'")
     s = s.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
     mt = re.search(r"-----BEGIN ([A-Z0-9 ]+?)-----(.*?)-----END \1-----", s, re.S)
-    if not mt:
-        return s if s.endswith("\n") else s + "\n"
-    header, body = mt.group(1).strip(), re.sub(r"\s+", "", mt.group(2))
+    if mt:
+        header, body = mt.group(1).strip(), re.sub(r"\s+", "", mt.group(2))
+    else:
+        header = "PRIVATE KEY"
+        body = re.sub(r"\s+", "", s)
+    if not body:
+        return s + "\n"
     wrapped = "\n".join(body[i:i + 64] for i in range(0, len(body), 64))
     return f"-----BEGIN {header}-----\n{wrapped}\n-----END {header}-----\n"
 
