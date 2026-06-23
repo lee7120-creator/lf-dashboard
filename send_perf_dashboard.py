@@ -178,16 +178,45 @@ def parse_plan_bytes(file_bytes):
     return lookup
 
 
+def _week_sheet_end_date(title):
+    """시트명에서 종료 날짜를 추출한다. 예: '6월 3주차(6/15-6/21)' → date(2025,6,21).
+    괄호 안 끝 날짜(M/D)를 파싱하고, 연도는 현재 연도 기준으로 추정한다."""
+    m = re.search(r'\((\d{1,2})/(\d{1,2})\s*[-~]\s*(\d{1,2})/(\d{1,2})\)', title)
+    if not m:
+        return None
+    from datetime import date
+    today = date.today()
+    end_m, end_d = int(m.group(3)), int(m.group(4))
+    year = today.year
+    try:
+        d = date(year, end_m, end_d)
+    except ValueError:
+        return None
+    if d.month > today.month + 6:
+        d = date(year - 1, end_m, end_d)
+    return d
+
+
 def parse_plan_gsheet(sh, recent=None, progress_cb=None):
     """구글시트(gspread Spreadsheet) → 기획 lookup. 주차(WEEK_RE) 시트만 순회.
 
-    · recent=N 이면 시트 목록 뒤쪽(최근) N개만 읽어 API 호출/속도를 통제한다.
+    · 시트를 종료 날짜 기준 최신순 정렬하고, 금주·미래 주차는 제외한다.
+    · recent=N 이면 최신 N개만 읽어 API 호출/속도를 통제한다.
     · progress_cb(i, total, title) 콜백으로 진행 상황을 외부에 알린다.
     반환: (lookup, 읽은_시트명_리스트)
     """
-    week_ws = [ws for ws in sh.worksheets() if WEEK_RE.search(ws.title)]
+    from datetime import date, timedelta
+    all_ws = [ws for ws in sh.worksheets() if WEEK_RE.search(ws.title)]
+    dated = []
+    for ws in all_ws:
+        d = _week_sheet_end_date(ws.title)
+        if d is not None:
+            dated.append((d, ws))
+    dated.sort(key=lambda x: x[0], reverse=True)
+    last_week_end = date.today() - timedelta(days=date.today().weekday() + 1)
+    week_ws = [ws for d, ws in dated if d <= last_week_end]
     if recent and recent > 0:
-        week_ws = week_ws[-recent:]
+        week_ws = week_ws[:recent]
     lookup = {}
     read = []
     total = len(week_ws)
