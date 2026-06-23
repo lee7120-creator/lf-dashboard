@@ -514,9 +514,10 @@ TREND_COLOR = {"급상승": "#e11d48", "상승": "#f97316", "유지": "#94a3b8",
 
 
 def render_naver():
-    st.markdown("## 🛒 네이버 쇼핑·검색")
-    st.markdown("<div class='cap'>네이버 검색광고 API(월간 검색량) + 데이터랩(12개월 추이) 기반. "
-                "Semrush(구글)로는 안 잡히는 한국 실수요를 보정.</div>", unsafe_allow_html=True)
+    st.markdown("## 🛒 네이버 쇼핑·검색 — 구글 vs 네이버 통합")
+    st.markdown("<div class='cap'>네이버 검색광고 API(월간 검색량)+데이터랩(12개월 추이)을 "
+                "Semrush(구글) 검색량·카테고리(섹션)와 한 화면에 합쳐 비교. "
+                "구글로는 안 잡히는 한국 실수요를 보정합니다.</div>", unsafe_allow_html=True)
     st.write("")
 
     if not os.path.exists(NAVER_CSV):
@@ -527,30 +528,36 @@ def render_naver():
             "(<code>API_KEY</code>·<code>SECRET</code>·<code>CUSTOMER_ID</code>)<br>"
             "• 데이터랩/쇼핑인사이트 — developers.naver.com → 애플리케이션 등록 "
             "(<code>CLIENT_ID</code>·<code>CLIENT_SECRET</code>)</div>"
-            "<div class='card'><b>② 프로젝트 루트 <code>.env</code> 에 입력</b><br>"
-            "<code>NAVER_AD_API_KEY=...</code><br><code>NAVER_AD_SECRET=...</code><br>"
-            "<code>NAVER_AD_CUSTOMER_ID=...</code><br><code>NAVER_CLIENT_ID=...</code><br>"
-            "<code>NAVER_CLIENT_SECRET=...</code></div>"
-            "<div class='card'><b>③ 수집 실행</b><br>"
-            "<code>python naver_keyword_data.py</code> → data/naver_keyword_metrics.csv 생성<br>"
-            "<code>python build_keyword_data.py</code> → 키워드 리서치 검색량을 네이버로 갱신</div>",
+            "<div class='card'><b>② GitHub Secrets 등록 후 Actions 탭에서 수집 실행</b><br>"
+            "Actions → '네이버 키워드 데이터 수집' → Run workflow</div>",
             unsafe_allow_html=True)
         return
 
     nv = pd.read_csv(NAVER_CSV, encoding="utf-8-sig")
+    # 키워드 리서치(919개)에서 섹션 + 구글검색량 + Status 병합 → 카테고리화 & 구글/네이버 비교
+    kw = load_kw()[["키워드", "섹션", "검색량", "패션", "Status"]].rename(
+        columns={"검색량": "구글검색량"})
+    nv = nv.merge(kw, on="키워드", how="left")
+    nv["섹션"] = nv["섹션"].fillna("기타")
+    nv["구글검색량"] = pd.to_numeric(nv["구글검색량"], errors="coerce").fillna(0).astype(int)
+    nv["네이버검색량"] = pd.to_numeric(nv["네이버검색량"], errors="coerce").fillna(0).astype(int)
     nv = nv.sort_values("네이버검색량", ascending=False)
     has_trend = nv["추이"].astype(str).str.len().gt(0).any() if "추이" in nv else False
 
+    # 섹션(카테고리) 필터 — 경쟁사 분석·키워드 리서치와 동일한 분류 체계
+    secs = sorted(nv["섹션"].unique())
+    sel_secs = st.multiselect("🗂️ 카테고리(섹션) 필터 — 비우면 전체", secs, key="nv_secs")
+    fv = nv[nv["섹션"].isin(sel_secs)] if sel_secs else nv
+
     k = st.columns(4)
-    k[0].metric("수집 키워드", f"{len(nv):,}개")
-    k[1].metric("네이버 검색량 합", f"{int(nv['네이버검색량'].sum()):,}")
-    k[2].metric("모바일 비중",
-                f"{round(nv['모바일'].sum() / max(1, nv[['PC', '모바일']].sum().sum()) * 100)}%")
-    rising = int(nv["추이"].isin(["상승", "급상승"]).sum()) if has_trend else 0
+    k[0].metric("수집 키워드", f"{len(fv):,}개")
+    k[1].metric("네이버 검색량 합", f"{int(fv['네이버검색량'].sum()):,}")
+    k[2].metric("구글 검색량 합", f"{int(fv['구글검색량'].sum()):,}")
+    rising = int(fv["추이"].isin(["상승", "급상승"]).sum()) if has_trend else 0
     k[3].metric("📈 상승 키워드", f"{rising}개")
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 
-    has_monthly = "월별추이" in nv.columns and nv["월별추이"].astype(str).str.len().gt(0).any()
+    has_monthly = "월별추이" in fv.columns and fv["월별추이"].astype(str).str.len().gt(0).any()
 
     def parse_series(s):
         try:
@@ -558,27 +565,85 @@ def render_naver():
         except ValueError:
             return []
 
-    t1, t2, t3 = st.tabs(["📈 검색량 TOP", "📅 기간 추이", "📋 전체(엑셀)"])
+    t1, t2, t3, t4, t5 = st.tabs(
+        ["📈 검색량 TOP", "🆚 구글 vs 네이버", "🗂️ 섹션 분석", "📅 기간 추이", "📋 전체(엑셀)"])
 
     with t1:
         topn = st.slider("상위 N개", 10, 60, 30, step=5, key="nv_topn")
-        d = nv.head(topn).sort_values("네이버검색량")
+        d = fv.head(topn).sort_values("네이버검색량")
         fig = go.Figure(go.Bar(x=d["네이버검색량"], y=d["키워드"], orientation="h",
                                marker_color=PALETTE["green"],
-                               customdata=d[["PC", "모바일"]],
-                               hovertemplate="<b>%{y}</b><br>네이버 %{x:,}"
+                               customdata=d[["PC", "모바일", "섹션"]],
+                               hovertemplate="<b>%{y}</b> · %{customdata[2]}<br>네이버 %{x:,}"
                                "<br>PC %{customdata[0]:,}·모바일 %{customdata[1]:,}<extra></extra>"))
         fig.update_layout(**base_layout(h=max(420, topn * 16), title="네이버 월간 검색량 TOP"))
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("PC+모바일 합산 월간 검색수. Semrush(구글)와 비교하면 한국 실수요 차이를 알 수 있습니다.")
+        st.caption("PC+모바일 합산 월간 검색수. 막대에 마우스를 올리면 소속 카테고리가 보입니다.")
 
     with t2:
+        st.markdown("##### 구글(Semrush) vs 네이버 검색량 — 한국 실수요 갭")
+        st.caption("대각선 위쪽(네이버 ≫ 구글) = 한국에서 네이버 수요가 훨씬 큰 키워드. "
+                   "LF몰이 네이버 SEO·쇼핑에 우선 투자해야 할 영역입니다.")
+        cmp = fv[(fv["네이버검색량"] > 0) | (fv["구글검색량"] > 0)].copy()
+        if len(cmp):
+            cmp["갭(네이버-구글)"] = cmp["네이버검색량"] - cmp["구글검색량"]
+            cmp["_size"] = cmp["네이버검색량"].clip(lower=1)
+            fig = px.scatter(cmp, x="구글검색량", y="네이버검색량", color="섹션",
+                             hover_name="키워드", size="_size", size_max=26)
+            mx = int(max(cmp["구글검색량"].max(), cmp["네이버검색량"].max(), 1))
+            fig.add_trace(go.Scatter(x=[0, mx], y=[0, mx], mode="lines",
+                                     line=dict(dash="dash", color="#94a3b8"),
+                                     showlegend=False, hoverinfo="skip"))
+            fig.update_layout(**base_layout(h=460, showlegend=True,
+                                            title="구글 vs 네이버 검색량 (점=키워드, 크기=네이버)"))
+            st.plotly_chart(fig, use_container_width=True)
+            st.markdown("##### 네이버 실수요가 구글보다 큰 키워드 TOP")
+            gap = cmp.sort_values("갭(네이버-구글)", ascending=False)
+            num_cols = ["네이버검색량", "구글검색량", "갭(네이버-구글)"]
+            st.dataframe(
+                gap[["키워드", "섹션"] + num_cols + ["Status"]].head(40),
+                use_container_width=True, hide_index=True, height=360,
+                column_config={c: st.column_config.NumberColumn(c, format="%d") for c in num_cols})
+        else:
+            st.info("비교할 검색량 데이터가 없습니다.")
+
+    with t3:
+        st.markdown("##### 섹션(카테고리)별 검색 수요 — 네이버 vs 구글")
+        sec = (fv.groupby("섹션").agg(키워드수=("키워드", "count"),
+                                     네이버검색량=("네이버검색량", "sum"),
+                                     구글검색량=("구글검색량", "sum"))
+                 .reset_index().sort_values("네이버검색량", ascending=False))
+        c1, c2 = st.columns(2)
+        with c1:
+            dd = sec.sort_values("네이버검색량")
+            fig = go.Figure()
+            fig.add_trace(go.Bar(y=dd["섹션"], x=dd["네이버검색량"], orientation="h",
+                                 name="네이버", marker_color=PALETTE["green"]))
+            fig.add_trace(go.Bar(y=dd["섹션"], x=dd["구글검색량"], orientation="h",
+                                 name="구글", marker_color=PALETTE["blue"]))
+            fig.update_layout(**base_layout(h=520, showlegend=True,
+                                            title="섹션별 검색량 (네이버 vs 구글)"))
+            fig.update_layout(barmode="group", legend=dict(orientation="h"))
+            st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            pos = fv[fv["네이버검색량"] > 0]
+            if len(pos):
+                fig = px.treemap(pos, path=[px.Constant("전체"), "섹션", "키워드"],
+                                 values="네이버검색량", color="섹션")
+                fig.update_layout(**base_layout(h=520, title="섹션 트리맵 (네이버 검색량)"))
+                fig.update_traces(hovertemplate="<b>%{label}</b><br>네이버 %{value:,}<extra></extra>")
+                st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(sec, use_container_width=True, hide_index=True,
+                     column_config={c: st.column_config.NumberColumn(c, format="%d")
+                                    for c in ["네이버검색량", "구글검색량"]})
+
+    with t4:
         if not has_monthly:
             st.info("데이터랩 키(CLIENT_ID/SECRET) 추가 후 재수집하면 **기간 슬라이더 + 추이 라인차트**가 "
                     "활성화됩니다. (검색광고 키만으로는 절대 검색량만 수집)")
         else:
             months = st.slider("📅 기간 (최근 N개월)", 3, 12, 12, step=1, key="nv_months")
-            nv2 = nv.copy()
+            nv2 = fv.copy()
             nv2["_s"] = nv2["월별추이"].map(parse_series)
 
             def grow(s):
@@ -597,24 +662,26 @@ def render_naver():
                                  default=up["키워드"].head(6).tolist(), key="nv_sel")
             if sel:
                 fig = go.Figure()
-                for kw in sel:
-                    s = nv2.loc[nv2["키워드"] == kw, "_s"].iloc[0][-months:]
+                for kw_ in sel:
+                    s = nv2.loc[nv2["키워드"] == kw_, "_s"].iloc[0][-months:]
                     fig.add_trace(go.Scatter(y=s, x=list(range(-len(s) + 1, 1)),
-                                             mode="lines+markers", name=kw))
+                                             mode="lines+markers", name=kw_))
                 fig.update_layout(**base_layout(h=360, showlegend=True,
                                                 title=f"최근 {months}개월 상대 검색추이(데이터랩 지수)"))
                 fig.update_xaxes(title="개월 전 (0 = 최근月)")
                 st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(up[["키워드", "네이버검색량", "기간성장%", "추이지수"]].head(60),
+            st.dataframe(up[["키워드", "섹션", "네이버검색량", "기간성장%", "추이지수"]].head(60),
                          use_container_width=True, hide_index=True, height=320,
                          column_config={"네이버검색량": st.column_config.NumberColumn("네이버검색량", format="%d")})
 
-    with t3:
-        st.markdown(f"##### 전체 네이버 지표 ({len(nv):,}개)")
-        st.download_button("⬇️ 엑셀(.xlsx)", to_excel(nv, "네이버지표"),
+    with t5:
+        st.markdown(f"##### 전체 통합 지표 ({len(fv):,}개) — 섹션·구글·네이버")
+        st.download_button("⬇️ 엑셀(.xlsx)", to_excel(fv, "네이버지표"),
                            "naver_keyword_metrics.xlsx", XLSX_MIME)
-        st.dataframe(nv, use_container_width=True, hide_index=True, height=480,
-                     column_config={"네이버검색량": st.column_config.NumberColumn("네이버검색량", format="%d")})
+        num_cfg = {c: st.column_config.NumberColumn(c, format="%d")
+                   for c in ["네이버검색량", "구글검색량", "PC", "모바일"] if c in fv}
+        st.dataframe(fv, use_container_width=True, hide_index=True, height=480,
+                     column_config=num_cfg)
 
 
 # ══════════════════════════════════════════════════════════════════
