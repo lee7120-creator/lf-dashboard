@@ -719,6 +719,18 @@ def _fix_pem(pk):
     return f"-----BEGIN {header}-----\n{wrapped}\n-----END {header}-----\n"
 
 
+def _pem_diag(pk):
+    """private_key 진단 문자열 — 어디가 잘못됐는지 알려준다(키 값은 노출 안 함)."""
+    if not isinstance(pk, str) or not pk.strip():
+        return "키가 비어있음(미입력)"
+    has_b = "-----BEGIN" in pk
+    has_e = "-----END" in pk
+    body = re.sub(r"\s+", "", re.sub(r"-----[A-Z0-9 ]+-----", "", pk))
+    n = len(body)
+    tip = "정상 길이" if n >= 1500 else "너무 짧음 → 잘린 듯"
+    return f"BEGIN:{'있음' if has_b else '없음'} END:{'있음' if has_e else '없음'} 본문:{n}자({tip})"
+
+
 def gs_open(creds_dict, spreadsheet):
     """서비스 계정 자격으로 스프레드시트 열기 (URL/키/제목 모두 허용)."""
     import gspread
@@ -727,7 +739,12 @@ def gs_open(creds_dict, spreadsheet):
               "https://www.googleapis.com/auth/drive"]
     info = dict(creds_dict)
     info["private_key"] = _fix_pem(info.get("private_key"))
-    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    try:
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+    except Exception as e:
+        raise ValueError(f"서비스계정 private_key 문제 — {_pem_diag(info.get('private_key'))}. "
+                         "값이 잘렸거나 마커가 빠졌을 수 있어요. 새 JSON의 private_key를 통째로 다시 넣어주세요. "
+                         f"(원본오류: {str(e)[:50]})")
     gc = gspread.authorize(creds)
     sp = str(spreadsheet).strip()
     if sp.startswith("http"):
