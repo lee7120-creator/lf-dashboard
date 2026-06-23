@@ -704,6 +704,21 @@ def compute_mtd(df):
 GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store"}
 
 
+def _fix_pem(pk):
+    """Secrets에서 깨진 private_key 복구 — '\\n' 글자·공백·무구분 등 어떤 형태든
+    base64 본문을 추출해 64자씩 표준 PEM으로 재구성한다 ('Unable to load PEM file' 방지)."""
+    if not isinstance(pk, str):
+        return pk
+    s = pk.strip().strip('"').strip("'")
+    s = s.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    mt = re.search(r"-----BEGIN ([A-Z0-9 ]+?)-----(.*?)-----END \1-----", s, re.S)
+    if not mt:
+        return s if s.endswith("\n") else s + "\n"
+    header, body = mt.group(1).strip(), re.sub(r"\s+", "", mt.group(2))
+    wrapped = "\n".join(body[i:i + 64] for i in range(0, len(body), 64))
+    return f"-----BEGIN {header}-----\n{wrapped}\n-----END {header}-----\n"
+
+
 def gs_open(creds_dict, spreadsheet):
     """서비스 계정 자격으로 스프레드시트 열기 (URL/키/제목 모두 허용)."""
     import gspread
@@ -711,15 +726,7 @@ def gs_open(creds_dict, spreadsheet):
     scopes = ["https://www.googleapis.com/auth/spreadsheets",
               "https://www.googleapis.com/auth/drive"]
     info = dict(creds_dict)
-    # Streamlit Secrets에서 private_key 줄바꿈이 '\n' 글자로 들어오면 PEM 파싱 실패 →
-    # 실제 줄바꿈으로 보정 ("Unable to load PEM file" 방지). 캐리지리턴/따옴표도 정리.
-    pk = info.get("private_key")
-    if isinstance(pk, str):
-        pk = pk.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
-        pk = pk.strip().strip('"').strip("'").strip()
-        if not pk.endswith("\n"):
-            pk += "\n"
-        info["private_key"] = pk
+    info["private_key"] = _fix_pem(info.get("private_key"))
     creds = Credentials.from_service_account_info(info, scopes=scopes)
     gc = gspread.authorize(creds)
     sp = str(spreadsheet).strip()
