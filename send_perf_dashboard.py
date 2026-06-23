@@ -1466,6 +1466,21 @@ def main():
         · 실제로 발송한 건만 분석해요. 기획만 있고 발송 안 한 건은 빠져요.<br>
         · 한 번 저장하면 다음부터는 <b>새 주차 실적만</b> 올리면 돼요.
         </div>""", unsafe_allow_html=True)
+        st.markdown("##### 💾 누적 백업 CSV로 바로 불러오기")
+        st.caption("이전에 받아둔 ‘누적 백업 CSV’가 있으면 여기 올리세요. 실적·기획 재업로드/머지 없이 바로 대시보드가 뜹니다.")
+        _up = st.file_uploader("백업 CSV 올리기", type=["csv"], key="restore_empty")
+        if _up is not None:
+            _sig = (_up.name, getattr(_up, "size", None))
+            if st.session_state.get("_restored_sig") != _sig:
+                try:
+                    d = pd.read_csv(_up, encoding="utf-8-sig", dtype={"date": str, "af": str})
+                    st.session_state.camp_store = merge_store(stored, d)
+                    storage_save(BK, "campaign", st.session_state.camp_store)
+                    st.session_state["_restored_sig"] = _sig
+                    st.success(f"불러왔어요 ✓ {len(st.session_state.camp_store):,}건")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"불러오지 못했어요: {e}")
         st.stop()
 
     # 작업 데이터 확정: 파생 재계산 + 타입 정리 + 문구 태깅 (캐시 — 성능 핵심)
@@ -1693,17 +1708,21 @@ def main():
                 file_name="send_perf_store_backup.csv", mime="text/csv", use_container_width=True)
             st.caption("전체 데이터가 백업에 포함돼요. "
                        "재배포하면 초기화될 수 있으니 가끔 백업해 주세요. 이 CSV를 다시 올리면 복원돼요.")
-        rest = st.file_uploader("백업 CSV로 복원하기", type=["csv"], key="restore_store")
+        rest = st.file_uploader("백업 CSV로 복원하기", type=["csv"], key="restore_store",
+                                help="이전에 받아둔 ‘누적 백업 CSV’를 올리면 실적·기획 재업로드/머지 없이 바로 불러옵니다.")
         if rest is not None:
-            try:
-                d = pd.read_csv(rest, encoding="utf-8-sig", dtype={"date": str, "af": str})
-                merged_restore = merge_store(stored, d)
-                storage_save(BK, "campaign", merged_restore)
-                st.session_state.camp_store = merged_restore
-                st.cache_data.clear()
-                st.success("복원했어요 ✓ 새로고침해 주세요")
-            except Exception as e:
-                st.error(f"복원하지 못했어요: {e}")
+            _sig = (rest.name, getattr(rest, "size", None))
+            if st.session_state.get("_restored_sig") != _sig:
+                try:
+                    d = pd.read_csv(rest, encoding="utf-8-sig", dtype={"date": str, "af": str})
+                    merged_restore = merge_store(stored, d)
+                    storage_save(BK, "campaign", merged_restore)
+                    st.session_state.camp_store = merged_restore
+                    st.session_state["_restored_sig"] = _sig
+                    st.success(f"복원 완료 ✓ {len(merged_restore):,}건 — 바로 표시합니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"복원하지 못했어요: {e}")
         if st.button("🗑 전부 지우기", use_container_width=True, key="clear_store"):
             storage_clear(BK, "campaign")
             st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
