@@ -1371,7 +1371,7 @@ def main():
             except Exception as e:
                 st.sidebar.error(f"가져오기에 실패했어요: {str(e)[:90]}")
     if st.session_state.get("plan_lookup_gs") is not None:
-        st.sidebar.caption(f"✓ 기획 불러옴: {st.session_state.get(‘plan_lookup_meta’,’’)}")
+        st.sidebar.caption(f"✓ 기획 불러옴: {st.session_state.get('plan_lookup_meta','')}")
 
     # ── 통합 업로드 자동 분류 → 기존 처리 변수로 라우팅 ──
     perf_files, promo_files, mtd_files = [], None, []
