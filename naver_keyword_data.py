@@ -186,7 +186,10 @@ def fetch_datalab_trends(keywords):
                 break
             except requests.RequestException as e:
                 if attempt == 3:
-                    print(f"  [경고] 데이터랩 그룹 {gi} 실패: {e}")
+                    detail = ""
+                    if hasattr(e, "response") and e.response is not None:
+                        detail = f" body={e.response.text[:200]}"
+                    print(f"  [경고] 데이터랩 그룹 {gi} 실패: {e}{detail}")
                 time.sleep(2 ** attempt)
         if gi % 10 == 0:
             print(f"  데이터랩 {gi}/{len(groups)} 그룹…")
