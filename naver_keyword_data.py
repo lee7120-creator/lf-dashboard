@@ -72,9 +72,9 @@ AD_BASE = "https://api.searchad.naver.com"
 
 
 def _ad_headers(method, path):
-    api_key = os.environ["NAVER_AD_API_KEY"]
-    secret = os.environ["NAVER_AD_SECRET"]
-    customer = os.environ["NAVER_AD_CUSTOMER_ID"]
+    api_key = os.environ["NAVER_AD_API_KEY"].strip()
+    secret = os.environ["NAVER_AD_SECRET"].strip()
+    customer = os.environ["NAVER_AD_CUSTOMER_ID"].strip()
     ts = str(round(time.time() * 1000))
     msg = f"{ts}.{method}.{path}"
     sig = base64.b64encode(
@@ -126,8 +126,13 @@ def fetch_ad_volumes(keywords):
                 break
             except requests.RequestException as e:
                 if attempt == 3:
-                    print(f"  [경고] 배치 {bi} 실패: {e}")
+                    detail = ""
+                    if hasattr(e, "response") and e.response is not None:
+                        detail = f" body={e.response.text[:200]}"
+                    print(f"  [경고] 배치 {bi} 실패: {e}{detail}")
                 time.sleep(2 ** attempt)
+        if bi == 1 and not out:
+            print("  ⚠ 첫 배치부터 실패 — API 키 확인 필요")
         if bi % 10 == 0:
             print(f"  검색광고 {bi}/{len(batches)} 배치…")
         time.sleep(0.3)                            # QPS 보호
@@ -142,8 +147,8 @@ DATALAB_URL = "https://openapi.naver.com/v1/datalab/search"
 
 def _datalab_headers():
     return {
-        "X-Naver-Client-Id": os.environ["NAVER_CLIENT_ID"],
-        "X-Naver-Client-Secret": os.environ["NAVER_CLIENT_SECRET"],
+        "X-Naver-Client-Id": os.environ["NAVER_CLIENT_ID"].strip(),
+        "X-Naver-Client-Secret": os.environ["NAVER_CLIENT_SECRET"].strip(),
         "Content-Type": "application/json",
     }
 
