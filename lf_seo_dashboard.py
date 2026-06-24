@@ -759,12 +759,18 @@ def render_cep():
     st.write("")
 
     st.markdown(
-        "<div class='card'><b>📍 pSEO 키워드 전략 로드맵</b><br>"
+        "<div class='card'><b>📍 pSEO 키워드 전략 로드맵</b> "
+        "<span style='color:#888'>(programmatic-seo 스킬 기준 점검 반영)</span><br>"
         "① 카테고리 키워드 수요조사 — <b>✅ 완료</b> (키워드 리서치 탭)<br>"
-        "② <b>CEP 키워드 수요조사</b> ← 현재 단계<br>"
-        "③ ①·② 고검색량 키워드 중심 조합<br>"
-        "④ [CEP] × [카테고리] 롱테일 키워드 수요조사<br>"
-        "⑤ ④ 우선순위로 pSEO 페이지 제작</div>",
+        "② CEP 키워드 수요조사 — <b>✅ 완료</b> (이 탭)<br>"
+        "③ ①·② 고검색량 키워드 중심 조합 ← <b>현재 단계</b><br>"
+        "④ [CEP]×[카테고리] 롱테일 수요조사 <b>+ 난이도(KD)·경쟁 검증</b><br>"
+        "⑤ pSEO 페이지 제작 — 5단계로 세분화:<br>"
+        "&nbsp;&nbsp;5a. 플레이북 확정 (Occasion·Persona + Curation + Examples)<br>"
+        "&nbsp;&nbsp;5b. <b>⭐ 고유 데이터 매핑</b> (LF몰 실제 상품 큐레이션 — thin content 방지)<br>"
+        "&nbsp;&nbsp;5c. 템플릿 설계 (제목·메타·H구조·스키마)<br>"
+        "&nbsp;&nbsp;5d. URL 구조 + 내부링킹 (허브앤스포크)<br>"
+        "&nbsp;&nbsp;5e. 인덱싱 전략 (sitemap · thin은 noindex)</div>",
         unsafe_allow_html=True)
     glossary()
 
