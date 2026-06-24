@@ -789,26 +789,60 @@ def render_cep():
             df[col] = dv
     df["검색량"] = pd.to_numeric(df["검색량"], errors="coerce").fillna(0).astype(int)
     df["네이버검색량"] = pd.to_numeric(df["네이버검색량"], errors="coerce").fillna(0).astype(int)
+    if "대표검색량" not in df.columns:
+        df["대표검색량"] = df[["검색량", "네이버검색량"]].max(axis=1)
+    df["대표검색량"] = pd.to_numeric(df["대표검색량"], errors="coerce").fillna(0).astype(int)
+
+    naver_ready = int(df["네이버검색량"].sum()) > 0
+    if not naver_ready:
+        st.info("현재는 **Semrush(구글)** 검색량만 표시됩니다. CEP는 `~룩`·`하객룩` 등 한국 신조어가 많아 "
+                "네이버 수집을 붙이면 수요가 크게 늘어납니다 → Actions 탭에서 'CEP 네이버 수집' 실행.")
 
     k = st.columns(4)
     k[0].metric("CEP 키워드", f"{len(df):,}개")
-    k[1].metric("구글 검색량 합", f"{int(df['검색량'].sum()):,}")
-    k[2].metric("네이버 검색량 합", f"{int(df['네이버검색량'].sum()):,}")
-    k[3].metric("섹션", f"{df['섹션'].nunique()}개")
+    k[1].metric("총 대표검색량", f"{int(df['대표검색량'].sum()):,}", "네이버 우선")
+    k[2].metric("구글 보유", f"{int((df['검색량'] > 0).sum())}개")
+    k[3].metric("CEP 축", f"{df['섹션'].nunique()}개")
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
+    glossary()
 
-    t1, t2 = st.tabs(["📈 검색량 TOP", "📋 전체(엑셀)"])
+    t1, t2, t3 = st.tabs(["🚀 축별 우선순위", "📈 검색량 TOP", "📋 전체(엑셀)"])
+
     with t1:
-        topn = st.slider("상위 N개", 10, 60, 30, step=5, key="cep_topn")
-        d = df.sort_values("네이버검색량", ascending=False).head(topn).sort_values("네이버검색량")
-        fig = go.Figure(go.Bar(x=d["네이버검색량"], y=d["키워드"], orientation="h",
-                               marker_color=PALETTE["purple"]))
-        fig.update_layout(**base_layout(h=max(420, topn * 16), title="CEP 키워드 검색량 TOP"))
+        st.caption("각 CEP 축 '내부'에서 대표검색량 순으로 1순위~. 이 우선순위가 ④ [CEP]×[카테고리] "
+                   "롱테일 조합의 출발점이 됩니다.")
+        axes = df.groupby("섹션")["대표검색량"].sum().sort_values(ascending=False).index.tolist()
+        ax_sel = st.selectbox("CEP 축 선택", axes, key="cep_axsel")
+        d = df[df["섹션"] == ax_sel].sort_values("순위")
+        dd = d.sort_values("대표검색량")
+        fig = go.Figure(go.Bar(x=dd["대표검색량"], y=dd["키워드"], orientation="h",
+                               marker_color=PALETTE["purple"], text=dd["우선순위"],
+                               textposition="outside"))
+        fig.update_layout(**base_layout(h=max(360, len(d) * 26),
+                                        title=f"{ax_sel} — 대표검색량 순"))
+        fig.update_xaxes(range=[0, max(1, dd["대표검색량"].max()) * 1.18])
         st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(d[["우선순위", "키워드", "대표검색량", "검색량", "네이버검색량"]],
+                     use_container_width=True, hide_index=True,
+                     column_config={c: st.column_config.NumberColumn(c, format="%d")
+                                    for c in ["대표검색량", "검색량", "네이버검색량"]})
+
     with t2:
+        topn = st.slider("상위 N개", 10, 60, 30, step=5, key="cep_topn")
+        d = df.sort_values("대표검색량", ascending=False).head(topn).sort_values("대표검색량")
+        fig = go.Figure(go.Bar(x=d["대표검색량"], y=d["키워드"], orientation="h",
+                               marker_color=PALETTE["purple"],
+                               customdata=d[["섹션"]],
+                               hovertemplate="<b>%{y}</b> · %{customdata[0]}<br>"
+                               "대표검색량 %{x:,}<extra></extra>"))
+        fig.update_layout(**base_layout(h=max(420, topn * 16), title="CEP 키워드 대표검색량 TOP"))
+        st.plotly_chart(fig, use_container_width=True)
+    with t3:
         st.download_button("⬇️ 엑셀(.xlsx)", to_excel(df, "CEP키워드"),
                            "cep_keyword_research.xlsx", XLSX_MIME)
-        st.dataframe(df, use_container_width=True, hide_index=True, height=480)
+        st.dataframe(df, use_container_width=True, hide_index=True, height=480,
+                     column_config={c: st.column_config.NumberColumn(c, format="%d")
+                                    for c in ["대표검색량", "검색량", "네이버검색량"] if c in df})
 
 
 # ══════════════════════════════════════════════════════════════════
