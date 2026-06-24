@@ -41,18 +41,21 @@ jobs:
           fi
           python naver_keyword_data.py --source combo $ARGS
 
-      - name: Rebuild combo CSV (merge Naver)
-        run: python build_combos.py
-
-      - name: Commit and push
+      - name: Rebuild & push (conflict-safe)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/naver_combo_metrics.csv data/combo_candidates.csv
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
+          # 생성물 CSV(combo_candidates.csv)는 main과 충돌나기 쉬우므로 rebase 대신
+          # '최신 main으로 reset → 방금 수집한 네이버 원본만 복원 → 재빌드'로 충돌 원천 차단.
+          cp data/naver_combo_metrics.csv /tmp/naver_combo.csv
+          for attempt in 1 2 3 4; do
+            git fetch origin "${GITHUB_REF_NAME}"
+            git reset --hard "origin/${GITHUB_REF_NAME}"
+            cp /tmp/naver_combo.csv data/naver_combo_metrics.csv
+            python build_combos.py
+            git add data/naver_combo_metrics.csv data/combo_candidates.csv
+            if git diff --cached --quiet; then echo "No changes"; break; fi
             git commit -m "네이버 조합키워드 수집 (④단계) $(date +%Y-%m-%d)"
-            git pull --rebase origin "${GITHUB_REF_NAME}"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-          fi
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then echo "pushed"; break; fi
+            echo "push 실패 — 재시도 $attempt"; sleep 3
+          done
