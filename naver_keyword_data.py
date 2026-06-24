@@ -217,8 +217,9 @@ def trend_label(growth):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="테스트용 상위 N개만")
-    ap.add_argument("--source", choices=["category", "cep"], default="category",
-                    help="category=.semrush_keywords_uniq.json / cep=.cep_keywords.json")
+    ap.add_argument("--source", choices=["category", "cep", "combo"], default="category",
+                    help="category=.semrush_keywords_uniq.json / cep=.cep_keywords.json / "
+                         "combo=data/combo_candidates.csv(조합키워드)")
     args = ap.parse_args()
     load_env()
 
@@ -227,6 +228,13 @@ def main():
         keywords = [k for v in cep.values() for k in v]
         out_name = "naver_cep_metrics.csv"
         next_build = "python build_cep_data.py"
+    elif args.source == "combo":
+        # 조합 후보 CSV의 '조합키워드' 컬럼 (조합점수 순으로 이미 정렬돼 있음)
+        path = os.path.join(ROOT, "data", "combo_candidates.csv")
+        with open(path, encoding="utf-8-sig") as f:
+            keywords = [r["조합키워드"] for r in csv.DictReader(f) if r.get("조합키워드")]
+        out_name = "naver_combo_metrics.csv"
+        next_build = "python build_combos.py"
     else:
         keywords = json.load(open(os.path.join(ROOT, ".semrush_keywords_uniq.json"),
                                   encoding="utf-8"))

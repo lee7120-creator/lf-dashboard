@@ -107,20 +107,48 @@ def main():
                         pass
         return d
 
-    real = _load(".combo_vol.csv", int)
-    kd = _load(".combo_kd.csv", float)
-    out_df["실제검색량"] = out_df["조합키워드"].map(real)        # 미조회=NaN
-    out_df["KD"] = out_df["조합키워드"].map(kd)
-    out_df["검증"] = out_df["조합키워드"].apply(
-        lambda k: "검증됨" if real.get(k, 0) > 0 else ("수요없음" if k in real else "미조회"))
+    real = _load(".combo_vol.csv", int)        # 구글(Semrush) 실제검색량
+    kd = _load(".combo_kd.csv", float)         # 난이도(KD)
 
-    out_df = out_df.sort_values("조합점수", ascending=False).reset_index(drop=True)
+    # 네이버 조합 검색량 — 별도 배치(naver-combo 워크플로)가 생성, 섞지 않고 별도 컬럼
+    naver = {}
+    np_ = os.path.join(ROOT, "data", "naver_combo_metrics.csv")
+    if os.path.exists(np_):
+        for r in csv.DictReader(open(np_, encoding="utf-8-sig")):
+            try:
+                naver[r["키워드"]] = int(r.get("네이버검색량") or 0)
+            except ValueError:
+                pass
+        print(f"네이버 조합 검색량 병합: {np_} ({len(naver)}개)")
+
+    out_df["실제검색량"] = out_df["조합키워드"].map(real)       # 구글
+    out_df["네이버검색량"] = out_df["조합키워드"].map(naver)     # 네이버
+    out_df["KD"] = out_df["조합키워드"].map(kd)
+    # 대표실제검색량 = 네이버 우선(없으면 구글) — CEP·카테고리와 동일 규칙
+    out_df["대표실제검색량"] = out_df["조합키워드"].map(
+        lambda k: naver[k] if naver.get(k, 0) > 0 else real.get(k))
+
+    def _ver(k):
+        g, n = real.get(k, 0) or 0, naver.get(k, 0) or 0
+        if g > 0 or n > 0:
+            return "검증됨"
+        if k in real or k in naver:
+            return "수요없음"
+        return "미조회"
+    out_df["검증"] = out_df["조합키워드"].apply(_ver)
+
+    # 검증된 건 대표실제검색량 순, 나머지는 조합점수(예측) 순
+    out_df["_rep"] = pd.to_numeric(out_df["대표실제검색량"], errors="coerce").fillna(-1)
+    out_df = out_df.sort_values(["_rep", "조합점수"], ascending=False).drop(columns="_rep")
+    out_df = out_df.reset_index(drop=True)
     out_df["우선순위"] = out_df.index + 1
 
     out = os.path.join(ROOT, "data", "combo_candidates.csv")
     out_df.to_csv(out, index=False, encoding="utf-8-sig")
     nver = int((out_df["검증"] == "검증됨").sum())
-    print(f"조합 후보 {len(out_df):,}개 → {out}  (④검증됨 {nver}개)")
+    ng = int((out_df["실제검색량"].fillna(0) > 0).sum())
+    nn = int((out_df["네이버검색량"].fillna(0) > 0).sum())
+    print(f"조합 후보 {len(out_df):,}개 → {out}  (검증됨 {nver}개 · 구글 {ng} · 네이버 {nn})")
     print(f"CEP축 {len(AXIS_TO_SECTIONS)}개 기준 · 축별 상위 {TOP_CEP} × 섹션별 상위 {TOP_CAT}")
     print("\n=== 조합점수 TOP 15 (④단계 우선 조사 대상) ===")
     for _, r in out_df.head(15).iterrows():
