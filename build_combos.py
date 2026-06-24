@@ -110,8 +110,10 @@ def main():
     real = _load(".combo_vol.csv", int)        # 구글(Semrush) 실제검색량
     kd = _load(".combo_kd.csv", float)         # 난이도(KD)
 
-    # 네이버 조합 검색량 — 별도 배치(naver-combo 워크플로)가 생성, 섞지 않고 별도 컬럼
-    naver = {}
+    # 네이버 조합 검색량 + 경쟁정도 — 별도 배치(naver-combo 워크플로)가 생성
+    #   경쟁정도(높음/중간/낮음)는 네이버 검색광고 API가 함께 주는 KD 대용 지표.
+    #   Semrush KD가 구글 기준이라 한국 시장에선 이쪽이 더 정확하다.
+    naver, naver_comp = {}, {}
     np_ = os.path.join(ROOT, "data", "naver_combo_metrics.csv")
     if os.path.exists(np_):
         for r in csv.DictReader(open(np_, encoding="utf-8-sig")):
@@ -119,10 +121,12 @@ def main():
                 naver[r["키워드"]] = int(r.get("네이버검색량") or 0)
             except ValueError:
                 pass
+            naver_comp[r["키워드"]] = r.get("경쟁정도", "")
         print(f"네이버 조합 검색량 병합: {np_} ({len(naver)}개)")
 
     out_df["실제검색량"] = out_df["조합키워드"].map(real)       # 구글
     out_df["네이버검색량"] = out_df["조합키워드"].map(naver)     # 네이버
+    out_df["네이버경쟁"] = out_df["조합키워드"].map(naver_comp)  # KD 대용(높음/중간/낮음)
     out_df["KD"] = out_df["조합키워드"].map(kd)
     # 대표실제검색량 = 네이버 우선(없으면 구글) — CEP·카테고리와 동일 규칙
     out_df["대표실제검색량"] = out_df["조합키워드"].map(
