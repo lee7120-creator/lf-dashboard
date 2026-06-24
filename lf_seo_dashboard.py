@@ -900,9 +900,14 @@ def render_combo():
                    "'네이버 조합키워드 수집(④단계)' 워크플로 실행 후 반영됩니다.")
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 
-    if df["KD"].notna().sum() == 0:
-        st.warning("난이도(KD)는 Semrush API 유닛 부족으로 미수집 상태입니다. "
-                   "유닛 충전 후 `.combo_kd.csv` 채우면 자동 반영됩니다.")
+    has_comp = "네이버경쟁" in df.columns and \
+        (df["네이버경쟁"].fillna("").astype(str).str.len() > 0).any()
+    if has_comp:
+        st.caption("🎯 난이도는 **네이버 경쟁정도**(높음/중간/낮음)로 봅니다 — 네이버 검색광고 API 제공. "
+                   "한국 시장 기준이라 Semrush KD(구글)보다 정확합니다.")
+    elif df["KD"].notna().sum() == 0:
+        st.warning("난이도 지표 없음 — 네이버 조합 수집(④ 워크플로)을 돌리면 **경쟁정도**가 함께 들어옵니다. "
+                   "(Semrush KD는 구글 기준 + 유닛 필요라, 한국은 네이버 경쟁정도 권장)")
 
     t1, t2 = st.tabs(["✅ ④ 검증된 조합", "🌱 ③ 전체 후보"])
 
@@ -923,10 +928,12 @@ def render_combo():
             fig.update_layout(**base_layout(h=max(420, len(dd) * 18),
                                             title="④ 검증된 조합 — 대표검색량 TOP"))
             st.plotly_chart(fig, use_container_width=True)
+            cols = ["조합키워드", "CEP축", "대표실제검색량", "실제검색량", "네이버검색량"]
+            if "네이버경쟁" in d.columns:
+                cols.append("네이버경쟁")     # KD 대용 (높음/중간/낮음)
+            cols += ["KD", "CEP", "카테고리", "조합점수"]
             st.dataframe(
-                d[["조합키워드", "CEP축", "대표실제검색량", "실제검색량", "네이버검색량",
-                   "KD", "CEP", "카테고리", "조합점수"]],
-                use_container_width=True, hide_index=True, height=420,
+                d[cols], use_container_width=True, hide_index=True, height=420,
                 column_config={c: st.column_config.NumberColumn(c, format="%d")
                                for c in ["대표실제검색량", "실제검색량", "네이버검색량", "조합점수"]})
 
