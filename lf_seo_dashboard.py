@@ -661,14 +661,24 @@ def render_naver():
         if len(cmp):
             cmp["갭(네이버-구글)"] = cmp["네이버검색량"] - cmp["구글검색량"]
             cmp["_size"] = cmp["네이버검색량"].clip(lower=1)
-            fig = px.scatter(cmp, x="구글검색량", y="네이버검색량", color="섹션",
-                             hover_name="키워드", size="_size", size_max=26)
+            # 검색량 분포가 10~수만으로 극단적 → 로그-로그축이라야 점들이 안 뭉친다.
+            # 0(데이터 없음)은 로그축에 못 찍으므로 1로 클립(최좌·최하단에 모임).
+            cmp["구글_p"] = cmp["구글검색량"].clip(lower=1)
+            cmp["네이버_p"] = cmp["네이버검색량"].clip(lower=1)
+            fig = px.scatter(cmp, x="구글_p", y="네이버_p", color="섹션",
+                             hover_name="키워드", size="_size", size_max=26,
+                             log_x=True, log_y=True,
+                             custom_data=["구글검색량", "네이버검색량", "섹션"])
+            fig.update_traces(hovertemplate="<b>%{hovertext}</b> · %{customdata[2]}<br>"
+                              "구글 %{customdata[0]:,} · 네이버 %{customdata[1]:,}<extra></extra>")
             mx = int(max(cmp["구글검색량"].max(), cmp["네이버검색량"].max(), 1))
-            fig.add_trace(go.Scatter(x=[0, mx], y=[0, mx], mode="lines",
+            fig.add_trace(go.Scatter(x=[1, mx], y=[1, mx], mode="lines",
                                      line=dict(dash="dash", color="#94a3b8"),
                                      showlegend=False, hoverinfo="skip"))
             fig.update_layout(**base_layout(h=460, showlegend=True,
-                                            title="구글 vs 네이버 검색량 (점=키워드, 크기=네이버)"))
+                                            title="구글 vs 네이버 검색량 (로그축, 점=키워드)"))
+            fig.update_xaxes(title="구글 검색량 (로그 · 1=데이터 없음)")
+            fig.update_yaxes(title="네이버 검색량 (로그)")
             st.plotly_chart(fig, use_container_width=True)
             st.markdown("##### 네이버 실수요가 구글보다 큰 키워드 TOP")
             gap = cmp.sort_values("갭(네이버-구글)", ascending=False)
