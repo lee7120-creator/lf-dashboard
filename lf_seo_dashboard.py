@@ -882,14 +882,22 @@ def render_combo():
     if "검증" not in df.columns:
         df["검증"] = "미조회"
     df["실제검색량"] = pd.to_numeric(df.get("실제검색량"), errors="coerce")
+    df["네이버검색량"] = pd.to_numeric(df.get("네이버검색량"), errors="coerce")
     df["KD"] = pd.to_numeric(df.get("KD"), errors="coerce")
+    df["대표실제검색량"] = pd.to_numeric(df.get("대표실제검색량"), errors="coerce")
+    df["대표실제검색량"] = df["대표실제검색량"].fillna(df["실제검색량"])
     verified = df[df["검증"] == "검증됨"]
+    naver_done = df["네이버검색량"].fillna(0).gt(0).any()
 
     k = st.columns(4)
     k[0].metric("조합 후보", f"{len(df):,}개")
     k[1].metric("④ 검증됨", f"{len(verified):,}개", "실제 수요 확인")
-    k[2].metric("검증 실제검색량 합", f"{int(verified['실제검색량'].sum()):,}")
+    k[2].metric("검증 대표검색량 합", f"{int(verified['대표실제검색량'].sum()):,}",
+                "네이버 우선" if naver_done else "구글")
     k[3].metric("CEP축", f"{df['CEP축'].nunique()}개")
+    if not naver_done:
+        st.caption("ℹ️ 현재 검증은 **구글(Semrush)** 기준. 네이버 조합 검색량은 "
+                   "'네이버 조합키워드 수집(④단계)' 워크플로 실행 후 반영됩니다.")
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 
     if df["KD"].notna().sum() == 0:
@@ -902,23 +910,25 @@ def render_combo():
         if len(verified) == 0:
             st.info("아직 검증된 조합이 없습니다.")
         else:
-            d = verified.sort_values("실제검색량", ascending=False)
-            st.caption(f"실제 검색 수요가 확인된 {len(d)}개 — pSEO 페이지 1순위 후보")
+            d = verified.sort_values("대표실제검색량", ascending=False)
+            st.caption(f"실제 검색 수요가 확인된 {len(d)}개 — pSEO 페이지 1순위 후보 "
+                       "(대표검색량 = 네이버 우선)")
             st.download_button("⬇️ 엑셀(.xlsx)", to_excel(d, "검증조합"),
                                "combo_verified.xlsx", XLSX_MIME, key="combo_dl_v")
-            dd = d.head(40).sort_values("실제검색량")
-            fig = go.Figure(go.Bar(x=dd["실제검색량"], y=dd["조합키워드"], orientation="h",
+            dd = d.head(40).sort_values("대표실제검색량")
+            fig = go.Figure(go.Bar(x=dd["대표실제검색량"], y=dd["조합키워드"], orientation="h",
                                    marker_color=PALETTE["green"], customdata=dd[["CEP축"]],
                                    hovertemplate="<b>%{y}</b> · %{customdata[0]}<br>"
-                                   "실제검색량 %{x:,}<extra></extra>"))
+                                   "대표검색량 %{x:,}<extra></extra>"))
             fig.update_layout(**base_layout(h=max(420, len(dd) * 18),
-                                            title="④ 검증된 조합 — 실제검색량 TOP"))
+                                            title="④ 검증된 조합 — 대표검색량 TOP"))
             st.plotly_chart(fig, use_container_width=True)
             st.dataframe(
-                d[["조합키워드", "CEP축", "실제검색량", "KD", "CEP", "카테고리", "조합점수"]],
+                d[["조합키워드", "CEP축", "대표실제검색량", "실제검색량", "네이버검색량",
+                   "KD", "CEP", "카테고리", "조합점수"]],
                 use_container_width=True, hide_index=True, height=420,
                 column_config={c: st.column_config.NumberColumn(c, format="%d")
-                               for c in ["실제검색량", "조합점수"]})
+                               for c in ["대표실제검색량", "실제검색량", "네이버검색량", "조합점수"]})
 
     with t2:
         c1, c2 = st.columns(2)
