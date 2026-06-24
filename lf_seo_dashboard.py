@@ -41,7 +41,7 @@ h1,h2,h3{color:#1e293b}
 
 # ── 공통 ──
 STATUS_COLOR = {"Strong": "#48bb78", "Weak": "#ed8936", "Missing": "#f56565",
-                "공백": "#4f8fff", "미수집": "#cbd5e1"}
+                "공백": "#4f8fff", "미수집": "#9ca3af"}
 PALETTE = {"blue": "#4f8fff", "red": "#f56565", "amber": "#ed8936",
            "green": "#48bb78", "purple": "#9f7aea", "slate": "#64748b"}
 SITE_COLOR = {"LF몰": PALETTE["blue"], "W컨셉": PALETTE["amber"], "한섬": PALETTE["purple"],
@@ -54,7 +54,7 @@ def base_layout(h=320, title="", showlegend=False):
     return dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#475569", size=12), margin=dict(l=10, r=10, t=42, b=10),
                 height=h, showlegend=showlegend,
-                title=dict(text=title, font=dict(color="#94a3b8", size=13)),
+                title=dict(text=title, font=dict(color="#64748b", size=13)),
                 legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1,
                             font=dict(size=11)),
                 xaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
@@ -461,7 +461,7 @@ def render_keyword():
             dd = d.sort_values("순위", ascending=False)
             fig = go.Figure(go.Bar(
                 x=dd["대표검색량"], y=dd["키워드"], orientation="h",
-                marker=dict(color=[STATUS_COLOR.get(s, "#cbd5e1") for s in dd["Status"]]),
+                marker=dict(color=[STATUS_COLOR.get(s, "#9ca3af") for s in dd["Status"]]),
                 text=dd["우선순위"], textposition="outside",
                 customdata=dd[["우선순위", "Status"]],
                 hovertemplate="<b>%{y}</b><br>%{customdata[0]} · 대표검색량 %{x:,} · "
@@ -511,7 +511,7 @@ def render_keyword():
         with c1:
             sc = known["Status"].value_counts()
             fig = go.Figure(go.Bar(x=sc.index, y=sc.values,
-                                   marker_color=[STATUS_COLOR.get(s, "#cbd5e1") for s in sc.index],
+                                   marker_color=[STATUS_COLOR.get(s, "#9ca3af") for s in sc.index],
                                    text=sc.values, textposition="outside"))
             fig.update_layout(**base_layout(h=320, title="Status 분포(순위 확보분)"))
             st.plotly_chart(fig, use_container_width=True)
@@ -582,7 +582,7 @@ def render_keyword():
 # ══════════════════════════════════════════════════════════════════
 NAVER_CSV = "data/naver_keyword_metrics.csv"
 TREND_COLOR = {"급상승": "#e11d48", "상승": "#f97316", "유지": "#94a3b8",
-               "하락": "#3b82f6", "급하락": "#1d4ed8", "": "#cbd5e1"}
+               "하락": "#3b82f6", "급하락": "#1d4ed8", "": "#9ca3af"}
 
 
 def render_naver():
