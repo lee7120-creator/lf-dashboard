@@ -930,8 +930,24 @@ def render_combo():
             d = verified.copy()
             d[sort_key] = pd.to_numeric(d[sort_key], errors="coerce").fillna(0)
             d = d.sort_values(sort_key, ascending=False)
-            st.caption(f"실제 검색 수요가 확인된 {len(d)}개 — **공략점수 = 대표검색량 × 경쟁가중"
-                       "(낮음1.0·중간0.6·높음0.3)** 순. 검색량 크고 경쟁 낮은 황금 키워드가 위로.")
+            # 공략 그룹 3분할 — 기준 설명 + 그룹별 개수 + 필터
+            if "공략그룹" in d.columns and (d["공략그룹"] != "").any():
+                with st.expander("📐 공략 그룹 3분할 기준 — 공략점수 = 대표검색량 × 경쟁가중(낮음1.0·중간0.6·높음0.3)"):
+                    st.markdown(
+                        "| 그룹 | 기준 | 의미 |\n|---|---|---|\n"
+                        "| 🥇 **1군 즉시공략** | 검색량 ≥ 500 & 경쟁 낮음/중간 | 수요 충분 + 경쟁 낮음 = ROI 최고, **최우선 제작** |\n"
+                        "| 🥈 **2군 성장공략** | (검색량 ≥ 500 & 경쟁 높음) 또는 100~500 | 수요 크나 경쟁 세거나 중간 수요. 콘텐츠 보강 시 가치 |\n"
+                        "| 🥉 **3군 롱테일풀** | 검색량 < 100 | 개별 수요는 작으나 다수. 템플릿 대량생성(AirOps) 후보 |")
+                gc = d["공략그룹"].value_counts()
+                m = st.columns(3)
+                m[0].metric("🥇 1군 즉시공략", f"{int(gc.get('1군 즉시공략', 0))}개", "검색량≥500·경쟁↓")
+                m[1].metric("🥈 2군 성장공략", f"{int(gc.get('2군 성장공략', 0))}개", "수요크나 경쟁↑/중간")
+                m[2].metric("🥉 3군 롱테일풀", f"{int(gc.get('3군 롱테일풀', 0))}개", "검색량<100·대량생성")
+                gsel = st.radio("공략 그룹 필터", ["전체", "1군 즉시공략", "2군 성장공략", "3군 롱테일풀"],
+                                horizontal=True, key="combo_grp")
+                if gsel != "전체":
+                    d = d[d["공략그룹"] == gsel]
+            st.caption(f"검색 수요 확인 {len(d)}개 — 공략점수순(검색량 크고 경쟁 낮을수록 위)")
             st.download_button("⬇️ 엑셀(.xlsx)", to_excel(d, "검증조합"),
                                "combo_verified.xlsx", XLSX_MIME, key="combo_dl_v")
             comp_color = {"낮음": PALETTE["green"], "중간": PALETTE["amber"], "높음": PALETTE["red"]}
@@ -947,9 +963,9 @@ def render_combo():
             fig.update_layout(**base_layout(h=max(420, len(dd) * 18),
                               title=f"④ 검증 조합 — {sort_key} TOP (🟢낮음 🟠중간 🔴높음)"))
             st.plotly_chart(fig, use_container_width=True)
-            cols = ["조합키워드", "CEP축", "공략점수", "대표실제검색량", "네이버검색량"]
+            cols = ["공략그룹", "조합키워드", "CEP축", "공략점수", "대표실제검색량", "네이버검색량"]
             if "네이버경쟁" in d.columns:
-                cols.insert(3, "네이버경쟁")
+                cols.insert(4, "네이버경쟁")
             cols += ["실제검색량", "CEP", "카테고리"]
             cols = [c for c in cols if c in d.columns]
             st.dataframe(
