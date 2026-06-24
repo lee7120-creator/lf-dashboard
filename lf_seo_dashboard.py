@@ -152,7 +152,8 @@ def glossary():
 
 | 용어 | 한 줄 뜻 | 자세히 |
 |---|---|---|
-| **검색량 (구글·MSV)** | 한 달 평균 구글 검색 수 | Semrush 한국(kr) 구글 DB · 최근 12개월 평균 월간 검색량. MSV = Monthly Search Volume(월간 검색량) |
+| **대표검색량** | 한국 실수요 대표값 | **네이버 우선**(없으면 구글). 우선순위·정렬의 기준. 구글에 안 잡히는 키워드도 네이버로 반영 |
+| **검색량 (구글·MSV)** | 한 달 평균 구글 검색 수 | Semrush 한국(kr) 구글 DB · 최근 12개월 평균 월간 검색량. MSV = Monthly Search Volume(월간 검색량). ⚠️ 구글의 한국 점유율이 낮아 한글 키워드 상당수가 0(데이터 없음) — 이때 네이버검색량으로 보완 |
 | **네이버검색량** | 한 달 네이버 검색 수 | 네이버 검색광고 API · PC+모바일 합산 월간 검색량. 한국은 네이버 비중이 커서 구글보다 클 때가 많음 |
 | **난이도 (KD)** | 상위노출 경쟁 강도 (0~100) | KD = Keyword Difficulty. 높을수록 검색 1페이지 진입이 어려움 (80↑ 매우 치열, 30↓ 비교적 쉬움) |
 | **섹션** | 키워드를 묶은 카테고리 | 의류·뷰티/향수·신발·가전·리빙/홈 등. 분류 규칙으로 자동 지정 |
@@ -406,6 +407,10 @@ def load_kw():
                     ("섹션", "기타"), ("Status", "미수집")]:
         if col not in df.columns:
             df[col] = dv
+    # 대표검색량 = 네이버 우선(없으면 구글). 구버전 CSV 호환: 없으면 구글검색량으로 대체
+    if "대표검색량" not in df.columns:
+        df["대표검색량"] = df["검색량"]
+    df["대표검색량"] = pd.to_numeric(df["대표검색량"], errors="coerce").fillna(0).astype(int)
     return df
 
 
@@ -416,8 +421,9 @@ def render_keyword():
                 "Semrush 한국(kr) DB 검색량 실측</div>", unsafe_allow_html=True)
     st.write("")
     k = st.columns(5)
-    k[0].metric("카테고리 키워드", f"{len(df):,}개", f"검색량 보유 {int((df['검색량'] > 0).sum())}개")
-    k[1].metric("총 검색량", f"{int(df['검색량'].sum()):,}")
+    k[0].metric("카테고리 키워드", f"{len(df):,}개",
+                f"검색량 보유 {int((df['대표검색량'] > 0).sum())}개")
+    k[1].metric("총 검색량(대표)", f"{int(df['대표검색량'].sum()):,}", "네이버 우선")
     k[2].metric("섹션", f"{df['섹션'].nunique()}개")
     k[3].metric("🔴 Missing", int((df["Status"] == "Missing").sum()), "경쟁사만 보유")
     k[4].metric("🎯 패션 우선순위", int((df["순위"] > 0).sum()), "1순위~ 부여")
@@ -430,9 +436,9 @@ def render_keyword():
     with t1:
         st.markdown("##### 카테고리별 선점 우선순위 (각 카테고리 안에서 1순위 = 최우선)")
         st.caption("패션·뷰티·골프 각 카테고리 '내부'에서 √검색량·난이도·경쟁상태로 1순위부터 부여. "
-                   "카테고리를 선택하면 그 안의 순위가 나옵니다.")
+                   "막대 = 대표검색량(네이버 우선, 없으면 구글). 카테고리를 선택하면 그 안의 순위가 나옵니다.")
         rank_df = df[df["순위"] > 0]
-        cats = rank_df.groupby("섹션")["검색량"].sum().sort_values(ascending=False).index.tolist()
+        cats = rank_df.groupby("섹션")["대표검색량"].sum().sort_values(ascending=False).index.tolist()
         c0, c1 = st.columns([1.5, 1])
         sec_sel = c0.selectbox("카테고리 선택", cats, key="kw_secsel")
         topn = c1.slider("상위 N개", 5, 40, 20, step=5, key="kw_topn")
@@ -441,29 +447,33 @@ def render_keyword():
         with c1a:
             dd = d.sort_values("순위", ascending=False)
             fig = go.Figure(go.Bar(
-                x=dd["검색량"], y=dd["키워드"], orientation="h",
+                x=dd["대표검색량"], y=dd["키워드"], orientation="h",
                 marker=dict(color=[STATUS_COLOR.get(s, "#cbd5e1") for s in dd["Status"]]),
                 text=dd["우선순위"], textposition="outside",
                 customdata=dd[["우선순위", "Status"]],
-                hovertemplate="<b>%{y}</b><br>%{customdata[0]} · 검색량 %{x:,} · "
+                hovertemplate="<b>%{y}</b><br>%{customdata[0]} · 대표검색량 %{x:,} · "
                               "%{customdata[1]}<extra></extra>"))
             fig.update_layout(**base_layout(h=max(380, len(d) * 24),
-                                            title=f"{sec_sel} 카테고리 내 우선순위 (막대=검색량)"))
-            fig.update_xaxes(range=[0, dd["검색량"].max() * 1.18])
+                                            title=f"{sec_sel} 카테고리 내 우선순위 (막대=대표검색량)"))
+            fig.update_xaxes(range=[0, max(1, dd["대표검색량"].max()) * 1.18])
             st.plotly_chart(fig, use_container_width=True)
         with c2a:
-            st.dataframe(d[["우선순위", "키워드", "검색량", "Status"]],
+            st.dataframe(d[["우선순위", "키워드", "대표검색량", "검색량", "네이버검색량", "Status"]],
                          use_container_width=True, hide_index=True, height=max(380, len(d) * 24),
-                         column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d")})
+                         column_config={c: st.column_config.NumberColumn(c, format="%d")
+                                        for c in ["대표검색량", "검색량", "네이버검색량"]})
+        st.caption("대표검색량 = 한국 실수요 대표값(네이버 우선) · 검색량 = 구글(Semrush) · 네이버검색량 = 네이버")
         st.markdown("##### 각 카테고리 1순위 (TOP1 모음)")
-        top1 = rank_df[rank_df["순위"] == 1].sort_values("검색량", ascending=False)
-        st.dataframe(top1[["섹션", "키워드", "검색량", "Status"]],
+        top1 = rank_df[rank_df["순위"] == 1].sort_values("대표검색량", ascending=False)
+        st.dataframe(top1[["섹션", "키워드", "대표검색량", "검색량", "네이버검색량", "Status"]],
                      use_container_width=True, hide_index=True,
-                     column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d")})
+                     column_config={c: st.column_config.NumberColumn(c, format="%d")
+                                    for c in ["대표검색량", "검색량", "네이버검색량"]})
 
     with t2:
         st.markdown("##### 섹션별 검색 수요 & 분포")
-        sec = (df.groupby("섹션").agg(키워드수=("키워드", "count"), 총검색량=("검색량", "sum"))
+        st.caption("총검색량 = 대표검색량(네이버 우선) 합계 — 구글에 안 잡히는 한국 실수요까지 반영")
+        sec = (df.groupby("섹션").agg(키워드수=("키워드", "count"), 총검색량=("대표검색량", "sum"))
                  .reset_index().sort_values("총검색량", ascending=False))
         c1, c2 = st.columns(2)
         with c1:
@@ -471,13 +481,13 @@ def render_keyword():
             fig = go.Figure(go.Bar(x=dd["총검색량"], y=dd["섹션"], orientation="h",
                                    marker_color="#4f8fff",
                                    text=[f"{int(v):,}" for v in dd["총검색량"]], textposition="outside"))
-            fig.update_layout(**base_layout(h=560, title="섹션별 총 검색량"))
+            fig.update_layout(**base_layout(h=560, title="섹션별 총 검색량(대표)"))
             st.plotly_chart(fig, use_container_width=True)
         with c2:
-            fig = px.treemap(df[df["검색량"] > 0], path=[px.Constant("전체"), "섹션", "키워드"],
-                             values="검색량", color="섹션")
+            fig = px.treemap(df[df["대표검색량"] > 0], path=[px.Constant("전체"), "섹션", "키워드"],
+                             values="대표검색량", color="섹션")
             fig.update_traces(marker=dict(line=dict(color="white", width=1)),
-                              hovertemplate="<b>%{label}</b><br>검색량 %{value:,}<extra></extra>")
+                              hovertemplate="<b>%{label}</b><br>대표검색량 %{value:,}<extra></extra>")
             fig.update_layout(margin=dict(l=4, r=4, t=10, b=4), height=560)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -504,30 +514,43 @@ def render_keyword():
         f0, f1, f2, f3 = st.columns([1.3, 1.3, 1, 1])
         fsec = f0.multiselect("섹션", sorted(df["섹션"].unique()), key="kw_fsec")
         fstat = f1.multiselect("Status", list(STATUS_COLOR.keys()), key="kw_fstat")
-        fmsv = f2.slider("최소 검색량", 0, int(df["검색량"].max()), 0, step=1000, key="kw_fmsv")
+        fmsv = f2.slider("최소 대표검색량", 0, int(df["대표검색량"].max()), 0,
+                         step=1000, key="kw_fmsv")
         q = f3.text_input("키워드 검색", "", key="kw_q")
-        fdf = df[df["검색량"] >= fmsv]
+        fdf = df[df["대표검색량"] >= fmsv]
         if fsec:
             fdf = fdf[fdf["섹션"].isin(fsec)]
         if fstat:
             fdf = fdf[fdf["Status"].isin(fstat)]
         if q:
             fdf = fdf[fdf["키워드"].str.contains(q, case=False, na=False)]
-        fdf = fdf.sort_values("검색량", ascending=False)
+        fdf = fdf.sort_values("대표검색량", ascending=False)
         st.markdown(f"**{len(fdf):,}개** 키워드")
         d1, d2 = st.columns(2)
         d1.download_button("⬇️ 엑셀(.xlsx)", to_excel(fdf, "키워드리서치"),
                            "lfmall_keyword_research.xlsx", XLSX_MIME, use_container_width=True)
         d2.download_button("⬇️ CSV", fdf.to_csv(index=False).encode("utf-8-sig"),
                            "lfmall_keyword_research.csv", "text/csv", use_container_width=True)
-        st.dataframe(fdf[["키워드", "섹션", "검색량", "난이도"] + SITES + ["Status", "우선순위"]],
+        st.dataframe(fdf[["키워드", "섹션", "대표검색량", "검색량", "네이버검색량", "난이도"]
+                         + SITES + ["Status", "우선순위"]],
                      use_container_width=True, hide_index=True, height=520,
-                     column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d")})
+                     column_config={c: st.column_config.NumberColumn(c, format="%d")
+                                    for c in ["대표검색량", "검색량", "네이버검색량"]})
+        st.caption("대표검색량 = 네이버 우선 실수요 · 검색량 = 구글(Semrush) · 네이버검색량 = 네이버. "
+                   "구글이 0이어도 네이버 수요가 크면 대표검색량에 반영됩니다.")
 
     with t5:
+        st.markdown("##### ❓ 왜 '검색량(구글)'이 0인 키워드가 많나요?")
+        st.markdown(
+            "<div class='card'>Semrush는 <b>구글 기준</b>인데 한국은 구글 점유율이 낮고 "
+            "한글 키워드 DB 커버리지가 약합니다. 그래서 <b>크로스백·골프공·헤어드라이기</b>처럼 "
+            "실제 수요가 큰 키워드도 구글 검색량이 0(데이터 없음)으로 나옵니다.<br>"
+            "→ 그래서 <b>네이버 검색광고 API</b>를 붙였고, <b>대표검색량(네이버 우선)</b>으로 "
+            "우선순위를 매깁니다. 전체 1,268개 중 <b>약 1,262개</b>가 대표검색량을 보유합니다.</div>",
+            unsafe_allow_html=True)
         st.markdown("##### 📅 기간 기준")
-        st.markdown("<div class='card'>검색량 = Semrush 한국(kr) DB, <b>2026-06-22 스냅샷</b>, "
-                    "<b>최근 12개월 평균 월간 검색량</b>(단월 아님). 계절 키워드(패딩·수영복)는 "
+        st.markdown("<div class='card'>검색량 = Semrush 한국(kr) DB <b>최근 12개월 평균 월간</b>, "
+                    "네이버검색량 = 네이버 검색광고 API <b>최근 1개월</b>. 계절 키워드(패딩·수영복)는 "
                     "성수기 단월이 연평균보다 큼.</div>", unsafe_allow_html=True)
         st.markdown("##### 🧮 연산 기준")
         st.markdown(
