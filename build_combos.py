@@ -62,11 +62,11 @@ def main():
     for axis, sections in AXIS_TO_SECTIONS.items():
         top_cep = (cep[(cep["섹션"] == axis) & (cep["대표검색량"] > 0)]
                    .nlargest(TOP_CEP, "대표검색량"))
-        # 매핑 섹션의 상위 카테고리 키워드 풀
-        cat_pool = (cat[(cat["섹션"].isin(sections)) & (cat["대표검색량"] > 0)]
-                    .sort_values("대표검색량", ascending=False))
-        cat_top = (cat_pool.groupby("섹션", group_keys=False)
-                   .apply(lambda g: g.nlargest(TOP_CAT, "대표검색량")))
+        # 매핑 섹션의 상위 카테고리 키워드 풀 (섹션별 상위 N)
+        cat_pool = cat[(cat["섹션"].isin(sections)) & (cat["대표검색량"] > 0)]
+        cat_top = pd.concat(
+            [g.nlargest(TOP_CAT, "대표검색량") for _, g in cat_pool.groupby("섹션")]
+        ) if len(cat_pool) else cat_pool
         for _, c in top_cep.iterrows():
             core = cep_core(c["키워드"])
             for _, k in cat_top.iterrows():
