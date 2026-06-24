@@ -864,13 +864,63 @@ def render_cep():
                                     for c in ["대표검색량", "검색량", "네이버검색량"] if c in df})
 
 
+COMBO_CSV = "data/combo_candidates.csv"
+
+
+def render_combo():
+    st.subheader("🔗 [CEP]×[카테고리] 조합 후보 — ③단계")
+    st.caption("CEP(상황·맥락)와 카테고리(상품)를 곱한 롱테일 키워드 후보. "
+               "고검색량 쌍을 넓게 뽑은 **씨앗 목록**으로, ④단계에서 실제 검색량·난이도(KD)를 "
+               "조회해 검증한다. (의미 약한 조합은 ④에서 검색량 0으로 자연 탈락)")
+
+    if not os.path.exists(COMBO_CSV):
+        st.info("아직 조합 후보가 없습니다. `python build_combos.py` 실행 후 표시됩니다.")
+        return
+
+    df = pd.read_csv(COMBO_CSV, encoding="utf-8-sig")
+    for c in ["CEP검색량", "카테고리검색량", "조합점수", "우선순위"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+
+    k = st.columns(4)
+    k[0].metric("조합 후보", f"{len(df):,}개")
+    k[1].metric("CEP축", f"{df['CEP축'].nunique()}개")
+    k[2].metric("연결 섹션", f"{df['섹션'].nunique()}개")
+    k[3].metric("최고 조합점수", f"{int(df['조합점수'].max()):,}")
+    st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    axes = ["전체"] + sorted(df["CEP축"].unique())
+    ax = c1.selectbox("CEP축", axes, key="combo_ax")
+    secs = ["전체"] + sorted(df["섹션"].unique())
+    sec = c2.selectbox("카테고리 섹션", secs, key="combo_sec")
+    d = df
+    if ax != "전체":
+        d = d[d["CEP축"] == ax]
+    if sec != "전체":
+        d = d[d["섹션"] == sec]
+    d = d.sort_values("조합점수", ascending=False)
+
+    st.caption(f"필터 결과 {len(d):,}개 · 조합점수 = √(CEP검색량)×√(카테고리검색량)")
+    st.download_button("⬇️ 엑셀(.xlsx)", to_excel(d, "조합후보"),
+                       "combo_candidates.xlsx", XLSX_MIME)
+    st.dataframe(
+        d[["우선순위", "조합키워드", "CEP", "CEP축", "CEP검색량",
+           "카테고리", "섹션", "카테고리검색량", "조합점수"]].head(300),
+        use_container_width=True, hide_index=True, height=520,
+        column_config={c: st.column_config.NumberColumn(c, format="%d")
+                       for c in ["CEP검색량", "카테고리검색량", "조합점수", "우선순위"]})
+    st.info("**다음 ④단계**: 상위 조합 키워드를 Semrush·네이버로 실제 검색량 조회 + 난이도(KD) 부착 "
+            "→ 검색량 높고 KD 낮은 조합을 pSEO 페이지 우선순위로 확정.")
+
+
 # ══════════════════════════════════════════════════════════════════
 # 라우팅
 # ══════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### 🧭 LF몰 SEO 대시보드")
     view = st.radio("보기 선택",
-                    ["🥊 경쟁사 분석", "🔎 키워드 리서치", "🛒 네이버 쇼핑", "🎯 CEP 키워드"])
+                    ["🥊 경쟁사 분석", "🔎 키워드 리서치", "🛒 네이버 쇼핑",
+                     "🎯 CEP 키워드", "🔗 조합·롱테일"])
     st.markdown("---")
     st.caption("Semrush 한국(kr) DB + 네이버 검색광고/데이터랩. "
                "데이터는 추정치로 실제와 차이가 있을 수 있습니다.")
@@ -881,5 +931,7 @@ elif view.startswith("🔎"):
     render_keyword()
 elif view.startswith("🛒"):
     render_naver()
-else:
+elif view.startswith("🎯"):
     render_cep()
+else:
+    render_combo()
