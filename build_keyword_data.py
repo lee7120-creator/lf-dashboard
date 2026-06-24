@@ -270,8 +270,9 @@ def main():
             sf = 0.5
         sec = section_of(kw)
         rows.append({
-            "키워드": kw, "검색량": msv, "네이버검색량": nv, "추이": ntrend,
-            "난이도": kd, "섹션": sec,
+            "키워드": kw, "검색량": msv, "네이버검색량": nv,
+            "대표검색량": score_vol,   # 네이버 우선(없으면 구글) — 한국 실수요 대표값
+            "추이": ntrend, "난이도": kd, "섹션": sec,
             "패션": "Y" if sec in FASHION_SECTIONS else "N",
             "LF몰": lf, "W컨셉": wc, "한섬": th, "SSF샵": ssf, "SI빌리지": si,
             "Status": status, "_score": (score_vol ** 0.5) * diff * sf,
@@ -295,7 +296,7 @@ def main():
 
     os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
     out = os.path.join(ROOT, "data", "lfmall_keyword_research.csv")
-    cols = ["키워드", "검색량", "네이버검색량", "추이", "난이도", "섹션", "패션",
+    cols = ["키워드", "검색량", "네이버검색량", "대표검색량", "추이", "난이도", "섹션", "패션",
             "LF몰", "W컨셉", "한섬", "SSF샵", "SI빌리지", "Status", "순위", "우선순위"]
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
