@@ -2,8 +2,9 @@
 
 사이드바에서 3개 뷰 전환:
   1) 경쟁사 분석   — LF몰 vs W컨셉·한섬·SSF샵·SI빌리지 (패션 62개, Semrush)
-  2) 키워드 리서치 — 전체 카테고리 919개 (Semrush 검색량) + 엑셀 다운로드
-  3) 네이버 쇼핑   — 네이버 검색광고/데이터랩 지표 (키 입력 후 활성)
+  2) 키워드 리서치 — 전체 카테고리 키워드 (Semrush 검색량) + 엑셀 다운로드
+  3) 네이버 쇼핑   — 네이버 검색광고/데이터랩 지표 (구글 vs 네이버 비교)
+  4) CEP 키워드    — 카테고리 진입점(상황·맥락) 수요조사 (pSEO 설계용)
 
 데이터:
   data/lfmall_keyword_research.csv     (키워드 리서치)
@@ -143,12 +144,46 @@ def comp_df():
     return df
 
 
+def glossary():
+    """모든 뷰 상단에 펼쳐보는 용어 사전. 처음 보는 사람도 이해하도록 상세 설명."""
+    with st.expander("📖 용어 설명 — 처음이세요? Status·검색량·우선순위·CEP 뜻풀이 (클릭해서 펼치기)"):
+        st.markdown("""
+**📊 기본 지표**
+
+| 용어 | 한 줄 뜻 | 자세히 |
+|---|---|---|
+| **검색량 (구글·MSV)** | 한 달 평균 구글 검색 수 | Semrush 한국(kr) 구글 DB · 최근 12개월 평균 월간 검색량. MSV = Monthly Search Volume(월간 검색량) |
+| **네이버검색량** | 한 달 네이버 검색 수 | 네이버 검색광고 API · PC+모바일 합산 월간 검색량. 한국은 네이버 비중이 커서 구글보다 클 때가 많음 |
+| **난이도 (KD)** | 상위노출 경쟁 강도 (0~100) | KD = Keyword Difficulty. 높을수록 검색 1페이지 진입이 어려움 (80↑ 매우 치열, 30↓ 비교적 쉬움) |
+| **섹션** | 키워드를 묶은 카테고리 | 의류·뷰티/향수·신발·가전·리빙/홈 등. 분류 규칙으로 자동 지정 |
+| **패션 (Y/N)** | 우선순위 부여 대상인지 | 패션·뷰티·골프 등 핵심 섹션만 Y → 순위를 매기는 대상 |
+| **우선순위 (N순위)** | 섹션 안에서의 공략 순서 | 각 카테고리 '내부'에서 1순위 = 가장 먼저 공략할 키워드 |
+| **추이** | 최근 검색 흐름 | 네이버 데이터랩 12개월 기준: 급상승 > 상승 > 유지 > 하락 > 급하락 |
+| **갭 (네이버−구글)** | 두 검색량의 차이 | 양수가 클수록 한국에서 네이버 실수요가 구글보다 큼 → 네이버 SEO·쇼핑 우선 투자 |
+| **CEP** | 카테고리 진입점 | Category Entry Points. "결혼식 하객룩"처럼 상황·맥락으로 카테고리를 떠올리는 검색 |
+| **pSEO** | 대량 SEO 페이지 | Programmatic SEO. [CEP]×[카테고리] 조합으로 템플릿 페이지를 대량 자동 생성 |
+
+**🚦 Status (상태) — LF몰이 4대 경쟁사(W컨셉·한섬·SSF샵·SI빌리지) 대비 검색 순위 어디에 있나**
+
+| 값 | 의미 | 무엇을 해야 하나 |
+|---|---|---|
+| 🟢 **Strong (강점)** | LF몰 순위가 경쟁사보다 높음 | 현 순위 유지·방어 |
+| 🟠 **Weak (약점)** | LF몰도 있지만 경쟁사보다 낮음 | 콘텐츠 보강해 순위 끌어올리기 |
+| 🔴 **Missing (공략기회)** | 경쟁사는 있는데 LF몰만 없음 | **최우선 선점 대상** — 경쟁사가 이미 먹고 있는 검색어 |
+| ⚪ **공백 (화이트스페이스)** | 5사 모두 순위 없음 | 무주공산 — 먼저 만들면 독점 가능 |
+| ◽ **미수집** | 아직 5사 SERP 순위를 조사하지 않음 | 추가 수집 필요 (현재 비패션 카테고리 대부분이 여기) |
+
+> *SERP = Search Engine Result Page(검색 결과 페이지). 순위 1~100, 0 또는 빈값은 해당 사이트가 그 키워드로 노출되지 않음을 뜻합니다.*
+""")
+
+
 def render_competitor():
     df = comp_df()
     st.markdown("## 🥊 경쟁사 분석 — LF몰 vs W컨셉·한섬·SSF샵·SI빌리지")
     st.markdown("<div class='cap'>패션 카테고리 키워드 62개 · Semrush 한국(kr) DB · "
                 "순위 1~100(0=없음) · Status는 LF몰 기준</div>", unsafe_allow_html=True)
     st.write("")
+    glossary()
     n_missing = int((df["Status"] == "Missing").sum())
     prime = df[(df["Status"] == "Missing") & (df["KD"] <= 25) & (df["MSV"] >= 10000)]
     k = st.columns(5)
@@ -363,7 +398,7 @@ def render_competitor():
 
 
 # ══════════════════════════════════════════════════════════════════
-# VIEW 2 — 키워드 리서치 (919개)
+# VIEW 2 — 키워드 리서치 (전체 카테고리)
 # ══════════════════════════════════════════════════════════════════
 def load_kw():
     df = pd.read_csv("data/lfmall_keyword_research.csv", encoding="utf-8-sig")
@@ -376,7 +411,7 @@ def load_kw():
 
 def render_keyword():
     df = load_kw()
-    st.markdown("## 🔎 키워드 리서치 — 전체 카테고리 919개")
+    st.markdown(f"## 🔎 키워드 리서치 — 전체 카테고리 {len(df):,}개")
     st.markdown("<div class='cap'>대상 lfmall.co.kr · 경쟁사 W컨셉·한섬·SSF샵·SI빌리지 · "
                 "Semrush 한국(kr) DB 검색량 실측</div>", unsafe_allow_html=True)
     st.write("")
@@ -387,6 +422,7 @@ def render_keyword():
     k[3].metric("🔴 Missing", int((df["Status"] == "Missing").sum()), "경쟁사만 보유")
     k[4].metric("🎯 패션 우선순위", int((df["순위"] > 0).sum()), "1순위~ 부여")
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
+    glossary()
 
     t1, t2, t3, t4, t5 = st.tabs(
         ["🚀 우선순위", "🗂️ 섹션 분석", "🎯 경쟁사 Status", "📋 전체 데이터(엑셀)", "📖 가이드"])
@@ -461,7 +497,7 @@ def render_keyword():
                 ["키워드", "섹션", "검색량", "난이도"] + SITES + ["Status"]],
                 use_container_width=True, hide_index=True, height=320,
                 column_config={"검색량": st.column_config.NumberColumn("검색량", format="%d")})
-        st.info("비패션 카테고리의 경쟁사 순위는 미수집 상태입니다. 전체 919개 5사 SERP는 추가 수집 필요.")
+        st.info(f"비패션 카테고리의 경쟁사 순위는 미수집 상태입니다. 전체 {len(df):,}개 5사 SERP는 추가 수집 필요.")
 
     with t4:
         st.markdown("##### 전체 키워드 리서치 데이터 (필터 + 다운로드)")
@@ -519,6 +555,7 @@ def render_naver():
                 "Semrush(구글) 검색량·카테고리(섹션)와 한 화면에 합쳐 비교. "
                 "구글로는 안 잡히는 한국 실수요를 보정합니다.</div>", unsafe_allow_html=True)
     st.write("")
+    glossary()
 
     if not os.path.exists(NAVER_CSV):
         st.warning("아직 네이버 데이터가 없습니다. 아래 절차로 키를 넣고 수집하면 이 탭이 활성화됩니다.")
@@ -534,7 +571,7 @@ def render_naver():
         return
 
     nv = pd.read_csv(NAVER_CSV, encoding="utf-8-sig")
-    # 키워드 리서치(919개)에서 섹션 + 구글검색량 + Status 병합 → 카테고리화 & 구글/네이버 비교
+    # 키워드 리서치 전체에서 섹션 + 구글검색량 + Status 병합 → 카테고리화 & 구글/네이버 비교
     kw = load_kw()[["키워드", "섹션", "검색량", "패션", "Status"]].rename(
         columns={"검색량": "구글검색량"})
     nv = nv.merge(kw, on="키워드", how="left")
@@ -685,11 +722,79 @@ def render_naver():
 
 
 # ══════════════════════════════════════════════════════════════════
+# VIEW 4 — CEP 키워드 (카테고리 진입점)
+# ══════════════════════════════════════════════════════════════════
+CEP_CSV = "data/cep_keyword_research.csv"
+
+
+def render_cep():
+    st.markdown("## 🎯 CEP 키워드 — 카테고리 진입점(상황·맥락) 수요조사")
+    st.markdown("<div class='cap'>CEP(Category Entry Points) = 소비자가 특정 상황·니즈에서 "
+                "카테고리를 떠올리는 검색 맥락(예: 결혼식 하객룩, 캠핑 옷, 여름 휴가룩). "
+                "카테고리 키워드와 조합해 롱테일 pSEO 페이지를 설계합니다.</div>",
+                unsafe_allow_html=True)
+    st.write("")
+
+    st.markdown(
+        "<div class='card'><b>📍 pSEO 키워드 전략 로드맵</b><br>"
+        "① 카테고리 키워드 수요조사 — <b>✅ 완료</b> (키워드 리서치 탭)<br>"
+        "② <b>CEP 키워드 수요조사</b> ← 현재 단계<br>"
+        "③ ①·② 고검색량 키워드 중심 조합<br>"
+        "④ [CEP] × [카테고리] 롱테일 키워드 수요조사<br>"
+        "⑤ ④ 우선순위로 pSEO 페이지 제작</div>",
+        unsafe_allow_html=True)
+    glossary()
+
+    if not os.path.exists(CEP_CSV):
+        st.warning("아직 CEP 키워드 데이터가 없습니다. CEP 키워드 목록을 정하면 "
+                   "카테고리 키워드와 동일한 방식(Semrush+네이버)으로 수요조사를 채웁니다.")
+        st.markdown(
+            "<div class='card'><b>CEP 키워드 예시 (상황·맥락 트리거)</b><br>"
+            "· 시즌/이벤트: 여름 휴가룩, 가을 코디, 결혼식 하객룩, 졸업식 정장<br>"
+            "· 활동/TPO: 캠핑 옷, 등산 복장, 출근룩, 골프웨어, 홈트레이닝복<br>"
+            "· 대상/관계: 엄마 선물, 남자친구 선물, 신생아 준비물<br>"
+            "· 니즈/속성: 키 커보이는 코디, 여름 시원한 이불, 미니멀 인테리어</div>",
+            unsafe_allow_html=True)
+        st.info("CEP 키워드 리스트를 주시면 `.cep_keywords.json` 으로 넣고 "
+                "Semrush·네이버 수집 → 이 탭에 자동 표시되게 만들겠습니다.")
+        return
+
+    df = pd.read_csv(CEP_CSV, encoding="utf-8-sig")
+    for col, dv in [("순위", 0), ("우선순위", ""), ("섹션", "기타"),
+                    ("Status", "미수집"), ("네이버검색량", 0), ("검색량", 0)]:
+        if col not in df.columns:
+            df[col] = dv
+    df["검색량"] = pd.to_numeric(df["검색량"], errors="coerce").fillna(0).astype(int)
+    df["네이버검색량"] = pd.to_numeric(df["네이버검색량"], errors="coerce").fillna(0).astype(int)
+
+    k = st.columns(4)
+    k[0].metric("CEP 키워드", f"{len(df):,}개")
+    k[1].metric("구글 검색량 합", f"{int(df['검색량'].sum()):,}")
+    k[2].metric("네이버 검색량 합", f"{int(df['네이버검색량'].sum()):,}")
+    k[3].metric("섹션", f"{df['섹션'].nunique()}개")
+    st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
+
+    t1, t2 = st.tabs(["📈 검색량 TOP", "📋 전체(엑셀)"])
+    with t1:
+        topn = st.slider("상위 N개", 10, 60, 30, step=5, key="cep_topn")
+        d = df.sort_values("네이버검색량", ascending=False).head(topn).sort_values("네이버검색량")
+        fig = go.Figure(go.Bar(x=d["네이버검색량"], y=d["키워드"], orientation="h",
+                               marker_color=PALETTE["purple"]))
+        fig.update_layout(**base_layout(h=max(420, topn * 16), title="CEP 키워드 검색량 TOP"))
+        st.plotly_chart(fig, use_container_width=True)
+    with t2:
+        st.download_button("⬇️ 엑셀(.xlsx)", to_excel(df, "CEP키워드"),
+                           "cep_keyword_research.xlsx", XLSX_MIME)
+        st.dataframe(df, use_container_width=True, hide_index=True, height=480)
+
+
+# ══════════════════════════════════════════════════════════════════
 # 라우팅
 # ══════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### 🧭 LF몰 SEO 대시보드")
-    view = st.radio("보기 선택", ["🥊 경쟁사 분석", "🔎 키워드 리서치", "🛒 네이버 쇼핑"])
+    view = st.radio("보기 선택",
+                    ["🥊 경쟁사 분석", "🔎 키워드 리서치", "🛒 네이버 쇼핑", "🎯 CEP 키워드"])
     st.markdown("---")
     st.caption("Semrush 한국(kr) DB + 네이버 검색광고/데이터랩. "
                "데이터는 추정치로 실제와 차이가 있을 수 있습니다.")
@@ -698,5 +803,7 @@ if view.startswith("🥊"):
     render_competitor()
 elif view.startswith("🔎"):
     render_keyword()
-else:
+elif view.startswith("🛒"):
     render_naver()
+else:
+    render_cep()
