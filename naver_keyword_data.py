@@ -217,14 +217,24 @@ def trend_label(growth):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="테스트용 상위 N개만")
+    ap.add_argument("--source", choices=["category", "cep"], default="category",
+                    help="category=.semrush_keywords_uniq.json / cep=.cep_keywords.json")
     args = ap.parse_args()
     load_env()
 
-    uniq_path = os.path.join(ROOT, ".semrush_keywords_uniq.json")
-    keywords = json.load(open(uniq_path, encoding="utf-8"))
+    if args.source == "cep":
+        cep = json.load(open(os.path.join(ROOT, ".cep_keywords.json"), encoding="utf-8"))
+        keywords = [k for v in cep.values() for k in v]
+        out_name = "naver_cep_metrics.csv"
+        next_build = "python build_cep_data.py"
+    else:
+        keywords = json.load(open(os.path.join(ROOT, ".semrush_keywords_uniq.json"),
+                                  encoding="utf-8"))
+        out_name = "naver_keyword_metrics.csv"
+        next_build = "python build_keyword_data.py"
     if args.limit:
         keywords = keywords[:args.limit]
-    print(f"대상 키워드 {len(keywords)}개")
+    print(f"[{args.source}] 대상 키워드 {len(keywords)}개")
 
     have_ad = all(os.environ.get(k) for k in
                   ("NAVER_AD_API_KEY", "NAVER_AD_SECRET", "NAVER_AD_CUSTOMER_ID"))
@@ -244,7 +254,7 @@ def main():
         print("② 데이터랩 키 없음 → 추이 생략(검색량만 수집)")
 
     os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
-    out = os.path.join(ROOT, "data", "naver_keyword_metrics.csv")
+    out = os.path.join(ROOT, "data", out_name)
     cols = ["키워드", "네이버검색량", "PC", "모바일", "경쟁정도", "추이지수", "추이", "월별추이"]
     n_hit = 0
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
@@ -267,7 +277,7 @@ def main():
                 "월별추이": "|".join(str(x) for x in series),   # 12개월 상대지수
             })
     print(f"완료 → {out}  (검색량 매칭 {n_hit}/{len(keywords)})")
-    print("다음: python build_keyword_data.py  (네이버 데이터 자동 병합)")
+    print(f"다음: {next_build}  (네이버 데이터 자동 병합)")
 
 
 if __name__ == "__main__":
