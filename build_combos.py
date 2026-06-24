@@ -93,12 +93,34 @@ def main():
                 })
 
     out_df = pd.DataFrame(rows).drop_duplicates("조합키워드")
+
+    # ④단계 실제 조회분 병합 (.combo_vol.csv: 키워드;검색량 / .combo_kd.csv: 키워드;KD)
+    def _load(path, conv):
+        d = {}
+        p = os.path.join(ROOT, path)
+        if os.path.exists(p):
+            for r in csv.reader(open(p, encoding="utf-8"), delimiter=";"):
+                if len(r) >= 2 and r[0] not in ("키워드", "Keyword"):
+                    try:
+                        d[r[0]] = conv(r[1])
+                    except ValueError:
+                        pass
+        return d
+
+    real = _load(".combo_vol.csv", int)
+    kd = _load(".combo_kd.csv", float)
+    out_df["실제검색량"] = out_df["조합키워드"].map(real)        # 미조회=NaN
+    out_df["KD"] = out_df["조합키워드"].map(kd)
+    out_df["검증"] = out_df["조합키워드"].apply(
+        lambda k: "검증됨" if real.get(k, 0) > 0 else ("수요없음" if k in real else "미조회"))
+
     out_df = out_df.sort_values("조합점수", ascending=False).reset_index(drop=True)
     out_df["우선순위"] = out_df.index + 1
 
     out = os.path.join(ROOT, "data", "combo_candidates.csv")
     out_df.to_csv(out, index=False, encoding="utf-8-sig")
-    print(f"조합 후보 {len(out_df):,}개 → {out}")
+    nver = int((out_df["검증"] == "검증됨").sum())
+    print(f"조합 후보 {len(out_df):,}개 → {out}  (④검증됨 {nver}개)")
     print(f"CEP축 {len(AXIS_TO_SECTIONS)}개 기준 · 축별 상위 {TOP_CEP} × 섹션별 상위 {TOP_CAT}")
     print("\n=== 조합점수 TOP 15 (④단계 우선 조사 대상) ===")
     for _, r in out_df.head(15).iterrows():

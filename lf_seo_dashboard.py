@@ -868,10 +868,9 @@ COMBO_CSV = "data/combo_candidates.csv"
 
 
 def render_combo():
-    st.subheader("🔗 [CEP]×[카테고리] 조합 후보 — ③단계")
-    st.caption("CEP(상황·맥락)와 카테고리(상품)를 곱한 롱테일 키워드 후보. "
-               "고검색량 쌍을 넓게 뽑은 **씨앗 목록**으로, ④단계에서 실제 검색량·난이도(KD)를 "
-               "조회해 검증한다. (의미 약한 조합은 ④에서 검색량 0으로 자연 탈락)")
+    st.subheader("🔗 [CEP]×[카테고리] 조합 — ③·④단계")
+    st.caption("CEP(상황·맥락)×카테고리(상품) 롱테일 후보(③)를 Semrush로 실제 검색량 조회해 검증(④). "
+               "**검증됨** = 실제 검색 수요 확인 → pSEO 페이지 우선순위 대상.")
 
     if not os.path.exists(COMBO_CSV):
         st.info("아직 조합 후보가 없습니다. `python build_combos.py` 실행 후 표시됩니다.")
@@ -880,37 +879,69 @@ def render_combo():
     df = pd.read_csv(COMBO_CSV, encoding="utf-8-sig")
     for c in ["CEP검색량", "카테고리검색량", "조합점수", "우선순위"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+    if "검증" not in df.columns:
+        df["검증"] = "미조회"
+    df["실제검색량"] = pd.to_numeric(df.get("실제검색량"), errors="coerce")
+    df["KD"] = pd.to_numeric(df.get("KD"), errors="coerce")
+    verified = df[df["검증"] == "검증됨"]
 
     k = st.columns(4)
     k[0].metric("조합 후보", f"{len(df):,}개")
-    k[1].metric("CEP축", f"{df['CEP축'].nunique()}개")
-    k[2].metric("연결 섹션", f"{df['섹션'].nunique()}개")
-    k[3].metric("최고 조합점수", f"{int(df['조합점수'].max()):,}")
+    k[1].metric("④ 검증됨", f"{len(verified):,}개", "실제 수요 확인")
+    k[2].metric("검증 실제검색량 합", f"{int(verified['실제검색량'].sum()):,}")
+    k[3].metric("CEP축", f"{df['CEP축'].nunique()}개")
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
 
-    c1, c2 = st.columns(2)
-    axes = ["전체"] + sorted(df["CEP축"].unique())
-    ax = c1.selectbox("CEP축", axes, key="combo_ax")
-    secs = ["전체"] + sorted(df["섹션"].unique())
-    sec = c2.selectbox("카테고리 섹션", secs, key="combo_sec")
-    d = df
-    if ax != "전체":
-        d = d[d["CEP축"] == ax]
-    if sec != "전체":
-        d = d[d["섹션"] == sec]
-    d = d.sort_values("조합점수", ascending=False)
+    if df["KD"].notna().sum() == 0:
+        st.warning("난이도(KD)는 Semrush API 유닛 부족으로 미수집 상태입니다. "
+                   "유닛 충전 후 `.combo_kd.csv` 채우면 자동 반영됩니다.")
 
-    st.caption(f"필터 결과 {len(d):,}개 · 조합점수 = √(CEP검색량)×√(카테고리검색량)")
-    st.download_button("⬇️ 엑셀(.xlsx)", to_excel(d, "조합후보"),
-                       "combo_candidates.xlsx", XLSX_MIME)
-    st.dataframe(
-        d[["우선순위", "조합키워드", "CEP", "CEP축", "CEP검색량",
-           "카테고리", "섹션", "카테고리검색량", "조합점수"]].head(300),
-        use_container_width=True, hide_index=True, height=520,
-        column_config={c: st.column_config.NumberColumn(c, format="%d")
-                       for c in ["CEP검색량", "카테고리검색량", "조합점수", "우선순위"]})
-    st.info("**다음 ④단계**: 상위 조합 키워드를 Semrush·네이버로 실제 검색량 조회 + 난이도(KD) 부착 "
-            "→ 검색량 높고 KD 낮은 조합을 pSEO 페이지 우선순위로 확정.")
+    t1, t2 = st.tabs(["✅ ④ 검증된 조합", "🌱 ③ 전체 후보"])
+
+    with t1:
+        if len(verified) == 0:
+            st.info("아직 검증된 조합이 없습니다.")
+        else:
+            d = verified.sort_values("실제검색량", ascending=False)
+            st.caption(f"실제 검색 수요가 확인된 {len(d)}개 — pSEO 페이지 1순위 후보")
+            st.download_button("⬇️ 엑셀(.xlsx)", to_excel(d, "검증조합"),
+                               "combo_verified.xlsx", XLSX_MIME, key="combo_dl_v")
+            dd = d.head(40).sort_values("실제검색량")
+            fig = go.Figure(go.Bar(x=dd["실제검색량"], y=dd["조합키워드"], orientation="h",
+                                   marker_color=PALETTE["green"], customdata=dd[["CEP축"]],
+                                   hovertemplate="<b>%{y}</b> · %{customdata[0]}<br>"
+                                   "실제검색량 %{x:,}<extra></extra>"))
+            fig.update_layout(**base_layout(h=max(420, len(dd) * 18),
+                                            title="④ 검증된 조합 — 실제검색량 TOP"))
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(
+                d[["조합키워드", "CEP축", "실제검색량", "KD", "CEP", "카테고리", "조합점수"]],
+                use_container_width=True, hide_index=True, height=420,
+                column_config={c: st.column_config.NumberColumn(c, format="%d")
+                               for c in ["실제검색량", "조합점수"]})
+
+    with t2:
+        c1, c2 = st.columns(2)
+        axes = ["전체"] + sorted(df["CEP축"].unique())
+        ax = c1.selectbox("CEP축", axes, key="combo_ax")
+        secs = ["전체"] + sorted(df["섹션"].unique())
+        sec = c2.selectbox("카테고리 섹션", secs, key="combo_sec")
+        d = df
+        if ax != "전체":
+            d = d[d["CEP축"] == ax]
+        if sec != "전체":
+            d = d[d["섹션"] == sec]
+        d = d.sort_values("조합점수", ascending=False)
+        st.caption(f"필터 결과 {len(d):,}개 · 조합점수 = √(CEP검색량)×√(카테고리검색량) (예측 점수)")
+        st.download_button("⬇️ 엑셀(.xlsx)", to_excel(d, "조합후보"),
+                           "combo_candidates.xlsx", XLSX_MIME, key="combo_dl_all")
+        st.dataframe(
+            d[["우선순위", "조합키워드", "검증", "실제검색량", "CEP축",
+               "CEP검색량", "카테고리", "카테고리검색량", "조합점수"]].head(300),
+            use_container_width=True, hide_index=True, height=480,
+            column_config={c: st.column_config.NumberColumn(c, format="%d")
+                           for c in ["실제검색량", "CEP검색량", "카테고리검색량",
+                                     "조합점수", "우선순위"]})
 
 
 # ══════════════════════════════════════════════════════════════════
