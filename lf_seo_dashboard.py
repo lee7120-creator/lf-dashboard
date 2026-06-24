@@ -16,6 +16,7 @@
 
 import io
 import os
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -265,11 +266,13 @@ def render_competitor():
 
     with t3:
         st.markdown("##### 카테고리 클러스터 — 허브·스포크 페이지 아키텍처")
-        st.caption("블록 크기=MSV, 색=Status. 빨간(Missing) 블록이 많은 카테고리 = 선점 여지 큰 클러스터.")
-        fig = px.treemap(df, path=[px.Constant("전체"), "카테고리", "키워드"], values="MSV",
-                         color="Status", color_discrete_map=STATUS_COLOR, custom_data=["KD", SUBJECT])
+        st.caption("블록 면적=MSV(로그스케일), 색=Status. 빨간(Missing) 블록이 많은 카테고리 = 선점 여지 큰 클러스터.")
+        dt = df.copy()
+        dt["_area"] = np.log10(dt["MSV"] + 1)
+        fig = px.treemap(dt, path=[px.Constant("전체"), "카테고리", "키워드"], values="_area",
+                         color="Status", color_discrete_map=STATUS_COLOR, custom_data=["KD", SUBJECT, "MSV"])
         fig.update_traces(marker=dict(line=dict(color="white", width=1)),
-                          hovertemplate="<b>%{label}</b><br>MSV %{value:,}<br>KD %{customdata[0]}<extra></extra>")
+                          hovertemplate="<b>%{label}</b><br>MSV %{customdata[2]:,}<br>KD %{customdata[0]}<extra></extra>")
         fig.update_layout(margin=dict(l=8, r=8, t=10, b=8), height=460)
         st.plotly_chart(fig, use_container_width=True)
         cat = (df.groupby("카테고리").agg(
@@ -497,10 +500,13 @@ def render_keyword():
             fig.update_layout(**base_layout(h=560, title="섹션별 총 검색량(대표)"))
             st.plotly_chart(fig, use_container_width=True)
         with c2:
-            fig = px.treemap(df[df["대표검색량"] > 0], path=[px.Constant("전체"), "섹션", "키워드"],
-                             values="대표검색량", color="섹션")
+            st.caption("블록 면적 = 로그스케일(멱법칙 분포라 면적 그대로면 1개가 화면 독차지) · hover = 실제 검색량")
+            dt = df[df["대표검색량"] > 0].copy()
+            dt["_area"] = np.log10(dt["대표검색량"] + 1)
+            fig = px.treemap(dt, path=[px.Constant("전체"), "섹션", "키워드"],
+                             values="_area", color="섹션", custom_data=["대표검색량"])
             fig.update_traces(marker=dict(line=dict(color="white", width=1)),
-                              hovertemplate="<b>%{label}</b><br>대표검색량 %{value:,}<extra></extra>")
+                              hovertemplate="<b>%{label}</b><br>대표검색량 %{customdata[0]:,.0f}<extra></extra>")
             fig.update_layout(margin=dict(l=4, r=4, t=10, b=4), height=560)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -709,12 +715,16 @@ def render_naver():
             fig.update_layout(barmode="group", legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True)
         with c2:
-            pos = fv[fv["네이버검색량"] > 0]
+            pos = fv[fv["네이버검색량"] > 0].copy()
             if len(pos):
+                # 검색량은 멱법칙 분포(크림 등 1개가 수십배) → 면적 그대로면 한 칸이 화면 독차지.
+                # 면적은 로그스케일로 완만하게, 실제값은 hover로.
+                pos["_area"] = np.log10(pos["네이버검색량"] + 1)
                 fig = px.treemap(pos, path=[px.Constant("전체"), "섹션", "키워드"],
-                                 values="네이버검색량", color="섹션")
-                fig.update_layout(**base_layout(h=520, title="섹션 트리맵 (네이버 검색량)"))
-                fig.update_traces(hovertemplate="<b>%{label}</b><br>네이버 %{value:,}<extra></extra>")
+                                 values="_area", color="섹션", custom_data=["네이버검색량"])
+                fig.update_layout(**base_layout(h=520,
+                                  title="섹션 트리맵 (면적=로그스케일 · hover=실제 네이버검색량)"))
+                fig.update_traces(hovertemplate="<b>%{label}</b><br>네이버 %{customdata[0]:,.0f}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
         st.dataframe(sec, use_container_width=True, hide_index=True,
                      column_config={c: st.column_config.NumberColumn(c, format="%d")
@@ -835,7 +845,7 @@ def render_cep():
     st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
     glossary()
 
-    t1, t2, t3 = st.tabs(["🚀 축별 우선순위", "📈 검색량 TOP", "📋 전체(엑셀)"])
+    t1, t2, t3, t4 = st.tabs(["🚀 축별 우선순위", "📈 검색량 TOP", "🗂️ 섹션 트리맵", "📋 전체(엑셀)"])
 
     with t1:
         st.caption("각 CEP 축 '내부'에서 대표검색량 순으로 1순위~. 이 우선순위가 ④ [CEP]×[카테고리] "
@@ -867,6 +877,19 @@ def render_cep():
         fig.update_layout(**base_layout(h=max(420, topn * 16), title="CEP 키워드 대표검색량 TOP"))
         st.plotly_chart(fig, use_container_width=True)
     with t3:
+        st.caption("CEP축 > 키워드 계층. 블록 면적 = 로그스케일(멱법칙 분포 대응) · hover = 실제 대표검색량")
+        dt = df[df["대표검색량"] > 0].copy()
+        if len(dt):
+            dt["_area"] = np.log10(dt["대표검색량"] + 1)
+            fig = px.treemap(dt, path=[px.Constant("전체"), "섹션", "키워드"],
+                             values="_area", color="섹션", custom_data=["대표검색량"])
+            fig.update_traces(marker=dict(line=dict(color="white", width=1)),
+                              hovertemplate="<b>%{label}</b><br>대표검색량 %{customdata[0]:,.0f}<extra></extra>")
+            fig.update_layout(**base_layout(h=560, title="CEP 섹션 트리맵 (면적=로그스케일)"))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("대표검색량 데이터가 없습니다.")
+    with t4:
         st.download_button("⬇️ 엑셀(.xlsx)", to_excel(df, "CEP키워드"),
                            "cep_keyword_research.xlsx", XLSX_MIME)
         st.dataframe(df, use_container_width=True, hide_index=True, height=480,
