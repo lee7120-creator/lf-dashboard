@@ -915,27 +915,37 @@ def render_combo():
         if len(verified) == 0:
             st.info("아직 검증된 조합이 없습니다.")
         else:
-            d = verified.sort_values("대표실제검색량", ascending=False)
-            st.caption(f"실제 검색 수요가 확인된 {len(d)}개 — pSEO 페이지 1순위 후보 "
-                       "(대표검색량 = 네이버 우선)")
+            has_atk = "공략점수" in verified.columns and verified["공략점수"].notna().any()
+            sort_key = "공략점수" if has_atk else "대표실제검색량"
+            d = verified.copy()
+            d[sort_key] = pd.to_numeric(d[sort_key], errors="coerce").fillna(0)
+            d = d.sort_values(sort_key, ascending=False)
+            st.caption(f"실제 검색 수요가 확인된 {len(d)}개 — **공략점수 = 대표검색량 × 경쟁가중"
+                       "(낮음1.0·중간0.6·높음0.3)** 순. 검색량 크고 경쟁 낮은 황금 키워드가 위로.")
             st.download_button("⬇️ 엑셀(.xlsx)", to_excel(d, "검증조합"),
                                "combo_verified.xlsx", XLSX_MIME, key="combo_dl_v")
-            dd = d.head(40).sort_values("대표실제검색량")
-            fig = go.Figure(go.Bar(x=dd["대표실제검색량"], y=dd["조합키워드"], orientation="h",
-                                   marker_color=PALETTE["green"], customdata=dd[["CEP축"]],
-                                   hovertemplate="<b>%{y}</b> · %{customdata[0]}<br>"
-                                   "대표검색량 %{x:,}<extra></extra>"))
+            comp_color = {"낮음": PALETTE["green"], "중간": PALETTE["amber"], "높음": PALETTE["red"]}
+            dd = d.head(40).sort_values(sort_key)
+            colors = ([comp_color.get(c, PALETTE["slate"]) for c in dd["네이버경쟁"]]
+                      if "네이버경쟁" in dd.columns else PALETTE["green"])
+            fig = go.Figure(go.Bar(
+                x=dd[sort_key], y=dd["조합키워드"], orientation="h", marker_color=colors,
+                customdata=dd[["CEP축", "대표실제검색량", "네이버경쟁"]] if "네이버경쟁" in dd.columns
+                else dd[["CEP축", "대표실제검색량", "CEP축"]],
+                hovertemplate="<b>%{y}</b> · %{customdata[0]}<br>"
+                "검색량 %{customdata[1]:,} · 경쟁 %{customdata[2]}<extra></extra>"))
             fig.update_layout(**base_layout(h=max(420, len(dd) * 18),
-                                            title="④ 검증된 조합 — 대표검색량 TOP"))
+                              title=f"④ 검증 조합 — {sort_key} TOP (🟢낮음 🟠중간 🔴높음)"))
             st.plotly_chart(fig, use_container_width=True)
-            cols = ["조합키워드", "CEP축", "대표실제검색량", "실제검색량", "네이버검색량"]
+            cols = ["조합키워드", "CEP축", "공략점수", "대표실제검색량", "네이버검색량"]
             if "네이버경쟁" in d.columns:
-                cols.append("네이버경쟁")     # KD 대용 (높음/중간/낮음)
-            cols += ["KD", "CEP", "카테고리", "조합점수"]
+                cols.insert(3, "네이버경쟁")
+            cols += ["실제검색량", "CEP", "카테고리"]
+            cols = [c for c in cols if c in d.columns]
             st.dataframe(
                 d[cols], use_container_width=True, hide_index=True, height=420,
                 column_config={c: st.column_config.NumberColumn(c, format="%d")
-                               for c in ["대표실제검색량", "실제검색량", "네이버검색량", "조합점수"]})
+                               for c in ["공략점수", "대표실제검색량", "실제검색량", "네이버검색량"]})
 
     with t2:
         c1, c2 = st.columns(2)

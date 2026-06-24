@@ -141,10 +141,18 @@ def main():
         return "미조회"
     out_df["검증"] = out_df["조합키워드"].apply(_ver)
 
-    # 검증된 건 대표실제검색량 순, 나머지는 조합점수(예측) 순
+    # 공략점수 = 대표검색량 × 경쟁가중 — 검색량 크고 경쟁 낮은 황금 키워드를 위로.
+    #   경쟁(네이버)이 검색량과 비례하므로, 둘을 함께 봐야 진짜 노릴 만한 키워드가 보인다.
+    COMP_W = {"낮음": 1.0, "중간": 0.6, "높음": 0.3}
+    rep = pd.to_numeric(out_df["대표실제검색량"], errors="coerce").fillna(0)
+    w = out_df["네이버경쟁"].map(COMP_W).fillna(0.5)   # 경쟁정보 없으면 중립 0.5
+    out_df["공략점수"] = (rep * w).round().astype(int)
+
+    # 검증된 건 공략점수 순, 나머지는 조합점수(예측) 순
     out_df["_rep"] = pd.to_numeric(out_df["대표실제검색량"], errors="coerce").fillna(-1)
-    out_df = out_df.sort_values(["_rep", "조합점수"], ascending=False).drop(columns="_rep")
-    out_df = out_df.reset_index(drop=True)
+    out_df["_atk"] = out_df["공략점수"].where(out_df["검증"] == "검증됨", -1)
+    out_df = out_df.sort_values(["_atk", "_rep", "조합점수"], ascending=False)
+    out_df = out_df.drop(columns=["_rep", "_atk"]).reset_index(drop=True)
     out_df["우선순위"] = out_df.index + 1
 
     out = os.path.join(ROOT, "data", "combo_candidates.csv")
