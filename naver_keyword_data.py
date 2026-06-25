@@ -229,8 +229,13 @@ def main():
         out_name = "naver_cep_metrics.csv"
         next_build = "python build_cep_data.py"
     elif args.source == "combo":
-        # 조합 후보 CSV의 '조합키워드' 컬럼 (조합점수 순으로 이미 정렬돼 있음)
+        # 조합 후보 CSV의 '조합키워드' 컬럼 (조합점수 순으로 이미 정렬돼 있음).
+        # combo_candidates.csv는 생성물이라 git에 없을 수 있음 → 없으면 즉석 빌드.
         path = os.path.join(ROOT, "data", "combo_candidates.csv")
+        if not os.path.exists(path):
+            print("combo_candidates.csv 없음 → build_combos로 생성")
+            import build_combos
+            build_combos.main()
         with open(path, encoding="utf-8-sig") as f:
             keywords = [r["조합키워드"] for r in csv.DictReader(f) if r.get("조합키워드")]
         out_name = "naver_combo_metrics.csv"
