@@ -900,16 +900,32 @@ def render_cep():
 COMBO_CSV = "data/combo_candidates.csv"
 
 
+@st.cache_data
+def load_combo_df():
+    """combo_candidates.csv는 생성물이라 git에서 제외(충돌 방지). 없으면 런타임 빌드.
+    입력(cep/lfmall/naver_combo/.combo_vol)은 git에 있으므로 앱에서 재생성 가능."""
+    if not os.path.exists(COMBO_CSV):
+        try:
+            import build_combos
+            build_combos.main()
+        except Exception as e:
+            st.warning(f"조합 데이터 생성 실패: {e}")
+            return None
+    if not os.path.exists(COMBO_CSV):
+        return None
+    return pd.read_csv(COMBO_CSV, encoding="utf-8-sig")
+
+
 def render_combo():
     st.subheader("🔗 [CEP]×[카테고리] 조합 — ③·④단계")
     st.caption("CEP(상황·맥락)×카테고리(상품) 롱테일 후보(③)를 Semrush로 실제 검색량 조회해 검증(④). "
                "**검증됨** = 실제 검색 수요 확인 → pSEO 페이지 우선순위 대상.")
 
-    if not os.path.exists(COMBO_CSV):
-        st.info("아직 조합 후보가 없습니다. `python build_combos.py` 실행 후 표시됩니다.")
+    df = load_combo_df()
+    if df is None:
+        st.info("조합 데이터를 생성할 수 없습니다. 입력 CSV(cep/lfmall/naver_combo)를 확인하세요.")
         return
 
-    df = pd.read_csv(COMBO_CSV, encoding="utf-8-sig")
     for c in ["CEP검색량", "카테고리검색량", "조합점수", "우선순위"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
     if "검증" not in df.columns:
