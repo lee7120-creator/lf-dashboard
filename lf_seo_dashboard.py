@@ -901,19 +901,26 @@ COMBO_CSV = "data/combo_candidates.csv"
 
 
 @st.cache_data
-def load_combo_df():
-    """combo_candidates.csv는 생성물이라 git에서 제외(충돌 방지). 없으면 런타임 빌드.
+def load_combo_df(naver_sig):
+    """combo_candidates.csv는 생성물이라 git에서 제외(충돌 방지). 매번 입력으로 재빌드.
+    naver_sig(naver_combo_metrics.csv의 mtime+행수)가 바뀌면 캐시 무효화 → 재생성.
     입력(cep/lfmall/naver_combo/.combo_vol)은 git에 있으므로 앱에서 재생성 가능."""
-    if not os.path.exists(COMBO_CSV):
-        try:
-            import build_combos
-            build_combos.main()
-        except Exception as e:
-            st.warning(f"조합 데이터 생성 실패: {e}")
-            return None
+    try:
+        import build_combos
+        build_combos.main()       # 항상 최신 입력으로 재생성 (네이버 데이터 갱신 반영)
+    except Exception as e:
+        st.warning(f"조합 데이터 생성 실패: {e}")
     if not os.path.exists(COMBO_CSV):
         return None
     return pd.read_csv(COMBO_CSV, encoding="utf-8-sig")
+
+
+def _naver_combo_sig():
+    """네이버 조합 원본의 변경 시그니처(mtime, 행수) — 데이터 갱신 시 캐시 무효화용."""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "naver_combo_metrics.csv")
+    if not os.path.exists(p):
+        return (0, 0)
+    return (os.path.getmtime(p), os.path.getsize(p))
 
 
 def render_combo():
@@ -921,7 +928,7 @@ def render_combo():
     st.caption("CEP(상황·맥락)×카테고리(상품) 롱테일 후보(③)를 Semrush로 실제 검색량 조회해 검증(④). "
                "**검증됨** = 실제 검색 수요 확인 → pSEO 페이지 우선순위 대상.")
 
-    df = load_combo_df()
+    df = load_combo_df(_naver_combo_sig())
     if df is None:
         st.info("조합 데이터를 생성할 수 없습니다. 입력 CSV(cep/lfmall/naver_combo)를 확인하세요.")
         return
