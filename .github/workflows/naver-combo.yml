@@ -41,19 +41,18 @@ jobs:
           fi
           python naver_keyword_data.py --source combo $ARGS
 
-      - name: Rebuild & push (conflict-safe)
+      - name: Commit naver raw data (combo CSV는 앱이 런타임 생성 → 커밋 안 함)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # 생성물 CSV(combo_candidates.csv)는 main과 충돌나기 쉬우므로 rebase 대신
-          # '최신 main으로 reset → 방금 수집한 네이버 원본만 복원 → 재빌드'로 충돌 원천 차단.
+          # 원천 데이터(naver_combo_metrics.csv)만 커밋한다. 생성물 combo_candidates.csv는
+          # git에서 제외(.gitignore)했고 Streamlit 앱이 런타임에 빌드하므로 충돌이 없다.
           cp data/naver_combo_metrics.csv /tmp/naver_combo.csv
           for attempt in 1 2 3 4; do
             git fetch origin "${GITHUB_REF_NAME}"
             git reset --hard "origin/${GITHUB_REF_NAME}"
             cp /tmp/naver_combo.csv data/naver_combo_metrics.csv
-            python build_combos.py
-            git add data/naver_combo_metrics.csv data/combo_candidates.csv
+            git add data/naver_combo_metrics.csv
             if git diff --cached --quiet; then echo "No changes"; break; fi
             git commit -m "네이버 조합키워드 수집 (④단계) $(date +%Y-%m-%d)"
             if git push origin "HEAD:${GITHUB_REF_NAME}"; then echo "pushed"; break; fi
