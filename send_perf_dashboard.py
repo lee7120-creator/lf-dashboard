@@ -1508,6 +1508,41 @@ def main():
     else:
         work = stored
 
+    def _apply_backup(file):
+        """통합 백업(ZIP) 또는 단일 캠페인 백업(CSV)을 복원. 복원 요약 문자열 반환."""
+        name = (getattr(file, "name", "") or "").lower()
+        done = []
+        if name.endswith(".zip"):
+            import zipfile as _zf
+            z = _zf.ZipFile(file)
+            for nm in z.namelist():
+                base = nm.split("/")[-1].lower()
+                if not base.endswith(".csv"):
+                    continue
+                data = io.BytesIO(z.read(nm))
+                if "mtd" in base:
+                    df = pd.read_csv(data, encoding="utf-8-sig")
+                    m = merge_mtd_store(st.session_state.get("mtd_store_df"), df)
+                    storage_save(BK, "mtd", m); st.session_state.mtd_store_df = m
+                    done.append(f"MTD {len(m):,}")
+                elif "promo" in base:
+                    df = pd.read_csv(data, encoding="utf-8-sig", dtype={"promo": str})
+                    m = merge_promo_store(st.session_state.get("promo_store_df"), df)
+                    storage_save(BK, "promo", m); st.session_state.promo_store_df = m
+                    done.append(f"기획전 {len(m):,}")
+                else:
+                    df = pd.read_csv(data, encoding="utf-8-sig", dtype={"date": str, "af": str})
+                    m = merge_store(stored, df)
+                    storage_save(BK, "campaign", m); st.session_state.camp_store = m
+                    done.append(f"캠페인 {len(m):,}")
+        else:
+            df = pd.read_csv(file, encoding="utf-8-sig", dtype={"date": str, "af": str})
+            m = merge_store(stored, df)
+            storage_save(BK, "campaign", m); st.session_state.camp_store = m
+            done.append(f"캠페인 {len(m):,}")
+        st.cache_data.clear()
+        return " · ".join(done) if done else "복원할 데이터가 없어요"
+
     if work is None or len(work) == 0:
         st.title("LF몰 CRM 발송성과 대시보드")
         st.markdown("""
@@ -1518,18 +1553,16 @@ def main():
         · 실제로 발송한 건만 분석해요. 기획만 있고 발송 안 한 건은 빠져요.<br>
         · 한 번 저장하면 다음부터는 <b>새 주차 실적만</b> 올리면 돼요.
         </div>""", unsafe_allow_html=True)
-        st.markdown("##### 💾 누적 백업 CSV로 바로 불러오기")
-        st.caption("이전에 받아둔 ‘누적 백업 CSV’가 있으면 여기 올리세요. 실적·기획 재업로드/머지 없이 바로 대시보드가 뜹니다.")
-        _up = st.file_uploader("백업 CSV 올리기", type=["csv"], key="restore_empty")
+        st.markdown("##### 💾 백업으로 바로 불러오기")
+        st.caption("이전에 받아둔 ‘통합 백업(ZIP)’ 또는 ‘누적 백업(CSV)’을 올리면 재업로드·머지 없이 바로 대시보드가 떠요.")
+        _up = st.file_uploader("백업 올리기 (ZIP/CSV)", type=["zip", "csv"], key="restore_empty")
         if _up is not None:
             _sig = (_up.name, getattr(_up, "size", None))
             if st.session_state.get("_restored_sig") != _sig:
                 try:
-                    d = pd.read_csv(_up, encoding="utf-8-sig", dtype={"date": str, "af": str})
-                    st.session_state.camp_store = merge_store(stored, d)
-                    storage_save(BK, "campaign", st.session_state.camp_store)
+                    summary = _apply_backup(_up)
                     st.session_state["_restored_sig"] = _sig
-                    st.success(f"불러왔어요 ✓ {len(st.session_state.camp_store):,}건")
+                    st.success(f"불러왔어요 ✓ {summary}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"불러오지 못했어요: {e}")
@@ -1753,28 +1786,51 @@ def main():
         st.caption(f"전체 {len(work):,}건 = 저장됨 {_n_saved:,} + 이번 세션 {_n_new:,}")
         if _n_new and not _n_saved:
             st.warning("저장된 데이터가 0건이에요. 「💾 저장하기」를 눌러야 다음에도 유지돼요.")
-        if len(work):
+
+        # ── 통합 백업: 캠페인+MTD+기획전을 한 ZIP 파일로 ──
+        st.markdown("##### 📦 통합 백업 (한 파일)")
+        import zipfile as _zf
+        _zbuf = io.BytesIO()
+        _has_any = False
+        with _zf.ZipFile(_zbuf, "w", _zf.ZIP_DEFLATED) as _z:
+            if len(work):
+                _z.writestr("campaign.csv",
+                    work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"))
+                _has_any = True
+            if mtd_work is not None and len(mtd_work):
+                _z.writestr("mtd.csv",
+                    mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"))
+                _has_any = True
+            if promo_work is not None and len(promo_work):
+                _z.writestr("promo.csv",
+                    promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"))
+                _has_any = True
+        if _has_any:
             st.download_button(
-                f"⬇ 누적 백업 (CSV · {len(work):,}건)",
-                work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
-                file_name="send_perf_store_backup.csv", mime="text/csv", use_container_width=True)
-            st.caption("전체 데이터가 백업에 포함돼요. "
-                       "재배포하면 초기화될 수 있으니 가끔 백업해 주세요. 이 CSV를 다시 올리면 복원돼요.")
-        rest = st.file_uploader("백업 CSV로 복원하기", type=["csv"], key="restore_store",
-                                help="이전에 받아둔 ‘누적 백업 CSV’를 올리면 실적·기획 재업로드/머지 없이 바로 불러옵니다.")
-        if rest is not None:
-            _sig = (rest.name, getattr(rest, "size", None))
+                "⬇ 통합 백업 (전체 ZIP)", _zbuf.getvalue(),
+                file_name="lf_dashboard_backup.zip", mime="application/zip",
+                use_container_width=True, key="bak_all")
+            st.caption("캠페인·MTD·기획전을 한 파일로 백업해요. 이 ZIP을 아래에 올리면 한 번에 복원돼요.")
+        _rest_all = st.file_uploader("통합 백업 복원하기 (ZIP/CSV)", type=["zip", "csv"], key="restore_all",
+                                     help="통합 백업(ZIP) 또는 예전 캠페인 백업(CSV) 모두 올릴 수 있어요.")
+        if _rest_all is not None:
+            _sig = (_rest_all.name, getattr(_rest_all, "size", None))
             if st.session_state.get("_restored_sig") != _sig:
                 try:
-                    d = pd.read_csv(rest, encoding="utf-8-sig", dtype={"date": str, "af": str})
-                    merged_restore = merge_store(stored, d)
-                    storage_save(BK, "campaign", merged_restore)
-                    st.session_state.camp_store = merged_restore
+                    summary = _apply_backup(_rest_all)
                     st.session_state["_restored_sig"] = _sig
-                    st.success(f"복원 완료 ✓ {len(merged_restore):,}건 — 바로 표시합니다.")
+                    st.success(f"복원 완료 ✓ {summary} — 바로 표시합니다.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"복원하지 못했어요: {e}")
+
+        st.markdown("---")
+        st.markdown("##### 개별 백업 (선택)")
+        if len(work):
+            st.download_button(
+                f"⬇ 캠페인 백업 (CSV · {len(work):,}건)",
+                work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
+                file_name="send_perf_store_backup.csv", mime="text/csv", use_container_width=True)
         if st.button("🗑 전부 지우기", use_container_width=True, key="clear_store"):
             storage_clear(BK, "campaign")
             st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
