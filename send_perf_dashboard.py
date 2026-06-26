@@ -6,7 +6,7 @@ LF몰 CRM 발송성과 대시보드
 "어떤 문구·오퍼·타이밍 패턴이 성과를 만드는가"를 도출하는 대시보드.
 
 · 조인 방향: 실적(성과) 기준 — 기획에만 있고 실제 발송 안 된 건은 제외
-· 문구 자동 태깅(규칙 기반) + Claude AI 인사이트/처방
+· 문구 자동 태깅(규칙 기반) + Gemini AI 인사이트/처방
 · 디자인: 기존 발송 피로도 / 첫구매 주간보고 대시보드 슬레이트 팔레트 계승
 
 데이터 로직(parse_perf_bytes / parse_plan_bytes / merge_perf_plan / tag_copy)은
@@ -1321,32 +1321,43 @@ def main():
     BK = init_storage()
 
     AI_MODELS = {
-        "Claude Opus 4.8 (최고 품질)": "claude-opus-4-8",
-        "Claude Sonnet 4.6 (균형)": "claude-sonnet-4-6",
-        "Claude Haiku 4.5 (빠름·저렴)": "claude-haiku-4-5",
+        "Gemini 2.5 Pro (최고 품질)": "gemini-2.5-pro",
+        "Gemini 2.5 Flash (균형)": "gemini-2.5-flash",
+        "Gemini 2.5 Flash-Lite (빠름·저렴)": "gemini-2.5-flash-lite",
     }
 
-    def anthropic_key():
-        try:
-            if "ANTHROPIC_API_KEY" in st.secrets:
-                return st.secrets["ANTHROPIC_API_KEY"]
-        except Exception:
-            pass
-        return os.environ.get("ANTHROPIC_API_KEY")
+    def gemini_key():
+        for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            try:
+                if k in st.secrets:
+                    return st.secrets[k]
+            except Exception:
+                pass
+            v = os.environ.get(k)
+            if v:
+                return v
+        return None
 
     def ai_generate(system, user, model):
-        key = anthropic_key()
+        key = gemini_key()
         if not key:
-            return None, "ANTHROPIC_API_KEY 미설정 — Streamlit Secrets 또는 환경변수에 추가하세요."
+            return None, "GEMINI_API_KEY 미설정 — Streamlit Secrets 또는 환경변수에 추가하세요."
         try:
-            import anthropic
+            from google import genai
+            from google.genai import types
         except ImportError:
-            return None, "anthropic 패키지가 없습니다. requirements.txt 반영 후 재배포하세요."
+            return None, "google-genai 패키지가 없습니다. requirements.txt 반영 후 재배포하세요."
         try:
-            client = anthropic.Anthropic(api_key=key)
-            resp = client.messages.create(model=model, max_tokens=2200, system=system,
-                                           messages=[{"role": "user", "content": user}])
-            text = "".join(b.text for b in resp.content if b.type == "text").strip()
+            client = genai.Client(api_key=key)
+            resp = client.models.generate_content(
+                model=model,
+                contents=user,
+                config=types.GenerateContentConfig(
+                    system_instruction=system,
+                    max_output_tokens=8000,
+                ),
+            )
+            text = (resp.text or "").strip()
             return (text or None), (None if text else "빈 응답")
         except Exception as e:
             return None, f"생성 오류: {e}"
@@ -1717,7 +1728,7 @@ def main():
         if mtd_data is None:
             st.sidebar.info("전사 MTD 파일을 올리면 볼 수 있어요.")
     _model_keys = list(AI_MODELS.keys())
-    _default_model = "Claude Sonnet 4.6 (균형)"
+    _default_model = "Gemini 2.5 Flash (균형)"
     model_name = st.sidebar.selectbox(
         "AI 모델", _model_keys,
         index=_model_keys.index(_default_model) if _default_model in _model_keys else 0)
