@@ -12,15 +12,16 @@ All source projects are **MIT licensed**. See each upstream repo for full text.
 | [AgriciDaniel/claude-seo](https://github.com/AgriciDaniel/claude-seo) | 2.2.0 | 25 skills + 18 agents | Python scripts, MCP extensions, and the auto-running `PostToolUse` validation hook |
 | [obra/superpowers](https://github.com/obra/superpowers) | — | 14 skills | `SessionStart` hook (not auto-enabled) |
 | [luongnv89/claude-howto](https://github.com/luongnv89/claude-howto) | 2.1.x | 6 skills + 9 subagents + 8 slash commands | tutorial modules, `06-hooks/`, `07-plugins/` |
-| Notion "claude 프롬프트+스킬 모음" 배치 (아래 표 참고) | — | 41 skills | 중복/대량 번들/dead repo 제외 |
+| Notion "claude 프롬프트+스킬 모음" 배치 (아래 표 참고) | — | 40 skills | 중복/대량 번들/dead repo 제외 |
 
-**Totals:** 131 skills · 27 agents · 8 commands
+**Totals:** 130 skills · 27 agents · 8 commands
 
-## Notion 스킬 배치 (41개 추가)
+## Notion 스킬 배치 (40개 추가)
 
 [Notion 큐레이션 목록](https://exultant-principle-9c5.notion.site/claude-34691cb23c4d806db398fd9fe5e1c364)의
 75개 중, 이미 설치돼 있던 14개(superpowers 계열)와 기존 스킬과 이름이 겹치는 항목,
-그리고 dead/renamed 저장소를 제외하고 **41개**를 설치했다.
+그리고 dead/renamed 저장소를 제외하고 **40개**를 설치했다.
+(원래 41개였으나 `senior-computer-vision`은 깨진 심볼릭 링크여서 제외했다.)
 
 | 출처 repo | 설치한 스킬 |
 |-----------|-------------|
@@ -37,7 +38,7 @@ All source projects are **MIT licensed**. See each upstream repo for full text.
 | lyndonkl/claude | prototyping-pretotyping, research-claim-map, scientific-clarity-checker |
 | Kamalnrf/claude-plugins | skills-discovery |
 | sickn33/antigravity-awesome-skills | threejs-skills |
-| alirezarezvani/claude-skills | content-creator, senior-frontend, senior-computer-vision, video-content-strategist, ui-ux-pro-max |
+| alirezarezvani/claude-skills | content-creator, senior-frontend, video-content-strategist, ui-ux-pro-max |
 | ognjengt/founder-skills | viral-hook-creator |
 | ComposioHQ/awesome-claude-skills | content-research-writer, scrape-do-automation, html-to-image-automation |
 | cuellarfr/design-skills | product-design |
