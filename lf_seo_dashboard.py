@@ -50,6 +50,17 @@ SITE_COLOR = {"LF몰": PALETTE["blue"], "W컨셉": PALETTE["amber"], "한섬": P
 SITES = ["LF몰", "W컨셉", "한섬", "SSF샵", "SI빌리지"]
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+# 섹션이 20개+라 Plotly 기본 10색으론 색이 돌고 돌아 여러 섹션이 같은 색으로 겹친다.
+# 24색 팔레트로 섹션마다 고유색을 명시 배정(정렬 기준이라 같은 섹션은 항상 같은 색). 기타는 중립 회색.
+_SECTION_PALETTE = px.colors.qualitative.Light24
+
+
+def section_colors(sections):
+    secs = sorted({str(s) for s in sections if str(s) and str(s) != "기타"})
+    cmap = {s: _SECTION_PALETTE[i % len(_SECTION_PALETTE)] for i, s in enumerate(secs)}
+    cmap["기타"] = "#cbd5e1"
+    return cmap
+
 
 def base_layout(h=320, title="", showlegend=False):
     return dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -504,7 +515,9 @@ def render_keyword():
             dt = df[df["대표검색량"] > 0].copy()
             dt["_area"] = np.log10(dt["대표검색량"] + 1)
             fig = px.treemap(dt, path=[px.Constant("전체"), "섹션", "키워드"],
-                             values="_area", color="섹션", custom_data=["대표검색량"])
+                             values="_area", color="섹션",
+                             color_discrete_map=section_colors(dt["섹션"]),
+                             custom_data=["대표검색량"])
             fig.update_traces(marker=dict(line=dict(color="white", width=1)),
                               hovertemplate="<b>%{label}</b><br>대표검색량 %{customdata[0]:,.0f}<extra></extra>")
             fig.update_layout(margin=dict(l=4, r=4, t=10, b=4), height=560)
@@ -721,10 +734,13 @@ def render_naver():
                 # 면적은 로그스케일로 완만하게, 실제값은 hover로.
                 pos["_area"] = np.log10(pos["네이버검색량"] + 1)
                 fig = px.treemap(pos, path=[px.Constant("전체"), "섹션", "키워드"],
-                                 values="_area", color="섹션", custom_data=["네이버검색량"])
+                                 values="_area", color="섹션",
+                                 color_discrete_map=section_colors(pos["섹션"]),
+                                 custom_data=["네이버검색량"])
                 fig.update_layout(**base_layout(h=520,
                                   title="섹션 트리맵 (면적=로그스케일 · hover=실제 네이버검색량)"))
-                fig.update_traces(hovertemplate="<b>%{label}</b><br>네이버 %{customdata[0]:,.0f}<extra></extra>")
+                fig.update_traces(marker=dict(line=dict(color="white", width=1)),
+                                  hovertemplate="<b>%{label}</b><br>네이버 %{customdata[0]:,.0f}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
         st.dataframe(sec, use_container_width=True, hide_index=True,
                      column_config={c: st.column_config.NumberColumn(c, format="%d")
@@ -882,7 +898,9 @@ def render_cep():
         if len(dt):
             dt["_area"] = np.log10(dt["대표검색량"] + 1)
             fig = px.treemap(dt, path=[px.Constant("전체"), "섹션", "키워드"],
-                             values="_area", color="섹션", custom_data=["대표검색량"])
+                             values="_area", color="섹션",
+                             color_discrete_map=section_colors(dt["섹션"]),
+                             custom_data=["대표검색량"])
             fig.update_traces(marker=dict(line=dict(color="white", width=1)),
                               hovertemplate="<b>%{label}</b><br>대표검색량 %{customdata[0]:,.0f}<extra></extra>")
             fig.update_layout(**base_layout(h=560, title="CEP 섹션 트리맵 (면적=로그스케일)"))
