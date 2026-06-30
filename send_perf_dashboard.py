@@ -54,13 +54,24 @@ def _norm_attr(x):
 
 
 def _norm_date(v):
-    """엑셀 셀 값 → 'YYYYMMDD' 문자열 또는 None."""
+    """엑셀 셀 값 → 'YYYYMMDD' 문자열 또는 None.
+    8자리(YYYYMMDD)는 그대로, 6자리(YYMMDD, 예: '250111')는 '20'을 붙여 복구한다.
+    (기획 시트에 'YYYY' 앞 두 자리가 빠진 날짜 오타가 있어 매칭에서 누락되던 문제 대응)"""
     if v is None:
         return None
     if isinstance(v, (datetime.datetime, datetime.date)):
         return v.strftime("%Y%m%d")
     s = re.sub(r'\.0$', '', str(v).strip())
-    return s if re.match(r'^\d{8}$', s) else None
+    if re.match(r'^\d{8}$', s):
+        return s
+    if re.match(r'^\d{6}$', s):                       # YYMMDD → 20YYMMDD (실제 날짜인지 검증)
+        cand = '20' + s
+        try:
+            datetime.datetime.strptime(cand, '%Y%m%d')
+            return cand
+        except ValueError:
+            return None
+    return None
 
 
 def parse_perf_bytes(file_bytes):
