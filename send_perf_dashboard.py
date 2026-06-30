@@ -89,6 +89,8 @@ def parse_perf_bytes(file_bytes):
         return pd.DataFrame()
     hdr = [str(x).strip() if x is not None else "" for x in rows[0]]
     idx = {h: i for i, h in enumerate(hdr)}
+    if "날짜" not in idx and "일자" in idx:           # 헤더가 '일자'로 표기된 실적 파일 대응
+        idx["날짜"] = idx["일자"]
     recs = []
     for r in rows[1:]:
         afi = idx.get("AF코드")
