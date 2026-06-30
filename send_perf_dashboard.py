@@ -89,8 +89,15 @@ def parse_perf_bytes(file_bytes):
         return pd.DataFrame()
     hdr = [str(x).strip() if x is not None else "" for x in rows[0]]
     idx = {h: i for i, h in enumerate(hdr)}
-    if "날짜" not in idx and "일자" in idx:           # 헤더가 '일자'로 표기된 실적 파일 대응
-        idx["날짜"] = idx["일자"]
+    # 날짜 컬럼 헤더 변형 대응. PERF_COLMAP은 '날짜' 키로 날짜를 읽으므로, '날짜'가 없으면
+    # '일자'/'날짜'를 포함하거나 '발송일'류인 헤더를 '날짜'로 매핑한다.
+    #   예) '일자', '일자(8자리)', '발송일', '발송일자' … (← 이게 없으면 날짜가 전부 비어 매칭 0%)
+    if "날짜" not in idx:
+        for h in hdr:
+            hs = h.replace(" ", "")
+            if hs and ("일자" in hs or "날짜" in hs or hs in ("발송일", "발송일자")):
+                idx["날짜"] = idx[h]
+                break
     recs = []
     for r in rows[1:]:
         afi = idx.get("AF코드")
@@ -181,24 +188,51 @@ def parse_plan_bytes(file_bytes):
 
 
 def _week_sheet_end_date(title):
-    """시트명에서 종료 날짜를 추출한다. 예: '6월 3주차(6/15-6/21)' → date(2025,6,21).
-    괄호 안 끝 날짜(M/D)를 파싱한다. 시트명엔 연도가 없으므로, 오늘 기준으로
-    '미래가 아닌 가장 가까운 과거 연도'를 택한다(최대 2년 전까지 후보)."""
-    m = re.search(r'\((\d{1,2})/(\d{1,2})\s*[-~]\s*(\d{1,2})/(\d{1,2})\)', title)
-    if not m:
-        return None
+    """시트명에서 종료 날짜를 추출한다.
+    슬래시형 '(6/15-6/21)' 과 무슬래시형 '(615~621)'·'(1229~14)' 둘 다 지원한다.
+    무슬래시형은 구분자가 없어 'N월' 접두어를 힌트로 끝 토큰을 월/일로 분해한다.
+    시트명엔 연도가 없으므로 '미래가 아닌 가장 가까운 과거 연도'를 택한다(최대 2년 전까지)."""
     from datetime import date, timedelta
     today = date.today()
-    end_m, end_d = int(m.group(3)), int(m.group(4))
-    # 종료월이 7~12월인데 연도를 무조건 올해로 잡으면 미래가 되어 필터에서 빠진다.
-    # 올해 → 작년 → 재작년 순으로, (오늘+14일) 이내가 되는 첫 연도를 채택.
-    for yr in (today.year, today.year - 1, today.year - 2):
-        try:
-            d = date(yr, end_m, end_d)
-        except ValueError:
-            continue
-        if d <= today + timedelta(days=14):
-            return d
+
+    def _pick_year(em, ed):
+        for yr in (today.year, today.year - 1, today.year - 2):
+            try:
+                d = date(yr, em, ed)
+            except ValueError:
+                continue
+            if d <= today + timedelta(days=14):
+                return d
+        return None
+
+    # 1) 슬래시형: (m/d - m/d) → 끝 날짜 사용
+    m = re.search(r'\((\d{1,2})/(\d{1,2})\s*[-~]\s*(\d{1,2})/(\d{1,2})\)', title)
+    if m:
+        return _pick_year(int(m.group(3)), int(m.group(4)))
+
+    # 2) 무슬래시형: (start~end). end 토큰(2~4자리)을 월/일로 분해.
+    #    접두어 'N월'을 힌트로, 끝 월이 접두월 또는 다음달(주 경계 spill)인 분해를 우선.
+    m = re.search(r'\(\s*\d{1,4}\s*[-~]\s*(\d{1,4})\s*\)', title)
+    if m:
+        end = m.group(1)
+        pm = re.search(r'(\d{1,2})\s*월', title)
+        prefix_m = int(pm.group(1)) if pm else None
+        cands = []
+        for cut in (2, 1):                       # 월 자릿수 2 → 1 순으로 분해 시도
+            if len(end) > cut:
+                try:
+                    em, ed = int(end[:cut]), int(end[cut:])
+                except ValueError:
+                    continue
+                if 1 <= em <= 12 and 1 <= ed <= 31:
+                    cands.append((em, ed))
+        if cands:
+            if prefix_m is not None:
+                allowed = {prefix_m, prefix_m % 12 + 1}
+                pref = [c for c in cands if c[0] in allowed]
+                if pref:
+                    cands = pref
+            return _pick_year(*cands[0])
     return None
 
 
@@ -212,16 +246,20 @@ def parse_plan_gsheet(sh, recent=None, progress_cb=None):
     """
     from datetime import date, timedelta
     all_ws = [ws for ws in sh.worksheets() if WEEK_RE.search(ws.title)]
-    dated = []
+    dated, undated = [], []
     for ws in all_ws:
         d = _week_sheet_end_date(ws.title)
         if d is not None:
             dated.append((d, ws))
+        else:
+            undated.append(ws)                       # 날짜를 못 읽은 시트도 버리지 않는다
     dated.sort(key=lambda x: x[0], reverse=True)
     last_week_end = date.today() - timedelta(days=date.today().weekday() + 1)
     week_ws = [ws for d, ws in dated if d <= last_week_end]
     if recent and recent > 0:
         week_ws = week_ws[:recent]
+    else:
+        week_ws = week_ws + undated                  # 전부 불러올 땐 미파싱 시트까지 포함
     lookup = {}
     read = []
     total = len(week_ws)
