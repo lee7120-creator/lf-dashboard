@@ -2954,18 +2954,24 @@ def main():
         if len(pr):
             pr["_key"] = pr["_key"].astype(float)
             pr = pr.sort_values("_key")
-            xlab = pr["_key"].astype(int).astype(str) + "순위"
-            y = pr[mcol] * (100 if is_pct else 1)
+            pr_chart = pr[pr["캠페인수"] > 1]
+            n_excluded = len(pr) - len(pr_chart)
+            xlab = pr_chart["_key"].astype(int).astype(str) + "순위"
+            y = pr_chart[mcol] * (100 if is_pct else 1)
             fig = go.Figure(go.Bar(x=xlab, y=y, marker_color=mclr,
                                    text=[f"{v:.2f}" for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"우선순위별 (가중) {mlabel}"))
             st.plotly_chart(fig, use_container_width=True)
+            if n_excluded:
+                excluded_labels = ", ".join(
+                    f"{int(k)}순위" for k in pr.loc[pr["캠페인수"] <= 1, "_key"])
+                st.caption(f"캠페인 1건뿐인 {excluded_labels}는 표본이 부족해 차트에서 제외했어요. (표에는 포함)")
             tshow = pr.copy(); tshow["_key"] = tshow["_key"].astype(int).astype(str) + "순위"
             st.dataframe(eff_table(tshow, "우선순위"), hide_index=True, use_container_width=True)
-            # 포지션 효과 간단 진단
-            if len(pr) >= 3 and pr[mcol].notna().sum() >= 3:
-                r = float(np.corrcoef(pr["_key"], pr[mcol].fillna(pr[mcol].mean()))[0, 1])
+            # 포지션 효과 간단 진단 (차트에 반영된 표본만 사용)
+            if len(pr_chart) >= 3 and pr_chart[mcol].notna().sum() >= 3:
+                r = float(np.corrcoef(pr_chart["_key"], pr_chart[mcol].fillna(pr_chart[mcol].mean()))[0, 1])
                 msg = ("앞 순번일수록 효율이 높습니다 (노출 우위)." if r < -0.3 else
                        "뒤 순번일수록 효율이 높아요." if r > 0.3 else
                        "순번과 효율 사이에 뚜렷한 관계는 약해요.")
