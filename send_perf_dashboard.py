@@ -182,21 +182,24 @@ def parse_plan_bytes(file_bytes):
 
 def _week_sheet_end_date(title):
     """시트명에서 종료 날짜를 추출한다. 예: '6월 3주차(6/15-6/21)' → date(2025,6,21).
-    괄호 안 끝 날짜(M/D)를 파싱하고, 연도는 현재 연도 기준으로 추정한다."""
+    괄호 안 끝 날짜(M/D)를 파싱한다. 시트명엔 연도가 없으므로, 오늘 기준으로
+    '미래가 아닌 가장 가까운 과거 연도'를 택한다(최대 2년 전까지 후보)."""
     m = re.search(r'\((\d{1,2})/(\d{1,2})\s*[-~]\s*(\d{1,2})/(\d{1,2})\)', title)
     if not m:
         return None
-    from datetime import date
+    from datetime import date, timedelta
     today = date.today()
     end_m, end_d = int(m.group(3)), int(m.group(4))
-    year = today.year
-    try:
-        d = date(year, end_m, end_d)
-    except ValueError:
-        return None
-    if d.month > today.month + 6:
-        d = date(year - 1, end_m, end_d)
-    return d
+    # 종료월이 7~12월인데 연도를 무조건 올해로 잡으면 미래가 되어 필터에서 빠진다.
+    # 올해 → 작년 → 재작년 순으로, (오늘+14일) 이내가 되는 첫 연도를 채택.
+    for yr in (today.year, today.year - 1, today.year - 2):
+        try:
+            d = date(yr, end_m, end_d)
+        except ValueError:
+            continue
+        if d <= today + timedelta(days=14):
+            return d
+    return None
 
 
 def parse_plan_gsheet(sh, recent=None, progress_cb=None):
@@ -1488,6 +1491,18 @@ def main():
                     frames.append(mdf[[c for c in STORE_COLS if c in mdf]])
                     mr = mdf["matched"].mean() * 100 if len(mdf) else 0
                     parse_log.append(f"· {nm[:26]} — {len(mdf)}건 (매칭 {mr:.0f}%)")
+                    # 매칭이 저조하면 원인 힌트: 기획에 '날짜 자체'가 없는지(=커버리지) vs
+                    # 날짜는 있는데 'AF코드'가 안 맞는지(=키 불일치)를 구분해 로그에 남긴다.
+                    if len(mdf) and mr < 50:
+                        un = mdf[~mdf["matched"]]
+                        plan_dates = {d for (d, a) in plan_lookup}
+                        plan_afs = {a for (d, a) in plan_lookup}
+                        un_dates = {d for d in un["date"] if d and str(d).lower() not in ("nan", "none")}
+                        d_hit = len(un_dates & plan_dates)
+                        af_hit = int(un["af"].isin(plan_afs).sum())
+                        parse_log.append(
+                            f"   ↳ 진단: 미매칭 {len(un)}건 · 기획에 있는 날짜 {d_hit}/{len(un_dates)} · "
+                            f"AF코드 기획존재 {af_hit}/{len(un)}")
                 except Exception as e:
                     parse_log.append(f"· {nm[:26]} — 실패: {e}")
             prog.empty()
