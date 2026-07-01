@@ -1504,7 +1504,8 @@ def main():
 
     st.sidebar.caption(BK["status"])
     if st.sidebar.button("🔄 새로 불러오기", use_container_width=True):
-        for k in ("camp_store", "mtd_store_df", "promo_store_df"):
+        for k in ("camp_store", "mtd_store_df", "promo_store_df",
+                  "_merge_sig", "_merge_new_raw", "_merge_parse_log"):
             st.session_state.pop(k, None)
         st.cache_data.clear()
     if "camp_store" not in st.session_state:
@@ -1527,36 +1528,51 @@ def main():
         if plan_lookup is None:
             st.sidebar.warning("기획 문구가 없어요. 「📥 기획 문구 가져오기」를 눌러 주세요.\n(없으면 기존 데이터만 보여요)")
         else:
-            frames = []
-            expanded = expand_uploads(perf_files)
-            prog = st.sidebar.progress(0.0, text="실적 파일을 합치고 있어요…")
-            for k, (nm, b) in enumerate(expanded):
-                prog.progress((k + 1) / max(len(expanded), 1), text=f"합치는 중… {nm[:24]}")
-                if b is None:
-                    parse_log.append(f"· {nm}"); continue
-                try:
-                    pdf = cached_perf(b)
-                    mdf = merge_perf_plan(pdf, plan_lookup, keep_unmatched=True)
-                    frames.append(mdf[[c for c in STORE_COLS if c in mdf]])
-                    mr = mdf["matched"].mean() * 100 if len(mdf) else 0
-                    parse_log.append(f"· {nm[:26]} — {len(mdf)}건 (매칭 {mr:.0f}%)")
-                    # 매칭이 저조하면 원인 힌트: 기획에 '날짜 자체'가 없는지(=커버리지) vs
-                    # 날짜는 있는데 'AF코드'가 안 맞는지(=키 불일치)를 구분해 로그에 남긴다.
-                    if len(mdf) and mr < 50:
-                        un = mdf[~mdf["matched"]]
-                        plan_dates = {d for (d, a) in plan_lookup}
-                        plan_afs = {a for (d, a) in plan_lookup}
-                        un_dates = {d for d in un["date"] if d and str(d).lower() not in ("nan", "none")}
-                        d_hit = len(un_dates & plan_dates)
-                        af_hit = int(un["af"].isin(plan_afs).sum())
-                        parse_log.append(
-                            f"   ↳ 진단: 미매칭 {len(un)}건 · 기획에 있는 날짜 {d_hit}/{len(un_dates)} · "
-                            f"AF코드 기획존재 {af_hit}/{len(un)}")
-                except Exception as e:
-                    parse_log.append(f"· {nm[:26]} — 실패: {e}")
-            prog.empty()
-            if frames:
-                new_raw = pd.concat(frames, ignore_index=True)
+            # 같은 파일·기획 조합이면 재파싱/재머지를 건너뛴다.
+            # (Streamlit은 페이지 이동마다 스크립트를 재실행 → 저장 후에도 매번 합치던 문제 방지)
+            try:
+                _perf_sig = tuple((getattr(f, "name", ""), len(f.getvalue())) for f in perf_files)
+            except Exception:
+                _perf_sig = None
+            _merge_sig = (_perf_sig, len(plan_lookup))
+            if (_perf_sig is not None and st.session_state.get("_merge_sig") == _merge_sig
+                    and "_merge_new_raw" in st.session_state):
+                new_raw = st.session_state["_merge_new_raw"]
+                parse_log = st.session_state.get("_merge_parse_log", [])
+            else:
+                frames = []
+                expanded = expand_uploads(perf_files)
+                prog = st.sidebar.progress(0.0, text="실적 파일을 합치고 있어요…")
+                for k, (nm, b) in enumerate(expanded):
+                    prog.progress((k + 1) / max(len(expanded), 1), text=f"합치는 중… {nm[:24]}")
+                    if b is None:
+                        parse_log.append(f"· {nm}"); continue
+                    try:
+                        pdf = cached_perf(b)
+                        mdf = merge_perf_plan(pdf, plan_lookup, keep_unmatched=True)
+                        frames.append(mdf[[c for c in STORE_COLS if c in mdf]])
+                        mr = mdf["matched"].mean() * 100 if len(mdf) else 0
+                        parse_log.append(f"· {nm[:26]} — {len(mdf)}건 (매칭 {mr:.0f}%)")
+                        # 매칭이 저조하면 원인 힌트: 기획에 '날짜 자체'가 없는지(=커버리지) vs
+                        # 날짜는 있는데 'AF코드'가 안 맞는지(=키 불일치)를 구분해 로그에 남긴다.
+                        if len(mdf) and mr < 50:
+                            un = mdf[~mdf["matched"]]
+                            plan_dates = {d for (d, a) in plan_lookup}
+                            plan_afs = {a for (d, a) in plan_lookup}
+                            un_dates = {d for d in un["date"] if d and str(d).lower() not in ("nan", "none")}
+                            d_hit = len(un_dates & plan_dates)
+                            af_hit = int(un["af"].isin(plan_afs).sum())
+                            parse_log.append(
+                                f"   ↳ 진단: 미매칭 {len(un)}건 · 기획에 있는 날짜 {d_hit}/{len(un_dates)} · "
+                                f"AF코드 기획존재 {af_hit}/{len(un)}")
+                    except Exception as e:
+                        parse_log.append(f"· {nm[:26]} — 실패: {e}")
+                prog.empty()
+                if frames:
+                    new_raw = pd.concat(frames, ignore_index=True)
+                st.session_state["_merge_sig"] = _merge_sig
+                st.session_state["_merge_new_raw"] = new_raw
+                st.session_state["_merge_parse_log"] = parse_log
 
     # 누적 병합 — 저장 전까지는 미리보기(영구 반영 X)
     if new_raw is not None and len(new_raw):
@@ -2008,7 +2024,14 @@ def main():
         fmts = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
         show = dd[cols].rename(columns=ren)
         fmts = {k: v for k, v in fmts.items() if k in show.columns}
-        st.dataframe(show.style.format(fmts), hide_index=True, use_container_width=True, height=340)
+        # 표의 행을 클릭하면 그 행 원문을 아래에 보여준다(on_select). 미지원 버전이면 일반 표로 폴백.
+        try:
+            _ev = st.dataframe(show.style.format(fmts), hide_index=True, use_container_width=True,
+                               height=340, key=f"tbl_{key}", on_select="rerun",
+                               selection_mode="single-row")
+        except TypeError:
+            _ev = None
+            st.dataframe(show.style.format(fmts), hide_index=True, use_container_width=True, height=340)
         if "title" not in dd.columns:
             return
         opts = {}
@@ -2016,8 +2039,22 @@ def main():
             cr = r["ord_cr"] if ("ord_cr" in dd.columns and pd.notna(r["ord_cr"])) else 0
             opts[f"[{r['date']}] {str(r['title'])[:44]} (주문CR {cr*100:.2f}%)"] = i
         if opts:
-            sel = st.selectbox("문구 원문 보기", list(opts.keys()), key=f"msg_{key}")
-            r = dd.loc[opts[sel]]
+            keys_list = list(opts.keys())
+            # 클릭한 행 위치 파악
+            picked = None
+            try:
+                _rows = _ev.selection["rows"] if _ev is not None else []
+                if _rows:
+                    picked = int(_rows[0])
+            except Exception:
+                picked = None
+            # 새로 클릭한 행이 있을 때만 셀렉트박스 기본값을 그 행으로 맞춘다(수동 선택은 그대로 유지).
+            _last = f"_lastpick_{key}"
+            if picked is not None and 0 <= picked < len(keys_list) and picked != st.session_state.get(_last):
+                st.session_state[_last] = picked
+                st.session_state[f"msg_{key}"] = keys_list[picked]
+            sel = st.selectbox("문구 원문 보기 (표에서 행을 클릭해도 돼요)", keys_list, key=f"msg_{key}")
+            r = dd.loc[opts.get(sel, list(opts.values())[0])]
             body = str(r["body"]).replace("\n", "<br>") if ("body" in dd.columns and pd.notna(r["body"]) and str(r["body"]).strip()) else "—"
             st.markdown(f'<div class="vg"><b>제목</b><br>{str(r["title"])}<br><br>'
                         f'<b>내용</b><br>{body}</div>', unsafe_allow_html=True)
@@ -2403,27 +2440,51 @@ def main():
         asc = st.radio("정렬", ["높은순", "낮은순"], horizontal=True) == "낮은순"
         base = fdf.sort_values(mcol, ascending=asc)
         tagcols = [t for t in TAG_BOOLS]
-        view = base.copy()
+        base_r = base.reset_index(drop=True)
+        view = base_r.copy()
         view["속성"] = view[tagcols].apply(lambda r: " ".join(t for t in tagcols if r[t]), axis=1)
         view["_bprev"] = view["body"].map(lambda x: " ".join(_s(x).split())[:60]) if "body" in view else ""
         cols = ["date", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt", "속성"]
         ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "_bprev": "내용",
                "send": "발송", "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
-        st.dataframe(view[cols].rename(columns=ren).style.format(
-            {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}),
-            hide_index=True, use_container_width=True, height=560)
+        _styled = view[cols].rename(columns=ren).style.format(
+            {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"})
+        try:
+            _ev = st.dataframe(_styled, hide_index=True, use_container_width=True, height=560,
+                               key="p03_tbl", on_select="rerun", selection_mode="single-row")
+        except TypeError:
+            _ev = None
+            st.dataframe(_styled, hide_index=True, use_container_width=True, height=560)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🔍 실제 문구 확인")
+        bb = base_r.head(40)
         opts = {f"[{r['date']}] {r['title'][:40]} (CR {r['ord_cr']*100:.2f}%)": i
-                for i, r in base.head(40).reset_index(drop=True).iterrows()}
-        bb = base.head(40).reset_index(drop=True)
-        sel = st.selectbox("캠페인 선택", list(opts.keys()))
-        if sel is not None:
+                for i, r in bb.iterrows()}
+        keys_list = list(opts.keys())
+        picked = None
+        try:
+            _rows = _ev.selection["rows"] if _ev is not None else []
+            if _rows:
+                picked = int(_rows[0])
+        except Exception:
+            picked = None
+        # 새로 클릭한 행이 상위 40건 안이면 셀렉트박스 기본값도 맞춘다(수동 선택 유지).
+        if picked is not None and 0 <= picked < len(keys_list) and picked != st.session_state.get("_lastpick_p03"):
+            st.session_state["_lastpick_p03"] = picked
+            st.session_state["p03_msg"] = keys_list[picked]
+        sel = st.selectbox("캠페인 선택 (표에서 행을 클릭해도 돼요)", keys_list, key="p03_msg")
+        if picked is not None and 0 <= picked < len(base_r):
+            r = base_r.iloc[picked]                       # 클릭한 행(전체 범위)
+        elif sel is not None:
             r = bb.loc[opts[sel]]
-            st.markdown(f'<div class="vg"><b>제목</b><br>{r["title"]}<br><br>'
-                        f'<b>내용</b><br>{(r["body"] or "—").replace(chr(10),"<br>")}</div>',
-                        unsafe_allow_html=True)
+        else:
+            r = None
+        if r is not None:
+            _body = (str(r["body"]).replace(chr(10), "<br>")
+                     if ("body" in base_r.columns and pd.notna(r["body"]) and str(r["body"]).strip()) else "—")
+            st.markdown(f'<div class="vg"><b>제목</b><br>{str(r["title"])}<br><br>'
+                        f'<b>내용</b><br>{_body}</div>', unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════
     # PAGE 04 — 카테고리·시간대 매트릭스
