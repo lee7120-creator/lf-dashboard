@@ -14,12 +14,17 @@
 실행: streamlit run lf_seo_dashboard.py
 """
 
+import base64
+import hashlib
+import hmac
 import io
 import os
+import time
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 st.set_page_config(page_title="LF몰 SEO 대시보드", page_icon="🧭",
@@ -80,6 +85,451 @@ def to_excel(d, sheet="data"):
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         d.to_excel(w, index=False, sheet_name=sheet)
     return buf.getvalue()
+
+
+# ══════════════════════════════════════════════════════════════════
+# 네이버 실시간 조회 헬퍼 (검색광고 API + 데이터랩)
+# ══════════════════════════════════════════════════════════════════
+_AD_BASE = "https://api.searchad.naver.com"
+_DATALAB_URL = "https://openapi.naver.com/v1/datalab/search"
+
+
+def _naver_creds():
+    def _g(k):
+        try:
+            v = st.secrets.get(k, "")
+            return str(v).strip() if v else ""
+        except Exception:
+            return os.environ.get(k, "").strip()
+    return {
+        "ad_key": _g("NAVER_AD_API_KEY"),
+        "ad_secret": _g("NAVER_AD_SECRET"),
+        "ad_customer": _g("NAVER_AD_CUSTOMER_ID"),
+        "lab_id": _g("NAVER_CLIENT_ID"),
+        "lab_secret": _g("NAVER_CLIENT_SECRET"),
+    }
+
+
+def _nv_norm(s):
+    import re
+    return re.sub(r"\s+", "", str(s)).lower()
+
+
+def _nv_int(v):
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v).replace(",", "").strip()
+    if s.startswith("<"):
+        return 5
+    try:
+        return int(s)
+    except ValueError:
+        return 0
+
+
+def _ad_hdr(creds, method, path):
+    ts = str(round(time.time() * 1000))
+    msg = f"{ts}.{method}.{path}"
+    sig = base64.b64encode(
+        hmac.new(creds["ad_secret"].encode(), msg.encode(), hashlib.sha256).digest()
+    ).decode()
+    return {
+        "X-Timestamp": ts, "X-API-KEY": creds["ad_key"],
+        "X-Customer": str(creds["ad_customer"]), "X-Signature": sig,
+    }
+
+
+def _lab_hdr(creds):
+    return {
+        "X-Naver-Client-Id": creds["lab_id"],
+        "X-Naver-Client-Secret": creds["lab_secret"],
+        "Content-Type": "application/json",
+    }
+
+
+def _nv_trend_label(growth):
+    if growth is None:
+        return ""
+    if growth >= 20:  return "급상승"
+    if growth >= 5:   return "상승"
+    if growth <= -20: return "급하락"
+    if growth <= -5:  return "하락"
+    return "유지"
+
+
+def _fetch_ad_volumes(keywords, creds, prog=None):
+    """검색광고 API로 월간 검색량 수집. prog = st.progress 객체(옵션)."""
+    path = "/keywordstool"
+    batches = [keywords[i:i + 5] for i in range(0, len(keywords), 5)]
+    out = {}
+    for bi, batch in enumerate(batches):
+        if prog is not None:
+            prog.progress((bi + 1) / len(batches),
+                          text=f"검색광고 API {bi+1}/{len(batches)} 배치 ({(bi+1)*5}/{len(keywords)}개)")
+        hint = ",".join(k.replace(" ", "") for k in batch)
+        for attempt in range(4):
+            try:
+                r = requests.get(_AD_BASE + path,
+                                 params={"hintKeywords": hint, "showDetail": "1"},
+                                 headers=_ad_hdr(creds, "GET", path), timeout=15)
+                if r.status_code == 429:
+                    time.sleep(2 ** attempt)
+                    continue
+                r.raise_for_status()
+                for row in r.json().get("keywordList", []):
+                    pc = _nv_int(row.get("monthlyPcQcCnt", 0))
+                    mo = _nv_int(row.get("monthlyMobileQcCnt", 0))
+                    out[_nv_norm(row.get("relKeyword", ""))] = {
+                        "pc": pc, "mobile": mo, "total": pc + mo,
+                        "comp": row.get("compIdx", ""),
+                    }
+                break
+            except Exception:
+                time.sleep(2 ** attempt)
+        time.sleep(0.3)
+    return out
+
+
+def _fetch_datalab_trends(keywords, creds, prog=None):
+    """데이터랩 12개월 추이. prog = st.progress 객체(옵션)."""
+    import json
+    from datetime import date, timedelta
+    end = date.today().replace(day=1) - timedelta(days=1)
+    start = (end.replace(day=1) - timedelta(days=365)).replace(day=1)
+    groups = [keywords[i:i + 5] for i in range(0, len(keywords), 5)]
+    out = {}
+    for gi, g in enumerate(groups):
+        if prog is not None:
+            prog.progress((gi + 1) / len(groups),
+                          text=f"데이터랩 {gi+1}/{len(groups)} 그룹")
+        body = {
+            "startDate": start.isoformat(), "endDate": end.isoformat(),
+            "timeUnit": "month",
+            "keywordGroups": [{"groupName": k, "keywords": [k]} for k in g],
+        }
+        for attempt in range(4):
+            try:
+                r = requests.post(_DATALAB_URL, data=json.dumps(body),
+                                  headers=_lab_hdr(creds), timeout=15)
+                if r.status_code == 429:
+                    time.sleep(2 ** attempt)
+                    continue
+                r.raise_for_status()
+                for res in r.json().get("results", []):
+                    pts = [p["ratio"] for p in res.get("data", [])]
+                    if not pts:
+                        continue
+                    early = sum(pts[:3]) / max(1, len(pts[:3]))
+                    late = sum(pts[-3:]) / max(1, len(pts[-3:]))
+                    growth = round((late - early) / early * 100) if early else 0
+                    out[_nv_norm(res["title"])] = (round(pts[-1], 1), growth,
+                                                    [round(p, 1) for p in pts])
+                break
+            except Exception:
+                time.sleep(2 ** attempt)
+        time.sleep(0.3)
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════
+# VIEW — 네이버 수요 조회 (실시간)
+# ══════════════════════════════════════════════════════════════════
+def render_naver_live():
+    st.markdown("## 🔍 네이버 수요 조회")
+    st.caption("키워드를 붙여넣으면 네이버 검색광고 API로 월간 검색량을 즉시 조회합니다. 최대 5,000개 · 탭을 닫으면 초기화됩니다.")
+
+    creds = _naver_creds()
+    has_ad  = all([creds["ad_key"], creds["ad_secret"], creds["ad_customer"]])
+    has_lab = all([creds["lab_id"], creds["lab_secret"]])
+
+    if not has_ad:
+        st.error("네이버 검색광고 API 키가 없습니다. "
+                 "Streamlit Cloud → Settings → Secrets에 "
+                 "NAVER_AD_API_KEY / NAVER_AD_SECRET / NAVER_AD_CUSTOMER_ID를 등록하세요.")
+        return
+
+    # ── 입력 UI ──
+    c_inp, c_opt = st.columns([3, 1])
+    with c_inp:
+        raw = st.text_area(
+            "키워드 (한 줄에 하나)",
+            height=200,
+            placeholder="청바지\n니트\n패딩\n롱원피스\n...",
+            key="nv_live_input",
+        )
+    with c_opt:
+        do_trends = st.checkbox(
+            "추이 수집",
+            value=False,
+            disabled=not has_lab,
+            help="네이버 데이터랩 12개월 추이 (NAVER_CLIENT_ID/SECRET 필요, +8분)",
+        )
+        if not has_lab:
+            st.caption("NAVER_CLIENT_ID·SECRET 없음 → 추이 비활성")
+        st.markdown("")
+        run_btn = st.button("🚀 조회 시작", type="primary",
+                            disabled=(not raw or not raw.strip()),
+                            use_container_width=True)
+
+    kw_list = [k.strip() for k in raw.splitlines() if k.strip()] if raw else []
+    st.caption(f"입력 키워드: **{len(kw_list):,}개**")
+
+    # ── 수집 실행 ──
+    if run_btn and kw_list:
+        if len(kw_list) > 5000:
+            kw_list = kw_list[:5000]
+            st.warning("5,000개 초과 → 상위 5,000개만 조회합니다.")
+
+        est = len(kw_list) // 5 * 0.5
+        est_str = f"약 {int(est//60)}분 {int(est%60)}초" if est >= 60 else f"약 {int(est)}초"
+        st.info(f"**{len(kw_list):,}개** 조회 시작 (예상 {est_str}). 페이지를 닫지 마세요.")
+
+        prog1 = st.progress(0, text="검색광고 API 준비 중...")
+        vols = _fetch_ad_volumes(kw_list, creds, prog1)
+        prog1.progress(1.0, text="검색량 수집 완료 ✅")
+
+        trends = {}
+        if do_trends:
+            prog2 = st.progress(0, text="데이터랩 추이 준비 중...")
+            trends = _fetch_datalab_trends(kw_list, creds, prog2)
+            prog2.progress(1.0, text="추이 수집 완료 ✅")
+
+        rows = []
+        for kw in kw_list:
+            v = vols.get(_nv_norm(kw))
+            t = trends.get(_nv_norm(kw))
+            idx, growth, series = t if t else (None, None, [])
+            rows.append({
+                "키워드": kw,
+                "네이버검색량": v["total"] if v else 0,
+                "PC": v["pc"] if v else 0,
+                "모바일": v["mobile"] if v else 0,
+                "경쟁정도": v["comp"] if v else "",
+                "추이지수": round(idx, 1) if idx is not None else None,
+                "추이": _nv_trend_label(growth) if growth is not None else "",
+                "성장률(%)": growth if growth is not None else None,
+            })
+
+        st.session_state["nv_live_df"] = pd.DataFrame(rows)
+        st.session_state["nv_live_trends_done"] = do_trends
+        st.success(f"✅ 완료! {len(kw_list):,}개 조회 · 검색량 매칭 "
+                   f"{sum(1 for r in rows if r['네이버검색량'] > 0):,}개")
+
+    # ── 결과 렌더링 ──
+    df = st.session_state.get("nv_live_df")
+    trends_done = st.session_state.get("nv_live_trends_done", False)
+
+    if df is None or len(df) == 0:
+        st.markdown("---")
+        st.markdown("##### 사용법")
+        st.markdown("""
+1. 키워드를 한 줄에 하나씩 붙여넣기 (최대 5,000개)
+2. 추이도 필요하면 **추이 수집** 체크 (+8분)
+3. **조회 시작** 클릭 후 완료까지 페이지 유지
+4. 결과 테이블·차트 확인 후 **엑셀 다운로드**
+""")
+        return
+
+    # KPI
+    total_vol  = int(df["네이버검색량"].sum())
+    matched    = int((df["네이버검색량"] > 0).sum())
+    pc_sum     = int(df["PC"].sum())
+    mo_sum     = int(df["모바일"].sum())
+    mo_pct     = round(mo_sum / max(1, total_vol) * 100, 1)
+    no_data    = len(df) - matched
+
+    k = st.columns(5)
+    k[0].metric("조회 키워드", f"{len(df):,}개")
+    k[1].metric("총 검색량", f"{total_vol:,}")
+    k[2].metric("매칭 성공", f"{matched:,}개", f"{round(matched/len(df)*100)}%")
+    k[3].metric("모바일 비중", f"{mo_pct}%")
+    k[4].metric("데이터 없음", f"{no_data:,}개", "검색량 0")
+
+    st.markdown("<div class='sdiv'></div>", unsafe_allow_html=True)
+
+    # 탭 구성
+    tab_labels = ["📊 검색량 TOP", "💻 PC vs 📱 모바일", "🏷️ 경쟁도", "📋 전체 테이블"]
+    if trends_done:
+        tab_labels.insert(3, "📈 추이 분석")
+    tabs = st.tabs(tab_labels)
+
+    with tabs[0]:
+        st.caption("검색량 0 제외. 로그 축 토글로 롱테일 분포를 확인하세요.")
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            topn = st.slider("상위 N개", 10, min(100, matched), min(30, matched),
+                             step=5, key="nv_topn")
+            use_log = st.checkbox("로그 축", value=False, key="nv_log")
+        dv = df[df["네이버검색량"] > 0].sort_values("네이버검색량", ascending=False).head(topn)
+        dv_bar = dv.sort_values("네이버검색량")
+        fig = go.Figure(go.Bar(
+            x=dv_bar["네이버검색량"], y=dv_bar["키워드"], orientation="h",
+            marker_color=PALETTE["blue"],
+            text=dv_bar["네이버검색량"].apply(lambda x: f"{x:,}"),
+            textposition="outside",
+            customdata=dv_bar[["PC", "모바일", "경쟁정도"]],
+            hovertemplate="<b>%{y}</b><br>총 %{x:,} (PC %{customdata[0]:,} / 모바일 %{customdata[1]:,})"
+                          "<br>경쟁도 %{customdata[2]}<extra></extra>",
+        ))
+        fig.update_layout(**base_layout(h=max(380, topn * 22), title=f"네이버 검색량 TOP {topn}"))
+        if use_log:
+            fig.update_xaxes(type="log")
+        fig.update_xaxes(range=[0, dv_bar["네이버검색량"].max() * 1.22] if not use_log else None)
+        with c2:
+            st.plotly_chart(fig, use_container_width=True)
+
+    with tabs[1]:
+        st.caption("X축=PC 검색량, Y축=모바일 검색량. 우상단 → 총량 많음. 대각선 위 → 모바일 강세.")
+        dv = df[df["네이버검색량"] > 0].copy()
+        dv["_size"] = np.sqrt(dv["네이버검색량"]).clip(lower=4)
+        fig = px.scatter(
+            dv, x="PC", y="모바일", text="키워드", size="_size",
+            color="경쟁정도",
+            color_discrete_map={"낮음": PALETTE["green"], "중간": PALETTE["amber"],
+                                "높음": PALETTE["red"], "": PALETTE["slate"]},
+            hover_data={"키워드": True, "네이버검색량": True, "_size": False},
+        )
+        max_val = max(dv["PC"].max(), dv["모바일"].max()) * 1.05
+        fig.add_shape(type="line", x0=0, y0=0, x1=max_val, y1=max_val,
+                      line=dict(color="#cbd5e1", dash="dash"))
+        fig.update_traces(textposition="top center", textfont=dict(size=9))
+        fig.update_layout(**base_layout(h=480, title="PC vs 모바일 검색량", showlegend=True))
+        st.plotly_chart(fig, use_container_width=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            pc_heavy  = int((dv["PC"] > dv["모바일"]).sum())
+            mo_heavy  = int((dv["모바일"] > dv["PC"]).sum())
+            fig2 = go.Figure(go.Bar(
+                x=["PC 강세", "균등", "모바일 강세"],
+                y=[pc_heavy, len(dv) - pc_heavy - mo_heavy, mo_heavy],
+                marker_color=[PALETTE["blue"], PALETTE["slate"], PALETTE["purple"]],
+            ))
+            fig2.update_layout(**base_layout(h=280, title="디바이스 강세 분포"))
+            st.plotly_chart(fig2, use_container_width=True)
+        with c2:
+            fig3 = go.Figure(go.Pie(
+                labels=["PC", "모바일"],
+                values=[pc_sum, mo_sum],
+                hole=0.55,
+                marker=dict(colors=[PALETTE["blue"], PALETTE["purple"]]),
+            ))
+            fig3.update_traces(textinfo="percent+label", textfont_size=13)
+            fig3.update_layout(**base_layout(h=280, title="PC / 모바일 검색량 비중"))
+            st.plotly_chart(fig3, use_container_width=True)
+
+    with tabs[2]:
+        comp_map = {"낮음": PALETTE["green"], "중간": PALETTE["amber"],
+                    "높음": PALETTE["red"], "": PALETTE["slate"]}
+        dv = df[df["네이버검색량"] > 0].copy()
+        dv["경쟁정도"] = dv["경쟁정도"].fillna("").replace("", "미확인")
+        grp = dv.groupby("경쟁정도").agg(
+            키워드수=("키워드", "count"),
+            총검색량=("네이버검색량", "sum"),
+            평균검색량=("네이버검색량", "mean"),
+        ).reset_index().sort_values("총검색량", ascending=False)
+        grp["평균검색량"] = grp["평균검색량"].round(0).astype(int)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            colors = [comp_map.get(c, PALETTE["slate"]) for c in grp["경쟁정도"]]
+            fig = go.Figure(go.Bar(
+                x=grp["경쟁정도"], y=grp["키워드수"],
+                marker_color=colors, text=grp["키워드수"], textposition="outside",
+                customdata=grp[["총검색량", "평균검색량"]],
+                hovertemplate="<b>%{x}</b><br>키워드 %{y}개<br>총검색량 %{customdata[0]:,}"
+                              "<br>평균 %{customdata[1]:,}<extra></extra>",
+            ))
+            fig.update_layout(**base_layout(h=320, title="경쟁정도별 키워드 수"))
+            st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            fig2 = go.Figure(go.Bar(
+                x=grp["경쟁정도"], y=grp["총검색량"],
+                marker_color=colors, text=grp["총검색량"].apply(lambda x: f"{x:,}"),
+                textposition="outside",
+            ))
+            fig2.update_layout(**base_layout(h=320, title="경쟁정도별 총 검색량"))
+            st.plotly_chart(fig2, use_container_width=True)
+
+        st.caption("💡 경쟁도 **낮음 + 검색량 높음** 조합이 SEO 황금 키워드입니다.")
+        low_high = dv[(dv["경쟁정도"] == "낮음") & (dv["네이버검색량"] >= 5000)]
+        if len(low_high):
+            st.markdown(f"**경쟁 낮음·검색량 5,000↑ 황금 키워드 {len(low_high)}개**")
+            st.dataframe(low_high.sort_values("네이버검색량", ascending=False)
+                         [["키워드", "네이버검색량", "PC", "모바일", "경쟁정도"]],
+                         use_container_width=True, hide_index=True,
+                         column_config={c: st.column_config.NumberColumn(c, format="%d")
+                                        for c in ["네이버검색량", "PC", "모바일"]})
+
+    trend_tab_idx = 3
+    if trends_done:
+        with tabs[trend_tab_idx]:
+            trend_order = ["급상승", "상승", "유지", "하락", "급하락", ""]
+            trend_color = {
+                "급상승": "#22c55e", "상승": "#86efac",
+                "유지": PALETTE["slate"],
+                "하락": "#fca5a5", "급하락": "#ef4444", "": "#e2e8f0",
+            }
+            dv = df[df["네이버검색량"] > 0].copy()
+            dv["추이"] = dv["추이"].fillna("")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                grp = dv.groupby("추이").agg(
+                    키워드수=("키워드", "count"),
+                    총검색량=("네이버검색량", "sum"),
+                ).reset_index()
+                grp["추이_ord"] = grp["추이"].map(
+                    {v: i for i, v in enumerate(trend_order)}).fillna(99)
+                grp = grp.sort_values("추이_ord")
+                colors = [trend_color.get(t, PALETTE["slate"]) for t in grp["추이"]]
+                fig = go.Figure(go.Bar(
+                    x=grp["추이"], y=grp["키워드수"],
+                    marker_color=colors, text=grp["키워드수"], textposition="outside",
+                ))
+                fig.update_layout(**base_layout(h=320, title="추이별 키워드 수"))
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                fig2 = go.Figure(go.Bar(
+                    x=grp["추이"], y=grp["총검색량"],
+                    marker_color=colors,
+                    text=grp["총검색량"].apply(lambda x: f"{x:,}"),
+                    textposition="outside",
+                ))
+                fig2.update_layout(**base_layout(h=320, title="추이별 총 검색량"))
+                st.plotly_chart(fig2, use_container_width=True)
+
+            st.markdown("##### 급상승 키워드")
+            rising = dv[dv["추이"].isin(["급상승", "상승"])].sort_values("성장률(%)", ascending=False)
+            if len(rising):
+                fig3 = go.Figure(go.Bar(
+                    x=rising["성장률(%)"].head(30),
+                    y=rising["키워드"].head(30),
+                    orientation="h",
+                    marker_color="#22c55e",
+                    customdata=rising[["네이버검색량", "추이"]].head(30),
+                    hovertemplate="<b>%{y}</b><br>성장률 %{x}%<br>검색량 %{customdata[0]:,} · %{customdata[1]}<extra></extra>",
+                ))
+                fig3.update_layout(**base_layout(h=max(320, min(len(rising), 30) * 22),
+                                                  title="성장률 TOP 30 (상승·급상승)"))
+                st.plotly_chart(fig3, use_container_width=True)
+        trend_tab_idx = 4
+
+    with tabs[trend_tab_idx]:
+        dl_cols = ["키워드", "네이버검색량", "PC", "모바일", "경쟁정도"]
+        if trends_done:
+            dl_cols += ["추이지수", "추이", "성장률(%)"]
+        dl_df = df[dl_cols].sort_values("네이버검색량", ascending=False)
+
+        st.download_button(
+            "⬇️ 엑셀(.xlsx)", to_excel(dl_df, "네이버검색량"),
+            "naver_keyword_volumes.xlsx", XLSX_MIME,
+        )
+        st.dataframe(
+            dl_df, use_container_width=True, hide_index=True, height=520,
+            column_config={c: st.column_config.NumberColumn(c, format="%d")
+                           for c in ["네이버검색량", "PC", "모바일"]},
+        )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1068,7 +1518,7 @@ with st.sidebar:
     st.markdown("### 🧭 LF몰 SEO 대시보드")
     view = st.radio("보기 선택",
                     ["🥊 경쟁사 분석", "🔎 키워드 리서치", "🛒 네이버 쇼핑",
-                     "🎯 CEP 키워드", "🔗 조합·롱테일"])
+                     "🎯 CEP 키워드", "🔗 조합·롱테일", "🔍 네이버 수요 조회"])
     st.markdown("---")
     st.caption("Semrush 한국(kr) DB + 네이버 검색광고/데이터랩. "
                "데이터는 추정치로 실제와 차이가 있을 수 있습니다.")
@@ -1081,5 +1531,7 @@ elif view.startswith("🛒"):
     render_naver()
 elif view.startswith("🎯"):
     render_cep()
-else:
+elif view.startswith("🔗"):
     render_combo()
+else:
+    render_naver_live()
