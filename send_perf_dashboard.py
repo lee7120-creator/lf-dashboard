@@ -1152,7 +1152,8 @@ def build_report_html(title, blocks):
                             parts.append(data.to_html(index=False))
         except Exception:
             pass
-    css = ("body{font-family:'Malgun Gothic','Apple SD Gothic Neo','Nanum Gothic',sans-serif;"
+    css = ("@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css');"
+           "body{font-family:'Pretendard Variable',Pretendard,'Malgun Gothic','Apple SD Gothic Neo','Nanum Gothic',sans-serif;"
            "color:#1e293b;margin:24px;} h1{font-size:20px;margin:0 0 4px;} "
            "table{border-collapse:collapse;font-size:12px;margin:10px 0;} "
            "th,td{border:1px solid #e2e8f0;padding:4px 8px;text-align:right;} "
@@ -1234,6 +1235,21 @@ def main():
                        initial_sidebar_state="expanded")
     st.markdown("""
     <style>
+    /* 한글 가독성 폰트: Pretendard (동적 서브셋 — 쓰인 글자만 내려받아 빠름) */
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css');
+    html, body, .stApp, .stApp p, .stApp div, .stApp span, .stApp label, .stApp li,
+    .stApp td, .stApp th, .stApp button, .stApp input, .stApp textarea, .stApp select,
+    h1, h2, h3, h4, h5, h6 {
+      font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
+                   'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+    }
+    /* Streamlit UI 아이콘(Material Symbols)은 아이콘 폰트를 유지해야 깨지지 않는다 */
+    [data-testid="stIconMaterial"], .material-symbols-rounded, .material-symbols-outlined {
+      font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
+    }
+    .stApp code, .stApp pre { font-family: 'Source Code Pro', ui-monospace, monospace !important; }
+    /* 숫자 자릿수 정렬(테이블·지표 가독성): 고정폭 숫자 */
+    [data-testid="stMetricValue"], [data-testid="stMetricDelta"] { font-feature-settings: 'tnum' 1; }
     [data-testid="stAppViewContainer"]{background:#f8f9fc}
     [data-testid="stSidebar"]{background:#ffffff;border-right:1px solid #e2e8f0}
     [data-testid="stMetric"]{background:#ffffff;border-radius:8px;padding:12px 16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
@@ -1258,15 +1274,16 @@ def main():
         # 제목 영역(top margin)을 충분히 확보한다. (각 차트 위 마크다운 헤더와도 분리)
         # hover="x" 이면 시계열용 통합 툴팁(hovermode=x unified) + 세로 크로스헤어를 켠다.
         has_title = bool(title)
+        _FONT = "Pretendard Variable, Pretendard, Malgun Gothic, Apple SD Gothic Neo, sans-serif"
         xaxis = dict(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
                      tickfont=dict(color="#64748b", size=11))
         lay = dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                   font=dict(color="#475569", size=11),
+                   font=dict(color="#475569", size=11, family=_FONT),
                    margin=dict(l=10, r=10, t=(58 if has_title else 30), b=10),
                    height=h, showlegend=False,
                    barcornerradius=4,
                    hoverlabel=dict(bgcolor="#ffffff", bordercolor="#e2e8f0",
-                                   font=dict(size=12, color="#1e293b")),
+                                   font=dict(size=12, color="#1e293b", family=_FONT)),
                    title=dict(text=title, font=dict(color="#94a3b8", size=13),
                               x=0, xanchor="left", y=0.99, yanchor="top"),
                    legend=dict(orientation="h", yanchor="bottom", y=1.02,

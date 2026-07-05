@@ -6,3 +6,11 @@ backgroundColor = "#f8f9fc"
 secondaryBackgroundColor = "#ffffff"
 textColor = "#1e293b"
 primaryColor = "#2E68B0"
+# 한글 가독성 폰트 — Pretendard (theme.font 로 지정해야 캔버스 렌더링인 st.dataframe 표까지 적용됨)
+font = "Pretendard Variable, Pretendard, sans-serif"
+
+[[theme.fontFaces]]
+family = "Pretendard Variable"
+url = "https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/woff2/PretendardVariable.woff2"
+style = "normal"
+weight = "45 920"
