@@ -1508,7 +1508,7 @@ def main():
     st.sidebar.markdown("---")
     recent_n = st.sidebar.number_input("가져올 최근 주차 수 (0이면 전부)", value=12, min_value=0, step=1,
                                        help="시트가 많으면 전부(0)는 느리고 API 한도에 걸릴 수 있어요. 보통 12주면 충분해요.")
-    if st.sidebar.button("📥 기획 문구 가져오기", use_container_width=True):
+    if st.sidebar.button("📥 기획 문구 가져오기", width="stretch"):
         if not _has_sa():
             st.sidebar.error("서비스계정이 없어요. Secrets에 gcp_service_account를 추가해 주세요.")
         else:
@@ -1563,7 +1563,7 @@ def main():
                            "기획전=’기획전 번호’ · 기획=주차 시트 · MTD=날짜행).")
 
     st.sidebar.caption(BK["status"])
-    if st.sidebar.button("🔄 새로 불러오기", use_container_width=True):
+    if st.sidebar.button("🔄 새로 불러오기", width="stretch"):
         for k in ("camp_store", "mtd_store_df", "promo_store_df",
                   "_merge_sig", "_merge_new_raw", "_merge_parse_log"):
             st.session_state.pop(k, None)
@@ -1641,7 +1641,7 @@ def main():
         kn = set(map(tuple, store_key_frame(new_raw).values))
         st.sidebar.success(f"신규 {len(new_raw)}건 → 누적 {len(work)}건 "
                            f"(추가 {len(kn - ko)} · 갱신 {len(kn & ko)})")
-        if st.sidebar.button("💾 저장하기", use_container_width=True):
+        if st.sidebar.button("💾 저장하기", width="stretch"):
             storage_save(BK, "campaign", work)
             st.session_state.camp_store = work
             tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
@@ -1735,7 +1735,7 @@ def main():
     if mtd_new is not None and len(mtd_new):
         mtd_work = merge_mtd_store(mtd_stored, mtd_new)
         st.sidebar.success(f"MTD 새로 {len(mtd_new)}일 → 합쳐서 {len(mtd_work)}일 (미리보기)")
-        if st.sidebar.button("💾 MTD 저장하기", use_container_width=True, key="save_mtd"):
+        if st.sidebar.button("💾 MTD 저장하기", width="stretch", key="save_mtd"):
             storage_save(BK, "mtd", mtd_work)
             st.session_state.mtd_store_df = mtd_work
             tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
@@ -1754,7 +1754,7 @@ def main():
             pnew = cached_promo(promo_files.getvalue())
             promo_work = merge_promo_store(promo_stored, pnew)
             st.sidebar.success(f"기획전 시트 {len(pnew):,}건 → 합쳐서 {len(promo_work):,}건 (미리보기)")
-            if st.sidebar.button("💾 기획전 저장하기", use_container_width=True, key="save_promo"):
+            if st.sidebar.button("💾 기획전 저장하기", width="stretch", key="save_promo"):
                 storage_save(BK, "promo", promo_work)
                 st.session_state.promo_store_df = promo_work
                 tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
@@ -1950,8 +1950,8 @@ def main():
         if _has_any:
             st.download_button(
                 "⬇ 통합 백업 (전체 ZIP)", _zbuf.getvalue(),
-                file_name="lf_dashboard_backup.zip", mime="application/zip",
-                use_container_width=True, key="bak_all")
+                file_name=f"lf_dashboard_backup_{datetime.date.today():%Y%m%d}.zip", mime="application/zip",
+                width="stretch", key="bak_all")
             st.caption("캠페인·MTD·기획전을 한 파일로 백업해요. 이 ZIP을 아래에 올리면 한 번에 복원돼요.")
         _rest_all = st.file_uploader("통합 백업 복원하기 (ZIP/CSV)", type=["zip", "csv"], key="restore_all",
                                      help="통합 백업(ZIP) 또는 예전 캠페인 백업(CSV) 모두 올릴 수 있어요.")
@@ -1972,8 +1972,8 @@ def main():
             st.download_button(
                 f"⬇ 캠페인 백업 (CSV · {len(work):,}건)",
                 work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
-                file_name="send_perf_store_backup.csv", mime="text/csv", use_container_width=True)
-        if st.button("🗑 전부 지우기", use_container_width=True, key="clear_store"):
+                file_name=f"send_perf_store_backup_{datetime.date.today():%Y%m%d}.csv", mime="text/csv", width="stretch")
+        if st.button("🗑 전부 지우기", width="stretch", key="clear_store"):
             storage_clear(BK, "campaign")
             st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
             st.cache_data.clear()
@@ -1985,8 +1985,8 @@ def main():
                 "⬇ MTD 백업 (CSV)",
                 mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"),
                 file_name="send_perf_mtd_backup.csv", mime="text/csv",
-                use_container_width=True, key="mtd_bak")
-        if st.button("🗑 MTD 지우기", use_container_width=True, key="clear_mtd"):
+                width="stretch", key="mtd_bak")
+        if st.button("🗑 MTD 지우기", width="stretch", key="clear_mtd"):
             storage_clear(BK, "mtd")
             st.session_state.mtd_store_df = pd.DataFrame(columns=MTD_STORE_COLS)
             st.cache_data.clear()
@@ -1998,7 +1998,7 @@ def main():
                 "⬇ 기획전 백업 (CSV)",
                 promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"),
                 file_name="send_perf_promo_backup.csv", mime="text/csv",
-                use_container_width=True, key="promo_bak")
+                width="stretch", key="promo_bak")
         rest_p = st.file_uploader("기획전 백업 CSV로 복원하기", type=["csv"], key="restore_promo")
         if rest_p is not None:
             try:
@@ -2010,7 +2010,7 @@ def main():
                 st.success("기획전 복원했어요 ✓ 새로고침해 주세요")
             except Exception as e:
                 st.error(f"기획전 복원하지 못했어요: {e}")
-        if st.button("🗑 기획전 지우기", use_container_width=True, key="clear_promo"):
+        if st.button("🗑 기획전 지우기", width="stretch", key="clear_promo"):
             storage_clear(BK, "promo")
             st.session_state.promo_store_df = pd.DataFrame(columns=PROMO_STORE_COLS)
             st.cache_data.clear()
@@ -2107,18 +2107,19 @@ def main():
         fmts = {k: v for k, v in fmts.items() if k in show.columns}
         # 표의 행을 클릭하면 그 행 원문을 아래에 보여준다(on_select). 미지원 버전이면 일반 표로 폴백.
         try:
-            _ev = st.dataframe(show.style.format(fmts), hide_index=True, use_container_width=True,
+            _ev = st.dataframe(show.style.format(fmts), hide_index=True, width="stretch",
                                height=340, key=f"tbl_{key}", on_select="rerun",
                                selection_mode="single-row")
         except TypeError:
             _ev = None
-            st.dataframe(show.style.format(fmts), hide_index=True, use_container_width=True, height=340)
+            st.dataframe(show.style.format(fmts), hide_index=True, width="stretch", height=340)
         if "title" not in dd.columns:
             return
         opts = {}
         for i, r in dd.iterrows():
             cr = r["ord_cr"] if ("ord_cr" in dd.columns and pd.notna(r["ord_cr"])) else 0
-            opts[f"[{r['date']}] {str(r['title'])[:44]} (주문CR {cr*100:.2f}%)"] = i
+            # 순번 프리픽스 — 같은 날짜·제목·CR 행이 있어도 라벨이 겹쳐 사라지지 않게
+            opts[f"{i+1}. [{r['date']}] {str(r['title'])[:44]} (주문CR {cr*100:.2f}%)"] = i
         if opts:
             keys_list = list(opts.keys())
             # 클릭한 행 위치 파악
@@ -2187,20 +2188,48 @@ def main():
             _wopts = ["전체 기간"] + [_wlab(w) for w in _wks]
             _wsel = st.selectbox("📅 주차 선택", _wopts, index=0, key="p01_week",
                                  help="특정 주차만 보려면 선택해 주세요. 최신 주차가 위에 있어요.")
+        base_prev = None                              # 주차 선택 시 '직전 주차' — 전주 대비 증감 표시용
+        if len(_bp):
             if _wsel != "전체 기간":
                 _ws = _wks[_wopts.index(_wsel) - 1]
-                base = base[(base["dt"] >= _ws) & (base["dt"] < _ws + pd.Timedelta(days=7))]
+                _b0 = base
+                base = _b0[(_b0["dt"] >= _ws) & (_b0["dt"] < _ws + pd.Timedelta(days=7))]
+                base_prev = _b0[(_b0["dt"] >= _ws - pd.Timedelta(days=7)) & (_b0["dt"] < _ws)]
+                if len(base_prev) == 0:
+                    base_prev = None
                 scope_label = _wsel
+
+        def _wow(cur, prev, pct=False):
+            """전주 대비 증감 문자열 (주차를 선택했고 직전 주가 있을 때만)."""
+            if base_prev is None or prev is None or pd.isna(prev) or pd.isna(cur):
+                return None
+            if pct:
+                return f"{(cur - prev) * 100:+.2f}%p 전주 대비"
+            return f"{(cur / prev - 1) * 100:+.1f}% 전주 대비" if prev else None
+        _pv = base_prev if base_prev is not None else base.iloc[0:0]
         c = st.columns(4)
-        c[0].metric("발송 캠페인 수", f"{len(base):,}")
-        c[1].metric("총 발송 건수", won(base["send"].sum()))
-        c[2].metric("총 거래액", won(base["amt"].sum()))
-        c[3].metric("총 주문건수", won(base["oc"].sum()) if "oc" in base else "–")
+        c[0].metric("발송 캠페인 수", f"{len(base):,}", _wow(len(base), len(_pv) or None),
+                    help="현재 조건(필터·최소 발송수)에서 분석에 포함된 캠페인 수예요.")
+        c[1].metric("총 발송 건수", won(base["send"].sum()), _wow(base["send"].sum(), _pv["send"].sum() if len(_pv) else None),
+                    help="보낸 메시지의 총 건수예요.")
+        c[2].metric("총 거래액", won(base["amt"].sum()), _wow(base["amt"].sum(), _pv["amt"].sum() if len(_pv) else None),
+                    help="발송으로 발생한 주문 금액 합계예요.")
+        c[3].metric("총 주문건수", won(base["oc"].sum()) if "oc" in base else "–",
+                    _wow(base["oc"].sum(), _pv["oc"].sum() if len(_pv) else None) if "oc" in base else None,
+                    help="발송으로 발생한 주문 건수 합계예요.")
         c = st.columns(4)
-        c[0].metric("평균 CTR", f"{base['infl_cr'].mean()*100:.2f}%")
-        c[1].metric("평균 주문전환율", f"{base['ord_cr'].mean()*100:.2f}%")
-        c[2].metric("평균 RPS(발송건당)", won(base["rps"].mean()))
-        c[3].metric("평균 객단가", won(base["aov"].mean()))
+        c[0].metric("평균 CTR", f"{base['infl_cr'].mean()*100:.2f}%",
+                    _wow(base["infl_cr"].mean(), _pv["infl_cr"].mean() if len(_pv) else None, pct=True),
+                    help="UV ÷ 발송 — 보낸 것 중 들어온 비율이에요 (캠페인 단순평균).")
+        c[1].metric("평균 주문전환율", f"{base['ord_cr'].mean()*100:.2f}%",
+                    _wow(base["ord_cr"].mean(), _pv["ord_cr"].mean() if len(_pv) else None, pct=True),
+                    help="주문 ÷ UV — 들어온 사람 중 구매한 비율이에요 (캠페인 단순평균).")
+        c[2].metric("평균 RPS(발송건당)", won(base["rps"].mean()),
+                    _wow(base["rps"].mean(), _pv["rps"].mean() if len(_pv) else None),
+                    help="거래액 ÷ 발송 — 1건 보냈을 때 평균 매출이에요.")
+        c[3].metric("평균 객단가", won(base["aov"].mean()),
+                    _wow(base["aov"].mean(), _pv["aov"].mean() if len(_pv) else None),
+                    help="거래액 ÷ 주문 — 주문 1건당 평균 금액이에요.")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         cc = st.columns(2)
@@ -2240,11 +2269,11 @@ def main():
         with cc[0]:
             st.markdown(f"##### 🏆 주문전환율 TOP ({scope_label})")
             st.dataframe(win[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width="stretch")
         with cc[1]:
             st.markdown(f"##### 🧊 주문전환율 BOTTOM ({scope_label})")
             st.dataframe(los[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width="stretch")
 
         # ── 주목 캠페인 자동 탐지 (이상치) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -2269,7 +2298,7 @@ def main():
                 vv = v[["date", "cat", "title", "ord_cr", "send", "편차σ"]].rename(
                     columns={"date": "날짜", "cat": "카테고리", "title": "제목", "ord_cr": "주문CR", "send": "발송"})
                 container.dataframe(vv.style.format({"주문CR": "{:.2%}", "발송": "{:,.0f}"}),
-                                    hide_index=True, use_container_width=True)
+                                    hide_index=True, width="stretch")
             _show_outliers(hi, oc1, "🔼", "급등 (성공 공식)")
             _show_outliers(lo, oc2, "🔽", "급락 (점검 대상)")
             st.markdown(f'<div class="appendix">기준: 평균 주문CR {mu*100:.2f}% ± 2σ({sd*100:.2f}%p). '
@@ -2331,7 +2360,7 @@ def main():
             marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in adf["차이"]],
             text=[f"{v:+.2f}{'%p' if is_pct else ''}" for v in delta_disp], textposition="outside"))
         fig.update_layout(**base_layout(h=360, title=f"{mlabel} — 속성 보유 시 평균 차이 (보유 − 미보유)"))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         def fmtv(v):
             return f"{v*100:.2f}%" if is_pct else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}")
@@ -2347,7 +2376,7 @@ def main():
         show["효과크기"] = show["d"].map(_dlabel)
         show["유의성(보정)"] = show["p_adj"].map(sig_label)
         st.dataframe(show[["속성", "보유평균", "보유n", "미보유평균", "미보유n", "차이", "효과크기", "유의성(보정)"]],
-                     hide_index=True, use_container_width=True)
+                     hide_index=True, width="stretch")
         st.markdown('<div class="appendix">속성은 제목·본문에서 자동으로 분류한 거예요. '
                     '<b>효과크기</b>(d)는 차이가 실제로 얼마나 큰지(0.2 작음·0.5 중간·0.8 큼), '
                     '<b>유의성(보정)</b>은 여러 개를 한꺼번에 비교할 때 우연을 걸러낸 값이에요. '
@@ -2375,12 +2404,12 @@ def main():
                 text=[f"{v:+.3f}{'%p' if is_pct else ''}" for v in ev], textposition="outside"))
             figr.update_layout(**base_layout(h=380, title=f"{mlabel} — 속성 순효과 (교란 통제)"))
             figr.update_yaxes(autorange="reversed")
-            st.plotly_chart(figr, use_container_width=True)
+            st.plotly_chart(figr, width="stretch")
             er = eff.copy()
             er["순효과"] = [f"{v*100:+.3f}%p" if is_pct else (f"{v:+,.0f}" if mcol in ("rps", "aov", "amt") else f"{v:+,.3f}")
                           for v in eff["순효과"]]
             er["유의성(보정)"] = er["p_adj"].map(sig_label)
-            st.dataframe(er[["속성", "순효과", "유의성(보정)"]], hide_index=True, use_container_width=True)
+            st.dataframe(er[["속성", "순효과", "유의성(보정)"]], hide_index=True, width="stretch")
             st.markdown('<div class="appendix">순효과가 +이고 유의하면, 다른 조건이 같아도 그 속성이 성과를 끌어올려요. '
                         '단순 비교에선 좋아 보였는데 여기서 약하면 다른 요인이 섞인 거예요.</div>', unsafe_allow_html=True)
 
@@ -2425,7 +2454,7 @@ def main():
             bm = base_mean * (100 if is_pct else 1)
             figc.add_vline(x=bm, line_dash="dot", line_color="#94a3b8",
                            annotation_text=f"전체평균 {bm:.2f}", annotation_position="top")
-            st.plotly_chart(figc, use_container_width=True)
+            st.plotly_chart(figc, width="stretch")
 
             cshow = cdf.copy()
             if is_pct:
@@ -2439,7 +2468,7 @@ def main():
                 cshow["차이"] = cshow["차이"].map(lambda v: f"{v:+,.1f}")
             cshow["유의성"] = cdf["p"].map(sig_label)
             st.dataframe(cshow[["조합", "캠페인수", "평균", "차이", "유의성"]].style.format({"캠페인수": "{:,.0f}"}),
-                         hide_index=True, use_container_width=True, height=320)
+                         hide_index=True, width="stretch", height=320)
             st.markdown('<div class="appendix">유의성은 해당 조합이 있는 그룹과 없는 그룹의 차이를 검정한 결과예요. '
                         '건수가 적으면 우연일 수 있어요.</div>',
                         unsafe_allow_html=True)
@@ -2476,7 +2505,7 @@ def main():
                                    textposition="outside"))
             fig.update_layout(**base_layout(h=300, ysuffix=("%" if is_pct else ""),
                                             title=f"{label} 길이 구간별 평균 {mlabel}"))
-            container.plotly_chart(fig, use_container_width=True)
+            container.plotly_chart(fig, width="stretch")
 
         len_bins("제목길이", "제목", lc1)
         len_bins("본문길이", "본문", lc2)
@@ -2536,16 +2565,16 @@ def main():
         _styled = view[cols].rename(columns=ren).style.format(
             {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"})
         try:
-            _ev = st.dataframe(_styled, hide_index=True, use_container_width=True, height=560,
+            _ev = st.dataframe(_styled, hide_index=True, width="stretch", height=560,
                                key="p03_tbl", on_select="rerun", selection_mode="single-row")
         except TypeError:
             _ev = None
-            st.dataframe(_styled, hide_index=True, use_container_width=True, height=560)
+            st.dataframe(_styled, hide_index=True, width="stretch", height=560)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🔍 실제 문구 확인")
         bb = base_r.head(40)
-        opts = {f"[{r['date']}] {r['title'][:40]} (CR {r['ord_cr']*100:.2f}%)": i
+        opts = {f"{i+1}. [{r['date']}] {r['title'][:40]} (CR {r['ord_cr']*100:.2f}%)": i
                 for i, r in bb.iterrows()}
         keys_list = list(opts.keys())
         picked = None
@@ -2597,7 +2626,7 @@ def main():
                 hovertemplate="%{y} × %{x}<br>" + mlabel + ": %{z:.2f}"
                               + ("%" if is_pct else "") + "<extra></extra>"))
             fig.update_layout(**base_layout(h=420, title=title))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         def _hod(h):  # 시간대 HHMM(800·1050·2200) → '08시'(시 단위로 묶기)
             try:
@@ -2639,7 +2668,7 @@ def main():
                               + ("%" if is_pct else "") + "<extra></extra>"))
             fig.update_layout(**base_layout(h=max(320, 60 + 34 * len(cmat)),
                                             title=f"카테고리 × 문구속성 — 평균 {mlabel}"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             # 카테고리별 베스트 속성 추천표
             recs = []
             for c in cmat.index:
@@ -2652,7 +2681,7 @@ def main():
                 recs.append(dict(카테고리=c, 추천속성=best, 평균성과=bstr))
             if recs:
                 st.markdown("**카테고리별 추천 소구**")
-                st.dataframe(pd.DataFrame(recs), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(recs), hide_index=True, width="stretch")
         else:
             st.info("카테고리별 데이터가 부족해요.")
 
@@ -2697,7 +2726,7 @@ def main():
                                    marker_color=METRIC_OPTS[mlabel][2],
                                    text=[f"{v:.2f}" for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=320, ysuffix=("%" if is_pct else ""), title=title))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         cc = st.columns(2)
         with cc[0]: barby("hour", f"시간대별 평균 {mlabel}")
@@ -2715,7 +2744,7 @@ def main():
                                    text=[f"{v:.2f}" for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=320, ysuffix=("%" if is_pct else ""),
                                             title=f"발송 규모 5분위(Q1 소량→Q5 대량)별 평균 {mlabel}"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             st.markdown('<div class="appendix">대량 발송 구간(Q5)에서 효율이 떨어지면 더 보내는 게 오히려 '
                         '낮다는 신호예요. 단, 발송유형/카테고리 구성 차이가 섞일 수 있어요.</div>',
                         unsafe_allow_html=True)
@@ -2748,7 +2777,7 @@ def main():
                 lay["xaxis"]["range"] = [0, float(yv.max()) * 1.2] if len(yv) else None
                 figs.update_layout(**lay)
                 figs.update_yaxes(autorange="reversed")
-                st.plotly_chart(figs, use_container_width=True)
+                st.plotly_chart(figs, width="stretch")
                 disp = slot.copy()
                 disp["요일"] = disp["dow_k"]
                 disp["시간"] = disp["hour"].map(fmt_hhmm)
@@ -2761,7 +2790,7 @@ def main():
                 disp["_o"] = disp["요일"].map(lambda d: dow_order.index(d) if d in dow_order else 99)
                 st.dataframe(disp.sort_values(["_o", "hour"])[["요일", "시간", "캠페인수", "평균", "발송", "거래액"]]
                              .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "거래액": "{:,.0f}"}),
-                             hide_index=True, use_container_width=True, height=300)
+                             hide_index=True, width="stretch", height=300)
                 best = slot.iloc[0]
                 bv = best["평균"] * (100 if is_pct else 1)
                 bstr = f"{bv:.2f}%" if is_pct else (won(best["평균"]) if mcol in ("rps", "aov", "amt") else f"{bv:,.1f}")
@@ -2930,7 +2959,7 @@ def main():
                              PALETTE["slate"], PALETTE["green"], h=430,
                              bar_suffix=("%" if lpct else ""), line_suffix=("%" if rpct else ""),
                              title=f"주차별 {llab}(위) vs {rlab}(아래)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # 선택한 두 지표의 상관관계
         x = wk[lc].values.astype(float); y = wk[rc].values.astype(float)
@@ -2954,7 +2983,7 @@ def main():
         st.dataframe(show.style.format({
             "발송": "{:,.0f}", "거래액": "{:,.0f}", "캠페인수": "{:,.0f}",
             "유입전환율": "{:.2%}", "주문전환율": "{:.2%}", "RPS": "{:,.0f}"}),
-            hide_index=True, use_container_width=True, height=360)
+            hide_index=True, width="stretch", height=360)
         st.markdown("<div class=\"appendix\">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산되지 않습니다 "
                     "— 전사 MTD 발송상세가 필요해요. 여기서는 캠페인 합산 기준 전체 효율을 봐요.</div>",
                     unsafe_allow_html=True)
@@ -2993,7 +3022,7 @@ def main():
                                    PALETTE["green"], PALETTE["purple"]][:len(labs)])))
             figf.update_layout(**base_layout(h=360, title="발송 퍼널 — 막대=로그 스케일, 라벨=실제 값·비율"))
             figf.update_xaxes(visible=False)
-            st.plotly_chart(figf, use_container_width=True)
+            st.plotly_chart(figf, width="stretch")
             st.caption("발송이 수억 단위라 막대 너비는 로그로 줄여서 보여드려요. "
                        "실제 값·비율은 막대 라벨과 아래 표에서 확인하세요.")
             # 단계별 전환율 표
@@ -3003,7 +3032,7 @@ def main():
                 pv = float(g[prev_c].fillna(0).sum()); cv = float(g[cur_c].fillna(0).sum())
                 frows.append(dict(단계=f"{prev_l} → {cur_l}", 직전대비=f"{(cv/pv if pv else 0)*100:.2f}%",
                                   발송대비=f"{(cv/base_v)*100:.2f}%"))
-            st.dataframe(pd.DataFrame(frows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(frows), hide_index=True, width="stretch")
             st.markdown("<div class=\"appendix\">’직전대비’가 가장 낮은 단계가 병목이에요. UV→주문이 낮으면 "
                         "랜딩·오퍼·상품 매력도, 발송→UV가 낮으면 제목·발송시점·타겟이 개선 포인트예요.</div>",
                         unsafe_allow_html=True)
@@ -3045,7 +3074,7 @@ def main():
                         pvs, rvs = f"{pv:,.0f}", f"{rv:,.0f}"
                         chg = f"{((rv/pv-1)*100):+.1f}%" if pv else "–"
                     cmp_rows.append({"지표": k, p_lab: pvs, r_lab: rvs, "변화": chg})
-                st.dataframe(pd.DataFrame(cmp_rows), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(cmp_rows), hide_index=True, width="stretch")
                 # 카테고리별 주문전환율 변화 Top
                 if "cat" in gdt.columns:
                     def _catcr(d):
@@ -3064,7 +3093,7 @@ def main():
                         ch["최근_주문CR"] = ch["최근_주문CR"].map(lambda v: f"{v*100:.2f}%")
                         ch["변화%p"] = ch["변화%p"].map(lambda v: f"{v:+.2f}%p")
                         st.markdown("**카테고리별 주문전환율 변화 (최근 − 직전)**")
-                        st.dataframe(ch, hide_index=True, use_container_width=True, height=260)
+                        st.dataframe(ch, hide_index=True, width="stretch", height=260)
 
         # ── 전사 MTD 발송피로도 시계열 · CTR (인당 발송 강도 vs 효율) ──
         if mtd_data is not None:
@@ -3086,7 +3115,7 @@ def main():
                                   PALETTE["amber"], _CLR[_yc], h=430,
                                   line_suffix=("%" if _yc in _PCT else ""),
                                   title=f"인당 발송 건수(위) vs {_yl}(아래)")
-            st.plotly_chart(mfig, use_container_width=True)
+            st.plotly_chart(mfig, width="stretch")
             st.markdown("**추세 분석**")
             _rows = []
             for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]:
@@ -3095,7 +3124,7 @@ def main():
                 sl = r["slope"] * (100 if k in _PCT else 1)
                 _rows.append(dict(지표=MTD_LABELS[k], 일변화=f"{sl:+.4g}{unit}",
                                   R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
-            st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
             st.markdown('<div class="appendix">인당 발송 건수는 상승하는데 CTR·구매전환율·RPS가 하락하면 '
                         '”발송 강도를 높일수록 효율이 떨어지는” 피로도 신호예요. '
                         '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 데이터를 얼마나 잘 설명하는지 — '
@@ -3151,9 +3180,9 @@ def main():
                                    text=[f"{v:.2f}" for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"BPU별 (가중) {mlabel}"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             st.dataframe(eff_table(bp.sort_values("발송", ascending=False), "BPU"),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width="stretch")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
@@ -3174,13 +3203,13 @@ def main():
                                    text=[f"{v:.2f}" for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"우선순위별 (가중) {mlabel}"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             if n_excluded:
                 excluded_labels = ", ".join(
                     f"{int(k)}순위" for k in pr.loc[pr["캠페인수"] <= 1, "_key"])
                 st.caption(f"캠페인 1건뿐인 {excluded_labels}는 표본이 부족해 차트에서 제외했어요. (표에는 포함)")
             tshow = pr.copy(); tshow["_key"] = tshow["_key"].astype(int).astype(str) + "순위"
-            st.dataframe(eff_table(tshow, "우선순위"), hide_index=True, use_container_width=True)
+            st.dataframe(eff_table(tshow, "우선순위"), hide_index=True, width="stretch")
             # 포지션 효과 간단 진단 (차트에 반영된 표본만 사용)
             if len(pr_chart) >= 3 and pr_chart[mcol].notna().sum() >= 3:
                 r = float(np.corrcoef(pr_chart["_key"], pr_chart[mcol].fillna(pr_chart[mcol].mean()))[0, 1])
@@ -3206,7 +3235,7 @@ def main():
                                        hovertemplate="%{y} · %{x}<br>" + mlabel + ": %{z:.2f}"
                                                      + ("%" if is_pct else "") + "<extra></extra>"))
             fig.update_layout(**base_layout(h=420, title=f"BPU × 우선순위 평균 {mlabel}"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         st.markdown('<div class="appendix">캠페인 수가 적은 BPU·순번은 우연일 수 있으니 건수도 같이 확인해 주세요.</div>',
                     unsafe_allow_html=True)
 
@@ -3270,7 +3299,7 @@ def main():
         else:
             st.plotly_chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
                                     max(360, 40 + 24 * min(len(kdf), int(ktop)))),
-                            use_container_width=True)
+                            width="stretch")
             sel_kw = st.selectbox("키워드를 골라 실제 메시지를 확인해 보세요", list(kdf["단어"]), key="p10_kw")
             if sel_kw:
                 hay = (base["title"].astype(str) + " " + base["body"].astype(str))
@@ -3286,7 +3315,7 @@ def main():
             st.info("조건에 맞는 이모지가 없어요. 이모지를 쓴 캠페인이 적을 수 있어요.")
         else:
             st.plotly_chart(_barfig(edf, "이모지", f"이모지별 평균 {mlabel}",
-                                    max(320, 40 + 28 * len(edf))), use_container_width=True)
+                                    max(320, 40 + 28 * len(edf))), width="stretch")
             eshow = edf.copy()
             if is_pct:
                 eshow["평균"] = eshow["평균"].map(lambda v: f"{v*100:.2f}%")
@@ -3295,7 +3324,7 @@ def main():
                 eshow["평균"] = eshow["평균"].map(won); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.0f}")
             else:
                 eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
-            st.dataframe(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, use_container_width=True)
+            st.dataframe(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
         st.markdown('<div class="appendix">단어/이모지 분석은 캠페인 단위 평균이에요. 건수(n)가 적으면 우연일 수 있어요. '
                     '한 캠페인에서 같은 단어가 여러 번 나와도 1회로 집계해요. 불용어·날짜/시간 숫자는 제외돼요.</div>',
                     unsafe_allow_html=True)
@@ -3337,7 +3366,7 @@ def main():
         lay["showlegend"] = True
         lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
         fig.update_layout(**lay)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # 마모 진단: 각 속성의 주차 추세 회귀(기울기) + 사용 빈도 추이
         st.markdown("##### 🔻 마모 진단")
@@ -3356,7 +3385,7 @@ def main():
                                  상관r=round(float(rr), 2), 유의성=sig_label(pp)))
             else:
                 diag.append(dict(속성=t, 주차수=len(pts), 추세="표본부족", 상관r=np.nan, 유의성="–"))
-        st.dataframe(pd.DataFrame(diag), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(diag), hide_index=True, width="stretch")
 
         # 속성 사용 빈도(발송수) 추이 — 너무 자주 쓰면 마모 위험
         st.markdown("##### 📨 속성 사용 빈도 추이")
@@ -3369,7 +3398,7 @@ def main():
         layf["showlegend"] = True
         layf["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
         figf.update_layout(**layf)
-        st.plotly_chart(figf, use_container_width=True)
+        st.plotly_chart(figf, width="stretch")
         st.markdown('<div class="appendix">상관 r이 음수이고 유의하면 "반복 소구로 효과가 닳고 있다"는 신호예요. '
                     '사용 빈도가 늘면서 성과가 떨어지면 해당 소구를 잠시 쉬는 전략을 고려해 보세요. '
                     '카테고리·시즌 구성 변화가 섞일 수 있어요.</div>', unsafe_allow_html=True)
@@ -3415,7 +3444,7 @@ def main():
                                  PALETTE["amber"], MCLR[yc], h=430,
                                  line_suffix=("%" if yc in MTD_PCT else ""),
                                  title=f"인당 발송 건수(위) vs {ylab}(아래)")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             st.markdown("##### 추세 분석")
             rows = []
@@ -3425,7 +3454,7 @@ def main():
                 sl = r["slope"] * (100 if k in MTD_PCT else 1)
                 rows.append(dict(지표=MTD_LABELS[k], **{"일변화": f"{sl:+.4g}{unit}"},
                                  R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
             st.markdown('<div class="appendix">인당 발송 건수는 상승, CTR·구매전환율·RPS는 하락 추세라면 '
                         '”발송 강도를 높일수록 효율이 떨어지는” 피로도 신호예요. '
                         '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 데이터를 얼마나 잘 설명하는지 — '
@@ -3446,7 +3475,7 @@ def main():
                                        text=[f"{v:.2f}" for v in y], textposition="outside"))
                 fig.update_layout(**base_layout(h=340, ysuffix=("%" if mc in MTD_PCT else ""),
                                                 title=f"인당 발송 구간별 평균 {lab} (표본 30일+)"))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
             st.markdown("##### 발송량 5분위 효율")
             q = mtd_data["quintile"]
@@ -3463,7 +3492,7 @@ def main():
                                      bar_suffix=("%" if m1 in MTD_PCT else ""),
                                      line_suffix=("%" if m2 in MTD_PCT else ""),
                                      title="발송량 5분위(Q1 소량→Q5 대량)")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
         # ── F3. 한계수익 ──
         elif page.startswith("F3"):
@@ -3481,7 +3510,7 @@ def main():
                                        marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in diff],
                                        text=[f"{v:+.2f}" for v in diff], textposition="outside"))
                 fig.update_layout(**base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
                 st.markdown('<div class="appendix">값이 마이너스면 그 구간부터는 더 보낼수록 '
                             '효율이 오히려 줄어드는 역효과 구간이에요.</div>', unsafe_allow_html=True)
             else:
@@ -3500,7 +3529,7 @@ def main():
                                    text=[f"{v:.2f}" for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=320, ysuffix=("%" if mc in MTD_PCT else ""),
                                             title=f"요일별 평균 {lab}"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             dc = pd.DataFrame(mtd_data["dow_comp"])
             if len(dc):
                 st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -3512,7 +3541,7 @@ def main():
                     "저발송일 RPS": dc["lowRps"].map("{:,.0f}".format),
                     "고발송일 RPS": dc["highRps"].map("{:,.0f}".format),
                 })
-                st.dataframe(show, hide_index=True, use_container_width=True)
+                st.dataframe(show, hide_index=True, width="stretch")
                 st.markdown('<div class="appendix">같은 요일인데 발송이 적은 날의 CTR·RPS가 더 높다면, '
                             '발송 강도 자체가 효율을 떨어뜨린다는 (요일 효과를 통제한) 근거예요.</div>',
                             unsafe_allow_html=True)
@@ -3550,7 +3579,7 @@ def main():
         lay = base_layout(h=max(280, 40 + 30 * len(g)), title=f"세그먼트별 평균 {mlabel}")
         lay["xaxis"]["range"] = [0, float(yv.max()) * 1.18] if len(yv) else None
         fig.update_layout(**lay); fig.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         gshow = g.rename(columns={"target": "세그먼트"}).copy()
         gshow["CTR"] = gshow["CTR"].map(lambda v: f"{v*100:.2f}%")
         gshow["주문CR"] = gshow["주문CR"].map(lambda v: f"{v*100:.2f}%")
@@ -3558,7 +3587,7 @@ def main():
             gshow[_c] = gshow[_c].map(won)
         st.dataframe(gshow[["세그먼트", "캠페인수", "발송", "CTR", "주문CR", "RPS", "AOV", "거래액"]]
                      .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}"}),
-                     hide_index=True, use_container_width=True)
+                     hide_index=True, width="stretch")
 
         st.markdown("##### 세그먼트별 잘 먹히는 소구")
         recs = []
@@ -3580,7 +3609,7 @@ def main():
                              "보유n": best[2]})
         if recs:
             st.dataframe(pd.DataFrame(recs).style.format({"보유n": "{:,.0f}"}),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width="stretch")
         else:
             st.caption("세그먼트별 데이터가 부족해요.")
 
@@ -3598,7 +3627,7 @@ def main():
                 hovertemplate="세그:%{y}<br>카테고리:%{x}<br>" + mlabel + ":%{z:.2f}<extra></extra>"))
             fig.update_layout(**base_layout(h=max(300, 70 + 30 * len(piv.index)),
                                             title=f"타겟×카테고리 평균 {mlabel}"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             st.caption("각 세그먼트에서 잘 먹히는 카테고리를 다음 발송에 써 보세요. 건수 적은 칸은 참고용이에요.")
         else:
             st.caption("카테고리 데이터가 없어서 건너뛸게요.")
@@ -3623,7 +3652,7 @@ def main():
             disp = fdfr.copy()
             for c in _rate:
                 disp[c] = disp[c].map(lambda v: f"{v*100:.1f}%" if pd.notna(v) else "–")
-            st.dataframe(disp, hide_index=True, use_container_width=True)
+            st.dataframe(disp, hide_index=True, width="stretch")
             overall = {}
             for lbl, nu, de in _stages:
                 if nu in seg and de in seg and seg[de].sum() > 0:
@@ -3660,10 +3689,10 @@ def main():
                                       hover="x")
                     lay["showlegend"] = True
                     fig.update_layout(**lay)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                     if slopes:
                         st.dataframe(pd.DataFrame(slopes).style.format({"주차수": "{:,.0f}"}),
-                                     hide_index=True, use_container_width=True)
+                                     hide_index=True, width="stretch")
                     st.caption("하락 추세인 세그먼트는 그 소구가 닳고 있다는 신호예요. 메시지나 오퍼를 바꿔 보세요.")
                 else:
                     st.caption(f"'{tagsel}' 캠페인이 6건 이상 있어야 해요.")
@@ -3713,10 +3742,10 @@ def main():
             lay["showlegend"] = True
             lay["xaxis"]["ticksuffix"] = "%"; lay["yaxis"]["ticksuffix"] = "%"
             fig.update_layout(**lay)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             qsum = d["사분면"].value_counts().reset_index()
             qsum.columns = ["사분면", "캠페인수"]
-            st.dataframe(qsum.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, use_container_width=True)
+            st.dataframe(qsum.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
             st.caption(f"기준선: CTR 중앙값 {mx*100:.2f}% · 주문CR 중앙값 {my*100:.2f}%. "
                        "🟡는 들어왔는데 안 산 케이스 — 오퍼/상품/랜딩을, 🔵는 적게 들어왔지만 잘 산 케이스 — 제목/타겟 확대를 권장.")
             qpick = st.selectbox("사분면 선택 → 캠페인 보기", list(qsum["사분면"]), key="p14_quad")
@@ -3750,7 +3779,7 @@ def main():
             lay = base_layout(h=420, title="주문CR(많이) × AOV(비싸게) — 점 크기=거래액")
             lay["xaxis"]["ticksuffix"] = "%"
             fig.update_layout(**lay)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             gs = gg.sort_values("거래액", ascending=False).copy()
             gs["전략"] = [("박리다매(전환↑·객단↓)" if cr >= mcr and av < mav else
                           "고가저빈도(전환↓·객단↑)" if cr < mcr and av >= mav else
@@ -3760,7 +3789,7 @@ def main():
             gs["AOV"] = gs["AOV"].map(won); gs["거래액"] = gs["거래액"].map(won)
             st.dataframe(gs.rename(columns={dcol: dimname})[[dimname, "캠페인수", "주문CR", "AOV", "거래액", "전략"]]
                          .style.format({"캠페인수": "{:,.0f}"}),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width="stretch")
             st.caption("올라운더는 더 밀고, 박리다매는 업셀로 객단가를, 고가저빈도는 전환을 보완해 보세요.")
         else:
             st.caption("차원별 3캠페인 이상 있어야 해요.")
@@ -3800,13 +3829,13 @@ def main():
             lay = base_layout(h=max(280, 40 + 28 * len(g)), title=f"{title} — 평균 {mlabel} (빨간선=전체평균)")
             lay["xaxis"]["range"] = [0, float(yv.max()) * 1.22] if len(yv) else None
             fig.update_layout(**lay); fig.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             gs = g.copy()
             gs["지표"] = gs["지표"].map(lambda v: f"{v*100:.2f}%" if is_pct else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}"))
             gs["거래액"] = gs["거래액"].map(won)
             st.dataframe(gs.rename(columns={dimcol: title})[[title, "캠페인수", "발송", "지표", "거래액"]]
                          .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}"}),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width="stretch")
 
         st.markdown("##### ① 발송유형별 성과")
         _rank("stype", "발송유형", minn=3, topn=15)
@@ -3846,7 +3875,7 @@ def main():
                 sshow["지표"] = sshow["지표"].map(_fmtv)
                 st.dataframe(sshow.rename(columns={"dow_k": "요일"})[["요일", "시간", "캠페인수", "지표", "발송"]]
                              .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}"}),
-                             hide_index=True, use_container_width=True)
+                             hide_index=True, width="stretch")
             else:
                 st.caption("슬롯 데이터가 부족해요.")
 
@@ -3867,7 +3896,7 @@ def main():
         if trows:
             tdf = pd.DataFrame(trows).sort_values("_l", ascending=False)
             st.dataframe(tdf[["소구", "보유평균", "리프트", "보유n", "유의성"]].head(6)
-                         .style.format({"보유n": "{:,.0f}"}), hide_index=True, use_container_width=True)
+                         .style.format({"보유n": "{:,.0f}"}), hide_index=True, width="stretch")
             top_tags = tdf.head(3)["소구"].tolist()
         else:
             st.caption("소구 리프트 표본 부족.")
@@ -3907,7 +3936,7 @@ def main():
                 row["기대 " + goal] = _fmtv(sg[gcol].mean())
                 play.append(row)
         if play:
-            st.dataframe(pd.DataFrame(play), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(play), hide_index=True, width="stretch")
             st.caption("위 조합은 과거 성과가 좋았던 패턴이에요. 다음 주 캘린더에 세그먼트×슬롯×카테고리×소구로 배치해 보세요.")
         else:
             st.caption("세그먼트(target) 데이터가 없어 조합 추천을 건너뜁니다.")
@@ -4007,15 +4036,15 @@ def main():
                 lay = base_layout(h=300, title="기여율 분포 (200% 초과는 200%로 표시)")
                 fig.update_layout(**lay)
                 fig.update_xaxes(ticksuffix="%")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
                 show = a.sort_values("기여율", ascending=False)
                 st.markdown("**기여율 높은 기획전 — 발송이 매출을 주도**")
                 st.dataframe(promo_perf_table(show.head(15)),
-                             hide_index=True, use_container_width=True)
+                             hide_index=True, width="stretch")
                 lowbase = show[show["inf_amt"] >= show["inf_amt"].median()]
                 st.markdown("**기여율 낮은 기획전 (유입거래액 중앙값 이상) — 자연유입 비중↑, 발송 강화 여지**")
                 st.dataframe(promo_perf_table(lowbase.sort_values("기여율").head(15)),
-                             hide_index=True, use_container_width=True)
+                             hide_index=True, width="stretch")
 
         # ── ② 발송 효율 순위 ──
         with tabB:
@@ -4028,7 +4057,7 @@ def main():
                        "발송수": "send"}
             b = b.sort_values(sortmap[order], ascending=False, na_position="last")
             st.dataframe(promo_perf_table(b.head(50)),
-                         hide_index=True, use_container_width=True, height=520)
+                         hide_index=True, width="stretch", height=520)
             st.markdown('<div class="appendix">'
                         '컬럼은 <b>발송 성과</b>(발송 데이터)와 <b>기획전 성과</b>(기획전 성과시트)로 나뉘어요. '
                         '같은 UV라도 <b>발송 성과·UV</b>=발송 유입 UV, <b>기획전 성과·UV</b>=기획전 시트의 기획전 UV로 출처가 달라요.<br>'
@@ -4059,11 +4088,11 @@ def main():
             })
             st.dataframe(summary.style.format({"기획전수": "{:,.0f}", "평균매출": "{:,.0f}",
                          "중앙값매출": "{:,.0f}", "합계매출": "{:,.0f}"}),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width="stretch")
             fig = go.Figure(go.Bar(x=["발송함", "발송안함"], y=[sset.mean(), uset.mean()],
                                    marker_color=[PALETTE["green"], PALETTE["slate"]]))
             fig.update_layout(**base_layout(h=320, title=f"발송 유무별 평균 {base_lbl}"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             p = welch(sset.dropna().values, uset.dropna().values)
             st.caption(f"평균 차이 통계 유의성: {sig_label(p)} · 발송 {len(sset):,}건 vs 미발송 {len(uset):,}건")
             st.markdown('<div class="appendix">평균은 초대형 기획전에 휘둘리니 중앙값도 함께 보세요. '
@@ -4094,7 +4123,7 @@ def main():
                 lay["showlegend"] = True
                 lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
                 fig.update_layout(**lay)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
                 cnt = P2.groupby(["월", "발송"]).size().reset_index(name="기획전수")
                 figc = go.Figure()
                 for flag, name, clr in [(True, "발송 기획전", PALETTE["green"]),
@@ -4106,7 +4135,7 @@ def main():
                 layc["showlegend"] = True
                 layc["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
                 figc.update_layout(**layc)
-                st.plotly_chart(figc, use_container_width=True)
+                st.plotly_chart(figc, width="stretch")
                 st.caption("기획전 시작월 기준 집계예요. 발송이 본격화된 시점 전후로 초록 선의 "
                            "매출 규모가 어떻게 변했는지 살펴보세요.")
 
@@ -4120,7 +4149,7 @@ def main():
         st.markdown(f"**머지 결과** — 전체 {len(raw)}건 · 문구 매칭 {raw['matched'].sum()}건 "
                     f"({raw['matched'].mean()*100:.0f}%)")
         st.dataframe(df.drop(columns=["dt"], errors="ignore"), hide_index=True,
-                     use_container_width=True, height=420)
+                     width="stretch", height=420)
         # ── 머지 전체 데이터 다운로드 (기획 문구 + 실적 성과) ──
         st.markdown("##### 📊 머지 전체 데이터 다운로드")
         st.caption("문구와 성과를 합친 전체 데이터예요. 자동분류 속성 컬럼도 포함돼요.")
@@ -4132,8 +4161,8 @@ def main():
         d1.download_button(
             f"📥 CSV 다운로드 ({len(dl_df):,}건)",
             dl_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name="발송성과_머지전체.csv", mime="text/csv", use_container_width=True)
-        if d2.button(f"📊 엑셀 생성 ({len(dl_df):,}건)", key="gen_full_xlsx", use_container_width=True):
+            file_name=f"발송성과_머지전체_{datetime.date.today():%Y%m%d}.csv", mime="text/csv", width="stretch")
+        if d2.button(f"📊 엑셀 생성 ({len(dl_df):,}건)", key="gen_full_xlsx", width="stretch"):
             try:
                 with st.spinner("엑셀 생성 중…"):
                     st.session_state["full_xlsx"] = df_to_xlsx_bytes(dl_df)
@@ -4144,7 +4173,7 @@ def main():
         if st.session_state.get("full_xlsx"):
             st.download_button(
                 f"📥 머지 전체 데이터 엑셀(xlsx) 다운로드 ({st.session_state.get('full_xlsx_n', 0):,}건)",
-                st.session_state["full_xlsx"], file_name="발송성과_머지전체.xlsx",
+                st.session_state["full_xlsx"], file_name=f"발송성과_머지전체_{datetime.date.today():%Y%m%d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         # ── 종합 리포트(엑셀) 내보내기 ──
@@ -4161,7 +4190,7 @@ def main():
         if st.session_state.get("report_xlsx"):
             st.download_button(
                 "📥 종합 리포트(xlsx) 다운로드", st.session_state["report_xlsx"],
-                file_name="발송성과_리포트.xlsx",
+                file_name=f"발송성과_리포트_{datetime.date.today():%Y%m%d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -4170,7 +4199,7 @@ def main():
         if len(miss):
             st.dataframe(miss.rename(columns={"date": "날짜", "af": "AF코드", "cat": "카테고리",
                                               "brand": "브랜드", "send": "발송", "amt": "거래액"}),
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width="stretch")
             st.caption("AF코드 오타·미등록·날짜 불일치 가능성이 있어요. 기획 파일을 확인해 보세요.")
         else:
             st.success("모든 실적 캠페인에 문구가 매칭됐어요.")

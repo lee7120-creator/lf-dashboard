@@ -401,3 +401,33 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
 - `scrolling=True` — 내부 스크롤 허용
 - Streamlit iframe 내부라 `window.localStorage`는 정상 작동함
 - 외부 폰트(Google Fonts)는 iframe 내부에서도 로드됨
+
+---
+
+## 발송성과 대시보드 (send_perf_dashboard.py) 개발 규칙
+
+### 차트 공통 규칙
+- **모든 차트 레이아웃은 `base_layout()`** 을 쓴다 — 폰트(Pretendard)·호버라벨·막대 라운딩 포함.
+  시계열이면 `base_layout(..., hover="x")` 로 통합 툴팁+크로스헤어를 켠다.
+- **이중축(두 y축) 금지** — 스케일이 다른 두 지표는 `stacked_panels()` (X축 공유 상막대/하선 패널) 사용.
+- **소구 속성 시리즈 색은 `tag_color(속성명)`** — TAG_BOOLS 순서에 고정. 필터가 바뀌어도 같은 속성=같은 색.
+- 시간대(HHMM) 표시는 반드시 `fmt_hhmm()`(차트/표) 또는 `_hm_label()`(셀렉트박스 format_func).
+  `int(hour)`를 그대로 문자열에 붙이면 1050 → "1050시" 버그가 된다.
+- `use_container_width` 금지(Streamlit 제거 예정) — **`width="stretch"`** 사용.
+
+### 페이지 작성 규칙
+- 모든 페이지 하단에 **`glossary()`** 호출 (용어 주석 접이식). 새 용어를 쓰면 glossary()에 항목 추가.
+- 문구 표+원문 보기는 `render_messages(df, mcol, key)` 재사용 — 행클릭(on_select) 연동 포함.
+- 행클릭·셀렉트박스를 직접 만들 땐, 지표/정렬 변경으로 세션 선택값이 무효가 될 수 있으니
+  `if st.session_state.get(key) not in opts: st.session_state.pop(key)` 가드를 넣는다.
+
+### 폰트
+- Pretendard 전면 적용: `.streamlit/config.toml`의 `theme.font`+`fontFaces`(표는 캔버스 렌더링이라
+  CSS로는 안 바뀌고 테마로만 적용됨) + 앱 CSS @import(이중 안전망) + `base_layout` font family.
+- CSS로 폰트를 만질 때 Material 아이콘(`[data-testid="stIconMaterial"]`) 폰트는 보호할 것.
+
+### 데이터 파싱 주의
+- 실적 날짜 헤더는 변형 다양(`일자`, `일자(8자리)`, `발송일자`…) — `parse_perf_bytes`의 퍼지 매칭 유지.
+- 기획 시트명은 무슬래시 형식(`1월 1주차(1229~14)`) — `_week_sheet_end_date`가 'N월' 힌트로 분해.
+- 6자리 날짜 오타(`250111`)는 `_norm_date`가 `20`을 붙여 복구.
+- 매칭 키는 `(date, af)` 정확 일치 — AF코드만으로 폴백하면 매주 재사용되는 코드라 엉뚱한 문구가 붙는다.
