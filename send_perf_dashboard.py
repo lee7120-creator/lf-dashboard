@@ -2650,8 +2650,8 @@ def main():
             return (f'<div style="font-size:12px;font-weight:600;margin-top:3px;'
                     f'color:{"#dc2626" if _neg else "#16a34a"}">'
                     f'{"▼" if _neg else "▲"} {d} {label} 대비</div>')
-        k = st.columns(5)
-        for col, met in zip(k, ["발송", "거래액", "CTR", "주문CR", "RPS"]):
+        k = st.columns(6)
+        for col, met in zip(k, ["발송", "UV", "CTR", "주문CR", "거래액", "RPS"]):
             _d = _dlt(met, cur_w[met], prev_w[met])
             _y = _dlt(met, cur_w[met], (yoy_w[met] if yoy_w else np.nan))
             col.markdown(
