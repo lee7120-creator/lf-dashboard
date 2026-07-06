@@ -2805,24 +2805,35 @@ def main():
                         d = cur - prev
                         return f"△{abs(d):,}명" if d < 0 else f"+{d:,}명"
 
+                    # 날짜 정보를 컬럼명에 동적으로 기입하기 위해 포맷팅 문자열 생성
+                    _cur_range = _rng_short(_cur_ws)
+                    _prev_range = _rng_short(_prev_ws)
+                    col_consent = f"주말 동의수 ({_cur_range})"
+                    col_added = f"주간 신규추가 ({_cur_range})"
+                    col_removed = f"주간 기존탈 ({_cur_range})"
+                    col_diff = f"주간 순증감 ({_cur_range})"
+                    col_con_diff = "동의수 증감(전주비)"
+                    col_add_pct = "신규추가 전주비"
+                    col_rem_pct = "기존탈 전주비"
+
                     push_summary.append({
                         "구분": g,
-                        "주말 동의수": f"{c_con:,.0f}명" if pd.notna(c_con) else "–",
-                        "동의수 증감(전주비)": _d_val_str(c_con, p_con),
-                        "주간 신규추가": f"{c_add:,.0f}명" if pd.notna(c_add) else "–",
-                        "신규추가 전주비": _d_str(c_add, p_add),
-                        "주간 기존탈": f"{c_rem:,.0f}명" if pd.notna(c_rem) else "–",
-                        "기존탈 전주비": _d_str(c_rem, p_rem),
-                        "주간 순증감": f"{c_dif:+,.0f}명" if pd.notna(c_dif) else "–"
+                        col_consent: f"{c_con:,.0f}명" if pd.notna(c_con) else "–",
+                        col_con_diff: _d_val_str(c_con, p_con),
+                        col_added: f"{c_add:,.0f}명" if pd.notna(c_add) else "–",
+                        col_add_pct: _d_str(c_add, p_add),
+                        col_removed: f"{c_rem:,.0f}명" if pd.notna(c_rem) else "–",
+                        col_rem_pct: _d_str(c_rem, p_rem),
+                        col_diff: f"{c_dif:+,.0f}명" if pd.notna(c_dif) else "–"
                     })
 
             if push_summary:
                 push_sum_df = pd.DataFrame(push_summary)
                 st.dataframe(
-                    push_sum_df.style.map(_clr, subset=["동의수 증감(전주비)", "신규추가 전주비", "기존탈 전주비"]),
+                    push_sum_df.style.map(_clr, subset=[col_con_diff, col_add_pct, col_rem_pct]),
                     hide_index=True, width="stretch"
                 )
-                st.caption(f"기준주 ({_rng_short(_cur_ws)}) vs 전주 ({_rng_short(_prev_ws)}) 앱푸시 수신동의 지표 비교 데이터예요. "
+                st.caption(f"기준주 ({_md(_rng_short(_cur_ws))}) vs 전주 ({_md(_rng_short(_prev_ws))}) 앱푸시 수신동의 지표 비교 데이터예요. "
                            f"마이너스 수치는 **△** 로 표기되며 붉은색으로 강조돼요.")
             else:
                 st.info("해당 기간의 앱푸시 동의 현황 데이터가 부재합니다.")
