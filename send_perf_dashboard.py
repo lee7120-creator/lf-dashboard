@@ -3007,8 +3007,21 @@ def main():
             if "cat" not in cwd.columns or len(pwd) == 0:
                 st.info("전주 데이터가 없어 분해할 수 없어요.")
             else:
-                curS = cwd.groupby("cat")["amt"].sum()
-                prvS = pwd.groupby("cat")["amt"].sum()
+                cur_g = cwd.groupby("cat").agg(
+                    send=("send", "sum"),
+                    uv=("uv", "sum"),
+                    oc=("oc", "sum"),
+                    amt=("amt", "sum")
+                )
+                prv_g = pwd.groupby("cat").agg(
+                    send=("send", "sum"),
+                    uv=("uv", "sum"),
+                    oc=("oc", "sum"),
+                    amt=("amt", "sum")
+                )
+                
+                curS = cur_g["amt"]
+                prvS = prv_g["amt"]
                 union = curS.index.union(prvS.index)
                 union = [c for c in union if str(c).strip() not in ("", "nan", "None")]
                 dif = (curS.reindex(union).fillna(0) - prvS.reindex(union).fillna(0))
@@ -3037,14 +3050,59 @@ def main():
                                  f"({_dlt('거래액', cur_tot, prev_tot)})"
                 ))
                 st.plotly_chart(figw, width="stretch")
-                wrows = [{"카테고리": str(c),
-                          "전주": won(float(prvS.get(c, 0))), "기준주": won(float(curS.get(c, 0))),
-                          "증감액": _damt(float(v)),
-                          "전주비": _dlt("거래액", float(curS.get(c, 0)), float(prvS.get(c, np.nan)))}
-                         for c, v in dif.items() if c != "기타"]
+                
+                wrows = []
+                top8_cats = [x for x in dif.index if x != "기타"]
+                for c in dif.index:
+                    if c == "기타":
+                        p_send = float(prv_g.drop(index=top8_cats, errors="ignore")["send"].sum())
+                        p_uv = float(prv_g.drop(index=top8_cats, errors="ignore")["uv"].sum())
+                        p_oc = float(prv_g.drop(index=top8_cats, errors="ignore")["oc"].sum())
+                        p_amt = float(prv_g.drop(index=top8_cats, errors="ignore")["amt"].sum())
+                        
+                        c_send = float(cur_g.drop(index=top8_cats, errors="ignore")["send"].sum())
+                        c_uv = float(cur_g.drop(index=top8_cats, errors="ignore")["uv"].sum())
+                        c_oc = float(cur_g.drop(index=top8_cats, errors="ignore")["oc"].sum())
+                        c_amt = float(cur_g.drop(index=top8_cats, errors="ignore")["amt"].sum())
+                    else:
+                        p_send = float(prv_g.loc[c, "send"]) if c in prv_g.index else 0.0
+                        p_uv = float(prv_g.loc[c, "uv"]) if c in prv_g.index else 0.0
+                        p_oc = float(prv_g.loc[c, "oc"]) if c in prv_g.index else 0.0
+                        p_amt = float(prv_g.loc[c, "amt"]) if c in prv_g.index else 0.0
+                        
+                        c_send = float(cur_g.loc[c, "send"]) if c in cur_g.index else 0.0
+                        c_uv = float(cur_g.loc[c, "uv"]) if c in cur_g.index else 0.0
+                        c_oc = float(cur_g.loc[c, "oc"]) if c in cur_g.index else 0.0
+                        c_amt = float(cur_g.loc[c, "amt"]) if c in cur_g.index else 0.0
+                    
+                    p_ctr = p_uv / p_send if p_send > 0 else 0.0
+                    c_ctr = c_uv / c_send if c_send > 0 else 0.0
+                    p_cr = p_oc / p_uv if p_uv > 0 else 0.0
+                    c_cr = c_oc / c_uv if c_uv > 0 else 0.0
+                    p_rps = p_amt / p_send if p_send > 0 else 0.0
+                    c_rps = c_amt / c_send if c_send > 0 else 0.0
+                    
+                    v = dif.get(c, 0.0)
+                    wrows.append({
+                        "카테고리": str(c),
+                        "전주 거래액": won(p_amt),
+                        "기준주 거래액": won(c_amt),
+                        "거래액 증감": _damt(v),
+                        "거래액 전주비": _dlt("거래액", c_amt, p_amt if p_amt > 0 else np.nan),
+                        "전주 발송": f"{p_send:,.0f}",
+                        "기준주 발송": f"{c_send:,.0f}",
+                        "전주 CTR": f"{p_ctr:.2%}",
+                        "기준주 CTR": f"{c_ctr:.2%}",
+                        "전주 UV": f"{p_uv:,.0f}",
+                        "기준주 UV": f"{c_uv:,.0f}",
+                        "전주 CR": f"{p_cr:.2%}",
+                        "기준주 CR": f"{c_cr:.2%}",
+                        "전주 RPS": f"{p_rps:,.0f}원",
+                        "기준주 RPS": f"{c_rps:,.0f}원",
+                    })
                 if wrows:
-                    st.dataframe(pd.DataFrame(wrows).style.map(_clr, subset=["증감액", "전주비"]),
-                                 hide_index=True, width="stretch", height=300)
+                    st.dataframe(pd.DataFrame(wrows).style.map(_clr, subset=["거래액 증감", "거래액 전주비"]),
+                                 hide_index=True, width="stretch", height=320)
                 st.markdown('<div class="appendix">카테고리별 전주 대비 거래액 증감 기여도입니다. '
                             '녹색은 매출 상승 기여, 적색(△)은 매출 감소 기여를 의미하며, 기여도가 큰 8개만 표시하고 나머지는 기타로 합산했습니다.</div>', unsafe_allow_html=True)
 
