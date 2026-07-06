@@ -2074,7 +2074,7 @@ def main():
         if _n_new and not _n_saved:
             st.warning("저장된 데이터가 0건이에요. 「💾 저장하기」를 눌러야 다음에도 유지돼요.")
 
-        # ── 통합 백업: 캠페인+MTD+기획전을 한 ZIP 파일로 ──
+        # ── 통합 백업: 캠페인+MTD+기획전+앱푸시 데이터를 한 ZIP 파일로 ──
         st.markdown("##### 📦 통합 백업 (한 파일)")
         import zipfile as _zf
         _zbuf = io.BytesIO()
@@ -2092,12 +2092,18 @@ def main():
                 _z.writestr("promo.csv",
                     promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"))
                 _has_any = True
+            # 앱푸시 수신동의 데이터 연동 백업
+            _push_df = st.session_state.get("push_consent_df")
+            if _push_df is not None and not _push_df.empty:
+                _z.writestr("push_consent.csv",
+                    _push_df.to_csv(index=False).encode("utf-8-sig"))
+                _has_any = True
         if _has_any:
             st.download_button(
                 "⬇ 통합 백업 (전체 ZIP)", _zbuf.getvalue(),
                 file_name=f"lf_dashboard_backup_{datetime.date.today():%Y%m%d}.zip", mime="application/zip",
                 width="stretch", key="bak_all")
-            st.caption("캠페인·MTD·기획전을 한 파일로 백업해요. 이 ZIP을 아래에 올리면 한 번에 복원돼요.")
+            st.caption("캠페인·MTD·기획전·앱푸시 수신동의 데이터를 모두 포함하여 백업합니다. 이 ZIP 파일을 아래에 다시 올리면 원클릭으로 일괄 복원됩니다.")
         _rest_all = st.file_uploader("통합 백업 복원하기 (ZIP/CSV)", type=["zip", "csv"], key="restore_all",
                                      help="통합 백업(ZIP) 또는 예전 캠페인 백업(CSV) 모두 올릴 수 있어요.")
         if _rest_all is not None:
@@ -2112,54 +2118,67 @@ def main():
                     st.error(f"복원하지 못했어요: {e}")
 
         st.markdown("---")
-        st.markdown("##### 개별 백업 (선택)")
-        if len(work):
-            st.download_button(
-                f"⬇ 캠페인 백업 (CSV · {len(work):,}건)",
-                work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"send_perf_store_backup_{datetime.date.today():%Y%m%d}.csv", mime="text/csv", width="stretch")
-        if st.button("🗑 전부 지우기", width="stretch", key="clear_store"):
-            storage_clear(BK, "campaign")
-            st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
-            st.cache_data.clear()
-            st.success("지웠어요. 새로고침해 주세요.")
-        st.markdown("---")
-        st.caption(f"전사 MTD {0 if mtd_work is None else len(mtd_work)}일치")
-        if mtd_work is not None and len(mtd_work):
-            st.download_button(
-                "⬇ MTD 백업 (CSV)",
-                mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"),
-                file_name="send_perf_mtd_backup.csv", mime="text/csv",
-                width="stretch", key="mtd_bak")
-        if st.button("🗑 MTD 지우기", width="stretch", key="clear_mtd"):
-            storage_clear(BK, "mtd")
-            st.session_state.mtd_store_df = pd.DataFrame(columns=MTD_STORE_COLS)
-            st.cache_data.clear()
-            st.success("MTD를 지웠어요. 새로고침해 주세요.")
-        st.markdown("---")
-        st.caption(f"기획전 성과 {0 if promo_work is None else len(promo_work):,}건")
-        if promo_work is not None and len(promo_work):
-            st.download_button(
-                "⬇ 기획전 백업 (CSV)",
-                promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"),
-                file_name="send_perf_promo_backup.csv", mime="text/csv",
-                width="stretch", key="promo_bak")
-        rest_p = st.file_uploader("기획전 백업 CSV로 복원하기", type=["csv"], key="restore_promo")
-        if rest_p is not None:
-            try:
-                dp = pd.read_csv(rest_p, encoding="utf-8-sig", dtype={"promo": str})
-                merged_p = merge_promo_store(st.session_state.get("promo_store_df"), dp)
-                storage_save(BK, "promo", merged_p)
-                st.session_state.promo_store_df = merged_p
+        # ── 지저분한 개별 제어기는 서브 expander 안으로 숨겨서 정돈 ──
+        with st.expander("⚙️ 개별 데이터 관리 및 영구 삭제", expanded=False):
+            st.markdown("##### 개별 백업 (선택)")
+            if len(work):
+                st.download_button(
+                    f"⬇ 캠페인 백업 (CSV · {len(work):,}건)",
+                    work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"send_perf_store_backup_{datetime.date.today():%Y%m%d}.csv", mime="text/csv", width="stretch")
+            if st.button("🗑 캠페인 DB 지우기", width="stretch", key="clear_store"):
+                storage_clear(BK, "campaign")
+                st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
                 st.cache_data.clear()
-                st.success("기획전 복원했어요 ✓ 새로고침해 주세요")
-            except Exception as e:
-                st.error(f"기획전 복원하지 못했어요: {e}")
-        if st.button("🗑 기획전 지우기", width="stretch", key="clear_promo"):
-            storage_clear(BK, "promo")
-            st.session_state.promo_store_df = pd.DataFrame(columns=PROMO_STORE_COLS)
-            st.cache_data.clear()
-            st.success("기획전을 지웠어요. 새로고침해 주세요.")
+                st.success("지웠어요. 새로고침해 주세요.")
+
+            st.markdown("---")
+            st.caption(f"전사 MTD {0 if mtd_work is None else len(mtd_work)}일치")
+            if mtd_work is not None and len(mtd_work):
+                st.download_button(
+                    "⬇ MTD 백업 (CSV)",
+                    mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"),
+                    file_name="send_perf_mtd_backup.csv", mime="text/csv",
+                    width="stretch", key="mtd_bak")
+            if st.button("🗑 MTD DB 지우기", width="stretch", key="clear_mtd"):
+                storage_clear(BK, "mtd")
+                st.session_state.mtd_store_df = pd.DataFrame(columns=MTD_STORE_COLS)
+                st.cache_data.clear()
+                st.success("MTD를 지웠어요. 새로고침해 주세요.")
+
+            st.markdown("---")
+            st.caption(f"기획전 성과 {0 if promo_work is None else len(promo_work):,}건")
+            if promo_work is not None and len(promo_work):
+                st.download_button(
+                    "⬇ 기획전 백업 (CSV)",
+                    promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"),
+                    file_name="send_perf_promo_backup.csv", mime="text/csv",
+                    width="stretch", key="promo_bak")
+            rest_p = st.file_uploader("기획전 백업 CSV로 복원하기", type=["csv"], key="restore_promo")
+            if rest_p is not None:
+                try:
+                    dp = pd.read_csv(rest_p, encoding="utf-8-sig", dtype={"promo": str})
+                    merged_p = merge_promo_store(st.session_state.get("promo_store_df"), dp)
+                    storage_save(BK, "promo", merged_p)
+                    st.session_state.promo_store_df = merged_p
+                    st.cache_data.clear()
+                    st.success("기획전 복원했어요 ✓ 새로고침해 주세요")
+                except Exception as e:
+                    st.error(f"기획전 복원하지 못했어요: {e}")
+            if st.button("🗑 기획전 DB 지우기", width="stretch", key="clear_promo"):
+                storage_clear(BK, "promo")
+                st.session_state.promo_store_df = pd.DataFrame(columns=PROMO_STORE_COLS)
+                st.cache_data.clear()
+                st.success("기획전을 지웠어요. 새로고침해 주세요.")
+
+            st.markdown("---")
+            _p_df = st.session_state.get("push_consent_df")
+            st.caption(f"앱푸시 동의 {0 if _p_df is None else len(_p_df)//3:,}일치")
+            if _p_df is not None and not _p_df.empty:
+                if st.button("🗑 앱푸시 세션 데이터 지우기", width="stretch", key="clear_push_sidebar"):
+                    st.session_state.pop("push_consent_df", None)
+                    st.session_state.pop("push_consent_hash", None)
+                    st.success("앱푸시 데이터를 지웠어요. 새로고침해 주세요.")
         st.markdown("---")
         st.caption(f"저장 위치: {BK['status']}")
         if BK["mode"] != "gsheets":
