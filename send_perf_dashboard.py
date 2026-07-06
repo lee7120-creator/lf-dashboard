@@ -2071,7 +2071,8 @@ def main():
             "- **MTD·인당 발송 건수**: 전사 기준 일별 집계예요. 인당 발송 건수는 고객 1명이 "
             "하루에 받은 평균 메시지 수(발송 강도)예요.\n"
             "- **전주비·전월비·전년비**: 기준 기간을 직전 주·4주 전(또는 전월 같은 기간)·작년 같은 "
-            "기간과 비교한 증감이에요. 비율 지표(CTR·CR)는 %p 차이, 나머지는 증감률(%)로 표시해요.\n")
+            "기간과 비교한 증감이에요. 비율 지표(CTR·CR)는 %p 차이, 나머지는 증감률(%)로 표시해요.\n"
+            "- **△ 표기**: 마이너스(감소)를 뜻해요 — 회사 보고 양식이에요. 예: △8.9% = 8.9% 감소.\n")
         stats_md = (
             "**🔬 통계 용어**\n"
             "- **p값·유의성**: 이 차이가 우연일 가능성이에요. 0.05 미만이면 보통 '진짜 차이'로 봐요.\n"
@@ -2380,12 +2381,17 @@ def main():
             return f"{v:,.0f}"
 
         def _dlt(met, cur, prev):
-            """증감 문자열 — 비율 지표는 %p 차이, 그 외 증감율 (weekly_report.py 관행)."""
+            """증감 문자열 — 비율 지표는 %p 차이, 그 외 증감율.
+            마이너스는 회사 보고 양식에 맞춰 △ 로 표기한다 (예: △8.9%)."""
             if cur is None or prev is None or pd.isna(cur) or pd.isna(prev):
                 return "–"
             if met in RATE:
-                return f"{(cur - prev) * 100:+.2f}%p"
-            return f"{(cur / prev - 1) * 100:+.1f}%" if prev else "–"
+                d = (cur - prev) * 100
+                return f"△{abs(d):.2f}%p" if d < 0 else f"+{d:.2f}%p"
+            if not prev:
+                return "–"
+            d = (cur / prev - 1) * 100
+            return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
 
         cur_w = _agg(_slice(ref_ws, ref_we))
         prev_w = _agg(_slice(ref_ws - pd.Timedelta(days=7), ref_we - pd.Timedelta(days=7)))
@@ -2398,11 +2404,24 @@ def main():
         except ValueError:                               # 53주차 등 전년에 없는 주
             yoy_w, yo_lab = None, "–"
 
-        # ── KPI 카드 (전주비) ──
+        # ── KPI 카드 (전주비) — △ 표기 방향이 st.metric 화살표와 어긋나서 커스텀 카드 사용 ──
         k = st.columns(5)
         for col, met in zip(k, ["발송", "거래액", "CTR", "주문CR", "RPS"]):
             _d = _dlt(met, cur_w[met], prev_w[met])
-            col.metric(met, _fmt(met, cur_w[met]), (f"{_d} 전주 대비" if _d != "–" else None))
+            if _d != "–":
+                _neg = _d.startswith("△")
+                _dh = (f'<div style="font-size:12px;font-weight:600;margin-top:3px;'
+                       f'color:{"#dc2626" if _neg else "#16a34a"}">'
+                       f'{"▼" if _neg else "▲"} {_d} 전주 대비</div>')
+            else:
+                _dh = '<div style="font-size:12px;color:#94a3b8;margin-top:3px">전주 데이터 없음</div>'
+            col.markdown(
+                f'<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;'
+                f'padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
+                f'<div style="font-size:12px;color:#64748b">{met}</div>'
+                f'<div style="font-size:20px;color:#1e293b;font-weight:600;'
+                f'font-feature-settings:\'tnum\' 1">{_fmt(met, cur_w[met])}</div>'
+                f'{_dh}</div>', unsafe_allow_html=True)
 
         # ── 주요 지표 현황 표 (전주·4주 전·전년 동주) ──
         st.markdown("##### 📋 주요 지표 현황")
@@ -2421,7 +2440,7 @@ def main():
             s = str(v)
             if s.startswith("+"):
                 return "color:#16a34a;font-weight:600"
-            if s.startswith("-"):
+            if s.startswith("△") or s.startswith("-"):    # △ = 마이너스 (회사 보고 양식)
                 return "color:#dc2626;font-weight:600"
             return ""
         st.dataframe(wr_tbl.style.map(_clr, subset=["전주비", "전월비(4주전)", "전년비"]),
@@ -2460,7 +2479,7 @@ def main():
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.</div>',
                     unsafe_allow_html=True)
 
-        # ── 최근 13주 추이 ──
+        # ── 최근 13주 추이 (발송량·CTR·주문CR·거래액) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📈 최근 13주 추이")
         wk13 = [w for w in sorted(g0["주"].unique()) if pd.Timestamp(w) <= ref_ws][-13:]
@@ -2470,36 +2489,90 @@ def main():
             a["주"] = pd.Timestamp(w)
             trows.append(a)
         tdf = pd.DataFrame(trows)
-        fig = stacked_panels(tdf["주"], tdf["거래액"], "거래액",
-                             tdf["주문CR"] * 100, "주문CR",
-                             PALETTE["slate"], PALETTE["purple"], h=430, line_suffix="%",
-                             title="주차별 거래액(위) · 주문CR(아래) — 기준주까지 13주")
+        WRT_BAR = {"발송량": "발송", "거래액": "거래액", "캠페인수": "캠페인수"}
+        WRT_LINE = {"CTR": ("CTR", "%"), "주문CR": ("주문CR", "%"), "RPS": ("RPS", "")}
+        tsel1, tsel2 = st.columns(2)
+        _bl = tsel1.selectbox("막대 지표 (위)", list(WRT_BAR), index=1, key="wr_t_bar")
+        _ll = tsel2.selectbox("선 지표 (아래)", list(WRT_LINE), index=1, key="wr_t_line")
+        _lc, _ls = WRT_LINE[_ll]
+        fig = stacked_panels(tdf["주"], tdf[WRT_BAR[_bl]], _bl,
+                             tdf[_lc] * (100 if _ls == "%" else 1), _ll,
+                             PALETTE["slate"], PALETTE["purple"], h=430, line_suffix=_ls,
+                             title=f"주차별 {_bl}(위) · {_ll}(아래) — 기준주까지 13주")
         st.plotly_chart(fig, width="stretch")
+        # 13주 표 — 발송량·CTR·주문CR·거래액 한눈에 (기준주는 ★ 표시)
+        tv = pd.DataFrame({
+            "주차": tdf["주"].map(lambda w: ("★ " if pd.Timestamp(w) == ref_ws else "") + _wklab(w)),
+            "캠페인수": tdf["캠페인수"].map(lambda v: f"{v:,.0f}"),
+            "발송량": tdf["발송"].map(lambda v: f"{v:,.0f}"),
+            "CTR": tdf["CTR"].map(lambda v: "–" if pd.isna(v) else f"{v*100:.2f}%"),
+            "주문CR": tdf["주문CR"].map(lambda v: "–" if pd.isna(v) else f"{v*100:.2f}%"),
+            "RPS": tdf["RPS"].map(won),
+            "거래액": tdf["거래액"].map(won),
+        }).iloc[::-1]                                     # 최신 주가 위로
+        st.dataframe(tv, hide_index=True, width="stretch", height=330)
 
-        # ── 카테고리별 기준주 실적 (전주 대비) ──
+        # ── 카테고리별 기준주 실적 (전주 대비) — 행 클릭 시 하단에 메시지 상세 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🗂 카테고리별 기준주 실적 — 전주 대비")
+        st.caption("행을 클릭하면 아래에 그 카테고리의 기준주 메시지별 효율 상세가 떠요.")
         cw = _slice(ref_ws, ref_we)
         pw = _slice(ref_ws - pd.Timedelta(days=7), ref_we - pd.Timedelta(days=7))
         if "cat" in cw.columns and len(cw):
             def _bycat(d):
-                return d.groupby("cat").agg(발송=("send", "sum"), UV=("uv", "sum"),
-                                            주문=("oc", "sum"), 거래액=("amt", "sum"))
+                return d.groupby("cat").agg(캠페인수=("cat", "size"), 발송=("send", "sum"),
+                                            UV=("uv", "sum"), 주문=("oc", "sum"), 거래액=("amt", "sum"))
             ca, cb = _bycat(cw), _bycat(pw)
-            crows = []
+            crows, cat_names = [], []
             for cname in ca.sort_values("거래액", ascending=False).index:
                 if str(cname).strip() in ("", "nan", "None"):
                     continue
+                s_c, u_c, o_c = ca.loc[cname, "발송"], ca.loc[cname, "UV"], ca.loc[cname, "주문"]
                 amt_c = ca.loc[cname, "거래액"]
+                s_p = cb.loc[cname, "발송"] if cname in cb.index else np.nan
                 amt_p = cb.loc[cname, "거래액"] if cname in cb.index else np.nan
-                cr_c = (ca.loc[cname, "주문"] / ca.loc[cname, "UV"]) if ca.loc[cname, "UV"] else np.nan
-                crows.append({"카테고리": cname, "발송": f"{ca.loc[cname, '발송']:,.0f}",
-                              "거래액": won(amt_c),
+                ctr_c = (u_c / s_c) if s_c else np.nan
+                cr_c = (o_c / u_c) if u_c else np.nan
+                cat_names.append(str(cname))
+                crows.append({"카테고리": cname,
+                              "캠페인수": f"{ca.loc[cname, '캠페인수']:,.0f}",
+                              "발송량": f"{s_c:,.0f}",
+                              "발송 전주비": _dlt("발송", s_c, s_p),
+                              "CTR": (f"{ctr_c*100:.2f}%" if pd.notna(ctr_c) else "–"),
                               "주문CR": (f"{cr_c*100:.2f}%" if pd.notna(cr_c) else "–"),
+                              "거래액": won(amt_c),
                               "거래액 전주비": _dlt("거래액", amt_c, amt_p)})
             if crows:
-                st.dataframe(pd.DataFrame(crows).style.map(_clr, subset=["거래액 전주비"]),
-                             hide_index=True, width="stretch", height=330)
+                _cstyled = pd.DataFrame(crows).style.map(_clr, subset=["발송 전주비", "거래액 전주비"])
+                try:
+                    _evc = st.dataframe(_cstyled, hide_index=True, width="stretch", height=330,
+                                        key="wr_cat_tbl", on_select="rerun",
+                                        selection_mode="single-row")
+                except TypeError:
+                    _evc = None
+                    st.dataframe(_cstyled, hide_index=True, width="stretch", height=330)
+                # 클릭한 행 → 카테고리 선택값에 반영 (수동 선택도 유지)
+                _cpick = None
+                try:
+                    _crows_sel = _evc.selection["rows"] if _evc is not None else []
+                    if _crows_sel:
+                        _cpick = int(_crows_sel[0])
+                except Exception:
+                    _cpick = None
+                if (_cpick is not None and 0 <= _cpick < len(cat_names)
+                        and _cpick != st.session_state.get("_lastpick_wrcat")):
+                    st.session_state["_lastpick_wrcat"] = _cpick
+                    st.session_state["wr_cat_sel"] = cat_names[_cpick]
+                if st.session_state.get("wr_cat_sel") not in cat_names:
+                    st.session_state.pop("wr_cat_sel", None)
+                sel_cat_wr = st.selectbox("카테고리 선택 (표에서 행을 클릭해도 돼요)",
+                                          cat_names, key="wr_cat_sel")
+                if sel_cat_wr:
+                    sub_wr = cw[cw["cat"].astype(str) == sel_cat_wr]
+                    st.markdown(f"##### 📋 '{sel_cat_wr}' — 기준주 메시지별 효율 상세")
+                    st.caption(f"{_wklab(ref_ws)} 발송 {len(sub_wr)}건 — 주문CR 높은 순. "
+                               "표의 행을 클릭하면 문구 원문도 볼 수 있어요.")
+                    render_messages(sub_wr, "ord_cr", f"wrcat_{sel_cat_wr}")
         else:
             st.caption("카테고리 데이터가 없어요.")
 
