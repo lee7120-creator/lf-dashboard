@@ -5055,20 +5055,25 @@ def main():
             _wk_chart = _wk_chart.sort_values("주시작")
             _colors_wk = [PALETTE["green"] if v >= 0 else PALETTE["red"] for v in _wk_chart["순증감합"]]
             fig_wk = go.Figure()
+            # customdata로 주차 문자열 전달
+            _wk_custom = _wk_chart["주차"].values
             fig_wk.add_trace(go.Bar(
-                x=_wk_chart["주차"], y=_wk_chart["순증감합"],
+                x=_wk_chart["주시작"], y=_wk_chart["순증감합"],
                 name="주간 순증감", marker_color=_colors_wk,
-                hovertemplate="%{x}<br>순증감: %{y:+,.0f}명<extra></extra>"))
+                customdata=_wk_custom,
+                hovertemplate="%{customdata}<br>순증감: %{y:+,.0f}명<extra></extra>"))
             fig_wk.add_trace(go.Scatter(
-                x=_wk_chart["주차"], y=_wk_chart["신규추가합"],
+                x=_wk_chart["주시작"], y=_wk_chart["신규추가합"],
                 mode="lines+markers", name="주간 신규추가",
                 line=dict(color=PALETTE["blue"], width=2),
-                hovertemplate="%{x}<br>신규추가: %{y:,.0f}명<extra></extra>"))
+                customdata=_wk_custom,
+                hovertemplate="%{customdata}<br>신규추가: %{y:,.0f}명<extra></extra>"))
             fig_wk.add_trace(go.Scatter(
-                x=_wk_chart["주차"], y=_wk_chart["탈퇴합"],
+                x=_wk_chart["주시작"], y=_wk_chart["탈퇴합"],
                 mode="lines+markers", name="주간 기존탈",
                 line=dict(color=PALETTE["amber"], width=2),
-                hovertemplate="%{x}<br>기존탈: %{y:,.0f}명<extra></extra>"))
+                customdata=_wk_custom,
+                hovertemplate="%{customdata}<br>기존탈: %{y:,.0f}명<extra></extra>"))
             
             lay_wk = base_layout(h=400, title="주간 신규추가/탈퇴 및 순증감 추이")
             lay_wk["showlegend"] = True
@@ -5076,7 +5081,9 @@ def main():
             lay_wk["yaxis"]["zeroline"] = True
             lay_wk["yaxis"]["zerolinecolor"] = "#cbd5e1"
             lay_wk["yaxis"]["title"] = "명"
-            lay_wk["xaxis"]["tickangle"] = -45
+            lay_wk["xaxis"]["type"] = "date"  # 명시적으로 날짜 축 설정
+            lay_wk["xaxis"]["tickformat"] = "%Y-%m"  # 연도-월 형태로 눈금 깔끔하게 포맷
+            lay_wk["xaxis"]["dtick"] = "M3"  # 3개월 간격으로 격자선 및 눈금 표시
             fig_wk.update_layout(**lay_wk)
             st.plotly_chart(fig_wk, use_container_width=True)
 
