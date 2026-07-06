@@ -5044,6 +5044,10 @@ def main():
         if push_consent_df is None or push_consent_df.empty:
             st.info("👈 사이드바에서 **앱푸시 동의 현황 xlsx** 파일을 올려주세요.")
             st.stop()
+        
+        # date 컬럼을 안전하게 datetime 형식으로 통일
+        push_consent_df = push_consent_df.copy()
+        push_consent_df["date"] = pd.to_datetime(push_consent_df["date"])
 
         # ── 필터: 그룹 & 날짜 범위 ──
         c_grp, c_date = st.columns([1, 2])
