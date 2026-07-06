@@ -2746,6 +2746,87 @@ def main():
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.</div>',
                     unsafe_allow_html=True)
 
+        # ── 📱 앱푸시 수신동의 주간 요약 (주간보고용 연동) ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📱 앱푸시 수신동의 주간 요약")
+
+        _push_df = st.session_state.get("push_consent_df")
+        if _push_df is None or _push_df.empty:
+            st.info("👈 사이드바에서 **앱푸시 동의 현황 xlsx** 파일을 올려주시면, "
+                    "이 주간보고 페이지에서도 기준 주차의 수신동의 추이와 전주 대비 증감 요약을 바로 볼 수 있어요.")
+        else:
+            # 기준주 및 전주의 날짜 필터 정의
+            _cur_ws, _cur_we = pd.Timestamp(ref_ws), pd.Timestamp(ref_we)
+            _prev_ws, _prev_we = _cur_ws - pd.Timedelta(days=7), _cur_we - pd.Timedelta(days=7)
+
+            def _get_push_week_summary(df, start_d, end_d, grp):
+                # 이상치 제외 필터
+                sub = df[(df["group"] == grp) & (df["date"] >= start_d) & (df["date"] <= end_d) & (~df["is_outlier"])].copy()
+                if sub.empty:
+                    return None
+                return {
+                    "last_consent": sub.sort_values("date").iloc[-1]["consent"],
+                    "tot_added": sub["added"].sum(),
+                    "tot_removed": sub["removed"].sum(),
+                    "tot_diff": sub["diff"].sum()
+                }
+
+            push_summary = []
+            for g in ["Total", "기존", "신규"]:
+                c_sum = _get_push_week_summary(_push_df, _cur_ws, _cur_we, g)
+                p_sum = _get_push_week_summary(_push_df, _prev_ws, _prev_we, g)
+                
+                if c_sum:
+                    c_con = c_sum["last_consent"]
+                    c_add = c_sum["tot_added"]
+                    c_rem = c_sum["tot_removed"]
+                    c_dif = c_sum["tot_diff"]
+                    
+                    p_con = p_sum["last_consent"] if p_sum else None
+                    p_add = p_sum["tot_added"] if p_sum else None
+                    p_rem = p_sum["tot_removed"] if p_sum else None
+                    p_dif = p_sum["tot_diff"] if p_sum else None
+
+                    def _d_str(cur, prev, is_con=False):
+                        if cur is None or prev is None:
+                            return "–"
+                        diff_val = cur - prev
+                        if is_con:
+                            # 동의수 차이값 그대로
+                            return f"△{abs(diff_val):,}명" if diff_val < 0 else f"+{diff_val:,}명"
+                        else:
+                            # 추가/탈퇴량 증감율 (%)
+                            if not prev: return "–"
+                            pct = (cur / prev - 1) * 100
+                            return f"△{abs(pct):.1f}%" if pct < 0 else f"+{pct:.1f}%"
+
+                    def _d_val_str(cur, prev):
+                        if cur is None or prev is None: return "–"
+                        d = cur - prev
+                        return f"△{abs(d):,}명" if d < 0 else f"+{d:,}명"
+
+                    push_summary.append({
+                        "구분": g,
+                        "주말 동의수": f"{c_con:,.0f}명" if pd.notna(c_con) else "–",
+                        "동의수 증감(전주비)": _d_val_str(c_con, p_con),
+                        "주간 신규추가": f"{c_add:,.0f}명" if pd.notna(c_add) else "–",
+                        "신규추가 전주비": _d_str(c_add, p_add),
+                        "주간 기존탈": f"{c_rem:,.0f}명" if pd.notna(c_rem) else "–",
+                        "기존탈 전주비": _d_str(c_rem, p_rem),
+                        "주간 순증감": f"{c_dif:+,.0f}명" if pd.notna(c_dif) else "–"
+                    })
+
+            if push_summary:
+                push_sum_df = pd.DataFrame(push_summary)
+                st.dataframe(
+                    push_sum_df.style.map(_clr, subset=["동의수 증감(전주비)", "신규추가 전주비", "기존탈 전주비"]),
+                    hide_index=True, width="stretch"
+                )
+                st.caption(f"기준주 ({_rng_short(_cur_ws)}) vs 전주 ({_rng_short(_prev_ws)}) 앱푸시 수신동의 지표 비교 데이터예요. "
+                           f"마이너스 수치는 **△** 로 표기되며 붉은색으로 강조돼요.")
+            else:
+                st.info("해당 기간의 앱푸시 동의 현황 데이터가 부재합니다.")
+
         # ── 심화 분석 탭: 증감 기여 분해 · 하이라이트 · 월말 마감 예상 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         tabW, tabH, tabP = st.tabs(["📉 증감 기여 분해", "🏆 하이라이트·로우라이트", "🎯 월말 마감 예상"])
