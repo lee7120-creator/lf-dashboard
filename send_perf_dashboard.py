@@ -779,6 +779,132 @@ def compute_mtd(df):
                 quintile=quintile, dow_mean=dow_mean, dow_comp=dow_comp, reg=reg, meta=meta)
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 앱푸시 동의 현황 파싱 (PUSH (1).xlsx 형태)
+# 구조: 행1=Date헤더, 행2=날짜(m/d), 행3~6=기존(수신동의/증감/신규추가/기존탈),
+#        행7~10=신규(수신동의/증감/신규추가/기존탈), 행11~14=Total(수신동의/증감/신규추가/기존탈)
+# ══════════════════════════════════════════════════════════════════════
+
+PUSH_OUTLIER_THRESHOLD = 10000   # 신규추가 또는 기존탈 > 이 값이면 배치/이관 이벤트로 판단, 제외
+
+
+def parse_push_consent_bytes(file_bytes, start_year=2024):
+    """앱푸시 수신동의 현황 Excel → 일별 DataFrame.
+
+    · 열 구조: A=그룹(기존/신규/Total), B=지표(수신동의/증감/신규추가/기존탈), C열부터=날짜별 값
+    · 날짜는 'm/d' 형식이며 연도는 start_year 기준 순서대로 할당(연말 넘어가면 +1년)
+    · 이상치(신규추가>PUSH_OUTLIER_THRESHOLD 또는 기존탈>PUSH_OUTLIER_THRESHOLD)는 is_outlier=True 플래그
+    반환 컬럼: date(datetime), group(기존/신규/Total), consent(수신동의수), diff(증감),
+               added(신규추가), removed(기존탈), is_outlier(bool)
+    """
+    import openpyxl, datetime as _dt
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    if len(rows) < 14:
+        return pd.DataFrame()
+
+    # 날짜 행 (행2, index 1) — col C(index 2)부터
+    date_strs = rows[1][2:]
+    n = len(date_strs)
+
+    # 행 인덱스 → (group, metric)
+    ROW_MAP = {
+        2:  ("기존",  "consent"),
+        3:  ("기존",  "diff"),
+        4:  ("기존",  "added"),
+        5:  ("기존",  "removed"),
+        6:  ("신규",  "consent"),
+        7:  ("신규",  "diff"),
+        8:  ("신규",  "added"),
+        9:  ("신규",  "removed"),
+        10: ("Total", "consent"),
+        11: ("Total", "diff"),
+        12: ("Total", "added"),
+        13: ("Total", "removed"),
+    }
+
+    # 그룹별 값 배열
+    data = {(g, m): [None] * n for (g, m) in ROW_MAP.values()}
+    for ri, (g, m) in ROW_MAP.items():
+        if ri < len(rows):
+            vals = rows[ri][2:2 + n]
+            data[(g, m)] = [v if isinstance(v, (int, float)) else None for v in vals]
+
+    # 날짜 파싱 — m/d 형식, start_year 기준 순서 할당
+    cur_year = start_year
+    prev_month = None
+    parsed_dates = []
+    for ds in date_strs:
+        if ds is None:
+            parsed_dates.append(None)
+            continue
+        s = str(ds).strip()
+        try:
+            parts = s.split("/")
+            m_val, d_val = int(parts[0]), int(parts[1])
+            if prev_month is not None and m_val < prev_month:
+                cur_year += 1
+            prev_month = m_val
+            parsed_dates.append(_dt.date(cur_year, m_val, d_val))
+        except Exception:
+            parsed_dates.append(None)
+
+    # 레코드 조합
+    records = []
+    for i, dt in enumerate(parsed_dates):
+        if dt is None:
+            continue
+        for g in ("기존", "신규", "Total"):
+            rec = {
+                "date":    pd.Timestamp(dt),
+                "group":   g,
+                "consent": data.get((g, "consent"), [None] * n)[i],
+                "diff":    data.get((g, "diff"),    [None] * n)[i],
+                "added":   data.get((g, "added"),   [None] * n)[i],
+                "removed": data.get((g, "removed"), [None] * n)[i],
+            }
+            # 이상치 플래그: 배치 이관 이벤트 (신규추가 or 기존탈 > 임계값)
+            added_v  = rec["added"]  if rec["added"]  is not None else 0
+            removed_v = rec["removed"] if rec["removed"] is not None else 0
+            rec["is_outlier"] = bool(added_v > PUSH_OUTLIER_THRESHOLD or
+                                      removed_v > PUSH_OUTLIER_THRESHOLD)
+            records.append(rec)
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+    for c in ("consent", "diff", "added", "removed"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values(["date", "group"]).reset_index(drop=True)
+
+
+def push_weekly(df, group="Total"):
+    """일별 동의 DataFrame → 주간 집계 (주 시작=월요일).
+
+    이상치 제외 후 주간 평균 동의수, 주간 순증감, 주간 신규추가합, 주간 탈퇴합 반환.
+    """
+    sub = df[(df["group"] == group) & (~df["is_outlier"])].copy()
+    if sub.empty:
+        return pd.DataFrame()
+    sub["week"] = sub["date"].dt.to_period("W-SUN").apply(lambda p: p.start_time)
+    agg = sub.groupby("week").agg(
+        일수=("date", "count"),
+        평균동의수=("consent", "mean"),
+        기말동의수=("consent", "last"),
+        순증감합=("diff", "sum"),
+        신규추가합=("added", "sum"),
+        탈퇴합=("removed", "sum"),
+    ).reset_index()
+    agg.rename(columns={"week": "주시작"}, inplace=True)
+    agg["주차"] = agg["주시작"].apply(
+        lambda d: f"{d.year}년 {d.isocalendar()[1]}주차 ({d.strftime('%m/%d')}~{(d + pd.Timedelta(days=6)).strftime('%m/%d')})"
+    )
+    return agg
+
+
 # ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
 GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store"}
 
@@ -1502,6 +1628,23 @@ def main():
         help="발송실적·기획·기획전성과·전사MTD 파일을 한 번에 올리면 "
              "자동으로 분류돼요. ZIP 파일도 돼요.")
 
+    # ── 앱푸시 수신동의 현황 파일 업로더 ──
+    push_consent_file = st.sidebar.file_uploader(
+        "📱 앱푸시 동의 현황 (xlsx)",
+        type=["xlsx"], accept_multiple_files=False, key="push_consent_up",
+        help="날짜별 기존/신규/Total 수신동의수·증감·신규추가·기존탈 데이터가 담긴 xlsx 파일이에요.")
+    if push_consent_file is not None:
+        try:
+            _push_bytes = push_consent_file.getvalue()
+            _push_hash = hashlib.md5(_push_bytes).hexdigest()
+            if st.session_state.get("push_consent_hash") != _push_hash:
+                with st.spinner("앱푸시 동의 파일 파싱 중…"):
+                    st.session_state["push_consent_df"] = parse_push_consent_bytes(_push_bytes)
+                st.session_state["push_consent_hash"] = _push_hash
+        except Exception as _e:
+            st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
+    push_consent_df = st.session_state.get("push_consent_df")
+
     # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
     _PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1xqlaRnHa5HMLz3ASUn-H7AvMkUsvQw6l7aw1rWLqfjw"
     plan_file = None
@@ -1874,16 +2017,17 @@ def main():
     # 연관 주제를 그룹으로 묶고(사이드바), 그룹 안 여러 주제는 본문 상단 하위탭으로 전환.
     # ▸ value 리스트의 각 항목 문자열은 아래 페이지 분기(if "..." in page)의 매칭 키를 포함해야 함.
     CAMPAIGN_GROUPS = {
-        "0. 주간보고":         ["주간보고"],
-        "1. 종합 요약":        ["종합 요약"],
-        "2. 문구 분석":        ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모"],
-        "3. 캠페인 리더보드":  ["캠페인 리더보드"],
-        "4. 세그먼트·진단":    ["세그먼트 분석", "전환·AOV 진단", "발송유형·브랜드 랭킹"],
-        "5. 맥락·타이밍":      ["카테고리·시간대", "타이밍·발송슬롯"],
-        "6. 효율·추이":        ["BPU·우선순위 효율", "전체 효율·추이"],
-        "7. 기획전 비교분석":  ["기획전 비교분석"],
-        "8. 액션":             ["다음주 발송 플레이북", "AI 처방·카피"],
-        "9. 데이터·다운로드":  ["데이터·다운로드"],
+        "0. 주간보고":           ["주간보고"],
+        "1. 종합 요약":          ["종합 요약"],
+        "2. 문구 분석":          ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모"],
+        "3. 캠페인 리더보드":    ["캠페인 리더보드"],
+        "4. 세그먼트·진단":      ["세그먼트 분석", "전환·AOV 진단", "발송유형·브랜드 랭킹"],
+        "5. 맥락·타이밍":        ["카테고리·시간대", "타이밍·발송슬롯"],
+        "6. 효율·추이":          ["BPU·우선순위 효율", "전체 효율·추이"],
+        "7. 기획전 비교분석":    ["기획전 비교분석"],
+        "8. 액션":               ["다음주 발송 플레이북", "AI 처방·카피"],
+        "9. 데이터·다운로드":    ["데이터·다운로드"],
+        "📱 앱푸시 동의 현황":   ["앱푸시 동의 현황"],
     }
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
@@ -4751,6 +4895,239 @@ def main():
             st.success("모든 실적 캠페인에 문구가 매칭됐어요.")
         glossary()
 
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 📱 — 앱푸시 동의 현황
+    # ══════════════════════════════════════════════════════════════
+    elif "앱푸시 동의 현황" in page:
+        import plotly.express as px
+        st.title("📱 앱푸시 수신동의 현황")
+
+        if push_consent_df is None or push_consent_df.empty:
+            st.info("👈 사이드바에서 **앱푸시 동의 현황 xlsx** 파일을 올려주세요.")
+            st.stop()
+
+        # ── 필터: 그룹 & 날짜 범위 ──
+        c_grp, c_date = st.columns([1, 2])
+        with c_grp:
+            sel_group = st.selectbox("그룹", ["Total", "기존", "신규"], index=0, key="pc_group")
+        with c_date:
+            _pc_dates = push_consent_df["date"].dropna()
+            _pc_min, _pc_max = _pc_dates.min().date(), _pc_dates.max().date()
+            pc_date_range = st.date_input(
+                "기간", value=(_pc_min, _pc_max),
+                min_value=_pc_min, max_value=_pc_max, key="pc_dates")
+
+        # 날짜 필터 적용
+        try:
+            _d0, _d1 = pd.Timestamp(pc_date_range[0]), pd.Timestamp(pc_date_range[1])
+        except Exception:
+            _d0, _d1 = pd.Timestamp(_pc_min), pd.Timestamp(_pc_max)
+
+        pc_all = push_consent_df[push_consent_df["group"] == sel_group].copy()
+        pc_all = pc_all[(pc_all["date"] >= _d0) & (pc_all["date"] <= _d1)]
+        pc_clean = pc_all[~pc_all["is_outlier"]].copy()
+        n_outlier = int(pc_all["is_outlier"].sum())
+
+        if pc_clean.empty:
+            st.warning("선택한 기간에 유효 데이터가 없어요.")
+            st.stop()
+
+        # ── KPI 카드 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📊 주요 지표 (이상치 제외 기간 기준)")
+        _latest = pc_clean.sort_values("date").iloc[-1]
+        _prev   = pc_clean.sort_values("date").iloc[-8] if len(pc_clean) >= 8 else pc_clean.sort_values("date").iloc[0]
+        _consent_now  = int(_latest["consent"])  if pd.notna(_latest["consent"])  else 0
+        _consent_prev = int(_prev["consent"])    if pd.notna(_prev["consent"])    else 0
+        _consent_delta = _consent_now - _consent_prev
+
+        _avg_added   = pc_clean["added"].mean()
+        _avg_removed = pc_clean["removed"].mean()
+        _avg_diff    = pc_clean["diff"].mean()
+        _net_ratio   = (_avg_diff / _avg_added * 100) if (_avg_added and _avg_added > 0) else 0
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("총 수신동의 수", f"{_consent_now:,}명",
+                  delta=f"{_consent_delta:+,}명 (최근 7일)", delta_color="normal")
+        k2.metric("일평균 신규추가",  f"{_avg_added:,.0f}명")
+        k3.metric("일평균 기존탈",    f"{_avg_removed:,.0f}명")
+        k4.metric("일평균 순증감",    f"{_avg_diff:+,.0f}명",
+                  delta_color="normal")
+        k5.metric("신규추가 대비 순증 비율", f"{_net_ratio:.1f}%",
+                  help="순증감 ÷ 신규추가 × 100. 100%에 가까울수록 탈퇴가 적음")
+
+        if n_outlier > 0:
+            st.caption(
+                f"⚠️ 배치/이관 이벤트로 추정되는 이상치 **{n_outlier}일** 은 KPI·차트에서 제외됐어요 "
+                f"(신규추가 또는 기존탈 > {PUSH_OUTLIER_THRESHOLD:,}건 기준).")
+
+        # ── 주간 지표 테이블 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📅 주간 지표 (이상치 제외)")
+        wk_df = push_weekly(push_consent_df[(push_consent_df["date"] >= _d0) & (push_consent_df["date"] <= _d1)],
+                            group=sel_group)
+        if not wk_df.empty:
+            wk_show = wk_df[["주차", "일수", "기말동의수", "순증감합", "신규추가합", "탈퇴합"]].copy()
+            wk_show = wk_show.sort_values("주차", ascending=False).reset_index(drop=True)
+            wk_show["기말동의수"] = wk_show["기말동의수"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+            wk_show["순증감합"]  = wk_show["순증감합"].apply(lambda v: f"{v:+,.0f}" if pd.notna(v) else "—")
+            wk_show["신규추가합"] = wk_show["신규추가합"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+            wk_show["탈퇴합"]   = wk_show["탈퇴합"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+            wk_show.rename(columns={
+                "주차": "주차", "일수": "집계일수", "기말동의수": "주말 동의수",
+                "순증감합": "순증감(합)", "신규추가합": "신규추가(합)", "탈퇴합": "기존탈(합)"}, inplace=True)
+            st.dataframe(wk_show, hide_index=True, width="stretch", height=360)
+
+            # 주간 CSV 다운로드
+            _wk_raw = push_weekly(
+                push_consent_df[(push_consent_df["date"] >= _d0) & (push_consent_df["date"] <= _d1)],
+                group=sel_group)
+            if not _wk_raw.empty:
+                st.download_button(
+                    "📥 주간 데이터 CSV",
+                    _wk_raw.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"앱푸시동의_주간_{sel_group}_{pd.Timestamp.today():%Y%m%d}.csv",
+                    mime="text/csv")
+
+        # ── 차트 1: 수신동의 수 추이 (일별·이상치 제외) ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📈 수신동의 수 추이 (일별)")
+        _pc_plot = pc_clean.sort_values("date")
+        fig_consent = go.Figure()
+        fig_consent.add_trace(go.Scatter(
+            x=_pc_plot["date"], y=_pc_plot["consent"],
+            mode="lines", name="수신동의 수",
+            line=dict(color="#3B82F6", width=2),
+            hovertemplate="%{x|%Y-%m-%d}<br>수신동의: %{y:,}명<extra></extra>"))
+        # 7일 이동평균
+        if len(_pc_plot) >= 7:
+            _ma7 = _pc_plot["consent"].rolling(7, center=True).mean()
+            fig_consent.add_trace(go.Scatter(
+                x=_pc_plot["date"], y=_ma7,
+                mode="lines", name="7일 이동평균",
+                line=dict(color="#F59E0B", width=2, dash="dot"),
+                hovertemplate="%{x|%Y-%m-%d}<br>7일 평균: %{y:,.0f}명<extra></extra>"))
+        fig_consent.update_layout(
+            height=360, legend=dict(orientation="h", y=1.08),
+            xaxis_title="날짜", yaxis_title="수신동의 수",
+            plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
+            font=dict(color="#e2e8f0"),
+            xaxis=dict(gridcolor="#1e293b"), yaxis=dict(gridcolor="#1e293b"),
+            margin=dict(l=10, r=10, t=30, b=10))
+        st.plotly_chart(fig_consent, use_container_width=True)
+
+        # ── 차트 2: 신규추가 / 기존탈 추이 (일별) ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📊 일별 신규추가 · 기존탈 추이")
+        fig_addrem = go.Figure()
+        fig_addrem.add_trace(go.Bar(
+            x=_pc_plot["date"], y=_pc_plot["added"],
+            name="신규추가", marker_color="#10B981",
+            hovertemplate="%{x|%Y-%m-%d}<br>신규추가: %{y:,}명<extra></extra>"))
+        fig_addrem.add_trace(go.Bar(
+            x=_pc_plot["date"], y=-_pc_plot["removed"],
+            name="기존탈(음수)", marker_color="#EF4444",
+            hovertemplate="%{x|%Y-%m-%d}<br>기존탈: %{y:,}명<extra></extra>"))
+        # 순증감 라인
+        fig_addrem.add_trace(go.Scatter(
+            x=_pc_plot["date"], y=_pc_plot["diff"],
+            mode="lines", name="순증감",
+            line=dict(color="#F59E0B", width=2),
+            hovertemplate="%{x|%Y-%m-%d}<br>순증감: %{y:+,}명<extra></extra>"))
+        fig_addrem.update_layout(
+            height=360, barmode="overlay",
+            legend=dict(orientation="h", y=1.08),
+            xaxis_title="날짜", yaxis_title="명",
+            plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
+            font=dict(color="#e2e8f0"),
+            xaxis=dict(gridcolor="#1e293b"), yaxis=dict(gridcolor="#1e293b", zeroline=True, zerolinecolor="#475569"),
+            margin=dict(l=10, r=10, t=30, b=10))
+        st.plotly_chart(fig_addrem, use_container_width=True)
+
+        # ── 차트 3: 주간 순증감 바차트 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📊 주간 순증감 추이")
+        _wk_chart = push_weekly(
+            push_consent_df[(push_consent_df["date"] >= _d0) & (push_consent_df["date"] <= _d1)],
+            group=sel_group)
+        if not _wk_chart.empty:
+            _wk_chart = _wk_chart.sort_values("주시작")
+            _colors_wk = ["#10B981" if v >= 0 else "#EF4444" for v in _wk_chart["순증감합"]]
+            fig_wk = go.Figure()
+            fig_wk.add_trace(go.Bar(
+                x=_wk_chart["주차"], y=_wk_chart["순증감합"],
+                name="주간 순증감", marker_color=_colors_wk,
+                hovertemplate="%{x}<br>순증감: %{y:+,.0f}명<extra></extra>"))
+            fig_wk.add_trace(go.Scatter(
+                x=_wk_chart["주차"], y=_wk_chart["신규추가합"],
+                mode="lines+markers", name="주간 신규추가",
+                line=dict(color="#3B82F6", width=2),
+                hovertemplate="%{x}<br>신규추가: %{y:,.0f}명<extra></extra>"))
+            fig_wk.add_trace(go.Scatter(
+                x=_wk_chart["주차"], y=_wk_chart["탈퇴합"],
+                mode="lines+markers", name="주간 기존탈",
+                line=dict(color="#F97316", width=2),
+                hovertemplate="%{x}<br>기존탈: %{y:,.0f}명<extra></extra>"))
+            fig_wk.update_layout(
+                height=400,
+                legend=dict(orientation="h", y=1.08),
+                xaxis_title="주차",
+                yaxis_title="명",
+                plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
+                font=dict(color="#e2e8f0"),
+                xaxis=dict(gridcolor="#1e293b", tickangle=-45),
+                yaxis=dict(gridcolor="#1e293b", zeroline=True, zerolinecolor="#475569"),
+                margin=dict(l=10, r=10, t=30, b=100))
+            st.plotly_chart(fig_wk, use_container_width=True)
+
+        # ── 차트 4: 기존 vs 신규 동의수 비교 (스택 영역) ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📊 기존 · 신규 수신동의 구성 추이")
+        _old_g = push_consent_df[
+            (push_consent_df["group"] == "기존") &
+            (~push_consent_df["is_outlier"]) &
+            (push_consent_df["date"] >= _d0) &
+            (push_consent_df["date"] <= _d1)].sort_values("date")
+        _new_g = push_consent_df[
+            (push_consent_df["group"] == "신규") &
+            (~push_consent_df["is_outlier"]) &
+            (push_consent_df["date"] >= _d0) &
+            (push_consent_df["date"] <= _d1)].sort_values("date")
+        if not _old_g.empty and not _new_g.empty:
+            fig_stack = go.Figure()
+            fig_stack.add_trace(go.Scatter(
+                x=_old_g["date"], y=_old_g["consent"],
+                mode="lines", name="기존 동의",
+                stackgroup="one", line=dict(color="#3B82F6"),
+                hovertemplate="%{x|%Y-%m-%d}<br>기존: %{y:,}명<extra></extra>"))
+            fig_stack.add_trace(go.Scatter(
+                x=_new_g["date"], y=_new_g["consent"],
+                mode="lines", name="신규 동의",
+                stackgroup="one", line=dict(color="#10B981"),
+                hovertemplate="%{x|%Y-%m-%d}<br>신규: %{y:,}명<extra></extra>"))
+            fig_stack.update_layout(
+                height=360,
+                legend=dict(orientation="h", y=1.08),
+                xaxis_title="날짜", yaxis_title="수신동의 수",
+                plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
+                font=dict(color="#e2e8f0"),
+                xaxis=dict(gridcolor="#1e293b"), yaxis=dict(gridcolor="#1e293b"),
+                margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_stack, use_container_width=True)
+
+        # ── 이상치 제외 목록 ──
+        with st.expander(f"⚠️ 제외된 이상치 날짜 ({n_outlier}일)"):
+            _outlier_rows = pc_all[pc_all["is_outlier"]][["date", "consent", "diff", "added", "removed"]]
+            if not _outlier_rows.empty:
+                st.dataframe(
+                    _outlier_rows.rename(columns={
+                        "date": "날짜", "consent": "수신동의수", "diff": "증감",
+                        "added": "신규추가", "removed": "기존탈"}),
+                    hide_index=True, width="stretch")
+                st.caption(f"신규추가 또는 기존탈이 {PUSH_OUTLIER_THRESHOLD:,}명 초과한 날짜예요. 배치 이관·대규모 재동의 등 특이 이벤트로 판단해 제외했어요.")
+            else:
+                st.success("이상치 없음")
+
     # ── 페이지 리포트 다운로드 (HTML → 브라우저 인쇄로 PDF) ──
     if _REPORT:
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -4764,6 +5141,8 @@ def main():
             st.caption("받은 HTML 파일을 열고 **Ctrl+P → PDF로 저장**하면 돼요.")
         except Exception as e:
             st.caption(f"리포트 생성 오류: {str(e)[:80]}")
+
+
 
 
 def build_facts(df, with_attr=False, metric_col="ord_cr"):
