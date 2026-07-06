@@ -726,6 +726,29 @@ def merge_promo_store(old, new):
     return both.drop_duplicates(subset=["promo"], keep="last").reset_index(drop=True)
 
 
+# ── 앱푸시 수신동의 현황 로컬 저장소 ──────────────────────────────────────
+PUSH_STORE = "send_perf_push_store.csv"
+PUSH_STORE_COLS = ["date", "group", "consent", "added", "removed", "diff", "is_outlier"]
+
+
+def load_push_store():
+    if os.path.exists(PUSH_STORE):
+        try:
+            return pd.read_csv(PUSH_STORE, encoding="utf-8-sig", dtype={"group": str})
+        except Exception:
+            pass
+    return pd.DataFrame(columns=PUSH_STORE_COLS)
+
+
+def save_push_store(df):
+    if df is None:
+        return
+    out = df[[c for c in PUSH_STORE_COLS if c in df]].copy()
+    if "date" in out.columns:
+        out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out.to_csv(PUSH_STORE, index=False, encoding="utf-8-sig")
+
+
 def finalize_promo(df):
     """저장소/파싱 로드 공통 — 키 정규화 + 숫자 컬럼 형변환."""
     if df is None or len(df) == 0:
@@ -1542,10 +1565,10 @@ def main():
         except Exception as e:
             return {"mode": "local", "status": f"⚠️ 구글시트 연결 실패 → 로컬에 저장해요 ({str(e)[:50]})"}
 
-    _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS}
-    _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store}
-    _LOCAL_SAVE = {"campaign": save_store, "mtd": save_mtd_store, "promo": save_promo_store}
-    _LOCAL_FILE = {"campaign": DATA_STORE, "mtd": MTD_STORE, "promo": PROMO_STORE}
+    _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS, "push": PUSH_STORE_COLS}
+    _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store, "push": load_push_store}
+    _LOCAL_SAVE = {"campaign": save_store, "mtd": save_mtd_store, "promo": save_promo_store, "push": save_push_store}
+    _LOCAL_FILE = {"campaign": DATA_STORE, "mtd": MTD_STORE, "promo": PROMO_STORE, "push": PUSH_STORE}
 
     def storage_load(bk, kind):
         cols = _STORE_COLS_BY_KIND[kind]
@@ -1642,7 +1665,9 @@ def main():
         help="발송실적·기획·기획전성과·전사MTD·앱푸시 수신동의 파일을 한 번에 올리면 "
              "자동으로 분류돼요. ZIP 파일도 돼요.")
 
-    push_consent_df = st.session_state.get("push_consent_df")
+    if "push_consent_df" not in st.session_state:
+        st.session_state.push_consent_df = storage_load(BK, "push")
+    push_consent_df = st.session_state.push_consent_df
 
     # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
     _PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1xqlaRnHa5HMLz3ASUn-H7AvMkUsvQw6l7aw1rWLqfjw"
@@ -1694,9 +1719,12 @@ def main():
                     try:
                         _push_hash = hashlib.md5(b).hexdigest()
                         if st.session_state.get("push_consent_hash") != _push_hash:
-                            st.session_state["push_consent_df"] = parse_push_consent_bytes(b)
+                            parsed_df = parse_push_consent_bytes(b)
+                            st.session_state["push_consent_df"] = parsed_df
                             st.session_state["push_consent_hash"] = _push_hash
-                            push_consent_df = st.session_state["push_consent_df"]
+                            push_consent_df = parsed_df
+                            storage_save(BK, "push", parsed_df)
+                            st.sidebar.success("📱 앱푸시 동의 데이터를 캐시에 저장했어요.")
                     except Exception as _e:
                         st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
 
@@ -1716,7 +1744,7 @@ def main():
 
     st.sidebar.caption(BK["status"])
     if st.sidebar.button("🔄 새로 불러오기", width="stretch"):
-        for k in ("camp_store", "mtd_store_df", "promo_store_df",
+        for k in ("camp_store", "mtd_store_df", "promo_store_df", "push_consent_df", "push_consent_hash",
                   "_merge_sig", "_merge_new_raw", "_merge_parse_log"):
             st.session_state.pop(k, None)
         st.cache_data.clear()
@@ -1824,6 +1852,17 @@ def main():
                     m = merge_promo_store(st.session_state.get("promo_store_df"), df)
                     storage_save(BK, "promo", m); st.session_state.promo_store_df = m
                     done.append(f"기획전 {len(m):,}")
+                elif "push" in base or "consent" in base:
+                    df = pd.read_csv(data, encoding="utf-8-sig", dtype={"date": str, "group": str})
+                    cur_push = st.session_state.get("push_consent_df")
+                    if cur_push is not None and not cur_push.empty:
+                        m = pd.concat([cur_push, df], ignore_index=True)
+                        m = m.drop_duplicates(subset=["date", "group"], keep="last")
+                    else:
+                        m = df
+                    storage_save(BK, "push", m)
+                    st.session_state.push_consent_df = m
+                    done.append(f"앱푸시 {len(m)//3:,}일")
                 else:
                     df = pd.read_csv(data, encoding="utf-8-sig", dtype={"date": str, "af": str})
                     m = merge_store(stored, df)
@@ -2182,12 +2221,20 @@ def main():
 
             st.markdown("---")
             _p_df = st.session_state.get("push_consent_df")
-            st.caption(f"앱푸시 동의 {0 if _p_df is None else len(_p_df)//3:,}일치")
+            st.caption(f"앱푸시 동의 {0 if _p_df is None else len(_p_df):,}건 (약 {0 if _p_df is None else len(_p_df)//3:,}일치)")
             if _p_df is not None and not _p_df.empty:
-                if st.button("🗑 앱푸시 세션 데이터 지우기", width="stretch", key="clear_push_sidebar"):
-                    st.session_state.pop("push_consent_df", None)
-                    st.session_state.pop("push_consent_hash", None)
-                    st.success("앱푸시 데이터를 지웠어요. 새로고침해 주세요.")
+                st.download_button(
+                    "⬇ 앱푸시 백업 (CSV)",
+                    _p_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="send_perf_push_backup.csv", mime="text/csv",
+                    width="stretch", key="push_bak"
+                )
+            if st.button("🗑 앱푸시 DB 지우기", width="stretch", key="clear_push"):
+                storage_clear(BK, "push")
+                st.session_state.push_consent_df = pd.DataFrame(columns=PUSH_STORE_COLS)
+                st.session_state.pop("push_consent_hash", None)
+                st.cache_data.clear()
+                st.success("앱푸시 데이터를 영구히 지웠어요. 새로고침해 주세요.")
         st.markdown("---")
         st.caption(f"저장 위치: {BK['status']}")
         if BK["mode"] != "gsheets":
