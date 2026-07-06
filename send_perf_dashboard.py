@@ -4998,7 +4998,7 @@ def main():
         fig_consent.add_trace(go.Scatter(
             x=_pc_plot["date"], y=_pc_plot["consent"],
             mode="lines", name="수신동의 수",
-            line=dict(color="#3B82F6", width=2),
+            line=dict(color=PALETTE["blue"], width=2),
             hovertemplate="%{x|%Y-%m-%d}<br>수신동의: %{y:,}명<extra></extra>"))
         # 7일 이동평균
         if len(_pc_plot) >= 7:
@@ -5006,15 +5006,14 @@ def main():
             fig_consent.add_trace(go.Scatter(
                 x=_pc_plot["date"], y=_ma7,
                 mode="lines", name="7일 이동평균",
-                line=dict(color="#F59E0B", width=2, dash="dot"),
+                line=dict(color=PALETTE["amber"], width=2, dash="dot"),
                 hovertemplate="%{x|%Y-%m-%d}<br>7일 평균: %{y:,.0f}명<extra></extra>"))
-        fig_consent.update_layout(
-            height=360, legend=dict(orientation="h", y=1.08),
-            xaxis_title="날짜", yaxis_title="수신동의 수",
-            plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(gridcolor="#1e293b"), yaxis=dict(gridcolor="#1e293b"),
-            margin=dict(l=10, r=10, t=30, b=10))
+        
+        lay_consent = base_layout(h=360, title="일별 수신동의 수 추이")
+        lay_consent["showlegend"] = True
+        lay_consent["yaxis"]["gridcolor"] = "#f1f5f9"
+        lay_consent["yaxis"]["title"] = "수신동의 수"
+        fig_consent.update_layout(**lay_consent)
         st.plotly_chart(fig_consent, use_container_width=True)
 
         # ── 차트 2: 신규추가 / 기존탈 추이 (일별) ──
@@ -5023,26 +5022,27 @@ def main():
         fig_addrem = go.Figure()
         fig_addrem.add_trace(go.Bar(
             x=_pc_plot["date"], y=_pc_plot["added"],
-            name="신규추가", marker_color="#10B981",
+            name="신규추가", marker_color=PALETTE["green"],
             hovertemplate="%{x|%Y-%m-%d}<br>신규추가: %{y:,}명<extra></extra>"))
         fig_addrem.add_trace(go.Bar(
             x=_pc_plot["date"], y=-_pc_plot["removed"],
-            name="기존탈(음수)", marker_color="#EF4444",
+            name="기존탈(음수)", marker_color=PALETTE["red"],
             hovertemplate="%{x|%Y-%m-%d}<br>기존탈: %{y:,}명<extra></extra>"))
         # 순증감 라인
         fig_addrem.add_trace(go.Scatter(
             x=_pc_plot["date"], y=_pc_plot["diff"],
             mode="lines", name="순증감",
-            line=dict(color="#F59E0B", width=2),
+            line=dict(color=PALETTE["amber"], width=2),
             hovertemplate="%{x|%Y-%m-%d}<br>순증감: %{y:+,}명<extra></extra>"))
-        fig_addrem.update_layout(
-            height=360, barmode="overlay",
-            legend=dict(orientation="h", y=1.08),
-            xaxis_title="날짜", yaxis_title="명",
-            plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(gridcolor="#1e293b"), yaxis=dict(gridcolor="#1e293b", zeroline=True, zerolinecolor="#475569"),
-            margin=dict(l=10, r=10, t=30, b=10))
+        
+        lay_addrem = base_layout(h=360, title="일별 신규추가 및 기존탈 추이")
+        lay_addrem["showlegend"] = True
+        lay_addrem["barmode"] = "overlay"
+        lay_addrem["yaxis"]["gridcolor"] = "#f1f5f9"
+        lay_addrem["yaxis"]["zeroline"] = True
+        lay_addrem["yaxis"]["zerolinecolor"] = "#cbd5e1"
+        lay_addrem["yaxis"]["title"] = "명"
+        fig_addrem.update_layout(**lay_addrem)
         st.plotly_chart(fig_addrem, use_container_width=True)
 
         # ── 차트 3: 주간 순증감 바차트 ──
@@ -5053,7 +5053,7 @@ def main():
             group=sel_group)
         if not _wk_chart.empty:
             _wk_chart = _wk_chart.sort_values("주시작")
-            _colors_wk = ["#10B981" if v >= 0 else "#EF4444" for v in _wk_chart["순증감합"]]
+            _colors_wk = [PALETTE["green"] if v >= 0 else PALETTE["red"] for v in _wk_chart["순증감합"]]
             fig_wk = go.Figure()
             fig_wk.add_trace(go.Bar(
                 x=_wk_chart["주차"], y=_wk_chart["순증감합"],
@@ -5062,23 +5062,22 @@ def main():
             fig_wk.add_trace(go.Scatter(
                 x=_wk_chart["주차"], y=_wk_chart["신규추가합"],
                 mode="lines+markers", name="주간 신규추가",
-                line=dict(color="#3B82F6", width=2),
+                line=dict(color=PALETTE["blue"], width=2),
                 hovertemplate="%{x}<br>신규추가: %{y:,.0f}명<extra></extra>"))
             fig_wk.add_trace(go.Scatter(
                 x=_wk_chart["주차"], y=_wk_chart["탈퇴합"],
                 mode="lines+markers", name="주간 기존탈",
-                line=dict(color="#F97316", width=2),
+                line=dict(color=PALETTE["amber"], width=2),
                 hovertemplate="%{x}<br>기존탈: %{y:,.0f}명<extra></extra>"))
-            fig_wk.update_layout(
-                height=400,
-                legend=dict(orientation="h", y=1.08),
-                xaxis_title="주차",
-                yaxis_title="명",
-                plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
-                font=dict(color="#e2e8f0"),
-                xaxis=dict(gridcolor="#1e293b", tickangle=-45),
-                yaxis=dict(gridcolor="#1e293b", zeroline=True, zerolinecolor="#475569"),
-                margin=dict(l=10, r=10, t=30, b=100))
+            
+            lay_wk = base_layout(h=400, title="주간 신규추가/탈퇴 및 순증감 추이")
+            lay_wk["showlegend"] = True
+            lay_wk["yaxis"]["gridcolor"] = "#f1f5f9"
+            lay_wk["yaxis"]["zeroline"] = True
+            lay_wk["yaxis"]["zerolinecolor"] = "#cbd5e1"
+            lay_wk["yaxis"]["title"] = "명"
+            lay_wk["xaxis"]["tickangle"] = -45
+            fig_wk.update_layout(**lay_wk)
             st.plotly_chart(fig_wk, use_container_width=True)
 
         # ── 차트 4: 기존 vs 신규 동의수 비교 (스택 영역) ──
@@ -5099,21 +5098,19 @@ def main():
             fig_stack.add_trace(go.Scatter(
                 x=_old_g["date"], y=_old_g["consent"],
                 mode="lines", name="기존 동의",
-                stackgroup="one", line=dict(color="#3B82F6"),
+                stackgroup="one", line=dict(color=PALETTE["blue"]),
                 hovertemplate="%{x|%Y-%m-%d}<br>기존: %{y:,}명<extra></extra>"))
             fig_stack.add_trace(go.Scatter(
                 x=_new_g["date"], y=_new_g["consent"],
                 mode="lines", name="신규 동의",
-                stackgroup="one", line=dict(color="#10B981"),
+                stackgroup="one", line=dict(color=PALETTE["green"]),
                 hovertemplate="%{x|%Y-%m-%d}<br>신규: %{y:,}명<extra></extra>"))
-            fig_stack.update_layout(
-                height=360,
-                legend=dict(orientation="h", y=1.08),
-                xaxis_title="날짜", yaxis_title="수신동의 수",
-                plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
-                font=dict(color="#e2e8f0"),
-                xaxis=dict(gridcolor="#1e293b"), yaxis=dict(gridcolor="#1e293b"),
-                margin=dict(l=10, r=10, t=30, b=10))
+            
+            lay_stack = base_layout(h=360, title="기존/신규 수신동의 구성 비율 추이")
+            lay_stack["showlegend"] = True
+            lay_stack["yaxis"]["gridcolor"] = "#f1f5f9"
+            lay_stack["yaxis"]["title"] = "수신동의 수"
+            fig_stack.update_layout(**lay_stack)
             st.plotly_chart(fig_stack, use_container_width=True)
 
         # ── 이상치 제외 목록 ──
