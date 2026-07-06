@@ -2646,10 +2646,11 @@ def main():
             if d == "–":
                 return (f'<div style="font-size:12px;color:#94a3b8;margin-top:3px">'
                         f'{label} 데이터 없음</div>')
-            _neg = d.startswith("△")
+            _neg = d.startswith("△") or d.startswith("-")
+            clean_d = d.lstrip("△+-")
             return (f'<div style="font-size:12px;font-weight:600;margin-top:3px;'
                     f'color:{"#dc2626" if _neg else "#16a34a"}">'
-                    f'{"▼" if _neg else "▲"} {d} {label} 대비</div>')
+                    f'{"▼" if _neg else "▲"} {clean_d} {label} 대비</div>')
         k = st.columns(6)
         for col, met in zip(k, ["발송", "UV", "CTR", "주문CR", "거래액", "RPS"]):
             _d = _dlt(met, cur_w[met], prev_w[met])
