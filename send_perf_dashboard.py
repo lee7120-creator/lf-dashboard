@@ -2416,24 +2416,27 @@ def main():
         except ValueError:                               # 53주차 등 전년에 없는 주
             yo_ws, yoy_w, yo_lab = None, None, "–"
 
-        # ── KPI 카드 (전주비) — △ 표기 방향이 st.metric 화살표와 어긋나서 커스텀 카드 사용 ──
+        # ── KPI 카드 (전주비·전년비) — △ 표기 방향이 st.metric 화살표와 어긋나서 커스텀 카드 사용 ──
+        def _delta_line(d, label):
+            if d == "–":
+                return (f'<div style="font-size:12px;color:#94a3b8;margin-top:3px">'
+                        f'{label} 데이터 없음</div>')
+            _neg = d.startswith("△")
+            return (f'<div style="font-size:12px;font-weight:600;margin-top:3px;'
+                    f'color:{"#dc2626" if _neg else "#16a34a"}">'
+                    f'{"▼" if _neg else "▲"} {d} {label} 대비</div>')
         k = st.columns(5)
         for col, met in zip(k, ["발송", "거래액", "CTR", "주문CR", "RPS"]):
             _d = _dlt(met, cur_w[met], prev_w[met])
-            if _d != "–":
-                _neg = _d.startswith("△")
-                _dh = (f'<div style="font-size:12px;font-weight:600;margin-top:3px;'
-                       f'color:{"#dc2626" if _neg else "#16a34a"}">'
-                       f'{"▼" if _neg else "▲"} {_d} 전주 대비</div>')
-            else:
-                _dh = '<div style="font-size:12px;color:#94a3b8;margin-top:3px">전주 데이터 없음</div>'
+            _y = _dlt(met, cur_w[met], (yoy_w[met] if yoy_w else np.nan))
             col.markdown(
                 f'<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;'
                 f'padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
                 f'<div style="font-size:12px;color:#64748b">{met}</div>'
                 f'<div style="font-size:20px;color:#1e293b;font-weight:600;'
                 f'font-feature-settings:\'tnum\' 1">{_fmt(met, cur_w[met])}</div>'
-                f'{_dh}</div>', unsafe_allow_html=True)
+                f'{_delta_line(_d, "전주")}{_delta_line(_y, "전년")}</div>',
+                unsafe_allow_html=True)
 
         # ── 주요 지표 현황 표 (전주·전월 동주·전년 동주 — 컬럼에 기간 일자 표기) ──
         st.markdown("##### 📋 주요 지표 현황")
@@ -2464,6 +2467,108 @@ def main():
         st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
                    "전월비는 기준주 시작일의 한 달 전 날짜가 속한 주(전월 동주)와 비교해요.")
+
+        # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 파일에 저장 ──
+        NOTES_FILE = "send_perf_notes.json"
+
+        def _notes_load():
+            try:
+                if os.path.exists(NOTES_FILE):
+                    with open(NOTES_FILE, "r", encoding="utf-8") as f:
+                        return json.load(f)
+            except Exception:
+                pass
+            return {}
+
+        def _notes_save(d):
+            try:
+                with open(NOTES_FILE, "w", encoding="utf-8") as f:
+                    json.dump(d, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
+        if "wr_notes" not in st.session_state:
+            st.session_state.wr_notes = _notes_load()
+
+        def _auto_kpi_note():
+            """기준주 실적으로 보고 문구 자동 생성 — weekly_report 템플릿 형식."""
+            lines = []
+            for met in ["발송", "거래액", "CTR", "주문CR", "RPS", "캠페인수"]:
+                yv = yoy_w[met] if yoy_w else np.nan
+                lines.append(f"- {met} — {_fmt(met, cur_w[met])}, "
+                             f"전주비 {_dlt(met, cur_w[met], prev_w[met])}, "
+                             f"전년비 {_dlt(met, cur_w[met], yv)}")
+            return "\n".join(lines)
+
+        def _note_render(text):
+            """보고란 표시 — △는 빨강, +는 초록 (회사 양식). HTML은 이스케이프."""
+            s = (text or "").strip() or "내용을 입력하세요."
+            s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            s = re.sub(r"(△[\d.,]+%?p?)",
+                       r'<span style="color:#dc2626;font-weight:700">\1</span>', s)
+            s = re.sub(r"(\+[\d.,]+%?p?)",
+                       r'<span style="color:#16a34a;font-weight:700">\1</span>', s)
+            return f'<div class="vg">{s.replace(chr(10), "<br>")}</div>'
+
+        def _ai_kpi_note():
+            system = ("당신은 LF몰 CRM 발송 주간보고 작성자입니다. 아래 지표 현황을 바탕으로 "
+                      "보고서 '전주 주요 지표 현황' 란에 넣을 불릿 요약을 한국어 플레인 텍스트로 쓰세요. "
+                      "각 지표 불릿(- 지표 — 값, 전주비 …, 전년비 …)은 유지하고, "
+                      "마지막에 '핵심 코멘트' 불릿 1~2개를 추가하세요. "
+                      "마이너스는 △ 표기를 유지하고 수치를 지어내지 마세요. HTML 태그 없이 순수 텍스트로.")
+            return ai_generate(system, _auto_kpi_note(), model)
+
+        def _note_block(col, nkey, title, regen=None, ai_fn=None):
+            """편집/자동 생성/AI 생성 버튼이 달린 보고란 (weekly_report.report_text_block 계승)."""
+            store = st.session_state.wr_notes
+            ekey = f"_wr_note_edit_{nkey}"
+            with col:
+                st.markdown(f"**{title}**")
+                bcols = st.columns(1 + (regen is not None) + (ai_fn is not None))
+                bi = 0
+                editing = st.session_state.get(ekey, False)
+                if bcols[bi].button("보기" if editing else "편집", key=f"btn_e_{nkey}", width="stretch"):
+                    st.session_state[ekey] = not editing
+                    st.rerun()
+                bi += 1
+                if regen is not None:
+                    if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
+                                        help="기준주 실적으로 지표 문구를 자동으로 채워요 (기존 내용 대체)"):
+                        store[nkey] = regen
+                        _notes_save(store)
+                        st.session_state[ekey] = False
+                        st.rerun()
+                    bi += 1
+                if ai_fn is not None:
+                    if bcols[bi].button("AI 생성", key=f"btn_a_{nkey}", width="stretch",
+                                        help="AI가 데이터를 보고 요약 문구를 작성해요 (기존 내용 대체)"):
+                        with st.spinner("AI 작성 중…"):
+                            text, err = ai_fn()
+                        if err:
+                            st.error(err)
+                        else:
+                            store[nkey] = text
+                            _notes_save(store)
+                            st.session_state[ekey] = False
+                            st.rerun()
+                if st.session_state.get(ekey, False):
+                    new = st.text_area("내용", store.get(nkey, ""), key=f"ta_{nkey}",
+                                       height=200, label_visibility="collapsed")
+                    if st.button("저장", key=f"btn_s_{nkey}", type="primary", width="stretch"):
+                        store[nkey] = new
+                        _notes_save(store)
+                        st.session_state[ekey] = False
+                        st.rerun()
+                else:
+                    st.markdown(_note_render(store.get(nkey, "")), unsafe_allow_html=True)
+
+        _wkkey = ref_ws.strftime("%Y%m%d")
+        with st.expander("📝 보고란 — 전주 주요 지표 현황 · 금주 집행 내용 요약", expanded=True):
+            nb1, nb2 = st.columns(2)
+            _note_block(nb1, f"kpi_{_wkkey}", "전주 주요 지표 현황",
+                        regen=_auto_kpi_note(), ai_fn=_ai_kpi_note)
+            _note_block(nb2, f"exec_{_wkkey}", "금주 집행 내용 요약")
+            st.caption("내용은 주차별로 저장돼요 — 기준 주차를 바꾸면 그 주차의 보고란이 열려요.")
 
         # ── 월 누계(MTD) — 기준주 일요일 마감 기준 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -2497,9 +2602,9 @@ def main():
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.</div>',
                     unsafe_allow_html=True)
 
-        # ── 심화 분석 탭: 증감 기여 분해 · 하이라이트 · 월말 착지 예상 ──
+        # ── 심화 분석 탭: 증감 기여 분해 · 하이라이트 · 월말 마감 예상 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        tabW, tabH, tabP = st.tabs(["📉 증감 기여 분해", "🏆 하이라이트·로우라이트", "🎯 월말 착지 예상"])
+        tabW, tabH, tabP = st.tabs(["📉 증감 기여 분해", "🏆 하이라이트·로우라이트", "🎯 월말 마감 예상"])
 
         def _damt(v):
             """증감액 문자열 — 마이너스는 △ (회사 보고 양식)."""
@@ -2588,9 +2693,9 @@ def main():
                 st.caption("UV 100 미만 캠페인은 전환율이 크게 튀어서 제외했어요. "
                            "하이라이트의 문구·소구는 다음 주에 재활용하고, 로우라이트는 원인을 점검해 보세요.")
 
-        # ③ 월말 착지 예상 (run-rate)
+        # ③ 월말 마감 예상 (run-rate)
         with tabP:
-            st.markdown("##### 월말 착지 예상 — 현재 속도(run-rate) 기준")
+            st.markdown("##### 월말 마감 예상 — 현재 속도(run-rate) 기준")
             elapsed = ref_end.day
             total_days = calendar.monthrange(ref_end.year, ref_end.month)[1]
             st.caption(f"{ref_end.year}년 {ref_end.month}월 — {elapsed}/{total_days}일 경과 기준. "
@@ -2607,12 +2712,12 @@ def main():
                 land = (cv / elapsed * total_days) if elapsed else np.nan
                 prow.append({"지표": met, "당월 MTD": _fmt(met, cv),
                              "일평균": _fmt(met, cv / elapsed if elapsed else np.nan),
-                             "착지 예상": _fmt(met, land),
+                             "마감 예상": _fmt(met, land),
                              "전월 실적": _fmt(met, pm_full[met]),
-                             "전월비(착지)": _dlt(met, land, pm_full[met]),
+                             "전월비(마감)": _dlt(met, land, pm_full[met]),
                              "전년 동월": _fmt(met, py_full[met]),
-                             "전년비(착지)": _dlt(met, land, py_full[met])})
-            st.dataframe(pd.DataFrame(prow).style.map(_clr, subset=["전월비(착지)", "전년비(착지)"]),
+                             "전년비(마감)": _dlt(met, land, py_full[met])})
+            st.dataframe(pd.DataFrame(prow).style.map(_clr, subset=["전월비(마감)", "전년비(마감)"]),
                          hide_index=True, width="stretch", height=240)
             tgt = st.number_input("월 거래액 목표 (억원 · 선택)", min_value=0.0, value=0.0,
                                   step=0.5, key="wr_target",
@@ -2626,10 +2731,10 @@ def main():
                                  f"({won(cur_amt)} / {won(tgt_won)})")
                 remain = total_days - elapsed
                 if pd.notna(land_amt) and land_amt >= tgt_won:
-                    _vd = f"이 속도면 <b>달성 예상</b> ✅ (착지 {won(land_amt)} ≥ 목표 {won(tgt_won)})"
+                    _vd = f"이 속도면 <b>달성 예상</b> ✅ (마감 예상 {won(land_amt)} ≥ 목표 {won(tgt_won)})"
                 elif remain > 0:
                     need = (tgt_won - cur_amt) / remain
-                    _vd = (f"이 속도면 착지 {won(land_amt)}로 <b>미달 예상</b> — 남은 {remain}일 동안 "
+                    _vd = (f"이 속도면 마감 {won(land_amt)}로 <b>미달 예상</b> — 남은 {remain}일 동안 "
                            f"일평균 <b>{won(need)}</b> 필요 (현재 일평균 {won(cur_amt / elapsed)})")
                 else:
                     _vd = f"월 마감 — 최종 {won(cur_amt)} / 목표 {won(tgt_won)}"
