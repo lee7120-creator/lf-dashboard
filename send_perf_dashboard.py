@@ -3045,12 +3045,12 @@ def main():
                 if wrows:
                     st.dataframe(pd.DataFrame(wrows).style.map(_clr, subset=["증감액", "전주비"]),
                                  hide_index=True, width="stretch", height=300)
-                st.markdown('<div class="appendix">막대 하나하나가 그 카테고리의 전주 대비 거래액 증감액을 나타냅니다. '
-                            '초록은 매출 상승 기여, 빨강(△)은 하락 기여를 뜻하며 기여도가 큰 8개만 표시하고 나머지는 기타로 합산했습니다.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="appendix">카테고리별 전주 대비 거래액 증감 기여도입니다. '
+                            '녹색은 매출 상승 기여, 적색(△)은 매출 감소 기여를 의미하며, 기여도가 큰 8개만 표시하고 나머지는 기타로 합산했습니다.</div>', unsafe_allow_html=True)
 
         # ② 금주 하이라이트 · 로우라이트
         with tabH:
-            st.markdown("##### 금주 하이라이트 · 로우라이트 — 보고서에 바로 쓰는 Top/Bottom 5")
+            st.markdown("##### 금주 주요 성과 지표 (Top 5 / Bottom 5)")
             hlab = st.radio("기준 지표", ["주문CR", "거래액", "RPS"], horizontal=True, key="wr_hl_met")
             hcol = {"주문CR": "ord_cr", "거래액": "amt", "RPS": "rps"}[hlab]
             hw = _slice(ref_ws, ref_we)
@@ -3076,16 +3076,16 @@ def main():
                     st.dataframe(hw.sort_values(hcol).head(5)[_hc]
                                  .rename(columns=_hrn).style.format(_hft),
                                  hide_index=True, width="stretch")
-                st.caption("UV 100 미만 캠페인은 전환율이 크게 튀어서 제외했어요. "
-                           "하이라이트의 문구·소구는 다음 주에 재활용하고, 로우라이트는 원인을 점검해 보세요.")
+                st.caption("UV 100 미만 캠페인은 전환율 변동성이 커 제외하였습니다. "
+                           "성과 우수(Top) 소구 패턴은 기획에 재활용하고, 저성과(Bottom) 요인은 발송 조건을 재점검하십시오.")
 
         # ③ 월말 마감 예상 (run-rate)
         with tabP:
-            st.markdown("##### 월말 마감 예상 — 현재 속도(run-rate) 기준")
+            st.markdown("##### 월말 예상 실적 (Run-rate 기준)")
             elapsed = ref_end.day
             total_days = calendar.monthrange(ref_end.year, ref_end.month)[1]
             st.caption(f"{ref_end.year}년 {ref_end.month}월 — {elapsed}/{total_days}일 경과 기준. "
-                       "현재 일평균 속도가 월말까지 유지된다고 가정한 단순 추정이에요.")
+                       "현재 일평균 추세가 월말까지 유지된다고 가정한 추정치입니다.")
             pm_full = _agg(_slice(datetime.date(pm_y, pm_m, 1),
                                   datetime.date(pm_y, pm_m, calendar.monthrange(pm_y, pm_m)[1])))
             _pyy = ref_end.year - 1
@@ -4197,8 +4197,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "키워드" in page:
         st.title("키워드·이모지 성과")
-        st.caption("실제 문구에 쓰인 단어와 이모지를 하나씩 뜯어서 성과를 봐요. "
-                   "각 단어/이모지를 포함한 캠페인의 평균 성과(전체 평균 대비)예요.")
+        st.caption("발송 문구에 사용된 단어 및 이모지 단위의 개별 성과(전체 평균 대비 상대적 효율)를 분석합니다.")
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p10_metric")
         mcol, _ms, mclr = METRIC_OPTS[mlabel]
         is_pct = mcol in ("ord_cr", "infl_cr")
@@ -4232,7 +4231,7 @@ def main():
             st.plotly_chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
                                     max(360, 40 + 24 * min(len(kdf), int(ktop)))),
                             width="stretch")
-            sel_kw = st.selectbox("키워드를 골라 실제 메시지를 확인해 보세요", list(kdf["단어"]), key="p10_kw")
+            sel_kw = st.selectbox("조회 대상 키워드 선택 (실제 발송 메시지 드릴다운)", list(kdf["단어"]), key="p10_kw")
             if sel_kw:
                 hay = (base["title"].astype(str) + " " + base["body"].astype(str))
                 subk = base[hay.str.contains(re.escape(sel_kw), na=False)]
@@ -4257,8 +4256,7 @@ def main():
             else:
                 eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
             st.dataframe(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
-        st.markdown('<div class="appendix">단어/이모지 분석은 캠페인 단위 평균이에요. 건수(n)가 적으면 우연일 수 있어요. '
-                    '한 캠페인에서 같은 단어가 여러 번 나와도 1회로 집계해요. 불용어·날짜/시간 숫자는 제외돼요.</div>',
+        st.markdown('<div class="appendix">단어 및 이모지 성과 분석은 캠페인 단위 평균 데이터입니다. 표본 건수(n)가 적은 항목은 편차가 존재할 수 있으니 유의하시기 바랍니다. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨)</div>',
                     unsafe_allow_html=True)
         glossary()
 
@@ -4267,8 +4265,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "소구 추세" in page:
         st.title("소구 추세·마모")
-        st.caption("같은 소구를 계속 쓰면 효과가 떨어질까요? 시간에 따른 변화를 봐요. "
-                   "주차별로 '그 속성 보유 캠페인'의 평균 성과 추이를 보고, 반복 소구의 피로를 진단해요.")
+        st.caption("동일 소구의 지속 노출에 따른 성과 반응 및 피로도 누적 추세를 시계열로 분석하여 피로 임계 구간을 진단합니다.")
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p11_metric")
         mcol, _ms, mclr = METRIC_OPTS[mlabel]
         is_pct = mcol in ("ord_cr", "infl_cr")
@@ -4301,7 +4298,7 @@ def main():
         st.plotly_chart(fig, width="stretch")
 
         # 마모 진단: 각 속성의 주차 추세 회귀(기울기) + 사용 빈도 추이
-        st.markdown("##### 🔻 마모 진단")
+        st.markdown("##### 📉 반복 소구 노출에 따른 성과 감쇠(마모) 진단")
         diag = []
         for t in sel_attrs:
             pts = []
@@ -4320,7 +4317,7 @@ def main():
         st.dataframe(pd.DataFrame(diag), hide_index=True, width="stretch")
 
         # 속성 사용 빈도(발송수) 추이 — 너무 자주 쓰면 마모 위험
-        st.markdown("##### 📨 속성 사용 빈도 추이")
+        st.markdown("##### 📨 속성별 발송 빈도 추이")
         figf = go.Figure()
         for t in sel_attrs:
             cnts = [int(((base["주"] == w) & (base[t])).sum()) for w in weeks]
@@ -4331,9 +4328,7 @@ def main():
         layf["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
         figf.update_layout(**layf)
         st.plotly_chart(figf, width="stretch")
-        st.markdown('<div class="appendix">상관 r이 음수이고 유의하면 "반복 소구로 효과가 닳고 있다"는 신호예요. '
-                    '사용 빈도가 늘면서 성과가 떨어지면 해당 소구를 잠시 쉬는 전략을 고려해 보세요. '
-                    '카테고리·시즌 구성 변화가 섞일 수 있어요.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="appendix">상관계수(r)가 통계적으로 유의한 음수(-)이면, 반복 소구 노출로 인한 성과 저하(마모) 가능성이 높음을 시사합니다. 집행 빈도 대비 효율 감소세가 지속될 경우 해당 메시지의 소구 휴지기 수립 및 대체 오퍼 도입을 권장합니다. (단, 카테고리 구성 비율이나 시즌 이벤트 영향성이 혼재할 수 있으므로 보조 지표로 참고하십시오)</div>', unsafe_allow_html=True)
 
         glossary()
 
@@ -4365,7 +4360,7 @@ def main():
         # ── F1. 피로도 시계열·CTR ──
         if page.startswith("F1"):
             st.title("피로도 시계열·CTR")
-            st.markdown("인당 발송 건수와 효율이 시간에 따라 어떻게 움직이는지 봐요.")
+            st.markdown("인당 누적 발송 빈도 대비 성과 지표(CTR, RPS)의 시계열 추이 분석")
             gran = st.radio("집계", ["월별", "분기별"], horizontal=True)
             agg = mtd_data["monthly"] if gran == "월별" else mtd_data["quarterly"]
             xcol = "month" if gran == "월별" else "quarter"
@@ -4387,17 +4382,15 @@ def main():
                 rows.append(dict(지표=MTD_LABELS[k], **{"일변화": f"{sl:+.4g}{unit}"},
                                  R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-            st.markdown('<div class="appendix">인당 발송 건수는 상승, CTR·구매전환율·RPS는 하락 추세라면 '
-                        '”발송 강도를 높일수록 효율이 떨어지는” 피로도 신호예요. '
-                        '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 데이터를 얼마나 잘 설명하는지 — '
-                        '1에 가까울수록 추세가 뚜렷하고, 0에 가까우면 들쭉날쭉해요. '
-                        '· <b>유의성</b>: 그 추세가 우연일 가능성(p값) — ‘유의함’이면 우연으로 보기 어려워요.</div>',
+            st.markdown('<div class="appendix">인당 발송량은 증가하는 반면 CTR·주문CR·RPS가 동반 하락할 경우 피로도 임계점에 도달했다는 위험 신호일 수 있습니다. '
+                        '<br>· <b>R²(결정계수, 0~1)</b>: 추세선의 설명력을 의미하며, 1에 가까울수록 경향성이 뚜렷하고 0에 가까울수록 불규칙한 변동을 보입니다. '
+                        '· <b>유의성</b>: 산출된 추세의 통계적 유효성(p-value)을 나타내며, ‘유의함’일 경우 우연이 아닌 일관된 흐름으로 판단할 수 있습니다.</div>',
                         unsafe_allow_html=True)
 
         # ── F2. 발송 빈도 효율 ──
         elif page.startswith("F2"):
             st.title("발송 빈도 효율")
-            st.markdown("인당 발송 건수별 효율이에요. 어느 정도까지 보내는 게 효율적인지 봐요.")
+            st.markdown("고객 인당 발송 빈도에 따른 효율 변화를 정량적으로 비교 분석합니다.")
             lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "객단가"])
             mc = MTDOPT[lab]
             b = mtd_data["buckets"]
@@ -4429,7 +4422,7 @@ def main():
         # ── F3. 한계수익 ──
         elif page.startswith("F3"):
             st.title("한계수익")
-            st.markdown("발송을 한 단계 더 늘리면 효율이 어떻게 바뀌는지 봐요.")
+            st.markdown("발송 규모 증분에 따른 한계 효율 추이 분석")
             lab = st.selectbox("지표", ["발송건당거래액(RPS)", "CTR", "구매전환율(CR)", "거래액"])
             mc = MTDOPT[lab]
             b = mtd_data["buckets"].reset_index(drop=True)
@@ -4443,8 +4436,7 @@ def main():
                                        text=[f"{v:+.2f}" for v in diff], textposition="outside"))
                 fig.update_layout(**base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
                 st.plotly_chart(fig, width="stretch")
-                st.markdown('<div class="appendix">값이 마이너스면 그 구간부터는 더 보낼수록 '
-                            '효율이 오히려 줄어드는 역효과 구간이에요.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 추가 발송 시 고객 반응 및 효율이 감소하는 감쇠 국면임을 뜻합니다.</div>', unsafe_allow_html=True)
             else:
                 st.info("구간별 데이터가 부족해요.")
 
@@ -4474,8 +4466,7 @@ def main():
                     "고발송일 RPS": dc["highRps"].map("{:,.0f}".format),
                 })
                 st.dataframe(show, hide_index=True, width="stretch")
-                st.markdown('<div class="appendix">같은 요일인데 발송이 적은 날의 CTR·RPS가 더 높다면, '
-                            '발송 강도 자체가 효율을 떨어뜨린다는 (요일 효과를 통제한) 근거예요.</div>',
+                st.markdown('<div class="appendix">동일 요일 내 발송 모수가 적을 때 효율(CTR, RPS)이 유의미하게 높다면, 무리한 모수 확장보다 타겟팅 세분화를 통해 반응률을 개선하는 것이 유효함을 의미합니다.</div>',
                             unsafe_allow_html=True)
         glossary()
 
@@ -4484,7 +4475,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "세그먼트 분석" in page:
         st.title("세그먼트 분석")
-        st.caption("누구에게 보냈을 때 성과가 좋은지, 세그먼트별로 봐요.")
+        st.caption("고객 세그먼트별 발송 반응도 비교 및 타겟 타당성 정량 평가")
         base = fdf
         if "target" not in base or base["target"].fillna("").eq("").all():
             st.info("타겟 구분 데이터가 없어요. 실적시트에 '타겟 구분' 컬럼이 있는지 확인해 주세요."); st.stop()
@@ -4543,7 +4534,7 @@ def main():
             st.dataframe(pd.DataFrame(recs).style.format({"보유n": "{:,.0f}"}),
                          hide_index=True, width="stretch")
         else:
-            st.caption("세그먼트별 데이터가 부족해요.")
+            st.caption("세그먼트별 유효 분석 표본이 부족합니다.")
 
         # ② 타겟 × 카테고리 적합도
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -4560,7 +4551,7 @@ def main():
             fig.update_layout(**base_layout(h=max(300, 70 + 30 * len(piv.index)),
                                             title=f"타겟×카테고리 평균 {mlabel}"))
             st.plotly_chart(fig, width="stretch")
-            st.caption("각 세그먼트에서 잘 먹히는 카테고리를 다음 발송에 써 보세요. 건수 적은 칸은 참고용이에요.")
+            st.caption("세그먼트별 고반응 카테고리를 차주 타겟팅 매칭 기획에 참고하십시오. (표본이 적은 항목은 참고용 데이터로만 활용)")
         else:
             st.caption("카테고리 데이터가 없어서 건너뛸게요.")
 
@@ -4591,7 +4582,7 @@ def main():
                     overall[lbl] = seg[nu].sum() / seg[de].sum()
             if overall:
                 st.caption("전체 평균 단계 전환율 — " + " · ".join(f"{k} {v*100:.1f}%" for k, v in overall.items())
-                           + ". 세그먼트별로 평균보다 크게 낮은 단계가 그 세그먼트의 '새는 곳'이에요.")
+                           + ". 세그먼트별 평균 대비 낙폭이 큰 구간이 퍼널 내 주요 이탈 경로(새는 곳)입니다.")
         else:
             st.caption("퍼널 데이터(UV/방문/고객/주문)가 부족해서 건너뛸게요.")
 
@@ -4625,7 +4616,7 @@ def main():
                     if slopes:
                         st.dataframe(pd.DataFrame(slopes).style.format({"주차수": "{:,.0f}"}),
                                      hide_index=True, width="stretch")
-                    st.caption("하락 추세인 세그먼트는 그 소구가 닳고 있다는 신호예요. 메시지나 오퍼를 바꿔 보세요.")
+                    st.caption("성과 추이가 지속 하락세인 세그먼트는 소구 피로도가 누적되었음을 시사하므로, 타겟 소구 및 제공 오퍼의 전환을 권장합니다.")
                 else:
                     st.caption(f"'{tagsel}' 캠페인이 6건 이상 있어야 해요.")
         else:
@@ -4637,7 +4628,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "전환·AOV 진단" in page:
         st.title("전환·AOV 진단")
-        st.caption("CTR과 주문전환율을 따로 보고, 매출이 '비싸게 팔아서'인지 '많이 팔아서'인지 분석해요.")
+        st.caption("유입 효율(CTR)과 구매 전환 효율(주문CR)을 분리 진단하여, 거래액 증대 요인(객단가 중심 vs 모수 유입 중심)을 정량 분석합니다.")
         base = fdf
         if len(base) < 6:
             st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
@@ -4679,7 +4670,7 @@ def main():
             qsum.columns = ["사분면", "캠페인수"]
             st.dataframe(qsum.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
             st.caption(f"기준선: CTR 중앙값 {mx*100:.2f}% · 주문CR 중앙값 {my*100:.2f}%. "
-                       "🟡는 들어왔는데 안 산 케이스 — 오퍼/상품/랜딩을, 🔵는 적게 들어왔지만 잘 산 케이스 — 제목/타겟 확대를 권장.")
+                       "🟡 유입O 주문CRX 영역은 오퍼 구조 및 랜딩 페이지 정비를 권장하며, 🔵 유입X 주문CRO 영역은 발송 타겟 확장 및 제목 메시지 보완을 권장합니다.")
             qpick = st.selectbox("사분면 선택 → 캠페인 보기", list(qsum["사분면"]), key="p14_quad")
             render_messages(d[d["사분면"] == qpick], "ord_cr", f"p14_{qpick}")
         else:
@@ -4687,7 +4678,7 @@ def main():
 
         # ② AOV vs 전환 기여
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ② 매출 = 많이 팔아서? 비싸게 팔아서?")
+        st.markdown("##### ② 거래액 드라이버 분석: 판매 수량(Q) vs 객단가(P)")
         _dim = {"카테고리": "cat", "세그먼트": "target", "브랜드": "brand"}
         _dim = {k: v for k, v in _dim.items() if v in base.columns and base[v].fillna("").ne("").any()}
         if not _dim:
@@ -4722,7 +4713,7 @@ def main():
             st.dataframe(gs.rename(columns={dcol: dimname})[[dimname, "캠페인수", "주문CR", "AOV", "거래액", "전략"]]
                          .style.format({"캠페인수": "{:,.0f}"}),
                          hide_index=True, width="stretch")
-            st.caption("올라운더는 더 밀고, 박리다매는 업셀로 객단가를, 고가저빈도는 전환을 보완해 보세요.")
+            st.caption("고효율 영역(올라운더)은 마케팅 리소스를 집중하고, 다빈도저단가(박리다매) 영역은 업셀링을 통한 객단가 제고, 고단가저빈도 영역은 구매 전환율 보완 전략 수립을 권장합니다.")
         else:
             st.caption("차원별 3캠페인 이상 있어야 해요.")
         glossary()
@@ -4786,7 +4777,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "다음주 발송 플레이북" in page or "플레이북" in page:
         st.title("다음 주 발송 플레이북")
-        st.caption("데이터를 바탕으로 다음 주에 뭘, 누구에게, 언제, 어떤 소구로 보내면 좋을지 알려드려요.")
+        st.caption("과거 성과 분석 데이터에 기반하여 차주 발송을 위한 세그먼트별 요일·시간·소구 매칭 테이블을 제공합니다.")
         base = fdf
         if len(base) < 8:
             st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
@@ -4869,13 +4860,12 @@ def main():
                 play.append(row)
         if play:
             st.dataframe(pd.DataFrame(play), hide_index=True, width="stretch")
-            st.caption("위 조합은 과거 성과가 좋았던 패턴이에요. 다음 주 캘린더에 세그먼트×슬롯×카테고리×소구로 배치해 보세요.")
+            st.caption("과거 실적 기준 최적 반응 조합 매칭 테이블입니다. 차주 발송 캘린더 기획 시 우선 배치를 권장합니다.")
         else:
             st.caption("세그먼트(target) 데이터가 없어 조합 추천을 건너뜁니다.")
         if top_tags:
             _rec = " · ".join(top_tags)
-            st.markdown(f'<div class="appendix">추천 소구: {_rec} → 「AI 처방·카피」 페이지에서 '
-                        f'이 소구로 문구 초안을 만들 수 있어요.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="appendix">추천 소구: {_rec} → 「AI 처방·카피」 페이지에서 해당 소구를 기반으로 신규 카피 초안 생성이 가능합니다.</div>', unsafe_allow_html=True)
         glossary()
 
     # ══════════════════════════════════════════════════════════════
@@ -4883,9 +4873,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif "기획전 비교분석" in page:
         st.title("기획전 비교분석")
-        st.caption("발송 데이터의 기획전번호(promo)를 기획전 성과시트와 조인해 "
-                   "① 발송 기여율 ② 발송 효율 순위 ③ 발송 유무별 매출 ④ 매출 추세를 봅니다. "
-                   "발송측은 현재 사이드바 필터가 적용돼요.")
+        st.caption("발송 이력 내 기획전 번호(promo)와 기획전 전체 성과를 매핑하여, 발송 기여 수준 및 상대적 효율을 종합 정량 분석합니다. (발송 데이터는 현재 지정된 사이드바 필터가 적용됨)")
         if promo_df is None or len(promo_df) == 0:
             st.info("사이드바 **📂 파일 업로드**에 **기획전 성과시트(xlsx)**를 올려 주세요(자동 인식). "
                     "업로드 후 **「💾 기획전 저장」**을 누르면 누적돼요.")
@@ -4951,8 +4939,7 @@ def main():
         # ── ① 발송 기여율 (분모 = 유입 거래액) ──
         with tabA:
             st.markdown("##### 발송 기여율 = 발송 추적 거래액 ÷ 기획전 **유입** 거래액")
-            st.caption("’유입 거래액’은 기획전을 통해 생긴 매출이에요. 그중 발송이 끌어온 비중을 봐요. "
-                       "어트리뷰션 기준이 달라 100%를 넘을 수 있어요(정상).")
+            st.caption("’유입 거래액’은 해당 기획전을 경유해 발생한 총 매출액이며, 발송 기여율은 이 중 발송 추적을 통해 발생한 매출의 비중을 의미합니다. (어트리뷰션 기준 차이로 인해 100%를 초과할 수 있음)")
             a = matched[matched["inf_amt"].fillna(0) > 0].copy()
             if len(a) == 0:
                 st.info("유입 거래액이 있는 매칭 기획전이 없어요.")
@@ -4970,11 +4957,11 @@ def main():
                 fig.update_xaxes(ticksuffix="%")
                 st.plotly_chart(fig, width="stretch")
                 show = a.sort_values("기여율", ascending=False)
-                st.markdown("**기여율 높은 기획전 — 발송이 매출을 주도**")
+                st.markdown("**기여율 우수 기획전 — 발송 주도형 매출**")
                 st.dataframe(promo_perf_table(show.head(15)),
                              hide_index=True, width="stretch")
                 lowbase = show[show["inf_amt"] >= show["inf_amt"].median()]
-                st.markdown("**기여율 낮은 기획전 (유입거래액 중앙값 이상) — 자연유입 비중↑, 발송 강화 여지**")
+                st.markdown("**기여율 미흡 기획전 (유입 거래액 중앙값 이상) — 자연 유입 의존도 우세, 마케팅 강화 권장**")
                 st.dataframe(promo_perf_table(lowbase.sort_values("기여율").head(15)),
                              hide_index=True, width="stretch")
 
@@ -4991,19 +4978,16 @@ def main():
             st.dataframe(promo_perf_table(b.head(50)),
                          hide_index=True, width="stretch", height=520)
             st.markdown('<div class="appendix">'
-                        '컬럼은 <b>발송 성과</b>(발송 데이터)와 <b>기획전 성과</b>(기획전 성과시트)로 나뉘어요. '
-                        '같은 UV라도 <b>발송 성과·UV</b>=발송 유입 UV, <b>기획전 성과·UV</b>=기획전 시트의 기획전 UV로 출처가 달라요.<br>'
-                        '<b>지표</b> · CTR=UV÷발송 · CR=주문÷UV · '
-                        'RPS=발송추적거래액÷발송 · <b>기여율=발송추적거래액÷유입거래액</b>.<br>'
-                        '한 기획전에 캠페인이 여러 개면 <b>발송·UV·VISIT·주문·발송추적거래액은 합산</b>, '
-                        'CTR·CR·RPS는 합산값 기준으로 계산해요. 발송일시는 가장 이른 기준이에요.</div>',
+                        '본 분석의 테이블 열은 <b>발송 실적</b>(발송 로그 추적 데이터)과 <b>기획전 성과</b>(기획전 성과 마스터 시트) 데이터로 구분됩니다. '
+                        '유입 고객수(UV) 역시 데이터 소스에 따라 <b>발송 실적 UV</b>(발송 링크 유입 고객수)와 <b>기획전 성과 UV</b>(해당 기획전의 전체 유입 고객수)로 구분되므로 주의하시기 바랍니다.<br>'
+                        '· CTR = 발송 유입 UV ÷ 발송 수량  · 주문CR = 주문건수 ÷ 발송 유입 UV  · RPS = 발송 추적 거래액 ÷ 발송 수량  · 기여율 = 발송 추적 거래액 ÷ 유입 거래액<br>'
+                        '· 단일 기획전 번호 내 다수의 캠페인이 중복 집행된 경우, 거래액/발송/UV/주문 등의 정량 지표는 합산 처리하며 비율 지표(CTR, CR, RPS)는 합계 기준의 가중 평균으로 계산합니다. 발송 일시는 가장 조기에 집행된 일자 기준입니다.</div>',
                         unsafe_allow_html=True)
 
         # ── ③ 발송 유무별 매출 ──
         with tabC:
             st.markdown("##### 발송한 기획전 vs 발송 안 한 기획전 — 매출 비교")
-            st.caption("기획전 성과시트 전체를 발송 여부로 나눠 평균·중앙값을 비교해요. "
-                       "규모가 큰 기획전 위주로 발송했을 수 있어서, 단순 우열로 보기는 어려워요.")
+            st.caption("기획전 성과 마스터의 전체 모수를 발송 집행 여부로 구분하여 평균 및 중앙값을 대조합니다. (단, 대형 기획전 위주의 편중 집행이 존재할 수 있어 단순 성과 비교 시 선택 편향이 있을 수 있습니다)")
             base_lbl = "유입 거래액"
             col = "inf_amt"
             allp = P.copy()
@@ -5027,8 +5011,7 @@ def main():
             st.plotly_chart(fig, width="stretch")
             p = welch(sset.dropna().values, uset.dropna().values)
             st.caption(f"평균 차이 통계 유의성: {sig_label(p)} · 발송 {len(sset):,}건 vs 미발송 {len(uset):,}건")
-            st.markdown('<div class="appendix">평균은 초대형 기획전에 휘둘리니 중앙값도 함께 보세요. '
-                        '발송 기획전이 더 크다면, 발송이 매출을 키운 건지 큰 기획전을 골라 발송한 건지 구분이 어려워요.</div>',
+            st.markdown('<div class="appendix">평균값은 일부 초대형 기획전(아웃라이어)에 왜곡되기 쉬우므로 중앙값을 병행하여 검토하십시오. 집행 집단의 매출 규모가 월등히 높은 경우, 발송 액션의 실질 성과인지 혹은 대형 기획전 대상의 선택 편향인지에 대해서는 통계적 추가 검증이 필요합니다.</div>',
                         unsafe_allow_html=True)
 
         # ── ④ 매출 추세 ──
@@ -5068,8 +5051,7 @@ def main():
                 layc["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
                 figc.update_layout(**layc)
                 st.plotly_chart(figc, width="stretch")
-                st.caption("기획전 시작월 기준 집계예요. 발송이 본격화된 시점 전후로 초록 선의 "
-                           "매출 규모가 어떻게 변했는지 살펴보세요.")
+                st.caption("기획전 런칭 시작월 기준 집계 데이터입니다. 마케팅(발송) 집행이 활성화된 전후 시점의 발송 기획전(녹색 선) 매출 규모 추이를 검토하십시오.")
 
         glossary()
 
