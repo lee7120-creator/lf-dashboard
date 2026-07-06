@@ -3616,9 +3616,10 @@ def main():
             if pv.empty:
                 st.info("데이터가 부족해요"); return
             z = pv.values * (100 if is_pct else 1)
+            txt_arr = np.where(np.isnan(z), "", np.round(z, 2).astype(str))
             fig = go.Figure(go.Heatmap(
                 z=z, x=[str(c) for c in pv.columns], y=[str(i) for i in pv.index],
-                colorscale="Blues", text=np.round(z, 2), texttemplate="%{text}",
+                colorscale="Blues", text=txt_arr, texttemplate="%{text}",
                 textfont=dict(size=10), colorbar=dict(thickness=10),
                 hovertemplate="%{y} × %{x}<br>" + mlabel + ": %{z:.2f}"
                               + ("%" if is_pct else "") + "<extra></extra>"))
@@ -3657,9 +3658,10 @@ def main():
         if cat_rows:
             cmat = pd.DataFrame(cat_rows).set_index("카테고리")
             z = cmat.values * (100 if is_pct else 1)
+            txt_arr = np.where(np.isnan(z), "", np.round(z, 2).astype(str))
             fig = go.Figure(go.Heatmap(
                 z=z, x=list(cmat.columns), y=list(cmat.index), colorscale="Blues",
-                text=np.round(z, 2), texttemplate="%{text}", textfont=dict(size=9),
+                text=txt_arr, texttemplate="%{text}", textfont=dict(size=9),
                 colorbar=dict(thickness=10), hoverongaps=False,
                 hovertemplate="%{y} · %{x}<br>" + mlabel + ": %{z:.2f}"
                               + ("%" if is_pct else "") + "<extra></extra>"))
@@ -4225,9 +4227,10 @@ def main():
         pv = hb.pivot_table(index="bpu", columns="_prio", values=mcol, aggfunc="mean")
         if not pv.empty:
             z = pv.values * (100 if is_pct else 1)
+            txt_arr = np.where(np.isnan(z), "", np.round(z, 2).astype(str))
             fig = go.Figure(go.Heatmap(z=z, x=[f"{c}순위" for c in pv.columns],
                                        y=[str(i) for i in pv.index], colorscale="Blues",
-                                       text=np.round(z, 2), texttemplate="%{text}",
+                                       text=txt_arr, texttemplate="%{text}",
                                        textfont=dict(size=10), colorbar=dict(thickness=10),
                                        hovertemplate="%{y} · %{x}<br>" + mlabel + ": %{z:.2f}"
                                                      + ("%" if is_pct else "") + "<extra></extra>"))
