@@ -5263,6 +5263,114 @@ def main():
             fig_stack.update_layout(**lay_stack)
             st.plotly_chart(fig_stack, use_container_width=True)
 
+        # ── 크로스 분석: 발송 강도(MTD) ↔ 수신동의 증감 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🔀 발송 강도 ↔ 수신동의 증감 (전사 MTD 연동)")
+        if mtd_data is None:
+            st.info("전사 **MTD 발송상세** 파일을 함께 올리면, 발송량이 많은 주/월에 "
+                    "수신동의 순증감이 정체·역전되는지 크로스로 분석해 드려요.")
+        else:
+            st.caption("일별은 노이즈가 커서 주간·월간으로 묶어서 봐요. "
+                       "발송이 많이 나간 기간에 순증감(신규−탈퇴)이 줄거나 마이너스면 "
+                       "‘발송 피로 → 동의 이탈’ 신호예요. (선택한 그룹·기간·이상치 제외 기준)")
+            xc1, xc2 = st.columns(2)
+            _gran = xc1.radio("집계 단위", ["주간", "월간"], horizontal=True, key="pc_x_gran")
+            _sendlab = xc2.selectbox("발송 강도 지표", ["총 발송 건수", "인당 발송 건수"], key="pc_x_send")
+            _sendcol = "totalSend" if _sendlab == "총 발송 건수" else "perSend"
+            _sendagg = "sum" if _sendcol == "totalSend" else "mean"
+
+            def _pk(dts):
+                per = "M" if _gran == "월간" else "W-SUN"
+                return dts.dt.to_period(per).apply(lambda p: p.start_time)
+
+            # 동의(선택 그룹·이상치 제외·기간 필터 = pc_clean)를 기간 단위로 집계
+            cc = pc_clean.copy()
+            cc["_pk"] = _pk(cc["date"])
+            cons_g = cc.groupby("_pk").agg(
+                순증감=("diff", "sum"), 신규추가=("added", "sum"),
+                탈퇴=("removed", "sum"), 기말동의=("consent", "last"),
+                동의일수=("date", "count")).reset_index()
+            # MTD 발송(같은 기간 필터)을 기간 단위로 집계
+            _mdf = mtd_data["df"]
+            mm = _mdf[(_mdf["date"] >= _d0) & (_mdf["date"] <= _d1)].copy()
+            mm["_pk"] = _pk(mm["date"])
+            send_g = mm.groupby("_pk").agg(
+                발송지표=(_sendcol, _sendagg), 총발송=("totalSend", "sum"),
+                CTR=("ctr", "mean"), 발송일수=("date", "count")).reset_index()
+            mrg = cons_g.merge(send_g, on="_pk", how="inner").sort_values("_pk")
+            # 주간은 양쪽 4일 이상 있는 기간만(부분 주 왜곡 방지)
+            if _gran == "주간":
+                mrg = mrg[(mrg["동의일수"] >= 4) & (mrg["발송일수"] >= 4)]
+
+            if len(mrg) < 3:
+                st.warning("두 데이터가 겹치는 기간이 3개 미만이라 크로스 분석을 못 해요. "
+                           "발송(MTD)과 동의 데이터의 기간이 겹치는지 확인해 주세요.")
+            else:
+                _sfx = "" if _sendcol == "totalSend" else "건"
+                fig_x = stacked_panels(
+                    mrg["_pk"], mrg["발송지표"], _sendlab,
+                    mrg["순증감"], "동의 순증감(명)",
+                    PALETTE["slate"], PALETTE["purple"], h=440,
+                    title=f"{_gran} {_sendlab}(위) ↔ 수신동의 순증감(아래)")
+                st.plotly_chart(fig_x, width="stretch")
+
+                # 상관 + 산점도(추세선) — 발송 강도 vs 순증감
+                x = mrg["발송지표"].values.astype(float)
+                y = mrg["순증감"].values.astype(float)
+                msk = ~np.isnan(x) & ~np.isnan(y)
+                if msk.sum() >= 3 and np.std(x[msk]) > 0 and np.std(y[msk]) > 0:
+                    r = float(np.corrcoef(x[msk], y[msk])[0, 1])
+                    sl, ic, _, p, _ = stats.linregress(x[msk], y[msk])
+                    xs = np.linspace(x[msk].min(), x[msk].max(), 50)
+                    _pk_labels = [pd.Timestamp(d).strftime("%Y-%m-%d")
+                                  for d in mrg["_pk"].to_numpy()[msk]]
+                    fig_sc = go.Figure()
+                    fig_sc.add_trace(go.Scatter(
+                        x=x[msk], y=y[msk], mode="markers",
+                        marker=dict(color=PALETTE["blue"], size=10),
+                        customdata=_pk_labels,
+                        hovertemplate="%{customdata}<br>" + _sendlab + ": %{x:,.0f}"
+                                      + _sfx + "<br>순증감: %{y:+,.0f}명<extra></extra>",
+                        name="기간"))
+                    fig_sc.add_trace(go.Scatter(
+                        x=xs, y=sl * xs + ic, mode="lines", name="추세",
+                        line=dict(color=PALETTE["red"], width=2, dash="dot")))
+                    lay_sc = base_layout(h=340, title=f"{_sendlab} vs 순증감 — 기간 단위 산점도")
+                    lay_sc["showlegend"] = False
+                    lay_sc["yaxis"]["gridcolor"] = "#f1f5f9"
+                    lay_sc["yaxis"]["zeroline"] = True
+                    lay_sc["yaxis"]["zerolinecolor"] = "#cbd5e1"
+                    fig_sc.update_layout(**lay_sc)
+                    st.plotly_chart(fig_sc, width="stretch")
+
+                    if r <= -0.3:
+                        _msg = ("발송이 많은 기간일수록 순증감이 낮아져요 — <b>발송 피로로 동의가 "
+                                "정체·이탈</b>하는 신호예요. 발송 강도 상한을 검토해 보세요.")
+                    elif r >= 0.3:
+                        _msg = ("발송이 많은 기간에 순증감도 높아요 — 아직 피로 구간은 아니고 "
+                                "발송이 동의 확보와 함께 가는 편이에요.")
+                    else:
+                        _msg = "발송 강도와 순증감 사이에 뚜렷한 관계는 약해요."
+                    st.markdown(
+                        f'<div class="appendix"><b>상관</b> — {_sendlab} ↔ 순증감: r={r:.2f}, '
+                        f'{sig_label(p)}. {_msg}<br>상관은 인과가 아니며 시즌·이벤트가 섞일 수 있어요. '
+                        '순증감이 마이너스인 기간의 발송량을 특히 함께 보세요.</div>',
+                        unsafe_allow_html=True)
+
+                # 기간별 표 (발송 강도 · 신규추가 · 탈퇴 · 순증감)
+                _xt = mrg.copy()
+                _xt["기간"] = _xt["_pk"].dt.strftime("%Y-%m-%d")
+                _xt["발송지표"] = _xt["발송지표"].map(
+                    lambda v: f"{v:,.0f}" + ("" if _sendcol == "totalSend" else "건"))
+                for _c in ("신규추가", "탈퇴", "총발송"):
+                    _xt[_c] = _xt[_c].map(lambda v: f"{v:,.0f}")
+                _xt["순증감"] = _xt["순증감"].map(lambda v: f"{v:+,.0f}")
+                _xt["CTR"] = _xt["CTR"].map(lambda v: f"{v*100:.2f}%" if pd.notna(v) else "–")
+                st.dataframe(
+                    _xt[["기간", "발송지표", "총발송", "CTR", "신규추가", "탈퇴", "순증감"]]
+                    .rename(columns={"발송지표": _sendlab, "총발송": "총 발송(합)"}),
+                    hide_index=True, width="stretch", height=300)
+
         # ── 이상치 제외 목록 ──
         with st.expander(f"⚠️ 제외된 이상치 날짜 ({n_outlier}일)"):
             _outlier_rows = pc_all[pc_all["is_outlier"]][["date", "consent", "diff", "added", "removed"]]
