@@ -2915,8 +2915,11 @@ def main():
             _prev_ws, _prev_we = _cur_ws - pd.Timedelta(days=7), _cur_we - pd.Timedelta(days=7)
 
             def _get_push_week_summary(df, start_d, end_d, grp):
-                # 이상치 제외 필터
-                sub = df[(df["group"] == grp) & (df["date"] >= start_d) & (df["date"] <= end_d) & (~df["is_outlier"])].copy()
+                df_dt = df.copy()
+                df_dt["date"] = pd.to_datetime(df_dt["date"])
+                sd = pd.to_datetime(start_d)
+                ed = pd.to_datetime(end_d)
+                sub = df_dt[(df_dt["group"] == grp) & (df_dt["date"] >= sd) & (df_dt["date"] <= ed) & (~df_dt["is_outlier"])].copy()
                 if sub.empty:
                     return None
                 return {
