@@ -2728,7 +2728,11 @@ def main():
             _push_df = st.session_state.get("push_consent_df")
             if _push_df is not None and not _push_df.empty:
                 def _get_push_summary(df, start_d, end_d, grp):
-                    sub = df[(df["group"] == grp) & (df["date"] >= start_d) & (df["date"] <= end_d) & (~df["is_outlier"])].copy()
+                    df_dt = df.copy()
+                    df_dt["date"] = pd.to_datetime(df_dt["date"])
+                    sd = pd.to_datetime(start_d)
+                    ed = pd.to_datetime(end_d)
+                    sub = df_dt[(df_dt["group"] == grp) & (df_dt["date"] >= sd) & (df_dt["date"] <= ed) & (~df_dt["is_outlier"])].copy()
                     if sub.empty:
                         return None
                     return {
