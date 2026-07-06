@@ -376,7 +376,10 @@ class _UF:
 
 def classify_upload(name, file_bytes):
     """업로드 xlsx 한 개의 종류 자동 판별:
-    perf(발송실적) / plan(발송기획 통합본) / promo(기획전 성과시트) / mtd(전사 MTD) / unknown."""
+    perf(발송실적) / plan(발송기획 통합본) / promo(기획전 성과시트) / mtd(전사 MTD) / push(앱푸시 동의 현황) / unknown."""
+    nm_lower = (name or "").lower()
+    if any(k in nm_lower for k in ("push", "consent", "앱푸시", "동의현황")):
+        return "push"
     import openpyxl
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
@@ -384,6 +387,8 @@ def classify_upload(name, file_bytes):
         return "unknown"
     try:
         names = [str(s) for s in wb.sheetnames]
+        if any(k in "".join(names) for k in ("앱푸시", "수신동의", "동의현황")):
+            return "push"
         # 1) 발송기획 통합본 — 주차 시트가 여러 개
         if sum(1 for s in names if WEEK_RE.search(s)) >= 3:
             return "plan"
@@ -394,6 +399,15 @@ def classify_upload(name, file_bytes):
         head = []
         for i, r in enumerate(first.iter_rows(min_row=1, max_row=14, values_only=True)):
             head.append([str(x).strip() if x is not None else "" for x in r])
+        
+        # 첫 14행 헤더 중 앱푸시 지표 관련 컬럼 키워드 감지
+        flat_head = []
+        for r in head:
+            flat_head.extend(r)
+        flat_head = "".join(flat_head)
+        if any(k in flat_head for k in ("기존 이탈", "기존탈", "신규추가")):
+            return "push"
+
         # 3) 기획전 성과시트 — 첫 칸이 '기획전 번호'
         for r in head:
             if r and r[0].replace(" ", "") == "기획전번호":
@@ -1625,24 +1639,9 @@ def main():
     uni_files = st.sidebar.file_uploader(
         "📂 파일 올리기 (xlsx/zip · 한 번에 여러 개 가능)",
         type=["xlsx", "zip"], accept_multiple_files=True, key="uni_up",
-        help="발송실적·기획·기획전성과·전사MTD 파일을 한 번에 올리면 "
+        help="발송실적·기획·기획전성과·전사MTD·앱푸시 수신동의 파일을 한 번에 올리면 "
              "자동으로 분류돼요. ZIP 파일도 돼요.")
 
-    # ── 앱푸시 수신동의 현황 파일 업로더 ──
-    push_consent_file = st.sidebar.file_uploader(
-        "📱 앱푸시 동의 현황 (xlsx)",
-        type=["xlsx"], accept_multiple_files=False, key="push_consent_up",
-        help="날짜별 기존/신규/Total 수신동의수·증감·신규추가·기존탈 데이터가 담긴 xlsx 파일이에요.")
-    if push_consent_file is not None:
-        try:
-            _push_bytes = push_consent_file.getvalue()
-            _push_hash = hashlib.md5(_push_bytes).hexdigest()
-            if st.session_state.get("push_consent_hash") != _push_hash:
-                with st.spinner("앱푸시 동의 파일 파싱 중…"):
-                    st.session_state["push_consent_df"] = parse_push_consent_bytes(_push_bytes)
-                st.session_state["push_consent_hash"] = _push_hash
-        except Exception as _e:
-            st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
     push_consent_df = st.session_state.get("push_consent_df")
 
     # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
@@ -1670,11 +1669,11 @@ def main():
     if st.session_state.get("plan_lookup_gs") is not None:
         st.sidebar.caption(f"✓ 기획 불러옴: {st.session_state.get('plan_lookup_meta','')}")
 
-    # ── 통합 업로드 자동 분류 → 기존 처리 변수로 라우팅 ──
+    # ── 통합 업로드 자동 분류 → 기존 처리 변수로 라우팅 및 앱푸시 즉시 파싱 ──
     perf_files, promo_files, mtd_files = [], None, []
     if uni_files:
         _LBL = {"perf": "발송실적", "plan": "발송기획", "promo": "기획전성과",
-                "mtd": "전사MTD", "unknown": "❓미인식"}
+                "mtd": "전사MTD", "push": "📱앱푸시", "unknown": "❓미인식"}
         _perf_b, _promo_b, _mtd_b, _cls = [], [], [], []
         with st.spinner("파일 종류를 파악하고 있어요…"):
             for nm, b in expand_uploads(uni_files):
@@ -1691,19 +1690,29 @@ def main():
                     _promo_b.append((nm, b))
                 elif k == "mtd":
                     _mtd_b.append((nm, b))
+                elif k == "push":
+                    try:
+                        _push_hash = hashlib.md5(b).hexdigest()
+                        if st.session_state.get("push_consent_hash") != _push_hash:
+                            st.session_state["push_consent_df"] = parse_push_consent_bytes(b)
+                            st.session_state["push_consent_hash"] = _push_hash
+                            push_consent_df = st.session_state["push_consent_df"]
+                    except Exception as _e:
+                        st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
+
         perf_files = [_UF(n, b) for n, b in _perf_b]
         promo_files = _UF(_promo_b[0][0], _promo_b[0][1]) if _promo_b else None
         mtd_files = [_UF(n, b) for n, b in _mtd_b]
         from collections import Counter
         _cnt = Counter(k for _, k in _cls)
         st.sidebar.success("자동 분류 — " + " · ".join(
-            f"{_LBL[k]} {_cnt[k]}" for k in ("perf", "plan", "promo", "mtd", "unknown") if _cnt.get(k)))
+            f"{_LBL[k]} {_cnt[k]}" for k in ("perf", "plan", "promo", "mtd", "push", "unknown") if _cnt.get(k)))
         with st.sidebar.expander("분류 상세"):
             for nm, k in _cls:
                 st.caption(f"**{_LBL[k]}** ← {nm[:34]}")
             if _cnt.get("unknown"):
                 st.caption("❓인식 못 한 파일이 있어요. 헤더를 확인해 주세요 (실적=’AF코드’ · "
-                           "기획전=’기획전 번호’ · 기획=주차 시트 · MTD=날짜행).")
+                           "기획전=’기획전 번호’ · 기획=주차 시트 · MTD=날짜행 · 앱푸시=기존 이탈).")
 
     st.sidebar.caption(BK["status"])
     if st.sidebar.button("🔄 새로 불러오기", width="stretch"):
