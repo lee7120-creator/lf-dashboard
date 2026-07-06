@@ -9,3 +9,4 @@ wr_member_store.csv
 send_perf_store.csv
 send_perf_mtd_store.csv
 data/combo_candidates.csv
+send_perf_notes.json
