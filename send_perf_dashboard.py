@@ -2670,6 +2670,43 @@ def main():
                 lines.append(f"- {met} — {_fmt(met, cur_w[met])}, "
                              f"전주비 {_dlt(met, cur_w[met], prev_w[met])}, "
                              f"전년비 {_dlt(met, cur_w[met], yv)}")
+
+            # 앱푸시 수신동의 데이터가 세션에 적재되어 있는 경우 요약 한 줄 추가
+            _push_df = st.session_state.get("push_consent_df")
+            if _push_df is not None and not _push_df.empty:
+                def _get_push_summary(df, start_d, end_d, grp):
+                    sub = df[(df["group"] == grp) & (df["date"] >= start_d) & (df["date"] <= end_d) & (~df["is_outlier"])].copy()
+                    if sub.empty:
+                        return None
+                    return {
+                        "last_consent": sub.sort_values("date").iloc[-1]["consent"],
+                        "tot_added": sub["added"].sum(),
+                        "tot_removed": sub["removed"].sum()
+                    }
+                
+                c_sum = _get_push_summary(_push_df, ref_ws, ref_we, "Total")
+                if c_sum:
+                    c_con = c_sum["last_consent"]
+                    c_add = c_sum["tot_added"]
+                    c_rem = c_sum["tot_removed"]
+                    
+                    p_sum = _get_push_summary(_push_df, prev_ws, ref_we - pd.Timedelta(days=7), "Total")
+                    p_con = p_sum["last_consent"] if p_sum else None
+                    
+                    y_sum = _get_push_summary(_push_df, yo_ws, yo_ws + pd.Timedelta(days=6), "Total") if yo_ws is not None else None
+                    y_con = y_sum["last_consent"] if y_sum else None
+                    
+                    def _d_pct(cur, prev):
+                        if cur is None or prev is None or not prev:
+                            return "–"
+                        pct = (cur / prev - 1) * 100
+                        return f"△{abs(pct):.2f}%" if pct < 0 else f"+{pct:.2f}%"
+                    
+                    p_diff = _d_pct(c_con, p_con)
+                    y_diff = _d_pct(c_con, y_con)
+                    
+                    lines.append(f"- 앱푸시 수신동의 — {c_con:,.0f}명 (신규: +{c_add:,.0f}명, 이탈: △{c_rem:,.0f}명), "
+                                 f"전주비 {p_diff}, 전년비 {y_diff}")
             return "\n".join(lines)
 
         def _note_render(text):
