@@ -4539,8 +4539,17 @@ def main():
             st.info("타겟 구분 데이터가 없어요. 실적시트에 '타겟 구분' 컬럼이 있는지 확인해 주세요."); st.stop()
         if len(base) < 6:
             st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
-        seg = base.copy()
-        seg["target"] = seg["target"].fillna("(미지정)").replace("", "(미지정)")
+        
+        # 유효 세그먼트 필터링 로직 (비로그인, 타겟 등 단순 분류 배제)
+        unique_targets = set(base["target"].fillna("").replace("", "(미지정)").unique())
+        invalid_segs = {"타겟", "비로그인", "(미지정)", "nan", "None"}
+        valid_segs = unique_targets - invalid_segs
+        
+        if not valid_segs:
+            st.info("💡 분석 안내: 현재 업로드된 데이터셋의 세그먼트 정보가 단순 시스템 분류(타겟, 비로그인 등)로만 구성되어 있어 실질적인 세그먼트별 비교 분석을 제공하지 않습니다. VIP, 휴면고객, 첫구매고객 등 CRM 타겟팅 세분화 규칙이 정의된 데이터를 업로드해주시기 바랍니다.")
+            st.stop()
+            
+        seg = base[base["target"].isin(valid_segs)].copy()
         mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p13_metric")
         mcol, msuf, mclr = METRIC_OPTS[mlabel]
         is_pct = mcol in ("ord_cr", "infl_cr")
