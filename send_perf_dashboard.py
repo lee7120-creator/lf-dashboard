@@ -17,6 +17,12 @@ import io, os, re, json, hashlib, datetime
 import numpy as np
 import pandas as pd
 
+try:
+    from streamlit_quill import st_quill
+    HAS_QUILL = True
+except Exception:
+    HAS_QUILL = False
+
 # ══════════════════════════════════════════════════════════════════════
 # 1. 순수 데이터 로직 (Streamlit 비의존)
 # ══════════════════════════════════════════════════════════════════════
@@ -2757,14 +2763,27 @@ def main():
             return "\n".join(lines)
 
         def _note_render(text):
-            """보고란 표시 — △는 빨강, +는 초록 (회사 양식). HTML은 이스케이프."""
+            """보고란 표시 — △는 빨강, +는 초록 (회사 양식). HTML 태그를 보존하면서 텍스트 노드만 색칠합니다."""
             s = (text or "").strip() or "내용을 입력하세요."
-            s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            s = re.sub(r"(△[\d.,]+%?p?)",
-                       r'<span style="color:#dc2626;font-weight:700">\1</span>', s)
-            s = re.sub(r"(\+[\d.,]+%?p?)",
-                       r'<span style="color:#16a34a;font-weight:700">\1</span>', s)
-            return f'<div class="vg">{s.replace(chr(10), "<br>")}</div>'
+            parts = re.split(r'(<[^>]+>)', s)
+            for i in range(len(parts)):
+                if i % 2 == 0:
+                    txt = parts[i]
+                    txt = re.sub(
+                        r"(△[\d.,]+%?p?)",
+                        r'<span style="color:#dc2626;font-weight:700">\1</span>',
+                        txt
+                    )
+                    txt = re.sub(
+                        r"(\+[\d.,]+%?p?)",
+                        r'<span style="color:#16a34a;font-weight:700">\1</span>',
+                        txt
+                    )
+                    parts[i] = txt
+            res = "".join(parts)
+            if "<p>" not in res and "<li>" not in res and "<br>" not in res:
+                res = res.replace("\n", "<br>")
+            return f'<div class="vg">{res}</div>'
 
         def _ai_kpi_note():
             system = ("당신은 LF몰 CRM 발송 주간보고 작성자입니다. 아래 지표 현황을 바탕으로 "
@@ -2808,10 +2827,30 @@ def main():
                             st.session_state[ekey] = False
                             st.rerun()
                 if st.session_state.get(ekey, False):
-                    new = st.text_area("내용", store.get(nkey, ""), key=f"ta_{nkey}",
-                                       height=200, label_visibility="collapsed")
+                    val = store.get(nkey, "")
+                    if val and not (val.startswith("<p>") or val.startswith("<ul>") or val.startswith("<li>") or "<div" in val):
+                        if val.strip().startswith("-"):
+                            items = [f"<li>{item.strip()[1:].strip()}</li>" for item in val.strip().split("\n") if item.strip()]
+                            val = f"<ul>{''.join(items)}</ul>"
+                        else:
+                            val = "".join(f"<p>{line}</p>" for line in val.split("\n"))
+                    
+                    if HAS_QUILL:
+                        toolbar = [
+                            [{"size": ["small", False, "large", "huge"]}],
+                            ["bold", "italic", "underline", "strike"],
+                            [{"color": []}, {"background": []}],
+                            [{"list": "ordered"}, {"list": "bullet"}],
+                            [{"align": []}], ["clean"],
+                        ]
+                        new = st_quill(value=val, html=True, toolbar=toolbar,
+                                       key=f"quill_{nkey}")
+                    else:
+                        new = st.text_area("내용", val, key=f"ta_{nkey}",
+                                           height=200, label_visibility="collapsed")
+                    
                     if st.button("저장", key=f"btn_s_{nkey}", type="primary", width="stretch"):
-                        store[nkey] = new
+                        store[nkey] = new if new is not None else val
                         _notes_save(store)
                         st.session_state[ekey] = False
                         st.rerun()
