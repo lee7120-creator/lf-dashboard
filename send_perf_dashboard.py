@@ -2070,7 +2070,7 @@ def main():
             "- **마모**: 같은 소구를 반복할수록 반응이 무뎌지는 현상이에요.\n"
             "- **MTD·인당 발송 건수**: 전사 기준 일별 집계예요. 인당 발송 건수는 고객 1명이 "
             "하루에 받은 평균 메시지 수(발송 강도)예요.\n"
-            "- **전주비·전월비·전년비**: 기준 기간을 직전 주·4주 전(또는 전월 같은 기간)·작년 같은 "
+            "- **전주비·전월비·전년비**: 기준 기간을 직전 주·전월 동주(한 달 전 같은 주)·작년 같은 "
             "기간과 비교한 증감이에요. 비율 지표(CTR·CR)는 %p 차이, 나머지는 증감률(%)로 표시해요.\n"
             "- **△ 표기**: 마이너스(감소)를 뜻해요 — 회사 보고 양식이에요. 예: △8.9% = 8.9% 감소.\n")
         stats_md = (
@@ -2080,12 +2080,12 @@ def main():
             "- **보정(FDR)**: 여러 개를 한꺼번에 비교하면 우연히 '유의'가 나오기 쉬워서 "
             "더 엄격하게 걸러낸 값이에요.\n"
             "- **순효과**: 카테고리·시간대 등 다른 조건을 맞춘 뒤 그 요소만의 진짜 기여예요.\n"
-            "- **상관 r**: 둘이 같이 움직이는 정도예요(−1~+1). +면 같이, −면 반대로 움직여요. "
+            "- **상관 r**: 둘이 같이 움직이는 정도예요(−1\\~+1). +면 같이, −면 반대로 움직여요. "
             "상관은 인과(원인→결과)와 달라요.\n"
             "- **R²(결정계수)**: 추세선이 데이터를 얼마나 잘 설명하는지예요(0~1). 1에 가까울수록 뚜렷해요.\n"
             "- **중앙값**: 크기순으로 줄 세웠을 때 딱 가운데 값이에요. 극단값에 안 휘둘려요.\n"
             "- **±2σ(시그마)**: 평균에서 아주 많이 벗어났다는 뜻이에요. 상·하위 약 2.5%에 해당해요.\n"
-            "- **5분위(Q1~Q5)**: 데이터를 크기순으로 5등분한 거예요. Q1이 가장 작고 Q5가 가장 커요.\n"
+            "- **5분위(Q1\\~Q5)**: 데이터를 크기순으로 5등분한 거예요. Q1이 가장 작고 Q5가 가장 커요.\n"
             "- **가중 평균 vs 단순 평균**: 가중은 발송 많은 캠페인에 비중을 더 두고(실제 효율에 가까움), "
             "단순은 캠페인 1건을 1표로 봐요.\n"
             "- **최소 발송수**: 표본이 너무 적으면 우연에 흔들려서, 일정 발송수 이상만 분석에 넣어요.\n")
@@ -2335,7 +2335,7 @@ def main():
     elif "주간보고" in page:
         import calendar
         st.title("주간보고")
-        st.caption("기준 주차(월~일) 실적을 전주·4주 전·전년 동주와 비교하고, "
+        st.caption("기준 주차(월\\~일) 실적을 전주·전월 동주·전년 동주와 비교하고, "
                    "월 누계(MTD)는 전월·전년 같은 기간과 비교해요. "
                    "모든 값은 합산(가중) 기준이에요. 사이드바 필터는 반영되고 '최소 발송수'는 제외돼요.")
         g0 = dff_all.dropna(subset=["dt"]).copy()
@@ -2393,16 +2393,28 @@ def main():
             d = (cur / prev - 1) * 100
             return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
 
+        def _rng_short(ws):
+            """짧은 기간 라벨 — 컬럼 헤더용. 예: '26년 6/22~6/28'."""
+            ws = pd.Timestamp(ws); we_ = ws + pd.Timedelta(days=6)
+            return f"{ws.year % 100}년 {ws.month}/{ws.day}~{we_.month}/{we_.day}"
+
+        def _md(s):
+            """마크다운 안전 문자열 — '~'가 취소선으로 해석되지 않게 이스케이프."""
+            return str(s).replace("~", "\\~")
+
         cur_w = _agg(_slice(ref_ws, ref_we))
-        prev_w = _agg(_slice(ref_ws - pd.Timedelta(days=7), ref_we - pd.Timedelta(days=7)))
-        m4_w = _agg(_slice(ref_ws - pd.Timedelta(days=28), ref_we - pd.Timedelta(days=28)))
+        prev_ws = ref_ws - pd.Timedelta(days=7)
+        prev_w = _agg(_slice(prev_ws, ref_we - pd.Timedelta(days=7)))
+        # 전월 동주 — 기준주 시작일의 '한 달 전' 날짜가 속한 주(월~일)
+        pm_ws = pd.Timestamp((ref_ws - pd.DateOffset(months=1)).to_period("W").start_time)
+        pm_w = _agg(_slice(pm_ws, pm_ws + pd.Timedelta(days=6)))
         try:                                             # 전년 동주 — ISO 주차 번호 기준
             _iy, _iw, _ = ref_ws.isocalendar()
             yo_ws = pd.Timestamp(datetime.date.fromisocalendar(_iy - 1, _iw, 1))
             yoy_w = _agg(_slice(yo_ws, yo_ws + pd.Timedelta(days=6)))
             yo_lab = _wklab(yo_ws)
         except ValueError:                               # 53주차 등 전년에 없는 주
-            yoy_w, yo_lab = None, "–"
+            yo_ws, yoy_w, yo_lab = None, None, "–"
 
         # ── KPI 카드 (전주비) — △ 표기 방향이 st.metric 화살표와 어긋나서 커스텀 카드 사용 ──
         k = st.columns(5)
@@ -2423,17 +2435,21 @@ def main():
                 f'font-feature-settings:\'tnum\' 1">{_fmt(met, cur_w[met])}</div>'
                 f'{_dh}</div>', unsafe_allow_html=True)
 
-        # ── 주요 지표 현황 표 (전주·4주 전·전년 동주) ──
+        # ── 주요 지표 현황 표 (전주·전월 동주·전년 동주 — 컬럼에 기간 일자 표기) ──
         st.markdown("##### 📋 주요 지표 현황")
+        col_prev = f"전주 ({_rng_short(prev_ws)})"
+        col_cur = f"기준주 ({_rng_short(ref_ws)})"
+        col_pm = f"전월 동주 ({_rng_short(pm_ws)})"
+        col_yoy = f"전년 동주 ({_rng_short(yo_ws)})" if yo_ws is not None else "전년 동주 (–)"
         rows = []
         for met in METS:
             yv = yoy_w[met] if yoy_w else np.nan
             rows.append({"지표": met,
-                         "전주": _fmt(met, prev_w[met]), "기준주": _fmt(met, cur_w[met]),
+                         col_prev: _fmt(met, prev_w[met]), col_cur: _fmt(met, cur_w[met]),
                          "전주비": _dlt(met, cur_w[met], prev_w[met]),
-                         "4주 전": _fmt(met, m4_w[met]),
-                         "전월비(4주전)": _dlt(met, cur_w[met], m4_w[met]),
-                         "전년 동주": _fmt(met, yv), "전년비": _dlt(met, cur_w[met], yv)})
+                         col_pm: _fmt(met, pm_w[met]),
+                         "전월비": _dlt(met, cur_w[met], pm_w[met]),
+                         col_yoy: _fmt(met, yv), "전년비": _dlt(met, cur_w[met], yv)})
         wr_tbl = pd.DataFrame(rows)
 
         def _clr(v):
@@ -2443,9 +2459,11 @@ def main():
             if s.startswith("△") or s.startswith("-"):    # △ = 마이너스 (회사 보고 양식)
                 return "color:#dc2626;font-weight:600"
             return ""
-        st.dataframe(wr_tbl.style.map(_clr, subset=["전주비", "전월비(4주전)", "전년비"]),
+        st.dataframe(wr_tbl.style.map(_clr, subset=["전주비", "전월비", "전년비"]),
                      hide_index=True, width="stretch", height=360)
-        st.caption(f"기준주 {_wklab(ref_ws)} · 전년 동주 {yo_lab} — 해당 기간에 데이터가 없으면 '–'로 표시돼요.")
+        st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
+                   "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
+                   "전월비는 기준주 시작일의 한 달 전 날짜가 속한 주(전월 동주)와 비교해요.")
 
         # ── 월 누계(MTD) — 기준주 일요일 마감 기준 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -2711,7 +2729,7 @@ def main():
                 if sel_cat_wr:
                     sub_wr = cw[cw["cat"].astype(str) == sel_cat_wr]
                     st.markdown(f"##### 📋 '{sel_cat_wr}' — 기준주 메시지별 효율 상세")
-                    st.caption(f"{_wklab(ref_ws)} 발송 {len(sub_wr)}건 — 주문CR 높은 순. "
+                    st.caption(f"{_md(_wklab(ref_ws))} 발송 {len(sub_wr)}건 — 주문CR 높은 순. "
                                "표의 행을 클릭하면 문구 원문도 볼 수 있어요.")
                     render_messages(sub_wr, "ord_cr", f"wrcat_{sel_cat_wr}")
         else:
@@ -2726,7 +2744,7 @@ def main():
                 yv = yoy_w[met] if yoy_w else np.nan
                 lines.append(f"- {met}: {_fmt(met, cur_w[met])} "
                              f"(전주비 {_dlt(met, cur_w[met], prev_w[met])}, "
-                             f"전월비(4주전) {_dlt(met, cur_w[met], m4_w[met])}, "
+                             f"전월비(전월 동주) {_dlt(met, cur_w[met], pm_w[met])}, "
                              f"전년비 {_dlt(met, cur_w[met], yv)})")
             lines.append(f"[MTD] 당월 거래액 {_fmt('거래액', cur_mtd['거래액'])} "
                          f"(전월비 {_dlt('거래액', cur_mtd['거래액'], prev_mtd['거래액'])}, "
