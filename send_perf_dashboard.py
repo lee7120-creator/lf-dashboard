@@ -908,11 +908,13 @@ def parse_push_consent_bytes(file_bytes, start_year=2024):
                 "added":   data.get((g, "added"),   [None] * n)[i],
                 "removed": data.get((g, "removed"), [None] * n)[i],
             }
-            # 이상치 플래그: 배치 이관 이벤트 (신규추가 or 기존탈 > 임계값)
+            # 이상치 플래그: 배치 이관 이벤트 (신규추가·기존탈·순증감 급락 > 임계값)
             added_v  = rec["added"]  if rec["added"]  is not None else 0
             removed_v = rec["removed"] if rec["removed"] is not None else 0
-            rec["is_outlier"] = bool(added_v > PUSH_OUTLIER_THRESHOLD or
-                                      removed_v > PUSH_OUTLIER_THRESHOLD)
+            diff_v   = rec["diff"]   if rec["diff"]   is not None else 0
+            rec["is_outlier"] = bool(abs(added_v) > PUSH_OUTLIER_THRESHOLD or
+                                      abs(removed_v) > PUSH_OUTLIER_THRESHOLD or
+                                      abs(diff_v) > PUSH_OUTLIER_THRESHOLD)
             records.append(rec)
 
     df = pd.DataFrame(records)
@@ -1501,6 +1503,33 @@ def main():
                          tickfont=dict(color="#64748b", size=11))
         fig.update_yaxes(ticksuffix=bar_suffix, row=1, col=1)
         fig.update_yaxes(ticksuffix=line_suffix, row=2, col=1)
+        return fig
+
+    def overlay_dual(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
+                     h=430, bar_suffix="", line_suffix="", title=""):
+        """한 차트 이중축 오버레이 — 막대(좌축)+선(우축)을 같은 X에 겹쳐 그린다.
+        스케일이 크게 다른 '발송 강도 ↔ 효율/증감' 관계를 한 눈에 보려는 용도.
+        어느 축인지 헷갈리지 않게 축 눈금·제목 색을 각 시리즈 색과 맞춘다.
+        통합 툴팁(x unified)+세로 크로스헤어 포함."""
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
+                             opacity=0.55))
+        fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
+                                 line=dict(color=line_color, width=2.5),
+                                 marker=dict(size=6), yaxis="y2"))
+        lay = base_layout(h=h, title=title, hover="x")
+        lay["showlegend"] = True
+        lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02,
+                             xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+        lay["yaxis"]["ticksuffix"] = bar_suffix
+        lay["yaxis"]["title"] = dict(text=bar_name, font=dict(color=bar_color, size=11))
+        lay["yaxis"]["tickfont"] = dict(color=bar_color, size=11)
+        lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
+                             ticksuffix=line_suffix,
+                             title=dict(text=line_name, font=dict(color=line_color, size=11)),
+                             tickfont=dict(color=line_color, size=11),
+                             zeroline=True, zerolinecolor="#e2e8f0")
+        fig.update_layout(**lay)
         return fig
 
     def sig_label(p):
@@ -4109,11 +4138,11 @@ def main():
             _agg = mtd_data["monthly"] if _gran == "월별" else mtd_data["quarterly"]
             _xc = "month" if _gran == "월별" else "quarter"
             _yc = _MO[_yl]
-            mfig = stacked_panels(_agg[_xc], _agg["perSend"], "인당 발송 건수",
-                                  _agg[_yc] * (100 if _yc in _PCT else 1), _yl,
-                                  PALETTE["amber"], _CLR[_yc], h=430,
-                                  line_suffix=("%" if _yc in _PCT else ""),
-                                  title=f"인당 발송 건수(위) vs {_yl}(아래)")
+            mfig = overlay_dual(_agg[_xc], _agg["perSend"], "인당 발송 건수",
+                                _agg[_yc] * (100 if _yc in _PCT else 1), _yl,
+                                PALETTE["amber"], _CLR[_yc], h=430,
+                                line_suffix=("%" if _yc in _PCT else ""),
+                                title=f"인당 발송 건수(좌·막대) ↔ {_yl}(우·선)")
             st.plotly_chart(mfig, width="stretch")
             st.markdown("**추세 분석**")
             _rows = []
@@ -4434,11 +4463,11 @@ def main():
             xcol = "month" if gran == "월별" else "quarter"
             ylab = st.selectbox("효율 지표(선·아래)", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)"])
             yc = MTDOPT[ylab]
-            fig = stacked_panels(agg[xcol], agg["perSend"], "인당 발송 건수",
-                                 agg[yc] * (100 if yc in MTD_PCT else 1), ylab,
-                                 PALETTE["amber"], MCLR[yc], h=430,
-                                 line_suffix=("%" if yc in MTD_PCT else ""),
-                                 title=f"인당 발송 건수(위) vs {ylab}(아래)")
+            fig = overlay_dual(agg[xcol], agg["perSend"], "인당 발송 건수",
+                               agg[yc] * (100 if yc in MTD_PCT else 1), ylab,
+                               PALETTE["amber"], MCLR[yc], h=430,
+                               line_suffix=("%" if yc in MTD_PCT else ""),
+                               title=f"인당 발송 건수(좌·막대) ↔ {ylab}(우·선)")
             st.plotly_chart(fig, width="stretch")
 
             st.markdown("##### 추세 분석")
@@ -5048,6 +5077,17 @@ def main():
         # date 컬럼을 안전하게 datetime 형식으로 통일
         push_consent_df = push_consent_df.copy()
         push_consent_df["date"] = pd.to_datetime(push_consent_df["date"])
+        # 이상치 재계산(런타임) — 신규추가·기존탈뿐 아니라 '순증감(diff) 급락'도 배치/이관
+        # 이벤트로 보고 제외한다. (예전에 저장된 데이터도 재업로드 없이 −20k 스파이크가 걸러짐)
+        for _c in ("added", "removed", "diff"):
+            if _c in push_consent_df:
+                push_consent_df[_c] = pd.to_numeric(push_consent_df[_c], errors="coerce")
+        _a = push_consent_df.get("added", pd.Series(0, index=push_consent_df.index)).fillna(0)
+        _r = push_consent_df.get("removed", pd.Series(0, index=push_consent_df.index)).fillna(0)
+        _f = push_consent_df.get("diff", pd.Series(0, index=push_consent_df.index)).fillna(0)
+        push_consent_df["is_outlier"] = (
+            (_a.abs() > PUSH_OUTLIER_THRESHOLD) | (_r.abs() > PUSH_OUTLIER_THRESHOLD)
+            | (_f.abs() > PUSH_OUTLIER_THRESHOLD))
 
         # ── 필터: 그룹 & 날짜 범위 ──
         c_grp, c_date = st.columns([1, 2])
@@ -5307,11 +5347,12 @@ def main():
                            "발송(MTD)과 동의 데이터의 기간이 겹치는지 확인해 주세요.")
             else:
                 _sfx = "" if _sendcol == "totalSend" else "건"
-                fig_x = stacked_panels(
+                fig_x = overlay_dual(
                     mrg["_pk"], mrg["발송지표"], _sendlab,
                     mrg["순증감"], "동의 순증감(명)",
                     PALETTE["slate"], PALETTE["purple"], h=440,
-                    title=f"{_gran} {_sendlab}(위) ↔ 수신동의 순증감(아래)")
+                    line_suffix="명",
+                    title=f"{_gran} {_sendlab}(좌·막대) ↔ 수신동의 순증감(우·선)")
                 st.plotly_chart(fig_x, width="stretch")
 
                 # 상관 + 산점도(추세선) — 발송 강도 vs 순증감
