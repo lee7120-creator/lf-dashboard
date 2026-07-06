@@ -2027,7 +2027,7 @@ def main():
         "7. 기획전 비교분석":    ["기획전 비교분석"],
         "8. 액션":               ["다음주 발송 플레이북", "AI 처방·카피"],
         "9. 데이터·다운로드":    ["데이터·다운로드"],
-        "📱 앱푸시 동의 현황":   ["앱푸시 동의 현황"],
+        "10. 앱푸시 동의 현황":  ["앱푸시 동의 현황"],
     }
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
@@ -4967,8 +4967,9 @@ def main():
         wk_df = push_weekly(push_consent_df[(push_consent_df["date"] >= _d0) & (push_consent_df["date"] <= _d1)],
                             group=sel_group)
         if not wk_df.empty:
-            wk_show = wk_df[["주차", "일수", "기말동의수", "순증감합", "신규추가합", "탈퇴합"]].copy()
-            wk_show = wk_show.sort_values("주차", ascending=False).reset_index(drop=True)
+            wk_show = wk_df[["주시작", "주차", "일수", "기말동의수", "순증감합", "신규추가합", "탈퇴합"]].copy()
+            wk_show = wk_show.sort_values("주시작", ascending=False).reset_index(drop=True)
+            wk_show = wk_show.drop(columns=["주시작"])
             wk_show["기말동의수"] = wk_show["기말동의수"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
             wk_show["순증감합"]  = wk_show["순증감합"].apply(lambda v: f"{v:+,.0f}" if pd.notna(v) else "—")
             wk_show["신규추가합"] = wk_show["신규추가합"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
