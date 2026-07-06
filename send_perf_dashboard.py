@@ -2086,13 +2086,13 @@ def main():
     FATIGUE_PAGES = [
         "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
     ]
-    cat = st.sidebar.radio("분석 영역", ["📊 발송성과", "😮‍💨 발송피로도"])
-    if cat.startswith("📊"):
+    cat = st.sidebar.radio("분석 영역", ["📈 발송성과", "⚡ 피로도 진단"])
+    if cat.startswith("📈"):
         _grp = st.sidebar.radio("페이지", list(CAMPAIGN_GROUPS))
         _subs = CAMPAIGN_GROUPS[_grp]
         if len(_subs) > 1:
             _gname = _grp.split(". ", 1)[-1]
-            # 본문 상단 하위탭 (기획전 비교분석 페이지의 하위탭과 동일한 위치/역할)
+            # 本문 상단 하위탭 (기획전 비교분석 페이지의 하위탭과 동일한 위치/역할)
             page = st.radio(_gname, _subs, horizontal=True, key=f"subtab_{_grp}",
                             label_visibility="collapsed")
         else:
@@ -2129,7 +2129,7 @@ def main():
             st.warning("저장된 데이터가 0건이에요. 「💾 저장하기」를 눌러야 다음에도 유지돼요.")
 
         # ── 통합 백업: 캠페인+MTD+기획전+앱푸시 데이터를 한 ZIP 파일로 ──
-        st.markdown("##### 📦 통합 백업 (한 파일)")
+        st.markdown("##### 📁 통합 백업 (단일 파일)")
         import zipfile as _zf
         _zbuf = io.BytesIO()
         _has_any = False
@@ -2154,7 +2154,7 @@ def main():
                 _has_any = True
         if _has_any:
             st.download_button(
-                "⬇ 통합 백업 (전체 ZIP)", _zbuf.getvalue(),
+                "📥 통합 백업 (전체 ZIP)", _zbuf.getvalue(),
                 file_name=f"lf_dashboard_backup_{datetime.date.today():%Y%m%d}.zip", mime="application/zip",
                 width="stretch", key="bak_all")
             st.caption("캠페인·MTD·기획전·앱푸시 수신동의 데이터를 모두 포함하여 백업합니다. 이 ZIP 파일을 아래에 다시 올리면 원클릭으로 일괄 복원됩니다.")
@@ -2173,14 +2173,14 @@ def main():
 
         st.markdown("---")
         # ── 지저분한 개별 제어기는 서브 expander 안으로 숨겨서 정돈 ──
-        with st.expander("⚙️ 개별 데이터 관리 및 영구 삭제", expanded=False):
+        with st.expander("🛠️ 개별 데이터 설정 및 삭제", expanded=False):
             st.markdown("##### 개별 백업 (선택)")
             if len(work):
                 st.download_button(
-                    f"⬇ 캠페인 백업 (CSV · {len(work):,}건)",
+                    f"📥 캠페인 백업 (CSV · {len(work):,}건)",
                     work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"send_perf_store_backup_{datetime.date.today():%Y%m%d}.csv", mime="text/csv", width="stretch")
-            if st.button("🗑 캠페인 DB 지우기", width="stretch", key="clear_store"):
+            if st.button("🧹 캠페인 저장소 초기화", width="stretch", key="clear_store"):
                 storage_clear(BK, "campaign")
                 st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
                 st.cache_data.clear()
@@ -2190,11 +2190,11 @@ def main():
             st.caption(f"전사 MTD {0 if mtd_work is None else len(mtd_work)}일치")
             if mtd_work is not None and len(mtd_work):
                 st.download_button(
-                    "⬇ MTD 백업 (CSV)",
+                    "📥 MTD 백업 (CSV)",
                     mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"),
                     file_name="send_perf_mtd_backup.csv", mime="text/csv",
                     width="stretch", key="mtd_bak")
-            if st.button("🗑 MTD DB 지우기", width="stretch", key="clear_mtd"):
+            if st.button("🧹 MTD 저장소 초기화", width="stretch", key="clear_mtd"):
                 storage_clear(BK, "mtd")
                 st.session_state.mtd_store_df = pd.DataFrame(columns=MTD_STORE_COLS)
                 st.cache_data.clear()
@@ -2204,7 +2204,7 @@ def main():
             st.caption(f"기획전 성과 {0 if promo_work is None else len(promo_work):,}건")
             if promo_work is not None and len(promo_work):
                 st.download_button(
-                    "⬇ 기획전 백업 (CSV)",
+                    "📥 기획전 백업 (CSV)",
                     promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"),
                     file_name="send_perf_promo_backup.csv", mime="text/csv",
                     width="stretch", key="promo_bak")
@@ -2219,7 +2219,7 @@ def main():
                     st.success("기획전 복원했어요 ✓ 새로고침해 주세요")
                 except Exception as e:
                     st.error(f"기획전 복원하지 못했어요: {e}")
-            if st.button("🗑 기획전 DB 지우기", width="stretch", key="clear_promo"):
+            if st.button("🧹 기획전 저장소 초기화", width="stretch", key="clear_promo"):
                 storage_clear(BK, "promo")
                 st.session_state.promo_store_df = pd.DataFrame(columns=PROMO_STORE_COLS)
                 st.cache_data.clear()
@@ -2230,12 +2230,12 @@ def main():
             st.caption(f"앱푸시 동의 {0 if _p_df is None else len(_p_df):,}건 (약 {0 if _p_df is None else len(_p_df)//3:,}일치)")
             if _p_df is not None and not _p_df.empty:
                 st.download_button(
-                    "⬇ 앱푸시 백업 (CSV)",
+                    "📥 앱푸시 백업 (CSV)",
                     _p_df.to_csv(index=False).encode("utf-8-sig"),
                     file_name="send_perf_push_backup.csv", mime="text/csv",
                     width="stretch", key="push_bak"
                 )
-            if st.button("🗑 앱푸시 DB 지우기", width="stretch", key="clear_push"):
+            if st.button("🧹 앱푸시 저장소 초기화", width="stretch", key="clear_push"):
                 storage_clear(BK, "push")
                 st.session_state.push_consent_df = pd.DataFrame(columns=PUSH_STORE_COLS)
                 st.session_state.pop("push_consent_hash", None)
@@ -3833,7 +3833,7 @@ def main():
 
         # ── AI 카피 초안 생성 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ✍️ AI 카피 초안 — 성과 기반 다음 메시지")
+        st.markdown("##### ✨ AI 카피 제안 — 성과 기반 메시징")
         st.caption("성과 좋았던 속성·조합을 참고해서 다음 PUSH 문구 초안을 만들어요.")
         dc1, dc2, dc3 = st.columns(3)
         cat_opts_ai = ["(전체)"] + [str(c) for c in sorted(base["cat"].dropna().unique())
@@ -3856,7 +3856,7 @@ def main():
             placeholder="예: 헤리스 여름 린넨 30% / 한정수량 / 오늘 마감 — 적을수록 자유롭게, "
                         "여기 내용을 카피의 핵심 소재로 반영해요.",
             help="기획전 특성·혜택·소구 포인트를 적으면 그 내용을 바탕으로 카피를 만들어요.")
-        if st.button("✍️ 카피 초안 만들기", key="ai_draft_btn"):
+        if st.button("✨ 카피 초안 생성", key="ai_draft_btn"):
             gcol = METRIC_OPTS[draft_goal][0]
             scope = base
             if draft_cat_sel != "(전체)":
@@ -4845,7 +4845,7 @@ def main():
         def _fmtv(v):
             return f"{v*100:.2f}%" if is_pct else (won(v) if gcol in ("rps", "aov", "amt") else f"{v:,.1f}")
 
-        st.markdown("##### 🕒 추천 슬롯 (요일 × 시간)")
+        st.markdown("##### 📅 추천 발송 슬롯 (요일 × 시간)")
         if "dow_k" in base and "hour" in base:
             slot = base.dropna(subset=["hour"]).groupby(["dow_k", "hour"]).agg(
                 캠페인수=("hour", "size"), 지표=(gcol, "mean"), 발송=("send", "sum")).reset_index()
@@ -4860,7 +4860,7 @@ def main():
             else:
                 st.caption("슬롯 데이터가 부족해요.")
 
-        st.markdown("##### 🏷️ 추천 소구 (보유 시 목표 지표 리프트 상위)")
+        st.markdown("##### 💡 추천 소구 및 리프트 성과")
         trows = []
         for tag in TAG_BOOLS:
             if tag not in base:
@@ -4882,7 +4882,7 @@ def main():
         else:
             st.caption("소구 리프트 표본 부족.")
 
-        st.markdown("##### 🎯 세그먼트별 추천 카테고리 + 소구 + 슬롯 (실행 플레이북)")
+        st.markdown("##### 📋 세그먼트별 실행 플레이북 (추천 조합)")
         play = []
         if "target" in base and base["target"].fillna("").ne("").any():
             bp = base.copy(); bp["target"] = bp["target"].fillna("(미지정)").replace("", "(미지정)")
