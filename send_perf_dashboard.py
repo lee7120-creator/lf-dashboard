@@ -2900,19 +2900,19 @@ def main():
                 prev_tot = float(pwd["amt"].sum()); cur_tot = float(cwd["amt"].sum())
                 labels = [str(i) for i in dif.index]
                 diffs = [float(v) for v in dif.values]
-                figw = go.Figure(go.Waterfall(
-                    x=["전주"] + labels + ["기준주"],
-                    y=[prev_tot] + diffs + [0],
-                    measure=["absolute"] + ["relative"] * len(diffs) + ["total"],
-                    text=[won(prev_tot)] + [_damt(d) for d in diffs] + [won(cur_tot)],
+                colors = [PALETTE["green"] if v >= 0 else PALETTE["red"] for v in diffs]
+                figw = go.Figure(go.Bar(
+                    x=labels,
+                    y=diffs,
+                    text=[_damt(d) for d in diffs],
                     textposition="outside",
-                    increasing=dict(marker=dict(color=PALETTE["green"])),
-                    decreasing=dict(marker=dict(color=PALETTE["red"])),
-                    totals=dict(marker=dict(color=PALETTE["slate"])),
-                    connector=dict(line=dict(color="#cbd5e1", width=1))))
+                    marker_color=colors,
+                    hovertemplate="%{x}<br>증감액: %{text}<extra></extra>"
+                ))
                 figw.update_layout(**base_layout(
-                    h=430, title=f"거래액 {won(prev_tot)} → {won(cur_tot)} "
-                                 f"({_dlt('거래액', cur_tot, prev_tot)})"))
+                    h=410, title=f"거래액 {won(prev_tot)} → {won(cur_tot)} "
+                                 f"({_dlt('거래액', cur_tot, prev_tot)})"
+                ))
                 st.plotly_chart(figw, width="stretch")
                 wrows = [{"카테고리": str(c),
                           "전주": won(float(prvS.get(c, 0))), "기준주": won(float(curS.get(c, 0))),
@@ -2922,9 +2922,8 @@ def main():
                 if wrows:
                     st.dataframe(pd.DataFrame(wrows).style.map(_clr, subset=["증감액", "전주비"]),
                                  hide_index=True, width="stretch", height=300)
-                st.markdown('<div class="appendix">막대 하나하나가 그 카테고리의 거래액 증감 기여예요. '
-                            '초록이 끌어올린 것, 빨강(△)이 깎아먹은 것 — 기여 큰 8개만 개별 표시하고 '
-                            '나머지는 기타로 묶었어요.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="appendix">막대 하나하나가 그 카테고리의 전주 대비 거래액 증감액을 나타냅니다. '
+                            '초록은 매출 상승 기여, 빨강(△)은 하락 기여를 뜻하며 기여도가 큰 8개만 표시하고 나머지는 기타로 합산했습니다.</div>', unsafe_allow_html=True)
 
         # ② 금주 하이라이트 · 로우라이트
         with tabH:
