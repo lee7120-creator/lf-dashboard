@@ -1621,8 +1621,13 @@ def main():
     @st.cache_data(show_spinner=False)
     def cached_classify(b): return classify_upload("", b)
 
+    # 태깅 체계 버전 키 — TAG_BOOLS(속성 구성)가 바뀌면 prepare_raw 캐시를 무효화한다.
+    # (st.cache_data는 내부에서 호출하는 tag_copy의 변경을 감지하지 못해, 속성 개편 시
+    #  구버전 태그 컬럼이 캐시로 반환되어 페이지들이 KeyError로 죽는 문제 방지)
+    TAGSET_VER = "|".join(TAG_BOOLS)
+
     @st.cache_data(show_spinner=False)
-    def prepare_raw(work_df):
+    def prepare_raw(work_df, tagset_ver):
         """파생 재계산 + 타입정리 + 문구 태깅을 1회만 — 필터·페이지 이동 때 재계산 방지(성능 핵심).
         입력 work_df 가 동일하면(저장 데이터만 볼 때) 캐시 히트하여 무거운 태깅을 건너뛴다."""
         r = _finalize(work_df.copy())
@@ -1996,7 +2001,7 @@ def main():
         st.stop()
 
     # 작업 데이터 확정: 파생 재계산 + 타입 정리 + 문구 태깅 (캐시 — 성능 핵심)
-    raw = prepare_raw(work)
+    raw = prepare_raw(work, TAGSET_VER)
 
     # ── 전사 MTD (발송피로도) 누적 처리 ──
     if "mtd_store_df" not in st.session_state:
@@ -2546,6 +2551,9 @@ def main():
                     help="거래액 ÷ 주문 — 주문 1건당 평균 금액이에요.")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        _rk_lab = st.selectbox("TOP/BOTTOM 순위 기준", list(METRIC_OPTS.keys()), key="p01_rank",
+                               help="선택한 지표 기준으로 아래 TOP/BOTTOM 순위가 바뀌어요.")
+        _rk_col = METRIC_OPTS[_rk_lab][0]
         cc = st.columns(2)
         base_cr = base[base["uv"].fillna(0) >= 100] if "uv" in base else base
         # 최근 7일 (데이터 최신 발송일 기준)
@@ -2559,8 +2567,8 @@ def main():
         def _date_only(r):
             t = r.get("dt")
             return f"{t.year}년 {t.month}월 {t.day}일" if (t is not None and not pd.isna(t)) else "–"
-        win = recent7.sort_values("ord_cr", ascending=False).head(8).copy()
-        los = recent7.sort_values("ord_cr").head(8).copy()
+        win = recent7.sort_values(_rk_col, ascending=False).head(8).copy()
+        los = recent7.sort_values(_rk_col).head(8).copy()
         for _w in (win, los):
             _w["발송일자"] = _w.apply(_date_only, axis=1)
             _w["발송시간"] = _w["hour"].map(fmt_hhmm) if "hour" in _w else "–"
@@ -2581,11 +2589,11 @@ def main():
         _tbfmt = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}",
                   "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"}
         with cc[0]:
-            st.markdown(f"##### 🏆 주문전환율 TOP ({scope_label})")
+            st.markdown(f"##### 🏆 {_rk_lab} TOP ({scope_label})")
             st.dataframe(win[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, width="stretch")
         with cc[1]:
-            st.markdown(f"##### 🧊 주문전환율 BOTTOM ({scope_label})")
+            st.markdown(f"##### 🧊 {_rk_lab} BOTTOM ({scope_label})")
             st.dataframe(los[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, width="stretch")
 
@@ -3415,6 +3423,8 @@ def main():
 
         rows = []
         for tag in TAG_BOOLS:
+            if tag not in base.columns:               # 구버전 캐시 등으로 태그 컬럼이 없으면 건너뜀
+                continue
             yes = base[base[tag]][mcol].dropna().values
             no = base[~base[tag]][mcol].dropna().values
             if len(yes) == 0 or len(no) == 0:
@@ -3630,7 +3640,7 @@ def main():
         mcol = METRIC_OPTS[mlabel][0]
         asc = st.radio("정렬", ["높은순", "낮은순"], horizontal=True) == "낮은순"
         base = fdf.sort_values(mcol, ascending=asc)
-        tagcols = [t for t in TAG_BOOLS]
+        tagcols = [t for t in TAG_BOOLS if t in base.columns]
         base_r = base.reset_index(drop=True)
         view = base_r.copy()
         view["속성"] = view[tagcols].apply(lambda r: " ".join(t for t in tagcols if r[t]), axis=1)
@@ -4025,7 +4035,9 @@ def main():
         if len(wk) >= 4:
             _med_send = wk["발송"].median()
             if _med_send and _med_send > 0:
-                _wk_f = wk[wk["발송"] >= _med_send * 0.05].reset_index(drop=True)
+                # 발송 극소(중앙값 5% 미만) 또는 캠페인 3건 미만(오날짜 1~2건) 주 제외
+                _wk_f = wk[(wk["발송"] >= _med_send * 0.05)
+                           & (wk["캠페인수"] >= 3)].reset_index(drop=True)
                 if len(_wk_f) >= 2:          # 필터가 최소 2주는 남길 때만 적용(과필터 방지)
                     wk = _wk_f
         _wk_dropped = _wk_all - len(wk)
@@ -4412,7 +4424,18 @@ def main():
             st.info("속성을 하나 이상 골라 주세요."); st.stop()
 
         fig = go.Figure()
-        weeks = sorted(base["주"].unique())
+        # 발송이 미미한 주(오조작·이월 날짜 1~2건으로 생긴 뜬금없는 주)는 추세에서 제외
+        _wk_send = base.groupby("주")["send"].sum()
+        _wk_cnt = base.groupby("주").size()
+        _enough = len(_wk_send) >= 4                      # 주가 적을 땐 필터 미적용
+        _med_ws = float(_wk_send.median()) if _enough else 0.0
+        weeks = sorted(w for w in base["주"].unique()
+                       if not _enough or (_wk_send.get(w, 0) >= _med_ws * 0.05
+                                          and _wk_cnt.get(w, 0) >= 3))
+        _wk_drop = base["주"].nunique() - len(weeks)
+        if _wk_drop:
+            st.caption(f"데이터가 미미한 주 {_wk_drop}개(캠페인 3건 미만 또는 발송 극소 — "
+                       "오조작·이월 날짜)는 추세에서 제외했어요.")
         for t in sel_attrs:
             ys = []
             for w in weeks:
