@@ -2234,6 +2234,20 @@ def main():
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))
 
+    with st.sidebar.expander("📖 지표 용어 사전", expanded=False):
+        st.markdown("""
+        **[ 핵심 성과 지표 ]**
+        * **UV (Unique Visitors)**: 푸시를 클릭하여 앱/웹으로 유입된 순 방문자 수
+        * **CTR (Click-Through Rate)**: 총 발송 건수 대비 클릭 비율
+        * **CR (Conversion Rate)**: 유입된 유저(UV) 대비 실제 구매로 이어진 비율
+        * **AOV (Average Order Value)**: 결제 1건당 평균 구매액 (객단가)
+        * **RPS (Revenue Per Send)**: 푸시 발송 1건당 발생한 평균 매출액
+        
+        **[ 기간 및 기타 지표 ]**
+        * **MTD (Month-to-Date)**: 해당 월 1일부터 현재(기준일)까지의 누적 실적
+        * **BPU (Buyers Per User)**: 유입 유저 당 구매 비율 (또는 우선순위 지표)
+        """)
+
     with st.sidebar.expander("데이터 관리"):
         _n_saved = len(stored) if stored is not None else 0
         _n_new = len(new_raw) if new_raw is not None else 0
