@@ -1148,7 +1148,7 @@ KW = {
     "행동리타겟": ["장바구니", "찜", "위시", "담아두신", "담은", "담으신", "보신", "눈여겨",
                 "주문서", "최근 본", "놓고 가신", "다시 만나", "기다리"],
     "이벤트응모": ["이벤트", "응모", "당첨", "럭키", "추첨", "참여", "인증", "댓글", "좋아요",
-                "퀴즈", "출석"],
+                "퀴즈", "출석", "룰렛"],
     "라이브방송": ["라이브", "LIVE", "Live", "방송", "생방"],
     "개인화":     ["고객님", "회원님", "님,", "님!", "님 ", "님의", "님을", "님께", "#{", "고객명",
                 "관심", "맞춤", "VIP", "등급", "멤버십", "전용"],
@@ -1173,7 +1173,16 @@ def tag_copy(title, body=""):
     b = _s(body)
     full = (t + " " + b).strip()
     d = {k: _has(full, ws) for k, ws in KW.items()}
-    d["할인율소구"] = d["할인율소구"] or bool(PCT_RE.search(full))   # 30% 같은 숫자 할인율
+    
+    has_pct = False
+    for m in PCT_RE.finditer(full):
+        match_str = m.group()
+        # 100% 당첨, 룰렛, 페이백 등은 할인율이 아님
+        if "100" in match_str and any(w in full for w in ["당첨", "룰렛", "추첨", "페이백", "캐시백", "지급"]):
+            continue
+        has_pct = True
+        
+    d["할인율소구"] = d["할인율소구"] or has_pct
     d["가격소구"] = d["가격소구"] or bool(PRICE_RE.search(full))     # 9,900원 같은 가격 언급
     d["질문형"] = ("?" in full or "？" in full)
     d["이모지"] = bool(EMOJI_RE.search(full))
