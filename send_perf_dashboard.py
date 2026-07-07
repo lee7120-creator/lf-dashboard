@@ -18,6 +18,13 @@ import numpy as np
 import pandas as pd
 
 try:
+    from streamlit import fragment
+except ImportError:
+    def fragment(func):
+        return func
+
+
+try:
     from streamlit_quill import st_quill
     HAS_QUILL = True
 except Exception:
@@ -740,7 +747,10 @@ PUSH_STORE_COLS = ["date", "group", "consent", "added", "removed", "diff", "is_o
 def load_push_store():
     if os.path.exists(PUSH_STORE):
         try:
-            return pd.read_csv(PUSH_STORE, encoding="utf-8-sig", dtype={"group": str})
+            df = pd.read_csv(PUSH_STORE, encoding="utf-8-sig", dtype={"group": str})
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            return df
         except Exception:
             pass
     return pd.DataFrame(columns=PUSH_STORE_COLS)
@@ -1424,6 +1434,19 @@ def promo_perf_table(d):
 # ══════════════════════════════════════════════════════════════════════
 # 2. Streamlit 앱
 # ══════════════════════════════════════════════════════════════════════
+def get_push_stats(df, start_d, end_d, grp):
+    sd = pd.to_datetime(start_d)
+    ed = pd.to_datetime(end_d)
+    sub = df[(df["group"] == grp) & (df["date"] >= sd) & (df["date"] <= ed) & (~df["is_outlier"])].copy()
+    if sub.empty:
+        return None
+    return {
+        "last_consent": sub.sort_values("date").iloc[-1]["consent"],
+        "tot_added": sub["added"].sum(),
+        "tot_removed": sub["removed"].sum(),
+        "tot_diff": sub["diff"].sum() if "diff" in sub else 0
+    }
+
 def main():
     import streamlit as st
     import plotly.graph_objects as go
@@ -1533,6 +1556,7 @@ def main():
         except ValueError:
             return PALETTE["slate"]
 
+    @fragment
     def stacked_panels(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
                        h=430, bar_suffix="", line_suffix="", title=""):
         """이중축 대신 X축을 공유하는 상(막대)/하(선) 패널 — 두 지표의 스케일을 섞지 않으면서
@@ -1560,6 +1584,7 @@ def main():
         fig.update_yaxes(ticksuffix=line_suffix, row=2, col=1)
         return fig
 
+    @fragment
     def overlay_dual(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
                      h=430, bar_suffix="", line_suffix="", title=""):
         """한 차트 이중축 오버레이 — 막대(좌축)+선(우축)을 같은 X에 겹쳐 그린다.
@@ -2812,30 +2837,17 @@ def main():
             # 앱푸시 수신동의 데이터가 세션에 적재되어 있는 경우 요약 한 줄 추가
             _push_df = st.session_state.get("push_consent_df")
             if _push_df is not None and not _push_df.empty:
-                def _get_push_summary(df, start_d, end_d, grp):
-                    df_dt = df.copy()
-                    df_dt["date"] = pd.to_datetime(df_dt["date"])
-                    sd = pd.to_datetime(start_d)
-                    ed = pd.to_datetime(end_d)
-                    sub = df_dt[(df_dt["group"] == grp) & (df_dt["date"] >= sd) & (df_dt["date"] <= ed) & (~df_dt["is_outlier"])].copy()
-                    if sub.empty:
-                        return None
-                    return {
-                        "last_consent": sub.sort_values("date").iloc[-1]["consent"],
-                        "tot_added": sub["added"].sum(),
-                        "tot_removed": sub["removed"].sum()
-                    }
                 
-                c_sum = _get_push_summary(_push_df, ref_ws, ref_we, "Total")
+                c_sum = get_push_stats(_push_df, ref_ws, ref_we, "Total")
                 if c_sum:
                     c_con = c_sum["last_consent"]
                     c_add = c_sum["tot_added"]
                     c_rem = c_sum["tot_removed"]
                     
-                    p_sum = _get_push_summary(_push_df, prev_ws, ref_we - pd.Timedelta(days=7), "Total")
+                    p_sum = get_push_stats(_push_df, prev_ws, ref_we - pd.Timedelta(days=7), "Total")
                     p_con = p_sum["last_consent"] if p_sum else None
                     
-                    y_sum = _get_push_summary(_push_df, yo_ws, yo_ws + pd.Timedelta(days=6), "Total") if yo_ws is not None else None
+                    y_sum = get_push_stats(_push_df, yo_ws, yo_ws + pd.Timedelta(days=6), "Total") if yo_ws is not None else None
                     y_con = y_sum["last_consent"] if y_sum else None
                     
                     def _d_pct(cur, prev):
@@ -2999,25 +3011,10 @@ def main():
             _cur_ws, _cur_we = pd.Timestamp(ref_ws), pd.Timestamp(ref_we)
             _prev_ws, _prev_we = _cur_ws - pd.Timedelta(days=7), _cur_we - pd.Timedelta(days=7)
 
-            def _get_push_week_summary(df, start_d, end_d, grp):
-                df_dt = df.copy()
-                df_dt["date"] = pd.to_datetime(df_dt["date"])
-                sd = pd.to_datetime(start_d)
-                ed = pd.to_datetime(end_d)
-                sub = df_dt[(df_dt["group"] == grp) & (df_dt["date"] >= sd) & (df_dt["date"] <= ed) & (~df_dt["is_outlier"])].copy()
-                if sub.empty:
-                    return None
-                return {
-                    "last_consent": sub.sort_values("date").iloc[-1]["consent"],
-                    "tot_added": sub["added"].sum(),
-                    "tot_removed": sub["removed"].sum(),
-                    "tot_diff": sub["diff"].sum()
-                }
-
             push_summary = []
             for g in ["Total", "기존", "신규"]:
-                c_sum = _get_push_week_summary(_push_df, _cur_ws, _cur_we, g)
-                p_sum = _get_push_week_summary(_push_df, _prev_ws, _prev_we, g)
+                c_sum = get_push_stats(_push_df, _cur_ws, _cur_we, g)
+                p_sum = get_push_stats(_push_df, _prev_ws, _prev_we, g)
                 
                 if c_sum:
                     c_con = c_sum["last_consent"]
@@ -3700,6 +3697,7 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
 
+        @fragment
         def heat(df, idx, col, title):
             pv = df.pivot_table(index=idx, columns=col, values=mcol, aggfunc="mean")
             if pv.empty:
@@ -3811,6 +3809,7 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
 
+        @fragment
         def barby(key, title, order=None):
             g = base.groupby(key)[mcol].mean()
             if order: g = g.reindex([o for o in order if o in g.index])
@@ -4237,6 +4236,7 @@ def main():
                                 rps=(a / s if s else np.nan), aov=(a / o if o else np.nan), amt=a))
             return pd.DataFrame(out)
 
+        @fragment
         def eff_table(t, keyname):
             ren = {"_key": keyname, "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS",
                    "aov": "객단가", "amt": "거래액"}
