@@ -2158,37 +2158,32 @@ def main():
     st.sidebar.markdown("---")
     # 연관 주제를 그룹으로 묶고(사이드바), 그룹 안 여러 주제는 본문 상단 하위탭으로 전환.
     # ▸ value 리스트의 각 항목 문자열은 아래 페이지 분기(if "..." in page)의 매칭 키를 포함해야 함.
+    # 단일 내비게이션 — 피로도 진단(구 F1~F4)을 '6. 효율·피로도' 하위탭으로 통합,
+    # BPU·우선순위는 성격이 같은 '4. 성과 진단'(차원별 랭킹)으로 이동
     CAMPAIGN_GROUPS = {
         "0. 주간보고":           ["주간보고"],
         "1. 종합 요약":          ["종합 요약"],
         "2. 문구 분석":          ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모"],
         "3. 캠페인 리더보드":    ["캠페인 리더보드"],
-        "4. 성과 진단":          ["전환·AOV 진단", "발송유형·브랜드 랭킹"],
+        "4. 성과 진단":          ["전환·AOV 진단", "발송유형·브랜드 랭킹", "BPU·우선순위 효율"],
         "5. 맥락·타이밍":        ["카테고리·시간대", "타이밍·발송슬롯"],
-        "6. 효율·추이":          ["BPU·우선순위 효율", "전체 효율·추이"],
+        "6. 효율·피로도":        ["전체 효율·추이", "피로도 시계열", "발송 빈도·한계수익", "요일 패턴"],
         "7. 기획전 비교분석":    ["기획전 비교분석"],
         "8. 액션":               ["다음주 발송 플레이북", "AI 처방·카피"],
         "9. 데이터·다운로드":    ["데이터·다운로드"],
         "10. 앱푸시 동의 현황":  ["앱푸시 동의 현황"],
     }
-    FATIGUE_PAGES = [
-        "F1. 피로도 시계열·CTR", "F2. 발송 빈도 효율", "F3. 한계수익", "F4. 요일 패턴",
-    ]
-    cat = st.sidebar.radio("분석 영역", ["📈 발송성과", "⚡ 피로도 진단"])
-    if cat.startswith("📈"):
-        _grp = st.sidebar.radio("페이지", list(CAMPAIGN_GROUPS))
-        _subs = CAMPAIGN_GROUPS[_grp]
-        if len(_subs) > 1:
-            _gname = _grp.split(". ", 1)[-1]
-            # 本문 상단 하위탭 (기획전 비교분석 페이지의 하위탭과 동일한 위치/역할)
-            page = st.radio(_gname, _subs, horizontal=True, key=f"subtab_{_grp}",
-                            label_visibility="collapsed")
-        else:
-            page = _subs[0]
+    _grp = st.sidebar.radio("페이지", list(CAMPAIGN_GROUPS))
+    _subs = CAMPAIGN_GROUPS[_grp]
+    if len(_subs) > 1:
+        _gname = _grp.split(". ", 1)[-1]
+        # 본문 상단 하위탭 (기획전 비교분석 페이지의 하위탭과 동일한 위치/역할)
+        page = st.radio(_gname, _subs, horizontal=True, key=f"subtab_{_grp}",
+                        label_visibility="collapsed")
     else:
-        page = st.sidebar.radio("페이지", FATIGUE_PAGES)
-        if mtd_data is None:
-            st.sidebar.info("전사 MTD 파일을 올리면 볼 수 있어요.")
+        page = _subs[0]
+    if _grp.startswith("6.") and mtd_data is None:
+        st.sidebar.info("피로도 하위탭(시계열·빈도·요일)은 전사 MTD 파일을 올리면 볼 수 있어요.")
     _model_keys = list(AI_MODELS.keys())
     _default_model = "Gemini 2.5 Flash (균형)"
     model_name = st.sidebar.selectbox(
@@ -3699,6 +3694,12 @@ def main():
             pv = df.pivot_table(index=idx, columns=col, values=mcol, aggfunc="mean")
             if pv.empty:
                 st.info("데이터가 부족해요"); return
+            # 요일 축은 가나다순(금·목·수…)이 아니라 월~일 순으로 정렬
+            _DOW = ["월", "화", "수", "목", "금", "토", "일"]
+            if col == "dow_k":
+                pv = pv.reindex(columns=[d for d in _DOW if d in pv.columns])
+            if idx == "dow_k":
+                pv = pv.reindex([d for d in _DOW if d in pv.index])
             z = pv.values * (100 if is_pct else 1)
             txt_arr = np.where(np.isnan(z), "", np.round(z, 2).astype(str))
             fig = go.Figure(go.Heatmap(
@@ -4191,50 +4192,11 @@ def main():
                         st.markdown("**카테고리별 주문전환율 변화 (최근 − 직전)**")
                         st.dataframe(ch, hide_index=True, width="stretch", height=260)
 
-        # ── 전사 MTD 발송피로도 시계열 · CTR (인당 발송 강도 vs 효율) ──
-        if mtd_data is not None:
-            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown("##### 🌡️ 발송피로도 시계열")
-            st.caption("전사 MTD 발송상세 기준 — 인당 발송 건수(발송 강도, 고객 중복 제거)와 효율 지표가 "
-                       f"시간에 따라 같이/반대로 움직이는지. ({mtd_data['meta']['start']} ~ {mtd_data['meta']['end']})")
-            _MO = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps",
-                   "총거래액": "revenue_sum", "총유입": "totalInflow_sum"}
-            _PCT = {"ctr", "purchaseRate"}
-            _CLR = {"ctr": PALETTE["red"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
-                    "revenue_sum": PALETTE["blue"], "totalInflow_sum": PALETTE["teal"]}
-            mc1, mc2 = st.columns(2)
-            _gran = mc1.radio("집계", ["월별", "분기별"], horizontal=True, key="p08_mtd_gran")
-            _agg = mtd_data["monthly"] if _gran == "월별" else mtd_data["quarterly"]
-            _xc = "month" if _gran == "월별" else "quarter"
-            _MO = {k: v for k, v in _MO.items()          # 데이터에 없는 합계 컬럼은 옵션에서 숨김
-                   if not v.endswith("_sum") or v in _agg.columns}
-            _yl = mc2.selectbox("효율 지표(선·아래)", list(_MO.keys()), key="p08_mtd_metric")
-            _yc = _MO[_yl]
-            mfig = overlay_dual(_agg[_xc], _agg["perSend"], "인당 발송 건수",
-                                _agg[_yc] * (100 if _yc in _PCT else 1), _yl,
-                                PALETTE["amber"], _CLR[_yc], h=430,
-                                line_suffix=("%" if _yc in _PCT else ""),
-                                title=f"인당 발송 건수(좌·막대) ↔ {_yl}(우·선)")
-            st.plotly_chart(mfig, width="stretch")
-            st.markdown("**추세 분석**")
-            _rows = []
-            for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]:
-                r = mtd_data["reg"][k]
-                unit = "%p/일" if k in _PCT else ("원/일" if k in ("rps", "revenue") else "/일")
-                sl = r["slope"] * (100 if k in _PCT else 1)
-                _rows.append(dict(지표=MTD_LABELS[k], 일변화=f"{sl:+.4g}{unit}",
-                                  R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
-            st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
-            st.markdown('<div class="appendix">인당 발송 건수는 상승하는데 CTR·구매전환율·RPS가 하락하면 '
-                        '”발송 강도를 높일수록 효율이 떨어지는” 피로도 신호예요. '
-                        '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 데이터를 얼마나 잘 설명하는지 — '
-                        '1에 가까울수록 추세가 뚜렷하고, 0에 가까우면 들쭉날쭉해요. '
-                        "· <b>유의성</b>: 그 추세가 우연일 가능성(p값) — ‘유의함’이면 우연으로 보기 어려워요.</div>",
-                        unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.caption("🌡️ 인당 발송 건수 기반 ‘발송피로도 시계열·CTR’은 전사 MTD 발송상세를 "
-                       "올리면(자동 인식) 여기에 함께 표시돼요.")
+        # 인당 발송 기반 피로도 분석은 같은 그룹 하위탭으로 통합됨 (중복 차트 제거)
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.caption("🌡️ 인당 발송 건수 기반 피로도 분석은 상단 하위탭 "
+                   "**피로도 시계열 · 발송 빈도·한계수익 · 요일 패턴**에서 볼 수 있어요"
+                   + ("" if mtd_data is not None else " (전사 MTD 파일 업로드 필요)") + ".")
 
         glossary()
 
@@ -4504,7 +4466,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # 발송피로도 (전사 MTD) — F1~F4
     # ══════════════════════════════════════════════════════════════
-    elif page.startswith("F"):
+    elif page in ("피로도 시계열", "발송 빈도·한계수익", "요일 패턴"):
         MTDOPT = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps",
                   "거래액": "revenue", "인당 발송 건수": "perSend", "객단가": "avgOrderVal",
                   "총거래액": "revenue_sum", "총유입": "totalInflow_sum"}
@@ -4528,8 +4490,8 @@ def main():
         st.caption(f"전사 MTD · {mtd_data['meta']['start']} ~ {mtd_data['meta']['end']} "
                    f"({mtd_data['meta']['days']:,}일)")
 
-        # ── F1. 피로도 시계열·CTR ──
-        if page.startswith("F1"):
+        # ── 피로도 시계열 ──
+        if page == "피로도 시계열":
             st.title("피로도 시계열·CTR")
             st.markdown("인당 누적 발송 빈도 대비 성과 지표(CTR, RPS)의 시계열 추이 분석")
             gran = st.radio("집계", ["월별", "분기별"], horizontal=True)
@@ -4560,10 +4522,11 @@ def main():
                         '· <b>유의성</b>: 산출된 추세의 통계적 유효성(p-value)을 나타내며, ‘유의함’일 경우 우연이 아닌 일관된 흐름으로 판단할 수 있습니다.</div>',
                         unsafe_allow_html=True)
 
-        # ── F2. 발송 빈도 효율 ──
-        elif page.startswith("F2"):
-            st.title("발송 빈도 효율")
-            st.markdown("고객 인당 발송 빈도에 따른 효율 변화를 정량적으로 비교 분석합니다.")
+        # ── 발송 빈도·한계수익 (구 F2+F3 통합) ──
+        elif page == "발송 빈도·한계수익":
+            st.title("발송 빈도 효율·한계수익")
+            st.markdown("고객 인당 발송 빈도에 따른 효율 변화와, 발송을 한 구간 더 늘렸을 때의 "
+                        "한계 효율을 함께 분석합니다.")
             lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "객단가"])
             mc = MTDOPT[lab]
             b = mtd_data["buckets"]
@@ -4574,6 +4537,26 @@ def main():
                 fig.update_layout(**base_layout(h=340, ysuffix=("%" if mc in MTD_PCT else ""),
                                                 title=f"인당 발송 구간별 평균 {lab} (표본 30일+)"))
                 st.plotly_chart(fig, width="stretch")
+
+            # 한계수익 — 같은 구간에서 한 단계 더 늘렸을 때의 증분 (구 F3 페이지 통합)
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 한계수익 — 발송 구간을 한 단계 올리면 얼마나 변할까")
+            b3 = mtd_data["buckets"].reset_index(drop=True)
+            if len(b3) >= 2:
+                vals = (b3[mc] * (100 if mc in MTD_PCT else 1)).values
+                diff = np.diff(vals)
+                labels = [f"{b3['bucket'].astype(str).iloc[i]}→{b3['bucket'].astype(str).iloc[i+1]}"
+                          for i in range(len(b3) - 1)]
+                fig = go.Figure(go.Bar(x=labels, y=diff,
+                                       marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in diff],
+                                       text=[f"{v:+.2f}" for v in diff], textposition="outside"))
+                fig.update_layout(**base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
+                st.plotly_chart(fig, width="stretch")
+                st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 추가 발송 시 고객 반응 및 '
+                            '효율이 감소하는 감쇠 국면임을 뜻합니다.</div>', unsafe_allow_html=True)
+            else:
+                st.info("구간별 데이터가 부족해요.")
+
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
             st.markdown("##### 발송량 5분위 효율")
             q = mtd_data["quintile"]
@@ -4592,28 +4575,7 @@ def main():
                                      title="발송량 5분위(Q1 소량→Q5 대량)")
                 st.plotly_chart(fig, width="stretch")
 
-        # ── F3. 한계수익 ──
-        elif page.startswith("F3"):
-            st.title("한계수익")
-            st.markdown("발송 규모 증분에 따른 한계 효율 추이 분석")
-            lab = st.selectbox("지표", ["발송건당거래액(RPS)", "CTR", "구매전환율(CR)", "거래액"])
-            mc = MTDOPT[lab]
-            b = mtd_data["buckets"].reset_index(drop=True)
-            if len(b) >= 2:
-                vals = (b[mc] * (100 if mc in MTD_PCT else 1)).values
-                diff = np.diff(vals)
-                labels = [f"{b['bucket'].astype(str).iloc[i]}→{b['bucket'].astype(str).iloc[i+1]}"
-                          for i in range(len(b) - 1)]
-                fig = go.Figure(go.Bar(x=labels, y=diff,
-                                       marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in diff],
-                                       text=[f"{v:+.2f}" for v in diff], textposition="outside"))
-                fig.update_layout(**base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
-                st.plotly_chart(fig, width="stretch")
-                st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 추가 발송 시 고객 반응 및 효율이 감소하는 감쇠 국면임을 뜻합니다.</div>', unsafe_allow_html=True)
-            else:
-                st.info("구간별 데이터가 부족해요.")
-
-        # ── F4. 요일 패턴 ──
+        # ── 요일 패턴 ──
         else:
             st.title("요일 패턴")
             lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "인당 발송 건수"])
