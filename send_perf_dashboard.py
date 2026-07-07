@@ -2245,7 +2245,6 @@ def main():
         
         **[ 기간 및 기타 지표 ]**
         * **MTD (Month-to-Date)**: 해당 월 1일부터 현재(기준일)까지의 누적 실적
-        * **BPU (Buyers Per User)**: 유입 유저 당 구매 비율 (또는 우선순위 지표)
         """)
 
     with st.sidebar.expander("데이터 관리"):
