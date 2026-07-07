@@ -755,6 +755,47 @@ def save_push_store(df):
     out.to_csv(PUSH_STORE, index=False, encoding="utf-8-sig")
 
 
+# ── 주간보고 보고란(전주 지표 현황·금주 집행) 영속 저장 — 주차별 key/text ──
+NOTES_STORE = "send_perf_notes.csv"
+NOTES_STORE_COLS = ["key", "text"]
+
+
+def load_notes_store():
+    if os.path.exists(NOTES_STORE):
+        try:
+            return pd.read_csv(NOTES_STORE, encoding="utf-8-sig", dtype=str).fillna("")
+        except Exception:
+            pass
+    return pd.DataFrame(columns=NOTES_STORE_COLS)
+
+
+def save_notes_store(df):
+    if df is None:
+        return
+    df[[c for c in NOTES_STORE_COLS if c in df]].to_csv(
+        NOTES_STORE, index=False, encoding="utf-8-sig")
+
+
+def notes_df_to_dict(df):
+    """저장소 DataFrame([key,text]) → {key: text} 사전."""
+    if df is None or len(df) == 0 or "key" not in df:
+        return {}
+    d = {}
+    for _, r in df.iterrows():
+        k = str(r.get("key", "")).strip()
+        if k and k.lower() != "nan":
+            d[k] = "" if pd.isna(r.get("text")) else str(r.get("text"))
+    return d
+
+
+def notes_dict_to_df(d):
+    """{key: text} → 저장소 DataFrame([key,text])."""
+    if not d:
+        return pd.DataFrame(columns=NOTES_STORE_COLS)
+    return pd.DataFrame([{"key": k, "text": v} for k, v in d.items()],
+                        columns=NOTES_STORE_COLS)
+
+
 def finalize_promo(df):
     """저장소/파싱 로드 공통 — 키 정규화 + 숫자 컬럼 형변환."""
     if df is None or len(df) == 0:
@@ -786,8 +827,11 @@ def compute_mtd(df):
     df["year"] = df["date"].dt.year
     allk = list(MTD_METRICS) + MTD_DERIVED
     agg = {k: pd.NamedAgg(k, "mean") for k in allk}
-    monthly = df.groupby("month", sort=True).agg(n=("revenue", "count"), **agg).reset_index()
-    quarterly = df.groupby("quarter", sort=True).agg(n=("revenue", "count"), **agg).reset_index()
+    # 거래액·유입은 '기간 합계'(총거래액·총유입)도 함께 — 차트 선지표 옵션에서 사용
+    _sum_keys = [k for k in ("revenue", "totalInflow", "uniqueInflow", "totalSend") if k in df]
+    agg_sum = {f"{k}_sum": pd.NamedAgg(k, "sum") for k in _sum_keys}
+    monthly = df.groupby("month", sort=True).agg(n=("revenue", "count"), **agg, **agg_sum).reset_index()
+    quarterly = df.groupby("quarter", sort=True).agg(n=("revenue", "count"), **agg, **agg_sum).reset_index()
 
     BINS = [0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 99]
     LBLS = ["~2.0건", "2.0~2.5", "2.5~3.0", "3.0~3.5", "3.5~4.0", "4.0~4.5", "4.5건+"]
@@ -951,7 +995,8 @@ def push_weekly(df, group="Total"):
 
 
 # ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
-GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store"}
+GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store",
+             "push": "push_store", "notes": "notes_store"}
 
 
 def _fix_pem(pk):
@@ -1600,10 +1645,14 @@ def main():
         except Exception as e:
             return {"mode": "local", "status": f"⚠️ 구글시트 연결 실패 → 로컬에 저장해요 ({str(e)[:50]})"}
 
-    _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS, "push": PUSH_STORE_COLS}
-    _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store, "push": load_push_store}
-    _LOCAL_SAVE = {"campaign": save_store, "mtd": save_mtd_store, "promo": save_promo_store, "push": save_push_store}
-    _LOCAL_FILE = {"campaign": DATA_STORE, "mtd": MTD_STORE, "promo": PROMO_STORE, "push": PUSH_STORE}
+    _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS,
+                           "push": PUSH_STORE_COLS, "notes": NOTES_STORE_COLS}
+    _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store,
+                   "push": load_push_store, "notes": load_notes_store}
+    _LOCAL_SAVE = {"campaign": save_store, "mtd": save_mtd_store, "promo": save_promo_store,
+                   "push": save_push_store, "notes": save_notes_store}
+    _LOCAL_FILE = {"campaign": DATA_STORE, "mtd": MTD_STORE, "promo": PROMO_STORE,
+                   "push": PUSH_STORE, "notes": NOTES_STORE}
 
     def storage_load(bk, kind):
         cols = _STORE_COLS_BY_KIND[kind]
@@ -2722,27 +2771,19 @@ def main():
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
                    "전월비는 기준주 시작일의 한 달 전 날짜가 속한 주(전월 동주)와 비교해요.")
 
-        # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 파일에 저장 ──
-        NOTES_FILE = "send_perf_notes.json"
-
-        def _notes_load():
-            try:
-                if os.path.exists(NOTES_FILE):
-                    with open(NOTES_FILE, "r", encoding="utf-8") as f:
-                        return json.load(f)
-            except Exception:
-                pass
-            return {}
-
+        # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 저장 백엔드에 영속 ──
+        # 구글시트(설정 시) 또는 로컬 CSV에 {key:text}를 저장 → 세션이 끊겨도 유지된다.
         def _notes_save(d):
             try:
-                with open(NOTES_FILE, "w", encoding="utf-8") as f:
-                    json.dump(d, f, ensure_ascii=False, indent=2)
+                storage_save(BK, "notes", notes_dict_to_df(d))
             except Exception:
                 pass
 
         if "wr_notes" not in st.session_state:
-            st.session_state.wr_notes = _notes_load()
+            try:
+                st.session_state.wr_notes = notes_df_to_dict(storage_load(BK, "notes"))
+            except Exception:
+                st.session_state.wr_notes = {}
 
         def _auto_kpi_note():
             """기준주 실적으로 보고 문구 자동 생성 — weekly_report 템플릿 형식."""
@@ -3178,8 +3219,10 @@ def main():
             st.markdown("##### 월말 예상 실적 (Run-rate 기준)")
             elapsed = ref_end.day
             total_days = calendar.monthrange(ref_end.year, ref_end.month)[1]
-            st.caption(f"{ref_end.year}년 {ref_end.month}월 — {elapsed}/{total_days}일 경과 기준. "
-                       "현재 일평균 추세가 월말까지 유지된다고 가정한 추정치입니다.")
+            st.caption(f"{ref_end.year}년 {ref_end.month}월 · 총 {total_days}일 중 "
+                       f"{elapsed}일 경과({ref_end.month}/1~{ref_end.month}/{elapsed}) 기준. "
+                       "현재 일평균 추세가 월말까지 유지된다고 가정한 추정치예요. "
+                       "기준주가 월초일수록 경과일이 적어 추정 오차가 커요.")
             pm_full = _agg(_slice(datetime.date(pm_y, pm_m, 1),
                                   datetime.date(pm_y, pm_m, calendar.monthrange(pm_y, pm_m)[1])))
             _pyy = ref_end.year - 1
@@ -3963,6 +4006,16 @@ def main():
                              주문전환율=(o / u if u else np.nan),
                              RPS=(a / s if s else np.nan)))
         wk = pd.DataFrame(rows).sort_values("주").reset_index(drop=True)
+        # 발송이 미미한 주(오조작·이월 날짜 1~2건으로 생긴 뜬금없는 주)는 추세에서 제외 —
+        # 중앙값 주 발송의 5% 미만이면 버림(x축이 통째로 늘어나 차트가 깨지는 것 방지)
+        _wk_all = len(wk)
+        if len(wk) >= 4:
+            _med_send = wk["발송"].median()
+            if _med_send and _med_send > 0:
+                _wk_f = wk[wk["발송"] >= _med_send * 0.05].reset_index(drop=True)
+                if len(_wk_f) >= 2:          # 필터가 최소 2주는 남길 때만 적용(과필터 방지)
+                    wk = _wk_f
+        _wk_dropped = _wk_all - len(wk)
 
         c = st.columns(4)
         c[0].metric("누적 발송", won(g["send"].sum()))
@@ -3988,6 +4041,9 @@ def main():
                              bar_suffix=("%" if lpct else ""), line_suffix=("%" if rpct else ""),
                              title=f"주차별 {llab}(위) vs {rlab}(아래)")
         st.plotly_chart(fig, width="stretch")
+        if _wk_dropped:
+            st.caption(f"발송이 미미한 주 {_wk_dropped}개는 추세에서 제외했어요 "
+                       "(오조작·이월 날짜로 생긴 뜬금없는 주 — x축 왜곡 방지).")
 
         # 선택한 두 지표의 상관관계
         x = wk[lc].values.astype(float); y = wk[rc].values.astype(float)
@@ -4129,14 +4185,18 @@ def main():
             st.markdown("##### 🌡️ 발송피로도 시계열")
             st.caption("전사 MTD 발송상세 기준 — 인당 발송 건수(발송 강도, 고객 중복 제거)와 효율 지표가 "
                        f"시간에 따라 같이/반대로 움직이는지. ({mtd_data['meta']['start']} ~ {mtd_data['meta']['end']})")
-            _MO = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps"}
+            _MO = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps",
+                   "총거래액": "revenue_sum", "총유입": "totalInflow_sum"}
             _PCT = {"ctr", "purchaseRate"}
-            _CLR = {"ctr": PALETTE["red"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"]}
+            _CLR = {"ctr": PALETTE["red"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
+                    "revenue_sum": PALETTE["blue"], "totalInflow_sum": PALETTE["teal"]}
             mc1, mc2 = st.columns(2)
             _gran = mc1.radio("집계", ["월별", "분기별"], horizontal=True, key="p08_mtd_gran")
-            _yl = mc2.selectbox("효율 지표(선·아래)", list(_MO.keys()), key="p08_mtd_metric")
             _agg = mtd_data["monthly"] if _gran == "월별" else mtd_data["quarterly"]
             _xc = "month" if _gran == "월별" else "quarter"
+            _MO = {k: v for k, v in _MO.items()          # 데이터에 없는 합계 컬럼은 옵션에서 숨김
+                   if not v.endswith("_sum") or v in _agg.columns}
+            _yl = mc2.selectbox("효율 지표(선·아래)", list(_MO.keys()), key="p08_mtd_metric")
             _yc = _MO[_yl]
             mfig = overlay_dual(_agg[_xc], _agg["perSend"], "인당 발송 건수",
                                 _agg[_yc] * (100 if _yc in _PCT else 1), _yl,
@@ -4434,10 +4494,12 @@ def main():
     # ══════════════════════════════════════════════════════════════
     elif page.startswith("F"):
         MTDOPT = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps",
-                  "거래액": "revenue", "인당 발송 건수": "perSend", "객단가": "avgOrderVal"}
+                  "거래액": "revenue", "인당 발송 건수": "perSend", "객단가": "avgOrderVal",
+                  "총거래액": "revenue_sum", "총유입": "totalInflow_sum"}
         MTD_PCT = {"ctr", "purchaseRate"}
         MCLR = {"ctr": PALETTE["red"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
-                "revenue": PALETTE["blue"], "perSend": PALETTE["amber"], "avgOrderVal": PALETTE["teal"]}
+                "revenue": PALETTE["blue"], "perSend": PALETTE["amber"], "avgOrderVal": PALETTE["teal"],
+                "revenue_sum": PALETTE["blue"], "totalInflow_sum": PALETTE["teal"]}
 
         def mfmt(col, v):
             if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
@@ -4461,7 +4523,9 @@ def main():
             gran = st.radio("집계", ["월별", "분기별"], horizontal=True)
             agg = mtd_data["monthly"] if gran == "월별" else mtd_data["quarterly"]
             xcol = "month" if gran == "월별" else "quarter"
-            ylab = st.selectbox("효율 지표(선·아래)", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)"])
+            _f1_opts = ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)"]
+            _f1_opts += [o for o in ("총거래액", "총유입") if MTDOPT[o] in agg.columns]
+            ylab = st.selectbox("효율 지표(선·아래)", _f1_opts)
             yc = MTDOPT[ylab]
             fig = overlay_dual(agg[xcol], agg["perSend"], "인당 발송 건수",
                                agg[yc] * (100 if yc in MTD_PCT else 1), ylab,
