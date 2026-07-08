@@ -3255,6 +3255,8 @@ def main():
                     c_rps = c_amt / c_send if c_send > 0 else 0.0
                     
                     v = dif.get(c, 0.0)
+                    send_diff = c_send - p_send
+                    send_diff_str = f"△{abs(send_diff):,.0f}" if send_diff < 0 else f"+{send_diff:,.0f}"
                     wrows.append({
                         "카테고리": str(c),
                         "전주 거래액": won(p_amt),
@@ -3263,6 +3265,8 @@ def main():
                         "거래액 전주비": _dlt("거래액", c_amt, p_amt if p_amt > 0 else np.nan),
                         "전주 발송": f"{p_send:,.0f}",
                         "기준주 발송": f"{c_send:,.0f}",
+                        "발송 증감": send_diff_str,
+                        "발송 전주비": _dlt("발송", c_send, p_send if p_send > 0 else np.nan),
                         "전주 CTR": f"{p_ctr:.2%}",
                         "기준주 CTR": f"{c_ctr:.2%}",
                         "전주 UV": f"{p_uv:,.0f}",
@@ -3273,7 +3277,7 @@ def main():
                         "기준주 RPS": f"{c_rps:,.0f}원",
                     })
                 if wrows:
-                    st.dataframe(pd.DataFrame(wrows).style.map(_clr, subset=["거래액 증감", "거래액 전주비"]),
+                    st.dataframe(pd.DataFrame(wrows).style.map(_clr, subset=["거래액 증감", "거래액 전주비", "발송 증감", "발송 전주비"]),
                                  hide_index=True, width="stretch", height=320)
                 st.markdown('<div class="appendix">카테고리별 전주 대비 거래액 증감 기여도입니다. '
                             '녹색은 매출 상승 기여, 적색(△)은 매출 감소 기여를 의미하며, 기여도가 큰 8개만 표시하고 나머지는 기타로 합산했습니다.</div>', unsafe_allow_html=True)
