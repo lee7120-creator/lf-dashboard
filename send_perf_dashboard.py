@@ -3284,9 +3284,9 @@ def main():
 
         # ② 금주 하이라이트 · 로우라이트
         with tabH:
-            st.markdown("##### 금주 주요 성과 지표 (Top 5 / Bottom 5)")
-            hlab = st.radio("기준 지표", ["주문CR", "거래액", "RPS"], horizontal=True, key="wr_hl_met")
-            hcol = {"주문CR": "ord_cr", "거래액": "amt", "RPS": "rps"}[hlab]
+            st.markdown("##### 금주 주요 성과 지표 (Top 10 / Bottom 10)")
+            hlab = st.radio("기준 지표", ["CTR", "주문CR", "거래액", "RPS"], horizontal=True, key="wr_hl_met")
+            hcol = {"CTR": "infl_cr", "주문CR": "ord_cr", "거래액": "amt", "RPS": "rps"}[hlab]
             hw = _slice(ref_ws, ref_we)
             if "uv" in hw.columns:
                 hw = hw[hw["uv"].fillna(0) >= 100]        # UV 적으면 전환율이 튀어서 제외
@@ -3301,13 +3301,13 @@ def main():
                         "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
                 hc1, hc2 = st.columns(2)
                 with hc1:
-                    st.markdown(f"**🏆 하이라이트 — {hlab} 상위 5**")
-                    st.dataframe(hw.sort_values(hcol, ascending=False).head(5)[_hc]
+                    st.markdown(f"**🏆 하이라이트 — {hlab} 상위 10**")
+                    st.dataframe(hw.sort_values(hcol, ascending=False).head(10)[_hc]
                                  .rename(columns=_hrn).style.format(_hft),
                                  hide_index=True, width="stretch")
                 with hc2:
-                    st.markdown(f"**🧊 로우라이트 — {hlab} 하위 5**")
-                    st.dataframe(hw.sort_values(hcol).head(5)[_hc]
+                    st.markdown(f"**🧊 로우라이트 — {hlab} 하위 10**")
+                    st.dataframe(hw.sort_values(hcol).head(10)[_hc]
                                  .rename(columns=_hrn).style.format(_hft),
                                  hide_index=True, width="stretch")
                 st.caption("UV 100 미만 캠페인은 전환율 변동성이 커 제외하였습니다. "
