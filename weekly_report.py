@@ -644,8 +644,16 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
                 [{"list": "ordered"}, {"list": "bullet"}],
                 [{"align": []}], ["clean"],
             ]
-            new = st_quill(value=store[key], html=True, toolbar=toolbar,
-                           key=f"wr_quill_{key}")
+            # value(초기값)는 최초 진입 또는 store[key]가 바뀐 경우에만 주입한다.
+            # 매 rerun마다 value를 다시 넣으면 타이핑 중 저장값으로 되돌아가
+            # '계속 리프레시'되는 버그가 발생한다. (st_quill은 입력마다 rerun 유발)
+            qkey = f"wr_quill_{key}"
+            skey = f"{qkey}__seed"
+            if st.session_state.get(skey) != store[key]:
+                st.session_state[skey] = store[key]
+                new = st_quill(value=store[key], html=True, toolbar=toolbar, key=qkey)
+            else:
+                new = st_quill(html=True, toolbar=toolbar, key=qkey)
         else:
             new = st.text_area("", store[key], key=f"wr_ta_{key}", height=180,
                                label_visibility="collapsed")
