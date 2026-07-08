@@ -1286,6 +1286,7 @@ def tag_copy(title, body=""):
     d["가격소구"] = d["가격소구"] or bool(PRICE_RE.search(full))     # 9,900원 같은 가격 언급
     d["질문형"] = ("?" in full or "？" in full)
     d["이모지"] = bool(EMOJI_RE.search(full))
+    d["이모지수"] = len(EMOJI_RE.findall(full))     # 최적 개수 분석용 (보유 여부와 별개)
     d["제목길이"] = len(t)
     d["본문길이"] = len(b)
     return d
@@ -1316,27 +1317,55 @@ STOPWORDS = set((
 ).split())
 
 
-def keyword_perf(df, metric_col, min_n=5, top=30):
+def _word_sig(out, word_col, positions, arr):
+    """단어/이모지 표에 보유 vs 미보유 Welch p + FDR 보정 유의성 컬럼을 붙인다.
+    소표본 요행 단어가 상위를 채우는 문제의 판별 근거 — '유의' 없는 차이는 참고만."""
+    import scipy.stats as ss
+    pvals = []
+    for tk in out[word_col]:
+        pos = positions.get(tk, set())
+        yes = arr[list(pos)]
+        no = np.delete(arr, list(pos))
+        if len(yes) < 3 or len(no) < 3:
+            pvals.append(np.nan)
+            continue
+        try:
+            pvals.append(float(ss.ttest_ind(yes, no, equal_var=False).pvalue))
+        except Exception:
+            pvals.append(np.nan)
+    adj = fdr_bh(pvals)
+    out = out.copy()
+    out["_p_adj"] = adj
+    out["유의성"] = ["✱ 유의" if (pd.notna(p) and p < 0.1) else "—" for p in adj]
+    return out
+
+
+def keyword_perf(df, metric_col, min_n=5, top=30, with_sig=False):
     """제목+내용을 단어로 토큰화 → 단어별 (캠페인 단위) 평균 성과·표본·전체평균 대비 차이.
 
     한 캠페인에서 같은 단어가 여러 번 나와도 1회로만 집계(set). 불용어·숫자 제외.
-    반환: DataFrame[단어, 캠페인수, 평균, 차이] (평균 내림차순)
+    반환: DataFrame[단어, 캠페인수, 평균, 차이] (평균 내림차순).
+    with_sig=True 면 보유 vs 미보유 Welch+FDR 유의성(_p_adj, 유의성) 컬럼 추가.
     """
     from collections import defaultdict
     if df is None or len(df) == 0 or metric_col not in df:
         return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
     bucket = defaultdict(list)
+    positions = defaultdict(set)
     metvals = []
     for _, r in df.iterrows():
         m = r.get(metric_col)
         if m is None or (isinstance(m, float) and np.isnan(m)):
             continue
-        m = float(m); metvals.append(m)
+        m = float(m)
+        i = len(metvals)
+        metvals.append(m)
         text = _s(r.get("title", "")) + " " + _s(r.get("body", ""))
         for tk in set(TOKEN_RE.findall(text)):
             if tk in STOPWORDS:
                 continue
             bucket[tk].append(m)
+            positions[tk].add(i)
     if not metvals:
         return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
     base_mean = float(np.mean(metvals))
@@ -1344,24 +1373,31 @@ def keyword_perf(df, metric_col, min_n=5, top=30):
             for tk, v in bucket.items() if len(v) >= min_n]
     if not rows:
         return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
-    return pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+    out = pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+    if with_sig:
+        out = _word_sig(out, "단어", positions, np.asarray(metvals, float))
+    return out
 
 
-def emoji_perf(df, metric_col, min_n=3, top=30):
+def emoji_perf(df, metric_col, min_n=3, top=30, with_sig=False):
     """제목+내용의 이모지(기호)별 (캠페인 단위) 평균 성과·표본·전체평균 대비 차이."""
     from collections import defaultdict
     if df is None or len(df) == 0 or metric_col not in df:
         return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
     bucket = defaultdict(list)
+    positions = defaultdict(set)
     metvals = []
     for _, r in df.iterrows():
         m = r.get(metric_col)
         if m is None or (isinstance(m, float) and np.isnan(m)):
             continue
-        m = float(m); metvals.append(m)
+        m = float(m)
+        i = len(metvals)
+        metvals.append(m)
         text = _s(r.get("title", "")) + " " + _s(r.get("body", ""))
         for em in set(EMOJI_RE.findall(text)):
             bucket[em].append(m)
+            positions[em].add(i)
     if not metvals:
         return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
     base_mean = float(np.mean(metvals))
@@ -1369,7 +1405,10 @@ def emoji_perf(df, metric_col, min_n=3, top=30):
             for em, v in bucket.items() if len(v) >= min_n]
     if not rows:
         return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
-    return pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+    out = pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+    if with_sig:
+        out = _word_sig(out, "이모지", positions, np.asarray(metvals, float))
+    return out
 
 
 # ── 통계 헬퍼: 효과크기 · 다중비교 보정 · 다변량 회귀 ──────────────────────
@@ -1812,17 +1851,17 @@ def main():
 
     @st.cache_data(show_spinner=False)
     def cached_keyword_perf(d, metric_col, min_n, top, _ver=_KWVER):
-        return keyword_perf(d, metric_col, min_n=min_n, top=top)
+        return keyword_perf(d, metric_col, min_n=min_n, top=top, with_sig=True)
 
     @st.cache_data(show_spinner=False)
     def cached_emoji_perf(d, metric_col, min_n, top, _ver=_KWVER):
-        return emoji_perf(d, metric_col, min_n=min_n, top=top)
+        return emoji_perf(d, metric_col, min_n=min_n, top=top, with_sig=True)
 
     # 태깅 체계 버전 키 — 속성 구성(TAG_BOOLS)뿐 아니라 키워드 '내용'(KW)이 바뀌어도
     # prepare_raw 캐시를 무효화한다. (st.cache_data는 내부에서 호출하는 tag_copy의 변경을
     # 감지하지 못해, 태그명이 그대로면 구버전 태깅 결과가 캐시로 반환되던 구멍 방지)
     TAGSET_VER = (hashlib.md5(json.dumps(KW, ensure_ascii=False, sort_keys=True).encode())
-                  .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS))
+                  .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS) + "|이모지수v1")
 
     @st.cache_data(show_spinner=False)
     def prepare_raw(work_df, tagset_ver):
@@ -2531,6 +2570,15 @@ def main():
         _ds = sorted(_ds)
         drange = f"{_ds[0]} ~ {_ds[-1]}"
     st.sidebar.caption(f"전체 {len(raw)}건 · 매칭 {raw['matched'].mean()*100:.0f}% · 분석 {len(fdf)}건\n\n{drange}")
+    # 최신 주 매칭률 경보 — 전체 %는 과거 누적에 묻혀서 최근 붕괴를 못 보여준다
+    _rw = raw.dropna(subset=["dt"]) if "dt" in raw else raw.iloc[0:0]
+    if len(_rw):
+        _lastwk = _rw["dt"].max().to_period("W").start_time
+        _lw = _rw[_rw["dt"] >= _lastwk]
+        if len(_lw) >= 5 and _lw["matched"].mean() < 0.7:
+            st.sidebar.warning(f"⚠️ 최신 주 매칭률 {_lw['matched'].mean()*100:.0f}% — "
+                               "기획 시트 적재·형식(날짜/AF코드)을 확인해 주세요. "
+                               "상세는 「9. 데이터·다운로드」의 매칭 품질 참고.")
     if parse_log:
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))
@@ -2901,6 +2949,12 @@ def main():
         c[3].metric("평균 객단가", won(base["aov"].mean()),
                     _wow(base["aov"].mean(), _pv["aov"].mean() if len(_pv) else None),
                     help="거래액 ÷ 주문 — 주문 1건당 평균 금액이에요.")
+        # 단순평균(위 카드) vs 가중평균 — 페이지마다 '평균 CTR' 정의가 달라 어긋나 보이던 문제 명시
+        _st_, _ut_, _ot_ = base["send"].sum(), base["uv"].sum(), base["oc"].sum()
+        if _st_ and _ut_:
+            st.caption(f"가중(합산) 기준 — CTR {_ut_/_st_*100:.2f}% · 주문CR {_ot_/_ut_*100:.2f}% "
+                       "(주간보고 페이지와 같은 정의). 위 카드는 캠페인 단순평균이라 값이 다를 수 있어요 — "
+                       "단순평균은 '캠페인 한 건의 전형적 성과', 가중평균은 '발송 전체의 실제 효율'이에요.")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         _rk_lab = st.selectbox("TOP/BOTTOM 순위 기준", list(METRIC_OPTS.keys()), key="p01_rank",
@@ -3709,6 +3763,70 @@ def main():
                 st.markdown('<div class="appendix">카테고리별 전주 대비 거래액 증감 기여도입니다. '
                             '녹색은 매출 상승 기여, 적색(△)은 매출 감소 기여를 의미하며, 기여도가 큰 8개만 표시하고 나머지는 기타로 합산했습니다.</div>', unsafe_allow_html=True)
 
+                # ── 지표 체인 분해(LMDI) — '어느 카테고리'가 아니라 '어느 지표'가 만들었나 ──
+                st.markdown("##### 거래액 전주 대비 — 어느 지표(발송·CTR·CR·객단가)가 만들었나")
+
+                def _chain(d):
+                    s, u, o, a = (float(d["send"].sum()), float(d["uv"].sum()),
+                                  float(d["oc"].sum()), float(d["amt"].sum()))
+                    if min(s, u, o, a) <= 0:
+                        return None
+                    return {"발송량": s, "CTR": u / s, "주문CR": o / u, "객단가": a / o, "_tot": a}
+                f1, f0 = _chain(cwd), _chain(pwd)
+                if f1 and f0:
+                    import math as _math
+                    v1, v0 = f1["_tot"], f0["_tot"]
+                    # LMDI-I: 각 요인 기여 = L(V1,V0)·ln(f1/f0), L=로그평균 → 기여 합 = ΔV (정확)
+                    _L = (v1 - v0) / (_math.log(v1) - _math.log(v0)) if v1 != v0 else v1
+                    contrib = {k: _L * _math.log(f1[k] / f0[k])
+                               for k in ("발송량", "CTR", "주문CR", "객단가")}
+                    wf = go.Figure(go.Waterfall(
+                        x=["전주 거래액"] + list(contrib.keys()) + ["기준주 거래액"],
+                        measure=["absolute"] + ["relative"] * 4 + ["total"],
+                        y=[v0] + [contrib[k] for k in contrib] + [0],
+                        text=[won(v0)] + [_damt(contrib[k]) for k in contrib] + [won(v1)],
+                        textposition="outside",
+                        connector=dict(line=dict(color="#cbd5e1")),
+                        increasing=dict(marker=dict(color=PALETTE["green"])),
+                        decreasing=dict(marker=dict(color=PALETTE["red"])),
+                        totals=dict(marker=dict(color=PALETTE["slate"])),
+                    ))
+                    wf.update_layout(**base_layout(h=380, title="지표 체인 기여 분해 (LMDI) — 전주 → 기준주"))
+                    st.plotly_chart(wf, width="stretch")
+                    _tot_d = v1 - v0
+                    _big = max(contrib, key=lambda k: abs(contrib[k]))
+                    _shr = (abs(contrib[_big]) / abs(_tot_d) * 100) if _tot_d else 0.0
+                    st.markdown('<div class="appendix">거래액 = 발송량 × CTR × 주문CR × 객단가 항등식을 '
+                                'LMDI(로그평균 디비지아 지수)로 분해한 거예요 — 네 기여의 합이 정확히 총 증감'
+                                f'({_damt(_tot_d)})과 일치해요. 이번 증감의 최대 요인은 <b>{_big}</b>'
+                                f'({_damt(contrib[_big])}, 총 증감 대비 크기 {_shr:.0f}%)예요.</div>',
+                                unsafe_allow_html=True)
+                else:
+                    st.caption("지표 체인 분해는 전주·기준주 모두 발송·UV·주문·거래액이 0보다 커야 계산돼요.")
+
+                # ── 가중 CTR 증감의 믹스 분해 — 진짜 효율 악화 vs 저효율 카테고리 비중 증가 ──
+                _cats_mx = [c for c in cur_g.index.union(prv_g.index)
+                            if str(c).strip() not in ("", "nan", "None")]
+                s1t, s0t = float(cwd["send"].sum()), float(pwd["send"].sum())
+                if s1t > 0 and s0t > 0 and _cats_mx:
+                    _real = _mix = 0.0
+                    for c in _cats_mx:
+                        s1 = float(cur_g["send"].get(c, 0) or 0); s0 = float(prv_g["send"].get(c, 0) or 0)
+                        u1 = float(cur_g["uv"].get(c, 0) or 0); u0 = float(prv_g["uv"].get(c, 0) or 0)
+                        ctr1 = (u1 / s1) if s1 else 0.0
+                        ctr0 = (u0 / s0) if s0 else 0.0
+                        _real += (s0 / s0t) * (ctr1 - ctr0)
+                        _mix += (s1 / s1t - s0 / s0t) * ctr1
+                    _dctr = float(cwd["uv"].sum()) / s1t - float(pwd["uv"].sum()) / s0t
+
+                    def _pp(v):
+                        return f"△{abs(v)*100:.2f}%p" if v < 0 else f"+{v*100:.2f}%p"
+                    st.markdown(f'<div class="appendix"><b>가중 CTR 전주 대비 {_pp(_dctr)}</b> = '
+                                f'실질 효율 {_pp(_real)} + 카테고리 믹스 {_pp(_mix)}. '
+                                '믹스 성분이 크면 CTR 변화가 문구·타깃 효율 문제가 아니라 '
+                                '카테고리 발송 비중 변화 때문이라는 뜻이에요.</div>',
+                                unsafe_allow_html=True)
+
         # ② 금주 하이라이트 · 로우라이트
         with tabH:
             st.markdown("##### 금주 주요 성과 지표 (Top 10 / Bottom 10)")
@@ -3745,20 +3863,53 @@ def main():
             st.markdown("##### 월말 예상 실적 (Run-rate 기준)")
             elapsed = ref_end.day
             total_days = calendar.monthrange(ref_end.year, ref_end.month)[1]
-            st.caption(f"{ref_end.year}년 {ref_end.month}월 · 총 {total_days}일 중 "
-                       f"{elapsed}일 경과({ref_end.month}/1~{ref_end.month}/{elapsed}) 기준. "
-                       "현재 일평균 추세가 월말까지 유지된다고 가정한 추정치예요. "
-                       "기준주가 월초일수록 경과일이 적어 추정 오차가 커요.")
             pm_full = _agg(_slice(datetime.date(pm_y, pm_m, 1),
                                   datetime.date(pm_y, pm_m, calendar.monthrange(pm_y, pm_m)[1])))
             _pyy = ref_end.year - 1
             py_full = _agg(_slice(datetime.date(_pyy, ref_end.month, 1),
                                   datetime.date(_pyy, ref_end.month,
                                                 calendar.monthrange(_pyy, ref_end.month)[1])))
+
+            # ── 요일 가중 run-rate — 경과 구간의 요일 구성(주말이 많았는지)을 보정 ──
+            # 직전 12주 일별 실적으로 지표별 '요일 평균'을 만들고, 경과분/전체월을 그 가중치로
+            # 환산해 예상한다. 이력이 부족하면(4주 미만) 단순 선형 run-rate로 폴백.
+            _dcolmap = {"캠페인수": ("af", "size"), "발송": ("send", "sum"), "UV": ("uv", "sum"),
+                        "주문건수": ("oc", "sum"), "거래액": ("amt", "sum")}
+            _hist0 = m_first - datetime.timedelta(days=84)
+            _hist = g0[(g0["dt"] >= pd.Timestamp(_hist0)) & (g0["dt"] < pd.Timestamp(m_first))]
+            _dowm, _amt_sd = None, np.nan
+            if len(_hist) >= 20 and _hist["dt"].dt.date.nunique() >= 28:
+                _daily = _hist.groupby(_hist["dt"].dt.normalize()).agg(
+                    **{k: v for k, v in _dcolmap.items()})
+                _daily = _daily.reindex(
+                    pd.date_range(_hist0, m_first - datetime.timedelta(days=1)), fill_value=0)
+                _dowm = _daily.groupby(_daily.index.dayofweek).mean()
+                _amt_res = _daily["거래액"] - _daily.index.dayofweek.map(_dowm["거래액"])
+                _amt_sd = float(_amt_res.std(ddof=1))
+            _mdays = pd.date_range(m_first, datetime.date(ref_end.year, ref_end.month, total_days))
+
+            def _project(met, cv):
+                """마감 예상값 — 요일 가중(이력 충분 시) 또는 선형 run-rate."""
+                if not elapsed or pd.isna(cv):
+                    return np.nan
+                if _dowm is not None and met in _dowm.columns:
+                    w = _dowm[met].reindex(range(7)).fillna(0.0)
+                    exp_month = float(w.loc[_mdays.dayofweek].sum())
+                    exp_sofar = float(w.loc[_mdays[:elapsed].dayofweek].sum())
+                    if exp_sofar > 0 and exp_month > 0:
+                        return cv * exp_month / exp_sofar
+                return cv / elapsed * total_days
+            _method = "요일 가중" if _dowm is not None else "단순 선형"
+            st.caption(f"{ref_end.year}년 {ref_end.month}월 · 총 {total_days}일 중 "
+                       f"{elapsed}일 경과({ref_end.month}/1~{ref_end.month}/{elapsed}) 기준 · "
+                       f"추정 방식: **{_method} run-rate**"
+                       + (" (직전 12주 요일별 평균으로 경과 구간의 요일 구성을 보정)" if _dowm is not None
+                          else " (이력이 12주 미만이라 일평균×잔여일)")
+                       + ". 월초일수록 경과일이 적어 추정 오차가 커요.")
             prow = []
             for met in ["캠페인수", "발송", "UV", "주문건수", "거래액"]:
                 cv = cur_mtd[met]
-                land = (cv / elapsed * total_days) if elapsed else np.nan
+                land = _project(met, cv)
                 prow.append({"지표": met, "당월 MTD": _fmt(met, cv),
                              "일평균": _fmt(met, cv / elapsed if elapsed else np.nan),
                              "마감 예상": _fmt(met, land),
@@ -3768,28 +3919,40 @@ def main():
                              "전년비(마감)": _dlt(met, land, py_full[met])})
             st.dataframe(pd.DataFrame(prow).style.map(_clr, subset=["전월비(마감)", "전년비(마감)"]),
                          hide_index=True, width="stretch", height=240)
+            remain = total_days - elapsed
+            land_amt = _project("거래액", float(cur_mtd["거래액"]))
+            _se = _amt_sd * np.sqrt(max(remain, 0)) if pd.notna(_amt_sd) else np.nan
+            if pd.notna(land_amt) and pd.notna(_se) and _se > 0 and remain > 0:
+                st.caption(f"거래액 마감 예상 **{won(land_amt)}** · 95% 구간 "
+                           f"{won(max(land_amt - 1.96 * _se, 0))} ~ {won(land_amt + 1.96 * _se)} "
+                           "(과거 일별 변동성 기준 — 대형 프로모션 등 특이 이벤트는 반영 못 해요)")
             tgt = st.number_input("월 거래액 목표 (억원 · 선택)", min_value=0.0, value=0.0,
                                   step=0.5, key="wr_target",
-                                  help="목표를 입력하면 진척률과 필요 일평균을 계산해 드려요.")
+                                  help="목표를 입력하면 진척률·필요 일평균·달성 확률을 계산해 드려요.")
             if tgt > 0:
                 tgt_won = tgt * 1e8
                 cur_amt = float(cur_mtd["거래액"])
-                land_amt = cur_amt / elapsed * total_days if elapsed else np.nan
                 st.progress(min(cur_amt / tgt_won, 1.0),
                             text=f"목표 대비 진척 {cur_amt / tgt_won * 100:.1f}% "
                                  f"({won(cur_amt)} / {won(tgt_won)})")
-                remain = total_days - elapsed
+                _prob_txt = ""
+                if pd.notna(land_amt) and pd.notna(_se) and _se > 0 and remain > 0:
+                    _prob = float(stats.norm.cdf((land_amt - tgt_won) / _se)) * 100
+                    _prob_txt = f" · 달성 확률 약 <b>{_prob:.0f}%</b>"
                 if pd.notna(land_amt) and land_amt >= tgt_won:
-                    _vd = f"이 속도면 <b>달성 예상</b> ✅ (마감 예상 {won(land_amt)} ≥ 목표 {won(tgt_won)})"
+                    _vd = (f"이 속도면 <b>달성 예상</b> ✅ (마감 예상 {won(land_amt)} ≥ 목표 "
+                           f"{won(tgt_won)}){_prob_txt}")
                 elif remain > 0:
                     need = (tgt_won - cur_amt) / remain
                     _vd = (f"이 속도면 마감 {won(land_amt)}로 <b>미달 예상</b> — 남은 {remain}일 동안 "
-                           f"일평균 <b>{won(need)}</b> 필요 (현재 일평균 {won(cur_amt / elapsed)})")
+                           f"일평균 <b>{won(need)}</b> 필요 (현재 일평균 {won(cur_amt / elapsed)})"
+                           f"{_prob_txt}")
                 else:
                     _vd = f"월 마감 — 최종 {won(cur_amt)} / 목표 {won(tgt_won)}"
                 st.markdown(f'<div class="appendix">{_vd}</div>', unsafe_allow_html=True)
-            st.markdown('<div class="appendix">run-rate 추정은 요일 구성·월말 프로모션 효과를 '
-                        '반영하지 않아요. 월초(경과 일수가 적을 때)일수록 오차가 커요.</div>',
+            st.markdown('<div class="appendix">run-rate 추정은 월말 프로모션 같은 특이 이벤트를 '
+                        '반영하지 않아요. 요일 가중 방식은 경과 구간에 주말이 몰렸을 때의 왜곡을 '
+                        '줄여 주지만, 월초(경과 일수가 적을 때)일수록 오차가 커요.</div>',
                         unsafe_allow_html=True)
 
         # ── 최근 13주 추이 (발송량·CTR·주문CR·거래액) ──
@@ -4030,8 +4193,27 @@ def main():
                 continue
             rest = base.loc[~mask, mcol].dropna()
             p = welch(sub.values, rest.values) if len(rest) > 1 else None
-            crows.append(dict(조합="+".join(combo), 캠페인수=len(sub),
-                              평균=float(sub.mean()), 차이=float(sub.mean()) - base_mean, p=p))
+            row = dict(조합="+".join(combo), 캠페인수=len(sub),
+                       평균=float(sub.mean()), 차이=float(sub.mean()) - base_mean, p=p)
+            if ksize == 2:
+                # 시너지(DID) — 'A도 좋고 B도 좋아서'가 아니라 '같이 써서 더 좋은지'를 분리.
+                # 시너지 = m(A∩B) − [m(A만) + m(B만) − m(둘다없음)] (주효과 합 대비 초과분)
+                _a, _b = combo
+                va = base[_a].fillna(False).astype(bool).values
+                vb = base[_b].fillna(False).astype(bool).values
+                mv = base[mcol].values.astype(float)
+
+                def _cellmean(cm):
+                    v = mv[cm]
+                    v = v[~np.isnan(v)]
+                    return float(v.mean()) if len(v) >= 3 else np.nan
+                m10 = _cellmean(va & ~vb)
+                m01 = _cellmean(~va & vb)
+                m00 = _cellmean(~va & ~vb)
+                if not any(pd.isna(v) for v in (m10, m01, m00)):
+                    row["기대치"] = m10 + m01 - m00
+                    row["시너지"] = float(sub.mean()) - row["기대치"]
+            crows.append(row)
         if not crows:
             st.info("조건에 맞는 조합이 없어요. 기준을 낮추거나 '최소 발송수'를 줄여 보세요.")
         else:
@@ -4064,10 +4246,26 @@ def main():
                 cshow["평균"] = cshow["평균"].map(lambda v: f"{v:,.1f}")
                 cshow["차이"] = cshow["차이"].map(lambda v: f"{v:+,.1f}")
             cshow["유의성"] = cdf["p"].map(sig_label)
-            st.dataframe(cshow[["조합", "캠페인수", "평균", "차이", "유의성"]].style.format({"캠페인수": "{:,.0f}"}),
+            _combo_cols = ["조합", "캠페인수", "평균", "차이", "유의성"]
+            if "시너지" in cdf.columns and cdf["시너지"].notna().any():
+                def _fm_signed(v):
+                    if pd.isna(v):
+                        return "–"
+                    if is_pct:
+                        return f"{v*100:+.2f}%p"
+                    return f"{v:+,.0f}" if mcol in ("rps", "aov", "amt") else f"{v:+,.1f}"
+                cshow["기대치(주효과 합)"] = cdf["기대치"].map(
+                    lambda v: "–" if pd.isna(v)
+                    else (f"{v*100:.2f}%" if is_pct
+                          else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}")))
+                cshow["시너지"] = cdf["시너지"].map(_fm_signed)
+                _combo_cols = ["조합", "캠페인수", "평균", "기대치(주효과 합)", "시너지", "유의성"]
+            st.dataframe(cshow[_combo_cols].style.format({"캠페인수": "{:,.0f}"}),
                          hide_index=True, width="stretch", height=320)
             st.markdown('<div class="appendix">유의성은 해당 조합이 있는 그룹과 없는 그룹의 차이를 검정한 결과예요. '
-                        '건수가 적으면 우연일 수 있어요.</div>',
+                        '건수가 적으면 우연일 수 있어요. <b>시너지</b>(2개 조합)는 조합 평균에서 '
+                        "'주효과 합(각자 단독 효과의 합)'을 뺀 값 — <b>+면 같이 써서 더 좋아지는 진짜 궁합</b>, "
+                        '0 근처면 각자 좋은 걸 합친 것에 불과하다는 뜻이에요.</div>',
                         unsafe_allow_html=True)
 
             sel_combo = st.selectbox("조합을 골라 실제 메시지를 확인해 보세요", list(cdf["조합"]), key="p02_combo")
@@ -4094,10 +4292,14 @@ def main():
                 b["_bin"] = pd.qcut(b[colname], q=4, duplicates="drop")
             except Exception:
                 container.info(f"{label} 구간화 불가"); return
-            g = b.groupby("_bin", observed=True)[mcol].agg(["mean", "count"])
+            g = b.groupby("_bin", observed=True)[mcol].agg(["mean", "count", "std"])
             xs = [f"{int(iv.left)}~{int(iv.right)}자" for iv in g.index]
             yvv = g["mean"].values * (100 if is_pct else 1)
+            _se = (g["std"] / np.sqrt(g["count"].clip(lower=1))).fillna(0).values
+            _err = _se * 1.96 * (100 if is_pct else 1)          # 95% 신뢰구간 에러바
             fig = go.Figure(go.Bar(x=xs, y=yvv, marker_color=mclr,
+                                   error_y=dict(type="data", array=_err,
+                                                color="#94a3b8", thickness=1.2, width=4),
                                    text=[f"{v:.2f}<br>(n={int(n)})" for v, n in zip(yvv, g["count"])],
                                    textposition="outside"))
             fig.update_layout(**base_layout(h=300, ysuffix=("%" if is_pct else ""),
@@ -4106,6 +4308,45 @@ def main():
 
         len_bins("제목길이", "제목", lc1)
         len_bins("본문길이", "본문", lc2)
+
+        # ── 최적점 추정 (2차항 회귀) — 구간 평균으론 '몇 자가 피크인지' 안 보인다 ──
+        def _quad_opt(colname, label, unit="자"):
+            if colname not in base:
+                return None
+            b = base[[colname, mcol]].dropna()
+            b = b[b[colname] > 0]
+            if len(b) < 30 or b[colname].nunique() < 8:
+                return None
+            x = b[colname].values.astype(float)
+            y = b[mcol].values.astype(float)
+            X = np.column_stack([np.ones_like(x), x, x ** 2])
+            try:
+                beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+                yhat = X @ beta
+                dof = len(x) - 3
+                if dof <= 0:
+                    return None
+                s2 = float(((y - yhat) ** 2).sum() / dof)
+                cov = s2 * np.linalg.inv(X.T @ X)
+                se2 = float(np.sqrt(cov[2, 2]))
+                p2 = float(2 * (1 - stats.t.cdf(abs(beta[2] / se2), dof))) if se2 > 0 else 1.0
+            except Exception:
+                return None
+            if beta[2] < 0 and p2 < 0.1:
+                xstar = float(-beta[1] / (2 * beta[2]))
+                lo, hi = float(np.percentile(x, 5)), float(np.percentile(x, 95))
+                if lo <= xstar <= hi:
+                    return f"**{label}**: 최적점 ≈ **{xstar:.0f}{unit}** (역U형 확인, 곡률 p={p2:.3f})"
+                return f"**{label}**: 역U형이지만 최적점({xstar:.0f}{unit})이 관측 범위 밖 — 참고만"
+            return f"**{label}**: 뚜렷한 최적점 없음 (단조 또는 무관)"
+
+        _opt_msgs = [m_ for m_ in (_quad_opt("제목길이", "제목 길이"),
+                                   _quad_opt("본문길이", "본문 길이"),
+                                   _quad_opt("이모지수", "이모지 개수", unit="개")) if m_]
+        if _opt_msgs:
+            st.markdown("🎯 **최적점 추정 (2차항 회귀)** — " + " · ".join(_opt_msgs))
+            st.caption("'많을수록 좋다가 어느 지점부터 꺾이는' 역U형이 통계적으로 확인될 때만 "
+                       "최적점을 표시해요. 카테고리 구성이 섞인 단순 회귀라 참고 지표예요.")
 
         # ── 속성별 드릴다운: 실제 발송 메시지 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -4870,8 +5111,13 @@ def main():
         def _barfig(d, namecol, title, h):
             up = d.head(int(ktop))
             yv = up["평균"] * (100 if is_pct else 1)
+            # 유의(FDR p<0.1) 항목만 본색, 나머지 회색 — 요행 단어가 진하게 강조되는 것 방지
+            if "유의성" in up.columns:
+                bar_colors = [mclr if s.startswith("✱") else "#cbd5e1" for s in up["유의성"]]
+            else:
+                bar_colors = mclr
             fig = go.Figure(go.Bar(
-                x=yv, y=up[namecol], orientation="h", marker_color=mclr, customdata=up["캠페인수"],
+                x=yv, y=up[namecol], orientation="h", marker_color=bar_colors, customdata=up["캠페인수"],
                 text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, up["캠페인수"])],
                 textposition="outside",
                 hovertemplate="%{y}<br>평균: %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
@@ -4913,8 +5159,9 @@ def main():
                 eshow["평균"] = eshow["평균"].map(won); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.0f}")
             else:
                 eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
+            eshow = eshow.drop(columns=["_p_adj"], errors="ignore")
             st.dataframe(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
-        st.markdown('<div class="appendix">단어 및 이모지 성과 분석은 캠페인 단위 평균 데이터입니다. 표본 건수(n)가 적은 항목은 편차가 존재할 수 있으니 유의하시기 바랍니다. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨)</div>',
+        st.markdown('<div class="appendix">단어 및 이모지 성과 분석은 캠페인 단위 평균 데이터입니다. 표본 건수(n)가 적은 항목은 편차가 존재할 수 있으니 유의하시기 바랍니다. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨) 차트의 <b>회색 막대</b>는 보유 vs 미보유 차이가 통계적으로 유의하지 않은(FDR 보정 p≥0.1) 항목 — 우연일 수 있으니 참고만 하세요.</div>',
                     unsafe_allow_html=True)
         glossary()
 
@@ -4984,6 +5231,59 @@ def main():
             else:
                 diag.append(dict(속성=t, 주차수=len(pts), 추세="표본부족", 상관r=np.nan, 유의성="–"))
         st.dataframe(pd.DataFrame(diag), hide_index=True, width="stretch")
+
+        # ── 노출 강도 기반 마모 진단 — '시즌 하락'과 '자주 써서 무뎌짐'을 분리 ──
+        st.markdown("##### 🔁 노출 강도 기반 마모 진단 — 최근 28일 사용량이 성과를 깎나")
+        _wear_rows = []
+        for t in sel_attrs:
+            vals = base.loc[base[t], [mcol, "dt"]].dropna()
+            if len(vals) < 25:
+                _wear_rows.append({"속성": t, "n": len(vals), "판정": "표본 부족(25건 미만)"})
+                continue
+            _days = vals["dt"].values.astype("datetime64[D]").astype(int)
+            _order = np.argsort(_days)
+            _ds = _days[_order]
+            y = vals[mcol].values.astype(float)[_order]
+            # 노출 강도 = 각 캠페인 '직전 28일' 동안 같은 소구 캠페인 수
+            expo = (np.searchsorted(_ds, _ds, side="left")
+                    - np.searchsorted(_ds, _ds - 28, side="left")).astype(float)
+            wk_idx = (_ds - _ds.min()) / 7.0                # 주차 추세 통제 (시즌 드리프트 분리)
+            X = np.column_stack([np.ones(len(y)), expo, wk_idx])
+            try:
+                beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+                dof = len(y) - 3
+                s2 = float(((y - X @ beta) ** 2).sum() / max(dof, 1))
+                cov = s2 * np.linalg.inv(X.T @ X)
+                se1 = float(np.sqrt(cov[1, 1]))
+                p1 = float(2 * (1 - stats.t.cdf(abs(beta[1] / se1), dof))) if se1 > 0 else 1.0
+            except Exception:
+                _wear_rows.append({"속성": t, "n": len(y), "판정": "계산 불가"})
+                continue
+            _q33, _q67 = np.percentile(expo, 33), np.percentile(expo, 67)
+            lo_m = float(y[expo <= _q33].mean()) if (expo <= _q33).any() else np.nan
+            hi_m = float(y[expo >= _q67].mean()) if (expo >= _q67).any() else np.nan
+            _mul = 100 if is_pct else 1
+            if beta[1] < 0 and p1 < 0.1:
+                _verdict = "🔻 마모 신호 — 빈도 축소·휴지기 검토"
+            elif beta[1] > 0 and p1 < 0.1:
+                _verdict = "🔺 빈도 여유 (강도↑에도 성과↑)"
+            else:
+                _verdict = "신호 없음"
+            _wear_rows.append({
+                "속성": t, "n": len(y),
+                "28일 노출 중앙값": f"{np.median(expo):.0f}회",
+                "노출 1회당 효과": (f"{beta[1]*_mul:+.3f}%p" if is_pct else f"{beta[1]:+,.1f}"),
+                "p값": f"{p1:.3f}",
+                "저노출 평균": (f"{lo_m*_mul:.2f}{'%' if is_pct else ''}" if pd.notna(lo_m) else "–"),
+                "고노출 평균": (f"{hi_m*_mul:.2f}{'%' if is_pct else ''}" if pd.notna(hi_m) else "–"),
+                "판정": _verdict})
+        st.dataframe(pd.DataFrame(_wear_rows), hide_index=True, width="stretch")
+        st.markdown('<div class="appendix">캠페인마다 <b>직전 28일간 같은 소구를 몇 번 썼는지(노출 강도)</b>를 '
+                    '세고, 주차 추세를 통제한 회귀로 노출 강도가 성과를 깎는지 확인해요 — 위의 달력 추세 '
+                    "진단과 달리 '시즌이라 떨어진 것'과 '과사용으로 무뎌진 것'을 분리해 줘요. "
+                    "'노출 1회당 효과'가 유의한 음수(🔻)면 그 소구는 쉬어 갈 때예요. "
+                    '(카테고리 구성까지 통제하지는 않으니 보조 지표로 참고하세요)</div>',
+                    unsafe_allow_html=True)
 
         # 속성 사용 빈도(발송수) 추이 — 너무 자주 쓰면 마모 위험
         st.markdown("##### 📨 속성별 발송 빈도 추이")
@@ -5634,14 +5934,56 @@ def main():
                 file_name=f"발송성과_리포트_{datetime.date.today():%Y%m%d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+        # ── 매칭 품질 상시 감시 — 특정 주차부터 매칭이 무너지면(시트 형식 변경 등) 즉시 보이게 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🧩 매칭 품질 — 주차별 매칭률 추이")
+        _mq = raw.dropna(subset=["dt"]).copy()
+        if len(_mq):
+            _mq["주"] = _mq["dt"].dt.to_period("W").dt.start_time
+            wk_m = (_mq.groupby("주").agg(건수=("af", "size"), 매칭률=("matched", "mean"))
+                    .reset_index().sort_values("주"))
+            _mcolors = [PALETTE["red"] if v < 0.8 else PALETTE["green"] for v in wk_m["매칭률"]]
+            figm = go.Figure(go.Bar(
+                x=wk_m["주"], y=wk_m["매칭률"] * 100, marker_color=_mcolors,
+                customdata=wk_m["건수"],
+                hovertemplate="%{x|%m/%d} 주<br>매칭률 %{y:.0f}% · 캠페인 %{customdata}건<extra></extra>"))
+            laym = base_layout(h=260, title="주차별 문구 매칭률(%) — 80% 미만 주는 빨강")
+            laym["yaxis"]["range"] = [0, 108]
+            figm.update_layout(**laym)
+            st.plotly_chart(figm, width="stretch")
+            _low = wk_m[wk_m["매칭률"] < 0.8]
+            if len(_low):
+                st.caption("⚠️ 매칭률 80% 미만 주: "
+                           + ", ".join(pd.Timestamp(w).strftime("%m/%d") for w in _low["주"])
+                           + " — 해당 주차 기획 시트의 날짜·AF코드 형식을 확인해 보세요.")
+
         st.markdown("##### ⚠️ 매칭 진단 — 실적은 있지만 문구를 못 찾은 건")
-        miss = raw[~raw["matched"]][["date", "af", "cat", "brand", "send", "amt"]]
+        miss = raw[~raw["matched"]][["date", "af", "cat", "brand", "send", "amt"]].copy()
         if len(miss):
+            # 원인 4분류 — 기획 lookup이 세션에 있을 때만 (업로드 1회성 로그를 상시 진단으로)
+            _lk = st.session_state.get("plan_lookup_gs")
+            if _lk:
+                _pdates = {d for (d, a) in _lk}
+                _pafs = {a for (d, a) in _lk}
+
+                def _cause(r):
+                    d_ok = str(r["date"]) in _pdates
+                    a_ok = str(r["af"]) in _pafs
+                    if d_ok and a_ok:
+                        return "날짜·AF 각각은 있음 (조합 불일치)"
+                    if d_ok:
+                        return "AF코드가 기획에 없음"
+                    if a_ok:
+                        return "날짜가 기획에 없음"
+                    return "날짜·AF 모두 없음 (기획 미적재 주차)"
+                miss["원인 추정"] = [_cause(r) for _, r in miss.iterrows()]
+                _cnt = miss["원인 추정"].value_counts()
+                st.caption("원인 분류 — " + " · ".join(f"**{k}** {v}건" for k, v in _cnt.items()))
             st.dataframe(miss.rename(columns={"date": "날짜", "af": "AF코드", "cat": "카테고리",
                                               "brand": "브랜드", "send": "발송", "amt": "거래액"}),
                          hide_index=True, width="stretch")
-            st.caption("AF코드 오타·미등록·날짜 불일치 가능성이 있어요. 기획 파일을 확인해 보세요.")
+            st.caption("AF코드 오타·미등록·날짜 불일치 가능성이 있어요. 기획 파일을 확인해 보세요. "
+                       "(원인 분류는 「기획 문구 가져오기」로 적재된 기획 기준)")
         else:
             st.success("모든 실적 캠페인에 문구가 매칭됐어요.")
         glossary()
@@ -5701,8 +6043,12 @@ def main():
         # ── KPI 카드 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📊 주요 지표 (이상치 제외 기간 기준)")
-        _latest = pc_clean.sort_values("date").iloc[-1]
-        _prev   = pc_clean.sort_values("date").iloc[-8] if len(pc_clean) >= 8 else pc_clean.sort_values("date").iloc[0]
+        _pc_sorted = pc_clean.sort_values("date")
+        _latest = _pc_sorted.iloc[-1]
+        # '최근 7일' 비교는 행 위치(iloc[-8])가 아니라 실제 날짜 기준 — 중간에 결측일이
+        # 있으면 7일 전이 아닌 날과 비교되던 문제 방지
+        _prev_cand = _pc_sorted[_pc_sorted["date"] <= _latest["date"] - pd.Timedelta(days=7)]
+        _prev = _prev_cand.iloc[-1] if len(_prev_cand) else _pc_sorted.iloc[0]
         _consent_now  = int(_latest["consent"])  if pd.notna(_latest["consent"])  else 0
         _consent_prev = int(_prev["consent"])    if pd.notna(_prev["consent"])    else 0
         _consent_delta = _consent_now - _consent_prev
@@ -5746,6 +6092,19 @@ def main():
             st.dataframe(wk_show, hide_index=True, width="stretch", height=360)
             st.caption("**기말 동의수**는 그 주 마지막 날 기준 누적 동의자 수(스냅샷)이고, "
                        "**순증감·신규추가·기존이탈**은 그 주 전체를 더한 값(합계)이에요.")
+
+            # 이탈률 급등 조기 경보 — 최근 주 이탈률이 과거 추세 대비 z>2면 배너
+            if len(wk_df) >= 9:
+                _wr_al = wk_df.sort_values("주시작").copy()
+                _wr_al["이탈률"] = _wr_al["탈퇴합"] / _wr_al["기말동의수"].replace(0, np.nan)
+                _hist_r = _wr_al["이탈률"].iloc[:-1].tail(26).dropna()
+                _now_r = _wr_al["이탈률"].iloc[-1]
+                if len(_hist_r) >= 8 and _hist_r.std(ddof=0) > 0 and pd.notna(_now_r):
+                    _z_r = (float(_now_r) - float(_hist_r.mean())) / float(_hist_r.std(ddof=0))
+                    if _z_r > 2:
+                        st.warning(f"🚨 최근 주 이탈률 {_now_r*100:.2f}%가 과거 26주 평균"
+                                   f"({_hist_r.mean()*100:.2f}%) 대비 +{_z_r:.1f}σ — 급등 신호예요. "
+                                   "최근 발송 강도·캠페인 내용을 점검해 보세요.")
 
             # 주간 CSV 다운로드 — 위에서 계산한 wk_df 재사용 (동일 인자 재계산 제거)
             _wk_raw = wk_df
@@ -5995,6 +6354,42 @@ def main():
                         _xt[["기간", "발송지표", "총발송", "CTR", "신규추가", "탈퇴", "순증감"]]
                         .rename(columns={"발송지표": _sendlab, "총발송": "총 발송(합)"}),
                         hide_index=True, width="stretch", height=300)
+
+                # ── 시차(lead-lag) 탐색 — '이번 주 발송 폭증 → k주 후 이탈'의 선행 신호 ──
+                _cw = pc_clean.copy()
+                _cw["_wk"] = _cw["date"].dt.to_period("W-SUN").dt.start_time
+                _rem_w = _cw.groupby("_wk")["removed"].sum()
+                _mmw = _mdf[(_mdf["date"] >= _d0) & (_mdf["date"] <= _d1)].copy()
+                _mmw["_wk"] = _mmw["date"].dt.to_period("W-SUN").dt.start_time
+                _snd_w = _mmw.groupby("_wk")["totalSend"].sum()
+                _joined = pd.concat([_snd_w.rename("send"), _rem_w.rename("removed")],
+                                    axis=1).dropna().sort_index()
+                if len(_joined) >= 8:
+                    _ll_rows = []
+                    for _k in range(0, 5):
+                        _x = _joined["send"].shift(_k)
+                        _y = _joined["removed"]
+                        _mk = _x.notna() & _y.notna()
+                        if _mk.sum() >= 6 and _x[_mk].std() > 0 and _y[_mk].std() > 0:
+                            _r_k = float(np.corrcoef(_x[_mk], _y[_mk])[0, 1])
+                            _p_k = float(stats.linregress(_x[_mk], _y[_mk]).pvalue)
+                            _ll_rows.append((_k, _r_k, _p_k, int(_mk.sum())))
+                    if _ll_rows:
+                        st.markdown("##### ⏱ 발송량 → 이탈 시차 탐색 (주간)")
+                        _lt = pd.DataFrame(_ll_rows, columns=["시차(주)", "상관 r", "p값", "표본(주)"])
+                        _lt["상관 r"] = _lt["상관 r"].map(lambda v: f"{v:+.2f}")
+                        _lt["p값"] = _lt["p값"].map(lambda v: f"{v:.3f}")
+                        st.dataframe(_lt, hide_index=True, width="stretch")
+                        _best_ll = max(_ll_rows, key=lambda t: abs(t[1]))
+                        if _best_ll[0] > 0 and _best_ll[1] > 0.3 and _best_ll[2] < 0.1:
+                            st.markdown(f'<div class="appendix">발송량 증가가 <b>{_best_ll[0]}주 후</b> '
+                                        f'이탈 증가와 가장 강하게 연결돼요 (r={_best_ll[1]:+.2f}, '
+                                        f'p={_best_ll[2]:.3f}). 발송 폭증 주 이후 {_best_ll[0]}주간은 '
+                                        '이탈 모니터링과 발송 강도 조절을 권장해요.</div>',
+                                        unsafe_allow_html=True)
+                        else:
+                            st.caption("현재 데이터에선 '발송 증가 → 이후 주 이탈 증가'의 뚜렷한 "
+                                       "시차 신호가 없어요 (시차 0~4주 상관 모두 약함).")
             _cross_analysis_block()
 
         # ── 이상치 제외 목록 ──
