@@ -1286,6 +1286,7 @@ def tag_copy(title, body=""):
     d["가격소구"] = d["가격소구"] or bool(PRICE_RE.search(full))     # 9,900원 같은 가격 언급
     d["질문형"] = ("?" in full or "？" in full)
     d["이모지"] = bool(EMOJI_RE.search(full))
+    d["이모지수"] = len(EMOJI_RE.findall(full))     # 최적 개수 분석용 (보유 여부와 별개)
     d["제목길이"] = len(t)
     d["본문길이"] = len(b)
     return d
@@ -1316,27 +1317,55 @@ STOPWORDS = set((
 ).split())
 
 
-def keyword_perf(df, metric_col, min_n=5, top=30):
+def _word_sig(out, word_col, positions, arr):
+    """단어/이모지 표에 보유 vs 미보유 Welch p + FDR 보정 유의성 컬럼을 붙인다.
+    소표본 요행 단어가 상위를 채우는 문제의 판별 근거 — '유의' 없는 차이는 참고만."""
+    import scipy.stats as ss
+    pvals = []
+    for tk in out[word_col]:
+        pos = positions.get(tk, set())
+        yes = arr[list(pos)]
+        no = np.delete(arr, list(pos))
+        if len(yes) < 3 or len(no) < 3:
+            pvals.append(np.nan)
+            continue
+        try:
+            pvals.append(float(ss.ttest_ind(yes, no, equal_var=False).pvalue))
+        except Exception:
+            pvals.append(np.nan)
+    adj = fdr_bh(pvals)
+    out = out.copy()
+    out["_p_adj"] = adj
+    out["유의성"] = ["✱ 유의" if (pd.notna(p) and p < 0.1) else "—" for p in adj]
+    return out
+
+
+def keyword_perf(df, metric_col, min_n=5, top=30, with_sig=False):
     """제목+내용을 단어로 토큰화 → 단어별 (캠페인 단위) 평균 성과·표본·전체평균 대비 차이.
 
     한 캠페인에서 같은 단어가 여러 번 나와도 1회로만 집계(set). 불용어·숫자 제외.
-    반환: DataFrame[단어, 캠페인수, 평균, 차이] (평균 내림차순)
+    반환: DataFrame[단어, 캠페인수, 평균, 차이] (평균 내림차순).
+    with_sig=True 면 보유 vs 미보유 Welch+FDR 유의성(_p_adj, 유의성) 컬럼 추가.
     """
     from collections import defaultdict
     if df is None or len(df) == 0 or metric_col not in df:
         return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
     bucket = defaultdict(list)
+    positions = defaultdict(set)
     metvals = []
     for _, r in df.iterrows():
         m = r.get(metric_col)
         if m is None or (isinstance(m, float) and np.isnan(m)):
             continue
-        m = float(m); metvals.append(m)
+        m = float(m)
+        i = len(metvals)
+        metvals.append(m)
         text = _s(r.get("title", "")) + " " + _s(r.get("body", ""))
         for tk in set(TOKEN_RE.findall(text)):
             if tk in STOPWORDS:
                 continue
             bucket[tk].append(m)
+            positions[tk].add(i)
     if not metvals:
         return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
     base_mean = float(np.mean(metvals))
@@ -1344,24 +1373,31 @@ def keyword_perf(df, metric_col, min_n=5, top=30):
             for tk, v in bucket.items() if len(v) >= min_n]
     if not rows:
         return pd.DataFrame(columns=["단어", "캠페인수", "평균", "차이"])
-    return pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+    out = pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+    if with_sig:
+        out = _word_sig(out, "단어", positions, np.asarray(metvals, float))
+    return out
 
 
-def emoji_perf(df, metric_col, min_n=3, top=30):
+def emoji_perf(df, metric_col, min_n=3, top=30, with_sig=False):
     """제목+내용의 이모지(기호)별 (캠페인 단위) 평균 성과·표본·전체평균 대비 차이."""
     from collections import defaultdict
     if df is None or len(df) == 0 or metric_col not in df:
         return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
     bucket = defaultdict(list)
+    positions = defaultdict(set)
     metvals = []
     for _, r in df.iterrows():
         m = r.get(metric_col)
         if m is None or (isinstance(m, float) and np.isnan(m)):
             continue
-        m = float(m); metvals.append(m)
+        m = float(m)
+        i = len(metvals)
+        metvals.append(m)
         text = _s(r.get("title", "")) + " " + _s(r.get("body", ""))
         for em in set(EMOJI_RE.findall(text)):
             bucket[em].append(m)
+            positions[em].add(i)
     if not metvals:
         return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
     base_mean = float(np.mean(metvals))
@@ -1369,7 +1405,10 @@ def emoji_perf(df, metric_col, min_n=3, top=30):
             for em, v in bucket.items() if len(v) >= min_n]
     if not rows:
         return pd.DataFrame(columns=["이모지", "캠페인수", "평균", "차이"])
-    return pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+    out = pd.DataFrame(rows).sort_values("평균", ascending=False).head(top).reset_index(drop=True)
+    if with_sig:
+        out = _word_sig(out, "이모지", positions, np.asarray(metvals, float))
+    return out
 
 
 # ── 통계 헬퍼: 효과크기 · 다중비교 보정 · 다변량 회귀 ──────────────────────
@@ -1604,13 +1643,17 @@ def main():
         st._orig_plotly_chart = st.plotly_chart
     if not hasattr(st, "_orig_dataframe"):
         st._orig_dataframe = st.dataframe
-    _REPORT = []
+    # 캡처 버퍼는 session_state에 — st 모듈 속성은 프로세스(멀티유저) 공유라 클로저
+    # 리스트에 쌓으면 동시 접속한 다른 사용자의 차트/표가 내 리포트에 섞인다.
+    # session_state 프록시는 '호출 시점' 세션 컨텍스트를 따라가므로 항상 자기 세션에 쌓인다.
+    st.session_state["_page_report"] = []
+    _REPORT = st.session_state["_page_report"]
 
     def _cap_plotly(*a, **k):
         try:
             f = a[0] if a else k.get("figure_or_data")
             if f is not None:
-                _REPORT.append(("fig", f))
+                st.session_state.setdefault("_page_report", []).append(("fig", f))
         except Exception:
             pass
         return st._orig_plotly_chart(*a, **k)
@@ -1619,7 +1662,7 @@ def main():
         try:
             d = a[0] if a else k.get("data")
             if d is not None:
-                _REPORT.append(("table", d))
+                st.session_state.setdefault("_page_report", []).append(("table", d))
         except Exception:
             pass
         return st._orig_dataframe(*a, **k)
@@ -1787,6 +1830,12 @@ def main():
     @st.cache_data(show_spinner=False)
     def cached_promo(b): return parse_promo_bytes(b)
 
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def cached_plan_gsheet(url, recent_n_, _sh, _cb):
+        """기획 구글시트 파싱 캐시(1시간) — 브라우저 새로고침 후 「기획 문구 가져오기」를
+        다시 눌러도 주차 시트들을 API로 재순회하지 않고 즉시 반환한다."""
+        return parse_plan_gsheet(_sh, recent=recent_n_, progress_cb=_cb)
+
     @st.cache_data(show_spinner=False)
     def cached_classify(b): return classify_upload("", b)
 
@@ -1802,17 +1851,17 @@ def main():
 
     @st.cache_data(show_spinner=False)
     def cached_keyword_perf(d, metric_col, min_n, top, _ver=_KWVER):
-        return keyword_perf(d, metric_col, min_n=min_n, top=top)
+        return keyword_perf(d, metric_col, min_n=min_n, top=top, with_sig=True)
 
     @st.cache_data(show_spinner=False)
     def cached_emoji_perf(d, metric_col, min_n, top, _ver=_KWVER):
-        return emoji_perf(d, metric_col, min_n=min_n, top=top)
+        return emoji_perf(d, metric_col, min_n=min_n, top=top, with_sig=True)
 
     # 태깅 체계 버전 키 — 속성 구성(TAG_BOOLS)뿐 아니라 키워드 '내용'(KW)이 바뀌어도
     # prepare_raw 캐시를 무효화한다. (st.cache_data는 내부에서 호출하는 tag_copy의 변경을
     # 감지하지 못해, 태그명이 그대로면 구버전 태깅 결과가 캐시로 반환되던 구멍 방지)
     TAGSET_VER = (hashlib.md5(json.dumps(KW, ensure_ascii=False, sort_keys=True).encode())
-                  .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS))
+                  .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS) + "|이모지수v1")
 
     @st.cache_data(show_spinner=False)
     def prepare_raw(work_df, tagset_ver):
@@ -1901,6 +1950,39 @@ def main():
 
     BK = init_storage()
 
+    def _preload_stores_parallel():
+        """gsheets 첫 세션 로드 최적화 — campaign·push·mtd·promo 4개 워크시트를
+        순차(각 0.5~1초 → 합 2~4초)가 아니라 동시에 읽는다. 어떤 이유로든 실패하면
+        조용히 반환해 기존 개별 로드 경로가 그대로 처리한다."""
+        keys = {"camp_store": "campaign", "push_consent_df": "push",
+                "mtd_store_df": "mtd", "promo_store_df": "promo"}
+        missing = {sk: kind for sk, kind in keys.items() if sk not in st.session_state}
+        if BK["mode"] != "gsheets" or len(missing) < 2:
+            return
+
+        def _load_one(kind):
+            cols = _STORE_COLS_BY_KIND[kind]
+            try:
+                return gs_read_ws(BK["sh"], GS_TITLES[kind], cols), None
+            except Exception as e:
+                return pd.DataFrame(columns=cols), str(e)[:120]
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(missing)) as ex:
+                futs = {sk: ex.submit(_load_one, kind) for sk, kind in missing.items()}
+                res = {sk: f.result() for sk, f in futs.items()}
+        except Exception:
+            return
+        for sk, (df, err) in res.items():
+            kind = keys[sk]
+            if err:                                   # 읽기 실패 플래그 — storage_save가 차단
+                st.session_state[f"_load_failed_{kind}"] = err
+            else:
+                st.session_state.pop(f"_load_failed_{kind}", None)
+            st.session_state[sk] = finalize_push(df) if sk == "push_consent_df" else df
+
+    _preload_stores_parallel()
+
     AI_MODELS = {
         "Gemini 2.5 Pro (최고 품질)": "gemini-2.5-pro",
         "Gemini 2.5 Flash (균형)": "gemini-2.5-flash",
@@ -1919,27 +2001,57 @@ def main():
                 return v
         return None
 
+    @st.cache_resource(show_spinner=False)
+    def _gemini_client(key):
+        """클라이언트 1회 생성 재사용 — 호출마다 신규 생성하던 오버헤드 제거. 120초 타임아웃."""
+        from google import genai
+        return genai.Client(api_key=key, http_options={"timeout": 120_000})
+
+    def _ai_transient(e):
+        s = str(e).lower()
+        return any(t in s for t in ("429", "500", "503", "quota", "rate", "timeout",
+                                    "deadline", "unavailable", "overloaded"))
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _ai_gen_cached(system, user, model, _key):
+        """같은 (지시문·데이터·모델) 재클릭 시 1시간 내 재과금·재대기 없이 재사용.
+        데이터가 바뀌면 user 텍스트가 달라져 자동으로 새로 생성된다.
+        실패·빈 응답은 예외로 올려 캐시에 남기지 않는다 (재클릭 시 재시도 가능)."""
+        from google.genai import types
+        client = _gemini_client(_key)
+        last_err = None
+        for wait in (0, 3):                       # 일시 오류(429·5xx·타임아웃) 1회 백오프 재시도
+            if wait:
+                time.sleep(wait)
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=user,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system,
+                        max_output_tokens=8000,
+                    ),
+                )
+                text = (resp.text or "").strip()
+                if not text:
+                    raise RuntimeError("빈 응답 — 잠시 후 다시 시도해 주세요.")
+                return text
+            except Exception as e:
+                last_err = e
+                if not _ai_transient(e):
+                    break
+        raise RuntimeError(str(last_err)[:200])
+
     def ai_generate(system, user, model):
         key = gemini_key()
         if not key:
             return None, "GEMINI_API_KEY 미설정 — Streamlit Secrets 또는 환경변수에 추가하세요."
         try:
-            from google import genai
-            from google.genai import types
+            import google.genai                     # noqa: F401 — 설치 여부만 확인
         except ImportError:
             return None, "google-genai 패키지가 없습니다. requirements.txt 반영 후 재배포하세요."
         try:
-            client = genai.Client(api_key=key)
-            resp = client.models.generate_content(
-                model=model,
-                contents=user,
-                config=types.GenerateContentConfig(
-                    system_instruction=system,
-                    max_output_tokens=8000,
-                ),
-            )
-            text = (resp.text or "").strip()
-            return (text or None), (None if text else "빈 응답")
+            return _ai_gen_cached(system, user, model, _key=key), None
         except Exception as e:
             return None, f"생성 오류: {e}"
 
@@ -1949,6 +2061,26 @@ def main():
         if abs(v) >= 1e8: return f"{v/1e8:.2f}억"
         if abs(v) >= 1e4: return f"{v/1e4:,.0f}만"
         return f"{v:,.0f}"
+
+    def bar_label(v, col, pct):
+        """막대 텍스트 라벨 — 비율은 %, 통화 지표는 원화 축약.
+        (RPS·거래액 라벨이 '1234567.89'처럼 콤마·단위 없이 찍히던 문제 통일)"""
+        if pct:
+            return f"{v:.2f}%"
+        if col in ("rps", "aov", "amt", "revenue", "avgOrderVal", "unitPrice"):
+            return won(v)
+        return f"{v:,.1f}"
+
+    def guard_select(key, opts):
+        """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
+        무효 선택은 버려서 조용한 리셋/예외를 막는다 (개발 규칙의 pop 가드 일원화)."""
+        if key in st.session_state and st.session_state[key] not in opts:
+            st.session_state.pop(key, None)
+
+    def legend_h():
+        """차트 상단 수평 범례 — 페이지마다 복붙되던 dict를 한 곳으로."""
+        return dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                    bgcolor="rgba(0,0,0,0)")
 
     # ══════════════════════════════════════════════════════════════
     # 사이드바 — 업로드 / 필터 / 페이지
@@ -1988,7 +2120,8 @@ def main():
                 prog = st.sidebar.progress(0.0, text="기획 시트를 읽고 있어요…")
                 def _cb(i, total, title):
                     prog.progress(i / max(total, 1), text=f"가져오는 중 {i}/{total} — {title[:16]}")
-                lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_cb)
+                lk, read = cached_plan_gsheet(_PLAN_SHEET_URL, (recent_n or None),
+                                              _sh=sh_plan, _cb=_cb)
                 prog.empty()
                 st.session_state.plan_lookup_gs = lk
                 st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
@@ -2023,12 +2156,24 @@ def main():
                     try:
                         _push_hash = hashlib.md5(b).hexdigest()
                         if st.session_state.get("push_consent_hash") != _push_hash:
-                            parsed_df = parse_push_consent_bytes(b)
-                            st.session_state["push_consent_df"] = parsed_df
+                            parsed_df = finalize_push(parse_push_consent_bytes(b))
+                            # 기존 누적과 병합 (date+group 키, 신규 우선) — 기간 짧은 새 파일을
+                            # 올리면 과거 일자 데이터가 통째로 사라지던 '교체 저장' 문제 방지
+                            _cur = st.session_state.get("push_consent_df")
+                            if _cur is not None and len(_cur):
+                                merged_push = pd.concat([finalize_push(_cur), parsed_df],
+                                                        ignore_index=True)
+                                merged_push = (merged_push
+                                               .drop_duplicates(subset=["date", "group"], keep="last")
+                                               .sort_values(["date", "group"]).reset_index(drop=True))
+                            else:
+                                merged_push = parsed_df
+                            st.session_state["push_consent_df"] = merged_push
                             st.session_state["push_consent_hash"] = _push_hash
-                            push_consent_df = parsed_df
-                            if storage_save(BK, "push", parsed_df):
-                                st.sidebar.success("📱 앱푸시 동의 데이터를 캐시에 저장했어요.")
+                            push_consent_df = merged_push
+                            if storage_save(BK, "push", merged_push):
+                                st.sidebar.success("📱 앱푸시 동의 데이터를 병합 저장했어요 "
+                                                   f"(총 {len(merged_push)//3:,}일치).")
                     except Exception as _e:
                         st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
 
@@ -2134,10 +2279,13 @@ def main():
         st.sidebar.success(f"신규 {len(new_raw)}건 → 누적 {len(work)}건 "
                            f"(추가 {len(kn - ko)} · 갱신 {len(kn & ko)})")
         if st.sidebar.button("💾 저장하기", width="stretch"):
-            if storage_save(BK, "campaign", work):
-                st.session_state.camp_store = work
+            # 낙관적 병합: 저장 직전 시트를 다시 읽어 합친다 — 두 세션이 각자 스냅샷으로
+            # 저장하면 나중 저장이 먼저 저장분을 지우던 last-write-wins 유실 방지
+            _tosave = merge_store(storage_load(BK, "campaign"), work)
+            if storage_save(BK, "campaign", _tosave):
+                st.session_state.camp_store = _tosave
                 tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-                st.sidebar.success(f"저장했어요 ✓ ({tgt}) — 다음에도 유지돼요.")
+                st.sidebar.success(f"저장했어요 ✓ ({tgt}, 총 {len(_tosave):,}건) — 다음에도 유지돼요.")
         st.sidebar.caption("※ 저장을 눌러야 반영돼요. 안 누르면 이번 세션에서만 볼 수 있어요.")
     else:
         work = stored
@@ -2172,6 +2320,16 @@ def main():
                     if storage_save(BK, "promo", m):
                         st.session_state.promo_store_df = m
                         done.append(f"기획전 {len(m):,}")
+                elif "note" in base:
+                    df = pd.read_csv(data, encoding="utf-8-sig", dtype=str).fillna("")
+                    try:
+                        _cur_n = notes_df_to_dict(storage_load(BK, "notes"))
+                    except Exception:
+                        _cur_n = {}
+                    merged_n = {**_cur_n, **notes_df_to_dict(df)}      # 같은 키는 백업 우선
+                    if storage_save(BK, "notes", notes_dict_to_df(merged_n)):
+                        st.session_state.wr_notes = merged_n
+                        done.append(f"보고란 {len(merged_n):,}")
                 elif "push" in base or "consent" in base:
                     # dtype 정규화 후 병합 — 문자열/Timestamp 혼재로 dedupe가 실패해
                     # 같은 날이 두 벌 남던 문제 방지
@@ -2251,8 +2409,9 @@ def main():
         mtd_work = merge_mtd_store(mtd_stored, mtd_new)
         st.sidebar.success(f"MTD 새로 {len(mtd_new)}일 → 합쳐서 {len(mtd_work)}일 (미리보기)")
         if st.sidebar.button("💾 MTD 저장하기", width="stretch", key="save_mtd"):
-            if storage_save(BK, "mtd", mtd_work):
-                st.session_state.mtd_store_df = mtd_work
+            _tosave = merge_mtd_store(storage_load(BK, "mtd"), mtd_work)   # 낙관적 병합
+            if storage_save(BK, "mtd", _tosave):
+                st.session_state.mtd_store_df = _tosave
                 tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
                 st.sidebar.success(f"MTD 저장했어요 ✓ ({tgt})")
     else:
@@ -2270,8 +2429,9 @@ def main():
             promo_work = merge_promo_store(promo_stored, pnew)
             st.sidebar.success(f"기획전 시트 {len(pnew):,}건 → 합쳐서 {len(promo_work):,}건 (미리보기)")
             if st.sidebar.button("💾 기획전 저장하기", width="stretch", key="save_promo"):
-                if storage_save(BK, "promo", promo_work):
-                    st.session_state.promo_store_df = promo_work
+                _tosave = merge_promo_store(storage_load(BK, "promo"), promo_work)   # 낙관적 병합
+                if storage_save(BK, "promo", _tosave):
+                    st.session_state.promo_store_df = _tosave
                     tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
                     st.sidebar.success(f"기획전 저장했어요 ✓ ({tgt})")
             st.sidebar.caption("※ 저장을 눌러야 반영돼요.")
@@ -2294,12 +2454,22 @@ def main():
             return d
         return d[d[col].astype(str).str.replace(r'\.0$', '', regex=True).isin(sel)]
 
-    search = st.sidebar.text_input("🔎 검색", "",
+    # 필터 위젯 키 목록 — 「필터 전체 초기화」가 한 번에 리셋할 대상
+    _FLT_KEYS = ("flt_q", "flt_matched", "flt_minsend", "flt_date", "flt_st", "flt_target",
+                 "flt_bpu", "flt_prio", "flt_hour", "flt_dow", "flt_cat", "flt_attr",
+                 "flt_owner", "flt_tags", "tags_mode")
+    if st.sidebar.button("↩️ 필터 전체 초기화", width="stretch", key="flt_reset",
+                         help="검색·기간·속성 등 아래 모든 필터를 기본값으로 되돌려요"):
+        for _k in _FLT_KEYS:
+            st.session_state.pop(_k, None)
+        st.rerun()
+
+    search = st.sidebar.text_input("🔎 검색", "", key="flt_q",
                                    help="제목·내용·브랜드·AF코드·카테고리에서 찾아요")
-    only_matched = st.sidebar.checkbox("문구 매칭된 것만", value=True,
+    only_matched = st.sidebar.checkbox("문구 매칭된 것만", value=True, key="flt_matched",
                                        help="문구(제목·내용)를 못 찾은 건 빼요")
     min_send = st.sidebar.number_input(
-        "최소 발송수", value=5000, step=1000, min_value=0,
+        "최소 발송수", value=5000, step=1000, min_value=0, key="flt_minsend",
         help="이 숫자 미만의 캠페인은 분석에서 빠져요. 발송이 너무 적으면 우연에 흔들리거든요. "
              "낮추면 더 많은 캠페인이 포함돼요.")
 
@@ -2312,16 +2482,19 @@ def main():
             dmin, dmax = dts.min().date(), dts.max().date()
             if dmin < dmax:
                 date_sel = st.date_input("발송일 범위", value=(dmin, dmax),
-                                         min_value=dmin, max_value=dmax)
+                                         min_value=dmin, max_value=dmax, key="flt_date")
+                if date_sel is not None and not (isinstance(date_sel, (tuple, list))
+                                                 and len(date_sel) == 2):
+                    st.caption("⚠️ 종료일까지 골라야 기간 필터가 적용돼요 (지금은 미적용).")
             else:
                 st.caption(f"단일 일자: {dmin}")
 
     with st.sidebar.expander("📤 발송 속성"):
-        sel_st = st.multiselect("발송유형", _opts(base_opt, "stype"))
-        sel_target = st.multiselect("타겟 구분", _opts(base_opt, "target"),
+        sel_st = st.multiselect("발송유형", _opts(base_opt, "stype"), key="flt_st")
+        sel_target = st.multiselect("타겟 구분", _opts(base_opt, "target"), key="flt_target",
                                     help="신규·휴면·전체 등 누구에게 보냈는지")
-        sel_bpu = st.multiselect("BPU(사업부)", _opts(base_opt, "bpu"))
-        sel_prio = st.multiselect("우선순위", _opts(base_opt, "prio"),
+        sel_bpu = st.multiselect("BPU(사업부)", _opts(base_opt, "bpu"), key="flt_bpu")
+        sel_prio = st.multiselect("우선순위", _opts(base_opt, "prio"), key="flt_prio",
                                   help="같은 시간에 몇 번째로 보냈는지 (1=가장 먼저)")
 
     def _hm_label(v):  # 시간대 HHMM 문자열 → 'HH시MM분' (예: 1030→10시30분, 800→08시00분)
@@ -2335,17 +2508,17 @@ def main():
     with st.sidebar.expander("🕒 발송 시점"):
         _hour_opts = sorted(_opts(base_opt, "hour"),
                             key=lambda v: int(float(v)) if str(v).replace(".", "", 1).isdigit() else 10 ** 9)
-        sel_hour = st.multiselect("시간대", _hour_opts, format_func=_hm_label)
-        sel_dow = st.multiselect("요일", _opts(base_opt, "dow_k"))
+        sel_hour = st.multiselect("시간대", _hour_opts, format_func=_hm_label, key="flt_hour")
+        sel_dow = st.multiselect("요일", _opts(base_opt, "dow_k"), key="flt_dow")
 
     with st.sidebar.expander("🏷️ 상품·담당"):
-        sel_cat = st.multiselect("카테고리", _opts(base_opt, "cat"))
-        sel_attr = st.multiselect("대상 속성", _opts(base_opt, "attr"),
+        sel_cat = st.multiselect("카테고리", _opts(base_opt, "cat"), key="flt_cat")
+        sel_attr = st.multiselect("대상 속성", _opts(base_opt, "attr"), key="flt_attr",
                                   help="통합·정상·이월·입점·마케팅 등")
-        sel_owner = st.multiselect("담당자", _opts(base_opt, "owner"))
+        sel_owner = st.multiselect("담당자", _opts(base_opt, "owner"), key="flt_owner")
 
     with st.sidebar.expander("✍️ 문구 속성"):
-        sel_tags = st.multiselect("소구 속성", TAG_BOOLS,
+        sel_tags = st.multiselect("소구 속성", TAG_BOOLS, key="flt_tags",
                                   help="할인율·마감임박 등 제목+내용에서 자동으로 분류한 속성이에요")
         tags_and = True
         if sel_tags:
@@ -2384,6 +2557,27 @@ def main():
     dff_all = apply_filters(raw)
     df = dff_all[dff_all["matched"]] if only_matched else dff_all
     fdf = df[df["send"].fillna(0) >= min_send].reset_index(drop=True)
+
+    # 활성 필터 요약 — 결과가 0건일 때 '왜 0건인지'를 바로 알 수 있게
+    _active_flt = []
+    if search.strip():
+        _active_flt.append(f"검색 '{search.strip()[:12]}'")
+    for _lab, _sel in (("발송유형", sel_st), ("타겟", sel_target), ("BPU", sel_bpu),
+                       ("우선순위", sel_prio), ("시간대", sel_hour), ("요일", sel_dow),
+                       ("카테고리", sel_cat), ("대상속성", sel_attr), ("담당자", sel_owner),
+                       ("소구", sel_tags)):
+        if _sel:
+            _active_flt.append(f"{_lab} {len(_sel)}개")
+    _dsel = st.session_state.get("flt_date")
+    if (isinstance(_dsel, (tuple, list)) and len(_dsel) == 2 and len(dts)
+            and (pd.Timestamp(_dsel[0]).date(), pd.Timestamp(_dsel[1]).date()) != (dmin, dmax)):
+        _active_flt.append("기간 지정")
+    if _active_flt:
+        st.sidebar.caption("🎛 활성 필터: " + " · ".join(_active_flt))
+    if len(dff_all) == 0:
+        st.warning("현재 필터 조합에 맞는 캠페인이 **0건**이에요"
+                   + (f" — 활성 필터: {' · '.join(_active_flt)}" if _active_flt else "")
+                   + ". 조건을 풀거나 사이드바 「↩️ 필터 전체 초기화」를 눌러 주세요.")
 
     st.sidebar.markdown("---")
     # 연관 주제를 그룹으로 묶고(사이드바), 그룹 안 여러 주제는 본문 상단 하위탭으로 전환.
@@ -2430,6 +2624,15 @@ def main():
         _ds = sorted(_ds)
         drange = f"{_ds[0]} ~ {_ds[-1]}"
     st.sidebar.caption(f"전체 {len(raw)}건 · 매칭 {raw['matched'].mean()*100:.0f}% · 분석 {len(fdf)}건\n\n{drange}")
+    # 최신 주 매칭률 경보 — 전체 %는 과거 누적에 묻혀서 최근 붕괴를 못 보여준다
+    _rw = raw.dropna(subset=["dt"]) if "dt" in raw else raw.iloc[0:0]
+    if len(_rw):
+        _lastwk = _rw["dt"].max().to_period("W").start_time
+        _lw = _rw[_rw["dt"] >= _lastwk]
+        if len(_lw) >= 5 and _lw["matched"].mean() < 0.7:
+            st.sidebar.warning(f"⚠️ 최신 주 매칭률 {_lw['matched'].mean()*100:.0f}% — "
+                               "기획 시트 적재·형식(날짜/AF코드)을 확인해 주세요. "
+                               "상세는 「9. 데이터·다운로드」의 매칭 품질 참고.")
     if parse_log:
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))
@@ -2471,6 +2674,15 @@ def main():
                     _z.writestr("push_consent.csv",
                         _push_df.to_csv(index=False).encode("utf-8-sig"))
                     _has_any = True
+                # 보고란(notes)도 백업에 포함 — 재배포(로컬 CSV 초기화) 시 유일한 복구 수단
+                try:
+                    _nd = st.session_state.get("wr_notes")
+                    _notes_df = notes_dict_to_df(_nd) if _nd else storage_load(BK, "notes")
+                    if _notes_df is not None and len(_notes_df):
+                        _z.writestr("notes.csv", _notes_df.to_csv(index=False).encode("utf-8-sig"))
+                        _has_any = True
+                except Exception:
+                    pass
             st.session_state["_bak_zip"] = (_bak_sig, _zbuf.getvalue()) if _has_any else None
         _bak_cached = st.session_state.get("_bak_zip")
         if _bak_cached:
@@ -2648,13 +2860,20 @@ def main():
             g1.markdown(biz_md)
             g2.markdown(stats_md)
 
+    @st.fragment
     def render_messages(d, mcol, key, n=200):
-        """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기."""
+        """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기.
+
+        fragment — 행 클릭·원문 선택 때 전체 스크립트(필터·사이드바·전 페이지)가
+        다시 돌지 않고 이 블록만 다시 그린다. 자기 완결 블록(외부 컨테이너 미사용)."""
         if d is None or len(d) == 0:
             st.info("해당 조건에 맞는 메시지가 없어요."); return
         dd = d.sort_values(mcol, ascending=False).head(n).reset_index(drop=True).copy()
         if "body" in dd.columns:
             dd["_bprev"] = dd["body"].map(lambda x: " ".join(_s(x).split())[:60])
+        if "date" in dd.columns:                      # 'YYYYMMDD' 원시 문자열 → 'MM/DD' 표기 통일
+            _dts = pd.to_datetime(dd["date"], format="%Y%m%d", errors="coerce")
+            dd["date"] = _dts.dt.strftime("%m/%d").where(_dts.notna(), dd["date"])
         all_cols = ["date", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt"]
         cols = [c for c in all_cols if c in dd.columns]
         ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "_bprev": "내용",
@@ -2731,6 +2950,9 @@ def main():
         st.title("종합 요약")
         st.caption(f"발송 {min_send:,}건 이상 · {len(fdf)}개 캠페인 · {drange}")
         base = fdf if len(fdf) else df
+        if not len(fdf) and len(df):
+            st.caption("⚠️ '최소 발송수' 기준을 충족하는 캠페인이 없어 **전체(발송수 무관)** 기준으로 "
+                       "표시 중이에요 — 위 캡션의 기준과 다르니 참고하세요.")
         # 주차 선택 필터 (년도 포함 · 최신순). 선택 시 이 페이지 전체가 해당 주차로 좁혀짐.
         scope_label = "최근 7일"
         _bp = base.dropna(subset=["dt"]) if "dt" in base else base.iloc[0:0]
@@ -2743,6 +2965,7 @@ def main():
                 iy, iw, _ = ws.isocalendar()
                 return f"{iy}년 {iw}주차 ({ws.strftime('%m/%d')}~{we.strftime('%m/%d')})"
             _wopts = ["전체 기간"] + [_wlab(w) for w in _wks]
+            guard_select("p01_week", _wopts)
             _wsel = st.selectbox("📅 주차 선택", _wopts, index=0, key="p01_week",
                                  help="특정 주차만 보려면 선택해 주세요. 최신 주차가 위에 있어요.")
         base_prev = None                              # 주차 선택 시 '직전 주차' — 전주 대비 증감 표시용
@@ -2787,12 +3010,33 @@ def main():
         c[3].metric("평균 객단가", won(base["aov"].mean()),
                     _wow(base["aov"].mean(), _pv["aov"].mean() if len(_pv) else None),
                     help="거래액 ÷ 주문 — 주문 1건당 평균 금액이에요.")
+        # 단순평균(위 카드) vs 가중평균 — 페이지마다 '평균 CTR' 정의가 달라 어긋나 보이던 문제 명시
+        _st_, _ut_, _ot_ = base["send"].sum(), base["uv"].sum(), base["oc"].sum()
+        if _st_ and _ut_:
+            st.caption(f"가중(합산) 기준 — CTR {_ut_/_st_*100:.2f}% · 주문CR {_ot_/_ut_*100:.2f}% "
+                       "(주간보고 페이지와 같은 정의). 위 카드는 캠페인 단순평균이라 값이 다를 수 있어요 — "
+                       "단순평균은 '캠페인 한 건의 전형적 성과', 가중평균은 '발송 전체의 실제 효율'이에요.")
+
+        # ── 최근 13주 미니 추이 — 첫 화면에서 '지금이 좋은 흐름인지' 맥락 제공 ──
+        _tr = (fdf if len(fdf) else df).dropna(subset=["dt"])
+        if len(_tr):
+            _trw = _tr.copy()
+            _trw["주"] = _trw["dt"].dt.to_period("W").dt.start_time
+            _tw = (_trw.groupby("주")
+                   .agg(발송=("send", "sum"), 거래액=("amt", "sum"), UV=("uv", "sum"))
+                   .reset_index().sort_values("주").tail(13))
+            if len(_tw) >= 3:
+                _tw["CTR"] = np.where(_tw["발송"] > 0, _tw["UV"] / _tw["발송"] * 100, np.nan)
+                figt = stacked_panels(_tw["주"], _tw["거래액"], "거래액(주간 합)",
+                                      _tw["CTR"], "가중 CTR", PALETTE["slate"], PALETTE["blue"],
+                                      h=340, line_suffix="%",
+                                      title="최근 13주 흐름 — 거래액(위) · 가중 CTR(아래)")
+                st.plotly_chart(figt, width="stretch")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         _rk_lab = st.selectbox("TOP/BOTTOM 순위 기준", list(METRIC_OPTS.keys()), key="p01_rank",
                                help="선택한 지표 기준으로 아래 TOP/BOTTOM 순위가 바뀌어요.")
         _rk_col = METRIC_OPTS[_rk_lab][0]
-        cc = st.columns(2)
         base_cr = base[base["uv"].fillna(0) >= 100] if "uv" in base else base
         # 최근 7일 (데이터 최신 발송일 기준)
         recent7 = base_cr
@@ -2831,12 +3075,13 @@ def main():
                   "ord_cr": "주문CR", "rps": "RPS", "aov": "객단가", "amt": "거래액"}
         _tbfmt = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}",
                   "RPS": "{:,.0f}", "객단가": "{:,.0f}", "거래액": "{:,.0f}"}
-        with cc[0]:
-            st.markdown(f"##### 🏆 {_rk_lab} TOP ({scope_label})")
+        # 반폭 2단 대신 전폭 탭 — 11개 컬럼 표가 좁은 화면에서 가로 스크롤로 잘리던 문제
+        _tab_top, _tab_bot = st.tabs([f"🏆 {_rk_lab} TOP ({scope_label})",
+                                      f"🧊 {_rk_lab} BOTTOM ({scope_label})"])
+        with _tab_top:
             st.dataframe(win[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, width="stretch")
-        with cc[1]:
-            st.markdown(f"##### 🧊 {_rk_lab} BOTTOM ({scope_label})")
+        with _tab_bot:
             st.dataframe(los[_tbcols].rename(columns=_tbren).style.format(_tbfmt),
                          hide_index=True, width="stretch")
 
@@ -2883,6 +3128,8 @@ def main():
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🤖 AI가 찾은 핵심 포인트")
+        with st.expander("🔍 AI에 전달되는 데이터 미리보기 (외부 API로 전송돼요)"):
+            st.text(build_facts(base))
         if st.button("AI 인사이트 만들기", key="ai_sum"):
             facts = build_facts(base)
             system = ("당신은 LF몰 CRM PUSH 발송 분석가입니다. 주어진 데이터만 근거로 "
@@ -2922,6 +3169,7 @@ def main():
             return (f"{iy}년 {iw}주차 ({ws.strftime('%m/%d')}~"
                     f"{(ws + pd.Timedelta(days=6)).strftime('%m/%d')})")
         _wlabs = [_wklab(w) for w in _wks_all]
+        guard_select("wr_week", _wlabs)
         ref_sel = st.selectbox("기준 주차", _wlabs, index=0, key="wr_week",
                                help="보고 기준이 되는 주(월~일)예요. 최신 주가 위에 있어요.")
         ref_ws = pd.Timestamp(_wks_all[_wlabs.index(ref_sel)])
@@ -3088,7 +3336,7 @@ def main():
                 return "color:#dc2626;font-weight:600"
             return ""
         st.dataframe(wr_tbl.style.map(_clr, subset=["전주비", "전월비", "전년비"]),
-                     hide_index=True, width="stretch", height=360)
+                     hide_index=True, width="stretch", height=38 + 35 * len(wr_tbl))
         st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
                    "전월비는 기준주 시작일의 한 달 전 날짜가 속한 주(전월 동주)와 비교해요. "
@@ -3252,82 +3500,90 @@ def main():
                       "근거로 쓰세요. HTML 태그 없이 순수 텍스트로 출력하세요.")
             return ai_generate(system, "\n".join(lines), model)
 
-        def _note_block(col, nkey, title, regen=None, ai_fn=None):
-            """편집/자동 생성/AI 생성 버튼이 달린 보고란 (weekly_report.report_text_block 계승)."""
+        @st.fragment
+        def _note_block_body(nkey, title, regen=None, ai_fn=None):
+            """편집/자동 생성/AI 생성 버튼이 달린 보고란 본문 (weekly_report.report_text_block 계승).
+
+            fragment — 편집 토글·quill 입력 등 상호작용 시 전체 스크립트가 아니라 이 보고란만
+            다시 그린다. 저장/생성 버튼은 st.rerun()으로 전체 갱신(다른 표시 영역 반영)."""
             store = st.session_state.wr_notes
             ekey = f"_wr_note_edit_{nkey}"
-            with col:
-                st.markdown(f"**{title}**")
-                if st.session_state.get(ekey, False):
-                    val = store.get(nkey, "")
-                    if val and not (val.startswith("<p>") or val.startswith("<ul>") or val.startswith("<li>") or "<div" in val):
-                        if val.strip().startswith("-"):
-                            # '-'로 시작하는 줄만 접두어를 떼고, 'ㄴ'(세부) 줄은 텍스트를
-                            # 그대로 보존한다 — 무조건 첫 글자를 자르면 계층 구조가 깨진다
-                            items = []
-                            for item in val.strip().split("\n"):
-                                t = item.strip()
-                                if not t:
-                                    continue
-                                if t.startswith("-"):
-                                    items.append(f"<li>{t[1:].strip()}</li>")
-                                else:
-                                    items.append(f"<li>{t}</li>")
-                            val = f"<ul>{''.join(items)}</ul>"
-                        else:
-                            val = "".join(f"<p>{line}</p>" for line in val.split("\n"))
-                    
-                    if HAS_QUILL:
-                        toolbar = [
-                            [{"size": ["small", False, "large", "huge"]}],
-                            ["bold", "italic", "underline", "strike"],
-                            [{"color": []}, {"background": []}],
-                            [{"list": "ordered"}, {"list": "bullet"}],
-                            [{"align": []}], ["clean"],
-                        ]
-                        new = st_quill(value=val, html=True, toolbar=toolbar,
-                                       key=f"quill_{nkey}")
+            st.markdown(f"**{title}**")
+            if st.session_state.get(ekey, False):
+                val = store.get(nkey, "")
+                if val and not (val.startswith("<p>") or val.startswith("<ul>") or val.startswith("<li>") or "<div" in val):
+                    if val.strip().startswith("-"):
+                        # '-'로 시작하는 줄만 접두어를 떼고, 'ㄴ'(세부) 줄은 텍스트를
+                        # 그대로 보존한다 — 무조건 첫 글자를 자르면 계층 구조가 깨진다
+                        items = []
+                        for item in val.strip().split("\n"):
+                            t = item.strip()
+                            if not t:
+                                continue
+                            if t.startswith("-"):
+                                items.append(f"<li>{t[1:].strip()}</li>")
+                            else:
+                                items.append(f"<li>{t}</li>")
+                        val = f"<ul>{''.join(items)}</ul>"
                     else:
-                        new = st.text_area("내용", val, key=f"ta_{nkey}",
-                                           height=200, label_visibility="collapsed")
-                    
-                    if st.button("저장", key=f"btn_s_{nkey}", type="primary", width="stretch"):
-                        store[nkey] = new if new is not None else val
-                        _notes_save(store)
-                        st.session_state[ekey] = False
-                        st.rerun()
-                else:
-                    st.markdown(_note_render(store.get(nkey, "")), unsafe_allow_html=True)
+                        val = "".join(f"<p>{line}</p>" for line in val.split("\n"))
                 
-                bcols = st.columns(1 + (regen is not None) + (ai_fn is not None))
-                bi = 0
-                editing = st.session_state.get(ekey, False)
-                if bcols[bi].button("보기" if editing else "편집", key=f"btn_e_{nkey}", width="stretch"):
-                    st.session_state[ekey] = not editing
+                if HAS_QUILL:
+                    toolbar = [
+                        [{"size": ["small", False, "large", "huge"]}],
+                        ["bold", "italic", "underline", "strike"],
+                        [{"color": []}, {"background": []}],
+                        [{"list": "ordered"}, {"list": "bullet"}],
+                        [{"align": []}], ["clean"],
+                    ]
+                    new = st_quill(value=val, html=True, toolbar=toolbar,
+                                   key=f"quill_{nkey}")
+                else:
+                    new = st.text_area("내용", val, key=f"ta_{nkey}",
+                                       height=200, label_visibility="collapsed")
+                
+                if st.button("저장", key=f"btn_s_{nkey}", type="primary", width="stretch"):
+                    store[nkey] = new if new is not None else val
+                    _notes_save(store)
+                    st.session_state[ekey] = False
+                    st.rerun()
+            else:
+                st.markdown(_note_render(store.get(nkey, "")), unsafe_allow_html=True)
+            
+            bcols = st.columns(1 + (regen is not None) + (ai_fn is not None))
+            bi = 0
+            editing = st.session_state.get(ekey, False)
+            if bcols[bi].button("보기" if editing else "편집", key=f"btn_e_{nkey}", width="stretch"):
+                st.session_state[ekey] = not editing
+                st.rerun()
+            bi += 1
+            if regen is not None:
+                if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
+                                    help="기준주 실적으로 지표 문구를 자동으로 채워요 (기존 내용 대체)"):
+                    # callable을 받아 클릭 시에만 평가 — 값으로 받으면 매 rerun마다
+                    # 자동 생성 로직(기획 lookup 전수 순회 등)이 실행된다
+                    store[nkey] = regen() if callable(regen) else regen
+                    _notes_save(store)
+                    st.session_state[ekey] = False
                     st.rerun()
                 bi += 1
-                if regen is not None:
-                    if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
-                                        help="기준주 실적으로 지표 문구를 자동으로 채워요 (기존 내용 대체)"):
-                        # callable을 받아 클릭 시에만 평가 — 값으로 받으면 매 rerun마다
-                        # 자동 생성 로직(기획 lookup 전수 순회 등)이 실행된다
-                        store[nkey] = regen() if callable(regen) else regen
+            if ai_fn is not None:
+                if bcols[bi].button("AI 생성", key=f"btn_a_{nkey}", width="stretch",
+                                    help="AI가 데이터를 보고 요약 문구를 작성해요 (기존 내용 대체)"):
+                    with st.spinner("AI 작성 중…"):
+                        text, err = ai_fn()
+                    if err:
+                        st.error(err)
+                    else:
+                        store[nkey] = text
                         _notes_save(store)
                         st.session_state[ekey] = False
                         st.rerun()
-                    bi += 1
-                if ai_fn is not None:
-                    if bcols[bi].button("AI 생성", key=f"btn_a_{nkey}", width="stretch",
-                                        help="AI가 데이터를 보고 요약 문구를 작성해요 (기존 내용 대체)"):
-                        with st.spinner("AI 작성 중…"):
-                            text, err = ai_fn()
-                        if err:
-                            st.error(err)
-                        else:
-                            store[nkey] = text
-                            _notes_save(store)
-                            st.session_state[ekey] = False
-                            st.rerun()
+
+
+        def _note_block(col, nkey, title, regen=None, ai_fn=None):
+            with col:                     # 컨테이너 진입은 fragment 밖에서 (외부 컨테이너 제약)
+                _note_block_body(nkey, title, regen, ai_fn)
 
         _wkkey = ref_ws.strftime("%Y%m%d")
         # '금주 집행'은 기준 주차 선택과 무관하게 항상 '오늘' 기준 이번 주를 가리키므로
@@ -3375,7 +3631,7 @@ def main():
                          _py_lab: _fmt(met, yoy_mtd[met]),
                          "전년비": _dlt_sig(met, cur_mtd, yoy_mtd)})
         st.dataframe(pd.DataFrame(rows).style.map(_clr, subset=["전월비", "전년비"]),
-                     hide_index=True, width="stretch", height=360)
+                     hide_index=True, width="stretch", height=38 + 35 * len(rows))
         st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.</div>',
@@ -3583,9 +3839,73 @@ def main():
                     })
                 if wrows:
                     st.dataframe(pd.DataFrame(wrows).style.map(_clr, subset=["거래액 증감", "거래액 전주비", "발송 증감", "발송 전주비"]),
-                                 hide_index=True, width="stretch", height=320)
+                                 hide_index=True, width="stretch", height=min(38 + 35 * len(wrows), 640))
                 st.markdown('<div class="appendix">카테고리별 전주 대비 거래액 증감 기여도입니다. '
                             '녹색은 매출 상승 기여, 적색(△)은 매출 감소 기여를 의미하며, 기여도가 큰 8개만 표시하고 나머지는 기타로 합산했습니다.</div>', unsafe_allow_html=True)
+
+                # ── 지표 체인 분해(LMDI) — '어느 카테고리'가 아니라 '어느 지표'가 만들었나 ──
+                st.markdown("##### 거래액 전주 대비 — 어느 지표(발송·CTR·CR·객단가)가 만들었나")
+
+                def _chain(d):
+                    s, u, o, a = (float(d["send"].sum()), float(d["uv"].sum()),
+                                  float(d["oc"].sum()), float(d["amt"].sum()))
+                    if min(s, u, o, a) <= 0:
+                        return None
+                    return {"발송량": s, "CTR": u / s, "주문CR": o / u, "객단가": a / o, "_tot": a}
+                f1, f0 = _chain(cwd), _chain(pwd)
+                if f1 and f0:
+                    import math as _math
+                    v1, v0 = f1["_tot"], f0["_tot"]
+                    # LMDI-I: 각 요인 기여 = L(V1,V0)·ln(f1/f0), L=로그평균 → 기여 합 = ΔV (정확)
+                    _L = (v1 - v0) / (_math.log(v1) - _math.log(v0)) if v1 != v0 else v1
+                    contrib = {k: _L * _math.log(f1[k] / f0[k])
+                               for k in ("발송량", "CTR", "주문CR", "객단가")}
+                    wf = go.Figure(go.Waterfall(
+                        x=["전주 거래액"] + list(contrib.keys()) + ["기준주 거래액"],
+                        measure=["absolute"] + ["relative"] * 4 + ["total"],
+                        y=[v0] + [contrib[k] for k in contrib] + [0],
+                        text=[won(v0)] + [_damt(contrib[k]) for k in contrib] + [won(v1)],
+                        textposition="outside",
+                        connector=dict(line=dict(color="#cbd5e1")),
+                        increasing=dict(marker=dict(color=PALETTE["green"])),
+                        decreasing=dict(marker=dict(color=PALETTE["red"])),
+                        totals=dict(marker=dict(color=PALETTE["slate"])),
+                    ))
+                    wf.update_layout(**base_layout(h=380, title="지표 체인 기여 분해 (LMDI) — 전주 → 기준주"))
+                    st.plotly_chart(wf, width="stretch")
+                    _tot_d = v1 - v0
+                    _big = max(contrib, key=lambda k: abs(contrib[k]))
+                    _shr = (abs(contrib[_big]) / abs(_tot_d) * 100) if _tot_d else 0.0
+                    st.markdown('<div class="appendix">거래액 = 발송량 × CTR × 주문CR × 객단가 항등식을 '
+                                'LMDI(로그평균 디비지아 지수)로 분해한 거예요 — 네 기여의 합이 정확히 총 증감'
+                                f'({_damt(_tot_d)})과 일치해요. 이번 증감의 최대 요인은 <b>{_big}</b>'
+                                f'({_damt(contrib[_big])}, 총 증감 대비 크기 {_shr:.0f}%)예요.</div>',
+                                unsafe_allow_html=True)
+                else:
+                    st.caption("지표 체인 분해는 전주·기준주 모두 발송·UV·주문·거래액이 0보다 커야 계산돼요.")
+
+                # ── 가중 CTR 증감의 믹스 분해 — 진짜 효율 악화 vs 저효율 카테고리 비중 증가 ──
+                _cats_mx = [c for c in cur_g.index.union(prv_g.index)
+                            if str(c).strip() not in ("", "nan", "None")]
+                s1t, s0t = float(cwd["send"].sum()), float(pwd["send"].sum())
+                if s1t > 0 and s0t > 0 and _cats_mx:
+                    _real = _mix = 0.0
+                    for c in _cats_mx:
+                        s1 = float(cur_g["send"].get(c, 0) or 0); s0 = float(prv_g["send"].get(c, 0) or 0)
+                        u1 = float(cur_g["uv"].get(c, 0) or 0); u0 = float(prv_g["uv"].get(c, 0) or 0)
+                        ctr1 = (u1 / s1) if s1 else 0.0
+                        ctr0 = (u0 / s0) if s0 else 0.0
+                        _real += (s0 / s0t) * (ctr1 - ctr0)
+                        _mix += (s1 / s1t - s0 / s0t) * ctr1
+                    _dctr = float(cwd["uv"].sum()) / s1t - float(pwd["uv"].sum()) / s0t
+
+                    def _pp(v):
+                        return f"△{abs(v)*100:.2f}%p" if v < 0 else f"+{v*100:.2f}%p"
+                    st.markdown(f'<div class="appendix"><b>가중 CTR 전주 대비 {_pp(_dctr)}</b> = '
+                                f'실질 효율 {_pp(_real)} + 카테고리 믹스 {_pp(_mix)}. '
+                                '믹스 성분이 크면 CTR 변화가 문구·타깃 효율 문제가 아니라 '
+                                '카테고리 발송 비중 변화 때문이라는 뜻이에요.</div>',
+                                unsafe_allow_html=True)
 
         # ② 금주 하이라이트 · 로우라이트
         with tabH:
@@ -3623,20 +3943,53 @@ def main():
             st.markdown("##### 월말 예상 실적 (Run-rate 기준)")
             elapsed = ref_end.day
             total_days = calendar.monthrange(ref_end.year, ref_end.month)[1]
-            st.caption(f"{ref_end.year}년 {ref_end.month}월 · 총 {total_days}일 중 "
-                       f"{elapsed}일 경과({ref_end.month}/1~{ref_end.month}/{elapsed}) 기준. "
-                       "현재 일평균 추세가 월말까지 유지된다고 가정한 추정치예요. "
-                       "기준주가 월초일수록 경과일이 적어 추정 오차가 커요.")
             pm_full = _agg(_slice(datetime.date(pm_y, pm_m, 1),
                                   datetime.date(pm_y, pm_m, calendar.monthrange(pm_y, pm_m)[1])))
             _pyy = ref_end.year - 1
             py_full = _agg(_slice(datetime.date(_pyy, ref_end.month, 1),
                                   datetime.date(_pyy, ref_end.month,
                                                 calendar.monthrange(_pyy, ref_end.month)[1])))
+
+            # ── 요일 가중 run-rate — 경과 구간의 요일 구성(주말이 많았는지)을 보정 ──
+            # 직전 12주 일별 실적으로 지표별 '요일 평균'을 만들고, 경과분/전체월을 그 가중치로
+            # 환산해 예상한다. 이력이 부족하면(4주 미만) 단순 선형 run-rate로 폴백.
+            _dcolmap = {"캠페인수": ("af", "size"), "발송": ("send", "sum"), "UV": ("uv", "sum"),
+                        "주문건수": ("oc", "sum"), "거래액": ("amt", "sum")}
+            _hist0 = m_first - datetime.timedelta(days=84)
+            _hist = g0[(g0["dt"] >= pd.Timestamp(_hist0)) & (g0["dt"] < pd.Timestamp(m_first))]
+            _dowm, _amt_sd = None, np.nan
+            if len(_hist) >= 20 and _hist["dt"].dt.date.nunique() >= 28:
+                _daily = _hist.groupby(_hist["dt"].dt.normalize()).agg(
+                    **{k: v for k, v in _dcolmap.items()})
+                _daily = _daily.reindex(
+                    pd.date_range(_hist0, m_first - datetime.timedelta(days=1)), fill_value=0)
+                _dowm = _daily.groupby(_daily.index.dayofweek).mean()
+                _amt_res = _daily["거래액"] - _daily.index.dayofweek.map(_dowm["거래액"])
+                _amt_sd = float(_amt_res.std(ddof=1))
+            _mdays = pd.date_range(m_first, datetime.date(ref_end.year, ref_end.month, total_days))
+
+            def _project(met, cv):
+                """마감 예상값 — 요일 가중(이력 충분 시) 또는 선형 run-rate."""
+                if not elapsed or pd.isna(cv):
+                    return np.nan
+                if _dowm is not None and met in _dowm.columns:
+                    w = _dowm[met].reindex(range(7)).fillna(0.0)
+                    exp_month = float(w.loc[_mdays.dayofweek].sum())
+                    exp_sofar = float(w.loc[_mdays[:elapsed].dayofweek].sum())
+                    if exp_sofar > 0 and exp_month > 0:
+                        return cv * exp_month / exp_sofar
+                return cv / elapsed * total_days
+            _method = "요일 가중" if _dowm is not None else "단순 선형"
+            st.caption(f"{ref_end.year}년 {ref_end.month}월 · 총 {total_days}일 중 "
+                       f"{elapsed}일 경과({ref_end.month}/1~{ref_end.month}/{elapsed}) 기준 · "
+                       f"추정 방식: **{_method} run-rate**"
+                       + (" (직전 12주 요일별 평균으로 경과 구간의 요일 구성을 보정)" if _dowm is not None
+                          else " (이력이 12주 미만이라 일평균×잔여일)")
+                       + ". 월초일수록 경과일이 적어 추정 오차가 커요.")
             prow = []
             for met in ["캠페인수", "발송", "UV", "주문건수", "거래액"]:
                 cv = cur_mtd[met]
-                land = (cv / elapsed * total_days) if elapsed else np.nan
+                land = _project(met, cv)
                 prow.append({"지표": met, "당월 MTD": _fmt(met, cv),
                              "일평균": _fmt(met, cv / elapsed if elapsed else np.nan),
                              "마감 예상": _fmt(met, land),
@@ -3646,28 +3999,40 @@ def main():
                              "전년비(마감)": _dlt(met, land, py_full[met])})
             st.dataframe(pd.DataFrame(prow).style.map(_clr, subset=["전월비(마감)", "전년비(마감)"]),
                          hide_index=True, width="stretch", height=240)
+            remain = total_days - elapsed
+            land_amt = _project("거래액", float(cur_mtd["거래액"]))
+            _se = _amt_sd * np.sqrt(max(remain, 0)) if pd.notna(_amt_sd) else np.nan
+            if pd.notna(land_amt) and pd.notna(_se) and _se > 0 and remain > 0:
+                st.caption(f"거래액 마감 예상 **{won(land_amt)}** · 95% 구간 "
+                           f"{won(max(land_amt - 1.96 * _se, 0))} ~ {won(land_amt + 1.96 * _se)} "
+                           "(과거 일별 변동성 기준 — 대형 프로모션 등 특이 이벤트는 반영 못 해요)")
             tgt = st.number_input("월 거래액 목표 (억원 · 선택)", min_value=0.0, value=0.0,
                                   step=0.5, key="wr_target",
-                                  help="목표를 입력하면 진척률과 필요 일평균을 계산해 드려요.")
+                                  help="목표를 입력하면 진척률·필요 일평균·달성 확률을 계산해 드려요.")
             if tgt > 0:
                 tgt_won = tgt * 1e8
                 cur_amt = float(cur_mtd["거래액"])
-                land_amt = cur_amt / elapsed * total_days if elapsed else np.nan
                 st.progress(min(cur_amt / tgt_won, 1.0),
                             text=f"목표 대비 진척 {cur_amt / tgt_won * 100:.1f}% "
                                  f"({won(cur_amt)} / {won(tgt_won)})")
-                remain = total_days - elapsed
+                _prob_txt = ""
+                if pd.notna(land_amt) and pd.notna(_se) and _se > 0 and remain > 0:
+                    _prob = float(stats.norm.cdf((land_amt - tgt_won) / _se)) * 100
+                    _prob_txt = f" · 달성 확률 약 <b>{_prob:.0f}%</b>"
                 if pd.notna(land_amt) and land_amt >= tgt_won:
-                    _vd = f"이 속도면 <b>달성 예상</b> ✅ (마감 예상 {won(land_amt)} ≥ 목표 {won(tgt_won)})"
+                    _vd = (f"이 속도면 <b>달성 예상</b> ✅ (마감 예상 {won(land_amt)} ≥ 목표 "
+                           f"{won(tgt_won)}){_prob_txt}")
                 elif remain > 0:
                     need = (tgt_won - cur_amt) / remain
                     _vd = (f"이 속도면 마감 {won(land_amt)}로 <b>미달 예상</b> — 남은 {remain}일 동안 "
-                           f"일평균 <b>{won(need)}</b> 필요 (현재 일평균 {won(cur_amt / elapsed)})")
+                           f"일평균 <b>{won(need)}</b> 필요 (현재 일평균 {won(cur_amt / elapsed)})"
+                           f"{_prob_txt}")
                 else:
                     _vd = f"월 마감 — 최종 {won(cur_amt)} / 목표 {won(tgt_won)}"
                 st.markdown(f'<div class="appendix">{_vd}</div>', unsafe_allow_html=True)
-            st.markdown('<div class="appendix">run-rate 추정은 요일 구성·월말 프로모션 효과를 '
-                        '반영하지 않아요. 월초(경과 일수가 적을 때)일수록 오차가 커요.</div>',
+            st.markdown('<div class="appendix">run-rate 추정은 월말 프로모션 같은 특이 이벤트를 '
+                        '반영하지 않아요. 요일 가중 방식은 경과 구간에 주말이 몰렸을 때의 왜곡을 '
+                        '줄여 주지만, 월초(경과 일수가 적을 때)일수록 오차가 커요.</div>',
                         unsafe_allow_html=True)
 
         # ── 최근 13주 추이 (발송량·CTR·주문CR·거래액) ──
@@ -3701,7 +4066,7 @@ def main():
             "RPS": tdf["RPS"].map(won),
             "거래액": tdf["거래액"].map(won),
         }).iloc[::-1]                                     # 최신 주가 위로
-        st.dataframe(tv, hide_index=True, width="stretch", height=330)
+        st.dataframe(tv, hide_index=True, width="stretch", height=min(38 + 35 * len(tv), 500))
 
         # ── 카테고리별 기준주 실적 (전주 대비) — 행 클릭 시 하단에 메시지 상세 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -3770,7 +4135,8 @@ def main():
         # ── AI 주간보고 코멘트 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🤖 AI 주간보고 코멘트")
-        if st.button("코멘트 생성", key="wr_ai"):
+
+        def _wr_ai_lines():
             lines = [f"[기준주] {_wklab(ref_ws)}"]
             for met in METS:
                 yv = yoy_w[met] if yoy_w else np.nan
@@ -3781,6 +4147,11 @@ def main():
             lines.append(f"[MTD] 당월 거래액 {_fmt('거래액', cur_mtd['거래액'])} "
                          f"(전월비 {_dlt('거래액', cur_mtd['거래액'], prev_mtd['거래액'])}, "
                          f"전년비 {_dlt('거래액', cur_mtd['거래액'], yoy_mtd['거래액'])})")
+            return lines
+        with st.expander("🔍 AI에 전달되는 데이터 미리보기 (외부 API로 전송돼요)"):
+            st.text("\n".join(_wr_ai_lines()))
+        if st.button("코멘트 생성", key="wr_ai"):
+            lines = _wr_ai_lines()
             system = ("당신은 LF몰 CRM 발송 주간보고 작성자입니다. 주어진 수치만 근거로 임원 보고용 "
                       "요약 코멘트를 한국어로 작성하세요: 1) 금주 총평 2줄, "
                       "2) 좋았던 점·주의할 점 각 2개(수치 인용), 3) 다음 주 액션 제안 2개. "
@@ -3835,6 +4206,7 @@ def main():
             marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in adf["차이"]],
             text=[f"{v:+.2f}{'%p' if is_pct else ''}" for v in delta_disp], textposition="outside"))
         fig.update_layout(**base_layout(h=360, title=f"{mlabel} — 속성 보유 시 평균 차이 (보유 − 미보유)"))
+        fig.update_yaxes(autorange="reversed")        # 아래 순효과 차트와 같은 방향(큰 값이 위)
         st.plotly_chart(fig, width="stretch")
 
         def fmtv(v):
@@ -3908,8 +4280,27 @@ def main():
                 continue
             rest = base.loc[~mask, mcol].dropna()
             p = welch(sub.values, rest.values) if len(rest) > 1 else None
-            crows.append(dict(조합="+".join(combo), 캠페인수=len(sub),
-                              평균=float(sub.mean()), 차이=float(sub.mean()) - base_mean, p=p))
+            row = dict(조합="+".join(combo), 캠페인수=len(sub),
+                       평균=float(sub.mean()), 차이=float(sub.mean()) - base_mean, p=p)
+            if ksize == 2:
+                # 시너지(DID) — 'A도 좋고 B도 좋아서'가 아니라 '같이 써서 더 좋은지'를 분리.
+                # 시너지 = m(A∩B) − [m(A만) + m(B만) − m(둘다없음)] (주효과 합 대비 초과분)
+                _a, _b = combo
+                va = base[_a].fillna(False).astype(bool).values
+                vb = base[_b].fillna(False).astype(bool).values
+                mv = base[mcol].values.astype(float)
+
+                def _cellmean(cm):
+                    v = mv[cm]
+                    v = v[~np.isnan(v)]
+                    return float(v.mean()) if len(v) >= 3 else np.nan
+                m10 = _cellmean(va & ~vb)
+                m01 = _cellmean(~va & vb)
+                m00 = _cellmean(~va & ~vb)
+                if not any(pd.isna(v) for v in (m10, m01, m00)):
+                    row["기대치"] = m10 + m01 - m00
+                    row["시너지"] = float(sub.mean()) - row["기대치"]
+            crows.append(row)
         if not crows:
             st.info("조건에 맞는 조합이 없어요. 기준을 낮추거나 '최소 발송수'를 줄여 보세요.")
         else:
@@ -3942,12 +4333,29 @@ def main():
                 cshow["평균"] = cshow["평균"].map(lambda v: f"{v:,.1f}")
                 cshow["차이"] = cshow["차이"].map(lambda v: f"{v:+,.1f}")
             cshow["유의성"] = cdf["p"].map(sig_label)
-            st.dataframe(cshow[["조합", "캠페인수", "평균", "차이", "유의성"]].style.format({"캠페인수": "{:,.0f}"}),
+            _combo_cols = ["조합", "캠페인수", "평균", "차이", "유의성"]
+            if "시너지" in cdf.columns and cdf["시너지"].notna().any():
+                def _fm_signed(v):
+                    if pd.isna(v):
+                        return "–"
+                    if is_pct:
+                        return f"{v*100:+.2f}%p"
+                    return f"{v:+,.0f}" if mcol in ("rps", "aov", "amt") else f"{v:+,.1f}"
+                cshow["기대치(주효과 합)"] = cdf["기대치"].map(
+                    lambda v: "–" if pd.isna(v)
+                    else (f"{v*100:.2f}%" if is_pct
+                          else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}")))
+                cshow["시너지"] = cdf["시너지"].map(_fm_signed)
+                _combo_cols = ["조합", "캠페인수", "평균", "기대치(주효과 합)", "시너지", "유의성"]
+            st.dataframe(cshow[_combo_cols].style.format({"캠페인수": "{:,.0f}"}),
                          hide_index=True, width="stretch", height=320)
             st.markdown('<div class="appendix">유의성은 해당 조합이 있는 그룹과 없는 그룹의 차이를 검정한 결과예요. '
-                        '건수가 적으면 우연일 수 있어요.</div>',
+                        '건수가 적으면 우연일 수 있어요. <b>시너지</b>(2개 조합)는 조합 평균에서 '
+                        "'주효과 합(각자 단독 효과의 합)'을 뺀 값 — <b>+면 같이 써서 더 좋아지는 진짜 궁합</b>, "
+                        '0 근처면 각자 좋은 걸 합친 것에 불과하다는 뜻이에요.</div>',
                         unsafe_allow_html=True)
 
+            guard_select("p02_combo", list(cdf["조합"]))
             sel_combo = st.selectbox("조합을 골라 실제 메시지를 확인해 보세요", list(cdf["조합"]), key="p02_combo")
             if sel_combo:
                 parts = sel_combo.split("+")
@@ -3972,10 +4380,14 @@ def main():
                 b["_bin"] = pd.qcut(b[colname], q=4, duplicates="drop")
             except Exception:
                 container.info(f"{label} 구간화 불가"); return
-            g = b.groupby("_bin", observed=True)[mcol].agg(["mean", "count"])
+            g = b.groupby("_bin", observed=True)[mcol].agg(["mean", "count", "std"])
             xs = [f"{int(iv.left)}~{int(iv.right)}자" for iv in g.index]
             yvv = g["mean"].values * (100 if is_pct else 1)
+            _se = (g["std"] / np.sqrt(g["count"].clip(lower=1))).fillna(0).values
+            _err = _se * 1.96 * (100 if is_pct else 1)          # 95% 신뢰구간 에러바
             fig = go.Figure(go.Bar(x=xs, y=yvv, marker_color=mclr,
+                                   error_y=dict(type="data", array=_err,
+                                                color="#94a3b8", thickness=1.2, width=4),
                                    text=[f"{v:.2f}<br>(n={int(n)})" for v, n in zip(yvv, g["count"])],
                                    textposition="outside"))
             fig.update_layout(**base_layout(h=300, ysuffix=("%" if is_pct else ""),
@@ -3985,10 +4397,50 @@ def main():
         len_bins("제목길이", "제목", lc1)
         len_bins("본문길이", "본문", lc2)
 
+        # ── 최적점 추정 (2차항 회귀) — 구간 평균으론 '몇 자가 피크인지' 안 보인다 ──
+        def _quad_opt(colname, label, unit="자"):
+            if colname not in base:
+                return None
+            b = base[[colname, mcol]].dropna()
+            b = b[b[colname] > 0]
+            if len(b) < 30 or b[colname].nunique() < 8:
+                return None
+            x = b[colname].values.astype(float)
+            y = b[mcol].values.astype(float)
+            X = np.column_stack([np.ones_like(x), x, x ** 2])
+            try:
+                beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+                yhat = X @ beta
+                dof = len(x) - 3
+                if dof <= 0:
+                    return None
+                s2 = float(((y - yhat) ** 2).sum() / dof)
+                cov = s2 * np.linalg.inv(X.T @ X)
+                se2 = float(np.sqrt(cov[2, 2]))
+                p2 = float(2 * (1 - stats.t.cdf(abs(beta[2] / se2), dof))) if se2 > 0 else 1.0
+            except Exception:
+                return None
+            if beta[2] < 0 and p2 < 0.1:
+                xstar = float(-beta[1] / (2 * beta[2]))
+                lo, hi = float(np.percentile(x, 5)), float(np.percentile(x, 95))
+                if lo <= xstar <= hi:
+                    return f"**{label}**: 최적점 ≈ **{xstar:.0f}{unit}** (역U형 확인, 곡률 p={p2:.3f})"
+                return f"**{label}**: 역U형이지만 최적점({xstar:.0f}{unit})이 관측 범위 밖 — 참고만"
+            return f"**{label}**: 뚜렷한 최적점 없음 (단조 또는 무관)"
+
+        _opt_msgs = [m_ for m_ in (_quad_opt("제목길이", "제목 길이"),
+                                   _quad_opt("본문길이", "본문 길이"),
+                                   _quad_opt("이모지수", "이모지 개수", unit="개")) if m_]
+        if _opt_msgs:
+            st.markdown("🎯 **최적점 추정 (2차항 회귀)** — " + " · ".join(_opt_msgs))
+            st.caption("'많을수록 좋다가 어느 지점부터 꺾이는' 역U형이 통계적으로 확인될 때만 "
+                       "최적점을 표시해요. 카테고리 구성이 섞인 단순 회귀라 참고 지표예요.")
+
         # ── 속성별 드릴다운: 실제 발송 메시지 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📋 속성별 실제 메시지 보기")
         avail_tags = [r["속성"] for _, r in adf.iterrows()] if len(adf) else TAG_BOOLS
+        guard_select("p02_tag", avail_tags)
         sel_tag = st.selectbox("속성 선택", avail_tags, key="p02_tag")
         if sel_tag and sel_tag in base.columns:
             sub = base[base[sel_tag]].copy()
@@ -4089,26 +4541,34 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
 
-        def heat(df, idx, col, title):
+        def heat(df, idx, col, title, min_cell_n=3):
             pv = df.pivot_table(index=idx, columns=col, values=mcol, aggfunc="mean")
             if pv.empty:
                 st.info("데이터가 부족해요"); return
+            cnt = df.pivot_table(index=idx, columns=col, values=mcol, aggfunc="count")
             # 요일 축은 가나다순(금·목·수…)이 아니라 월~일 순으로 정렬
             _DOW = ["월", "화", "수", "목", "금", "토", "일"]
             if col == "dow_k":
                 pv = pv.reindex(columns=[d for d in _DOW if d in pv.columns])
             if idx == "dow_k":
                 pv = pv.reindex([d for d in _DOW if d in pv.index])
+            cnt = cnt.reindex(index=pv.index, columns=pv.columns)
+            # n<min_cell_n 셀 마스킹 — 캠페인 1건짜리 우연값이 가장 진한 색으로 강조되는 것 방지
+            pv = pv.where(cnt >= min_cell_n)
             z = pv.values * (100 if is_pct else 1)
+            n_arr = cnt.fillna(0).values
             txt_arr = np.where(np.isnan(z), "", np.round(z, 2).astype(str))
             fig = go.Figure(go.Heatmap(
                 z=z, x=[str(c) for c in pv.columns], y=[str(i) for i in pv.index],
                 colorscale="Blues", text=txt_arr, texttemplate="%{text}",
                 textfont=dict(size=10), colorbar=dict(thickness=10),
+                customdata=n_arr,
                 hovertemplate="%{y} × %{x}<br>" + mlabel + ": %{z:.2f}"
-                              + ("%" if is_pct else "") + "<extra></extra>"))
+                              + ("%" if is_pct else "") + " · n=%{customdata:.0f}<extra></extra>"))
             fig.update_layout(**base_layout(h=420, title=title))
             st.plotly_chart(fig, width="stretch")
+            st.caption(f"빈 셀은 캠페인 {min_cell_n}건 미만이라 가린 구간이에요 (우연값 강조 방지) · "
+                       "hover에 표본수(n)가 함께 떠요.")
 
         def _hod(h):  # 시간대 HHMM(800·1050·2200) → '08시'(시 단위로 묶기)
             try:
@@ -4130,29 +4590,37 @@ def main():
         present_tags = [t for t in TAG_BOOLS if t in base.columns]
         cat_rows = []
         cat_list = [c for c in base["cat"].dropna().unique() if str(c).strip() not in ("", "nan", "None")]
+        cat_ns = []
         for c in cat_list:
             sub = base[base["cat"] == c]
             if len(sub) < 3:
                 continue
             row = {"카테고리": str(c)}
+            nrow = {"카테고리": str(c)}
             for t in present_tags:
                 vv = sub[sub[t]][mcol].dropna()
-                row[t] = float(vv.mean()) if len(vv) else np.nan
+                # 셀 n<3 은 마스킹 — 캠페인 1건짜리 우연값이 가장 진한 색이 되는 것 방지
+                row[t] = float(vv.mean()) if len(vv) >= 3 else np.nan
+                nrow[t] = len(vv)
             cat_rows.append(row)
+            cat_ns.append(nrow)
         if cat_rows:
             cmat = pd.DataFrame(cat_rows).set_index("카테고리")
+            nmat = pd.DataFrame(cat_ns).set_index("카테고리")
             z = cmat.values * (100 if is_pct else 1)
             txt_arr = np.where(np.isnan(z), "", np.round(z, 2).astype(str))
             fig = go.Figure(go.Heatmap(
                 z=z, x=list(cmat.columns), y=list(cmat.index), colorscale="Blues",
                 text=txt_arr, texttemplate="%{text}", textfont=dict(size=9),
                 colorbar=dict(thickness=10), hoverongaps=False,
+                customdata=nmat.values,
                 hovertemplate="%{y} · %{x}<br>" + mlabel + ": %{z:.2f}"
-                              + ("%" if is_pct else "") + "<extra></extra>"))
+                              + ("%" if is_pct else "") + " · n=%{customdata}<extra></extra>"))
             fig.update_layout(**base_layout(h=max(320, 60 + 34 * len(cmat)),
                                             title=f"카테고리 × 문구속성 — 평균 {mlabel}"))
             st.plotly_chart(fig, width="stretch")
-            # 카테고리별 베스트 속성 추천표
+            st.caption("빈 셀은 해당 조합 캠페인 3건 미만(우연값 방지) · hover에 표본수(n) 표시.")
+            # 카테고리별 베스트 속성 추천표 — n 병기
             recs = []
             for c in cmat.index:
                 rowv = cmat.loc[c].dropna()
@@ -4161,9 +4629,10 @@ def main():
                 best = rowv.idxmax()
                 bv = rowv.max() * (100 if is_pct else 1)
                 bstr = f"{bv:.2f}%" if is_pct else (won(rowv.max()) if mcol in ("rps", "aov", "amt") else f"{bv:,.1f}")
-                recs.append(dict(카테고리=c, 추천속성=best, 평균성과=bstr))
+                recs.append(dict(카테고리=c, 추천속성=best, 평균성과=bstr,
+                                 표본수=int(nmat.loc[c, best])))
             if recs:
-                st.markdown("**카테고리별 추천 소구**")
+                st.markdown("**카테고리별 추천 소구** (표본 3건 이상만)")
                 st.dataframe(pd.DataFrame(recs), hide_index=True, width="stretch")
         else:
             st.info("카테고리별 데이터가 부족해요.")
@@ -4175,6 +4644,10 @@ def main():
         cat_opts = sorted(base["cat"].dropna().unique()) if "cat" in base else []
         hour_opts = sorted(base["hour"].dropna().unique()) if "hour" in base else []
         dow_opts = [d for d in ["월", "화", "수", "목", "금", "토", "일"] if d in base["dow_k"].values] if "dow_k" in base else []
+        for _k, _o in (("p04_cat", ["전체"] + [str(c) for c in cat_opts]),
+                       ("p04_hour", ["전체"] + [str(h) for h in hour_opts]),
+                       ("p04_dow", ["전체"] + dow_opts)):
+            guard_select(_k, _o)
         sel_cat_d = dc1.selectbox("카테고리", ["전체"] + [str(c) for c in cat_opts], key="p04_cat")
         sel_hour_d = dc2.selectbox("시간대", ["전체"] + [str(h) for h in hour_opts], key="p04_hour",
                                    format_func=lambda v: v if v == "전체" else _hm_label(v))
@@ -4207,7 +4680,7 @@ def main():
             xlab = [fmt_hhmm(i) for i in g.index] if key == "hour" else [str(i) for i in g.index]
             fig = go.Figure(go.Bar(x=xlab, y=y,
                                    marker_color=METRIC_OPTS[mlabel][2],
-                                   text=[f"{v:.2f}" for v in y], textposition="outside"))
+                                   text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=320, ysuffix=("%" if is_pct else ""), title=title))
             st.plotly_chart(fig, width="stretch")
 
@@ -4224,7 +4697,7 @@ def main():
             g.index = [f"Q{i+1}" for i in range(len(g))]
             y = g.values * (100 if is_pct else 1)
             fig = go.Figure(go.Bar(x=[str(i) for i in g.index], y=y, marker_color=PALETTE["amber"],
-                                   text=[f"{v:.2f}" for v in y], textposition="outside"))
+                                   text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=320, ysuffix=("%" if is_pct else ""),
                                             title=f"발송 규모 5분위(Q1 소량→Q5 대량)별 평균 {mlabel}"))
             st.plotly_chart(fig, width="stretch")
@@ -4268,16 +4741,19 @@ def main():
                 disp = slot.copy()
                 disp["요일"] = disp["dow_k"]
                 disp["시간"] = disp["hour"].map(fmt_hhmm)
-                if is_pct:
-                    disp["평균"] = disp["평균"].map(lambda v: f"{v*100:.2f}%")
-                elif mcol in ("rps", "aov", "amt"):
-                    disp["평균"] = disp["평균"].map(won)
-                else:
-                    disp["평균"] = disp["평균"].map(lambda v: f"{v:,.1f}")
                 disp["_o"] = disp["요일"].map(lambda d: dow_order.index(d) if d in dow_order else 99)
-                st.dataframe(disp.sort_values(["_o", "hour"])[["요일", "시간", "캠페인수", "평균", "발송", "거래액"]]
-                             .style.format({"캠페인수": "{:,.0f}", "발송": "{:,.0f}", "거래액": "{:,.0f}"}),
-                             hide_index=True, width="stretch", height=300)
+                # 숫자를 문자열로 바꾸지 않고 column_config로 포맷 — 문자열화하면
+                # 헤더 클릭 정렬이 사전순("9,900" > "10,000")으로 깨진다
+                disp["평균"] = disp["평균"] * (100 if is_pct else 1)
+                _avg_cfg = (st.column_config.NumberColumn("평균", format="%.2f%%") if is_pct
+                            else st.column_config.NumberColumn("평균", format="localized"))
+                st.dataframe(disp.sort_values(["_o", "hour"])[["요일", "시간", "캠페인수", "평균", "발송", "거래액"]],
+                             hide_index=True, width="stretch", height=300,
+                             column_config={
+                                 "평균": _avg_cfg,
+                                 "캠페인수": st.column_config.NumberColumn(format="localized"),
+                                 "발송": st.column_config.NumberColumn(format="localized"),
+                                 "거래액": st.column_config.NumberColumn(format="localized")})
                 best = slot.iloc[0]
                 bv = best["평균"] * (100 if is_pct else 1)
                 bstr = f"{bv:.2f}%" if is_pct else (won(best["평균"]) if mcol in ("rps", "aov", "amt") else f"{bv:,.1f}")
@@ -4292,6 +4768,8 @@ def main():
         tc1, tc2 = st.columns(2)
         hour_opts5 = sorted(base["hour"].dropna().unique()) if "hour" in base else []
         dow_opts5 = [d for d in ["월", "화", "수", "목", "금", "토", "일"] if d in base["dow_k"].values] if "dow_k" in base else []
+        guard_select("p05_hour", ["전체"] + [str(h) for h in hour_opts5])
+        guard_select("p05_dow", ["전체"] + dow_opts5)
         sel_h5 = tc1.selectbox("시간대", ["전체"] + [str(h) for h in hour_opts5], key="p05_hour",
                                format_func=lambda v: v if v == "전체" else _hm_label(v))
         sel_d5 = tc2.selectbox("요일", ["전체"] + dow_opts5, key="p05_dow")
@@ -4337,6 +4815,8 @@ def main():
                                     if str(c).strip() not in ("", "nan", "None")]
         attr_opts_ai = ["(전체)"] + ([str(x) for x in sorted(base["attr"].dropna().unique())
                                       if str(x).strip() not in ("", "nan", "None")] if "attr" in base else [])
+        guard_select("ai_draft_cat_sel", cat_opts_ai)
+        guard_select("ai_draft_attr_sel", attr_opts_ai)
         draft_cat_sel = dc1.selectbox("대상 카테고리", cat_opts_ai, key="ai_draft_cat_sel")
         draft_attr_sel = dc2.selectbox("대상 속성", attr_opts_ai, key="ai_draft_attr_sel",
                                        help="발송 속성(통합·정상·이월·입점·BPU 등)으로 범위를 좁힙니다.")
@@ -4495,6 +4975,7 @@ def main():
         st.markdown("##### 📋 주차별 캠페인 보기")
         wk_labels = [f"{r['주'].strftime('%Y-%m-%d')} (캠페인 {r['캠페인수']:.0f}건)" for _, r in wk.iterrows()]
         if wk_labels:
+            guard_select("p08_wk", wk_labels)
             sel_wk = st.selectbox("주차 선택", wk_labels, key="p08_wk")
             wk_idx = wk_labels.index(sel_wk)
             wk_start = wk.iloc[wk_idx]["주"]
@@ -4515,18 +4996,24 @@ def main():
             vals = [float(g[c].fillna(0).sum()) for _, c in avail]
             labs = [lab for lab, _ in avail]
             base_v = vals[0] if vals[0] else 1
-            # 막대 너비는 로그 스케일 — 발송(수억)이 하위 단계를 가리지 않도록. 라벨은 실제 값·비율.
-            disp = [float(np.log10(v + 1)) for v in vals]
-            txt = [f"{lab}<br>{v:,.0f} ({v/base_v*100:.2f}%)" for lab, v in zip(labs, vals)]
-            figf = go.Figure(go.Funnel(
-                y=labs, x=disp, text=txt, textinfo="text", textposition="inside",
-                marker=dict(color=[PALETTE["slate"], PALETTE["blue"], PALETTE["teal"],
-                                   PALETTE["green"], PALETTE["purple"]][:len(labs)])))
-            figf.update_layout(**base_layout(h=360, title="발송 퍼널 — 막대=로그 스케일, 라벨=실제 값·비율"))
-            figf.update_xaxes(visible=False)
+            # 로그 폭 퍼널은 '좁아지는 정도'가 실제 전환율과 무관해 모양 자체가 왜곡 —
+            # 막대 길이 = '직전 단계 대비 전환율'인 수평 막대로 교체 (라벨 = 실제 건수)
+            rates = [100.0] + [(vals[i] / vals[i - 1] * 100 if vals[i - 1] else 0.0)
+                               for i in range(1, len(vals))]
+            figf = go.Figure(go.Bar(
+                x=rates, y=labs, orientation="h",
+                marker_color=[PALETTE["slate"], PALETTE["blue"], PALETTE["teal"],
+                              PALETTE["green"], PALETTE["purple"]][:len(labs)],
+                text=[(f"{v:,.0f}건" + ("" if i == 0 else f" · 직전 대비 {rates[i]:.2f}%"))
+                      for i, v in enumerate(vals)],
+                textposition="outside",
+                hovertemplate="%{y}<br>직전 단계 대비: %{x:.2f}%<extra></extra>"))
+            layf2 = base_layout(h=340, title="단계별 전환 — 막대 길이 = 직전 단계 대비 전환율(%)")
+            layf2["xaxis"]["range"] = [0, 130]
+            layf2["xaxis"]["ticksuffix"] = "%"
+            figf.update_layout(**layf2)
+            figf.update_yaxes(autorange="reversed")
             st.plotly_chart(figf, width="stretch")
-            st.caption("발송이 수억 단위라 막대 너비는 로그로 줄여서 보여드려요. "
-                       "실제 값·비율은 막대 라벨과 아래 표에서 확인하세요.")
             # 단계별 전환율 표
             frows = []
             for i in range(1, len(avail)):
@@ -4644,7 +5131,7 @@ def main():
             bp = bp.sort_values(mcol, ascending=False)
             y = bp[mcol] * (100 if is_pct else 1)
             fig = go.Figure(go.Bar(x=bp["_key"].astype(str), y=y, marker_color=mclr,
-                                   text=[f"{v:.2f}" for v in y], textposition="outside"))
+                                   text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"BPU별 (가중) {mlabel}"))
             st.plotly_chart(fig, width="stretch")
@@ -4667,7 +5154,7 @@ def main():
             xlab = pr_chart["_key"].astype(int).astype(str) + "순위"
             y = pr_chart[mcol] * (100 if is_pct else 1)
             fig = go.Figure(go.Bar(x=xlab, y=y, marker_color=mclr,
-                                   text=[f"{v:.2f}" for v in y], textposition="outside"))
+                                   text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"우선순위별 (가중) {mlabel}"))
             st.plotly_chart(fig, width="stretch")
@@ -4694,17 +5181,22 @@ def main():
         hb["_prio"] = hb["_prio"].astype(int)
         pv = hb.pivot_table(index="bpu", columns="_prio", values=mcol, aggfunc="mean")
         if not pv.empty:
+            _cntb = hb.pivot_table(index="bpu", columns="_prio", values=mcol, aggfunc="count")
+            _cntb = _cntb.reindex(index=pv.index, columns=pv.columns)
+            pv = pv.where(_cntb >= 3)                  # n<3 셀 마스킹
             z = pv.values * (100 if is_pct else 1)
             txt_arr = np.where(np.isnan(z), "", np.round(z, 2).astype(str))
             fig = go.Figure(go.Heatmap(z=z, x=[f"{c}순위" for c in pv.columns],
                                        y=[str(i) for i in pv.index], colorscale="Blues",
                                        text=txt_arr, texttemplate="%{text}",
                                        textfont=dict(size=10), colorbar=dict(thickness=10),
+                                       customdata=_cntb.fillna(0).values,
                                        hovertemplate="%{y} · %{x}<br>" + mlabel + ": %{z:.2f}"
-                                                     + ("%" if is_pct else "") + "<extra></extra>"))
+                                                     + ("%" if is_pct else "")
+                                                     + " · n=%{customdata:.0f}<extra></extra>"))
             fig.update_layout(**base_layout(h=420, title=f"BPU × 우선순위 평균 {mlabel}"))
             st.plotly_chart(fig, width="stretch")
-        st.markdown('<div class="appendix">캠페인 수가 적은 BPU·순번은 우연일 수 있으니 건수도 같이 확인해 주세요.</div>',
+        st.markdown('<div class="appendix">빈 셀은 캠페인 3건 미만(우연값 방지). hover에 표본수(n)가 함께 떠요.</div>',
                     unsafe_allow_html=True)
 
         # ── BPU·우선순위 드릴다운 ──
@@ -4714,6 +5206,8 @@ def main():
         bpu_opts = sorted(base["bpu"].dropna().astype(str).unique()) if "bpu" in base else []
         bpu_opts = [b for b in bpu_opts if b.strip() not in ("", "nan", "None")]
         prio_opts = sorted(base2["_prio"].dropna().unique()) if "_prio" in base2 else []
+        guard_select("p09_bpu", ["전체"] + bpu_opts)
+        guard_select("p09_prio", ["전체"] + [f"{int(p)}순위" for p in prio_opts])
         sel_bpu9 = bc1.selectbox("BPU", ["전체"] + bpu_opts, key="p09_bpu")
         sel_prio9 = bc2.selectbox("우선순위", ["전체"] + [f"{int(p)}순위" for p in prio_opts], key="p09_prio")
         sub9 = base.copy()
@@ -4748,8 +5242,13 @@ def main():
         def _barfig(d, namecol, title, h):
             up = d.head(int(ktop))
             yv = up["평균"] * (100 if is_pct else 1)
+            # 유의(FDR p<0.1) 항목만 본색, 나머지 회색 — 요행 단어가 진하게 강조되는 것 방지
+            if "유의성" in up.columns:
+                bar_colors = [mclr if s.startswith("✱") else "#cbd5e1" for s in up["유의성"]]
+            else:
+                bar_colors = mclr
             fig = go.Figure(go.Bar(
-                x=yv, y=up[namecol], orientation="h", marker_color=mclr, customdata=up["캠페인수"],
+                x=yv, y=up[namecol], orientation="h", marker_color=bar_colors, customdata=up["캠페인수"],
                 text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, up["캠페인수"])],
                 textposition="outside",
                 hovertemplate="%{y}<br>평균: %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
@@ -4759,14 +5258,41 @@ def main():
             fig.update_yaxes(autorange="reversed")
             return fig
 
-        st.markdown("##### 🔤 키워드별 성과 상위")
-        kdf = cached_keyword_perf(base, mcol, int(kmin), int(ktop))
-        if len(kdf) == 0:
+        st.markdown("##### 🔤 키워드별 성과")
+        _kw_view = st.radio("보기", ["평균 상위", "차이 ±상하위 (평균을 깎는 단어까지)"],
+                            horizontal=True, key="p10_kwview")
+        _kdf_full = cached_keyword_perf(base, mcol, int(kmin), 500)
+        kdf = _kdf_full.head(int(ktop))
+        if len(_kdf_full) == 0:
             st.info("조건에 맞는 키워드가 없어요. 기준을 낮춰 보세요.")
         else:
-            st.plotly_chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
-                                    max(360, 40 + 24 * min(len(kdf), int(ktop)))),
-                            width="stretch")
+            if _kw_view.startswith("평균"):
+                st.plotly_chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
+                                        max(360, 40 + 24 * min(len(kdf), int(ktop)))),
+                                width="stretch")
+            else:
+                # diverging — 전체평균 대비 +/− 상하위 각 10개 (역효과 단어가 안 보이던 문제)
+                _hi = _kdf_full.sort_values("차이", ascending=False).head(10)
+                _lo = _kdf_full.sort_values("차이").head(10)
+                _dv = pd.concat([_hi, _lo]).drop_duplicates("단어").sort_values("차이", ascending=False)
+                kdf = _dv
+                _yv = _dv["차이"] * (100 if is_pct else 1)
+                _sig_col = _dv["유의성"] if "유의성" in _dv.columns else pd.Series("✱", index=_dv.index)
+                _cols_dv = [("#cbd5e1" if not str(s).startswith("✱")
+                             else (PALETTE["green"] if v >= 0 else PALETTE["red"]))
+                            for v, s in zip(_dv["차이"], _sig_col)]
+                figd = go.Figure(go.Bar(
+                    x=_yv, y=_dv["단어"], orientation="h", marker_color=_cols_dv,
+                    customdata=_dv["캠페인수"],
+                    text=[f"{v:+.2f}{'%p' if is_pct else ''} (n={int(n)})"
+                          for v, n in zip(_yv, _dv["캠페인수"])],
+                    textposition="outside",
+                    hovertemplate="%{y}<br>전체평균 대비: %{x:+.2f}<br>캠페인수: %{customdata}<extra></extra>"))
+                layd = base_layout(h=max(420, 40 + 24 * len(_dv)),
+                                   title=f"전체평균 대비 차이 ±상하위 — {mlabel} (회색=유의하지 않음)")
+                figd.update_layout(**layd)
+                figd.update_yaxes(autorange="reversed")
+                st.plotly_chart(figd, width="stretch")
             sel_kw = st.selectbox("조회 대상 키워드 선택 (실제 발송 메시지 드릴다운)", list(kdf["단어"]), key="p10_kw")
             if sel_kw:
                 hay = (base["title"].astype(str) + " " + base["body"].astype(str))
@@ -4791,8 +5317,9 @@ def main():
                 eshow["평균"] = eshow["평균"].map(won); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.0f}")
             else:
                 eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
+            eshow = eshow.drop(columns=["_p_adj"], errors="ignore")
             st.dataframe(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
-        st.markdown('<div class="appendix">단어 및 이모지 성과 분석은 캠페인 단위 평균 데이터입니다. 표본 건수(n)가 적은 항목은 편차가 존재할 수 있으니 유의하시기 바랍니다. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨)</div>',
+        st.markdown('<div class="appendix">단어 및 이모지 성과 분석은 캠페인 단위 평균 데이터입니다. 표본 건수(n)가 적은 항목은 편차가 존재할 수 있으니 유의하시기 바랍니다. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨) 차트의 <b>회색 막대</b>는 보유 vs 미보유 차이가 통계적으로 유의하지 않은(FDR 보정 p≥0.1) 항목 — 우연일 수 있으니 참고만 하세요.</div>',
                     unsafe_allow_html=True)
         glossary()
 
@@ -4840,7 +5367,7 @@ def main():
         lay = base_layout(h=420, ysuffix=("%" if is_pct else ""),
                           title=f"속성별 주차 추이 — 평균 {mlabel}", hover="x")
         lay["showlegend"] = True
-        lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+        lay["legend"] = legend_h()
         fig.update_layout(**lay)
         st.plotly_chart(fig, width="stretch")
 
@@ -4863,6 +5390,59 @@ def main():
                 diag.append(dict(속성=t, 주차수=len(pts), 추세="표본부족", 상관r=np.nan, 유의성="–"))
         st.dataframe(pd.DataFrame(diag), hide_index=True, width="stretch")
 
+        # ── 노출 강도 기반 마모 진단 — '시즌 하락'과 '자주 써서 무뎌짐'을 분리 ──
+        st.markdown("##### 🔁 노출 강도 기반 마모 진단 — 최근 28일 사용량이 성과를 깎나")
+        _wear_rows = []
+        for t in sel_attrs:
+            vals = base.loc[base[t], [mcol, "dt"]].dropna()
+            if len(vals) < 25:
+                _wear_rows.append({"속성": t, "n": len(vals), "판정": "표본 부족(25건 미만)"})
+                continue
+            _days = vals["dt"].values.astype("datetime64[D]").astype(int)
+            _order = np.argsort(_days)
+            _ds = _days[_order]
+            y = vals[mcol].values.astype(float)[_order]
+            # 노출 강도 = 각 캠페인 '직전 28일' 동안 같은 소구 캠페인 수
+            expo = (np.searchsorted(_ds, _ds, side="left")
+                    - np.searchsorted(_ds, _ds - 28, side="left")).astype(float)
+            wk_idx = (_ds - _ds.min()) / 7.0                # 주차 추세 통제 (시즌 드리프트 분리)
+            X = np.column_stack([np.ones(len(y)), expo, wk_idx])
+            try:
+                beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+                dof = len(y) - 3
+                s2 = float(((y - X @ beta) ** 2).sum() / max(dof, 1))
+                cov = s2 * np.linalg.inv(X.T @ X)
+                se1 = float(np.sqrt(cov[1, 1]))
+                p1 = float(2 * (1 - stats.t.cdf(abs(beta[1] / se1), dof))) if se1 > 0 else 1.0
+            except Exception:
+                _wear_rows.append({"속성": t, "n": len(y), "판정": "계산 불가"})
+                continue
+            _q33, _q67 = np.percentile(expo, 33), np.percentile(expo, 67)
+            lo_m = float(y[expo <= _q33].mean()) if (expo <= _q33).any() else np.nan
+            hi_m = float(y[expo >= _q67].mean()) if (expo >= _q67).any() else np.nan
+            _mul = 100 if is_pct else 1
+            if beta[1] < 0 and p1 < 0.1:
+                _verdict = "🔻 마모 신호 — 빈도 축소·휴지기 검토"
+            elif beta[1] > 0 and p1 < 0.1:
+                _verdict = "🔺 빈도 여유 (강도↑에도 성과↑)"
+            else:
+                _verdict = "신호 없음"
+            _wear_rows.append({
+                "속성": t, "n": len(y),
+                "28일 노출 중앙값": f"{np.median(expo):.0f}회",
+                "노출 1회당 효과": (f"{beta[1]*_mul:+.3f}%p" if is_pct else f"{beta[1]:+,.1f}"),
+                "p값": f"{p1:.3f}",
+                "저노출 평균": (f"{lo_m*_mul:.2f}{'%' if is_pct else ''}" if pd.notna(lo_m) else "–"),
+                "고노출 평균": (f"{hi_m*_mul:.2f}{'%' if is_pct else ''}" if pd.notna(hi_m) else "–"),
+                "판정": _verdict})
+        st.dataframe(pd.DataFrame(_wear_rows), hide_index=True, width="stretch")
+        st.markdown('<div class="appendix">캠페인마다 <b>직전 28일간 같은 소구를 몇 번 썼는지(노출 강도)</b>를 '
+                    '세고, 주차 추세를 통제한 회귀로 노출 강도가 성과를 깎는지 확인해요 — 위의 달력 추세 '
+                    "진단과 달리 '시즌이라 떨어진 것'과 '과사용으로 무뎌진 것'을 분리해 줘요. "
+                    "'노출 1회당 효과'가 유의한 음수(🔻)면 그 소구는 쉬어 갈 때예요. "
+                    '(카테고리 구성까지 통제하지는 않으니 보조 지표로 참고하세요)</div>',
+                    unsafe_allow_html=True)
+
         # 속성 사용 빈도(발송수) 추이 — 너무 자주 쓰면 마모 위험
         st.markdown("##### 📨 속성별 발송 빈도 추이")
         figf = go.Figure()
@@ -4872,7 +5452,7 @@ def main():
                                       line=dict(color=tag_color(t), width=2)))
         layf = base_layout(h=320, title="속성별 주차 사용 빈도(캠페인 수)", hover="x")
         layf["showlegend"] = True
-        layf["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+        layf["legend"] = legend_h()
         figf.update_layout(**layf)
         st.plotly_chart(figf, width="stretch")
         st.markdown('<div class="appendix">상관계수(r)가 통계적으로 유의한 음수(-)이면, 반복 소구 노출로 인한 성과 저하(마모) 가능성이 높음을 시사합니다. 집행 빈도 대비 효율 감소세가 지속될 경우 해당 메시지의 소구 휴지기 수립 및 대체 오퍼 도입을 권장합니다. (단, 카테고리 구성 비율이나 시즌 이벤트 영향성이 혼재할 수 있으므로 보조 지표로 참고하십시오)</div>', unsafe_allow_html=True)
@@ -4887,7 +5467,9 @@ def main():
                   "거래액": "revenue", "인당 발송 건수": "perSend", "객단가": "avgOrderVal",
                   "총거래액": "revenue_sum", "총유입": "totalInflow_sum"}
         MTD_PCT = {"ctr", "purchaseRate"}
-        MCLR = {"ctr": PALETTE["red"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
+        # ctr는 blue — 대시보드 전역에서 빨강=감소/나쁨(△·급락·이탈)이라 CTR 시리즈가
+        # 빨강이면 '나쁜 지표'로 오독됨 (METRIC_OPTS의 CTR 색과도 통일)
+        MCLR = {"ctr": PALETTE["blue"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
                 "revenue": PALETTE["blue"], "perSend": PALETTE["amber"], "avgOrderVal": PALETTE["teal"],
                 "revenue_sum": PALETTE["blue"], "totalInflow_sum": PALETTE["teal"]}
 
@@ -4949,7 +5531,7 @@ def main():
             if len(b):
                 y = b[mc] * (100 if mc in MTD_PCT else 1)
                 fig = go.Figure(go.Bar(x=b["bucket"].astype(str), y=y, marker_color=MCLR[mc],
-                                       text=[f"{v:.2f}" for v in y], textposition="outside"))
+                                       text=[bar_label(v, mc, mc in MTD_PCT) for v in y], textposition="outside"))
                 fig.update_layout(**base_layout(h=340, ysuffix=("%" if mc in MTD_PCT else ""),
                                                 title=f"인당 발송 구간별 평균 {lab} (표본 30일+)"))
                 st.plotly_chart(fig, width="stretch")
@@ -5001,7 +5583,7 @@ def main():
             dm = dm.set_index("요일").reindex([o for o in order if o in dm["요일"].values]).reset_index()
             y = dm[mc] * (100 if mc in MTD_PCT else 1)
             fig = go.Figure(go.Bar(x=dm["요일"], y=y, marker_color=MCLR[mc],
-                                   text=[f"{v:.2f}" for v in y], textposition="outside"))
+                                   text=[bar_label(v, mc, mc in MTD_PCT) for v in y], textposition="outside"))
             fig.update_layout(**base_layout(h=320, ysuffix=("%" if mc in MTD_PCT else ""),
                                             title=f"요일별 평균 {lab}"))
             st.plotly_chart(fig, width="stretch")
@@ -5069,6 +5651,7 @@ def main():
             st.dataframe(qsum.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
             st.caption(f"기준선: CTR 중앙값 {mx*100:.2f}% · 주문CR 중앙값 {my*100:.2f}%. "
                        "🟡 유입O 주문CRX 영역은 오퍼 구조 및 랜딩 페이지 정비를 권장하며, 🔵 유입X 주문CRO 영역은 발송 타겟 확장 및 제목 메시지 보완을 권장합니다.")
+            guard_select("p14_quad", list(qsum["사분면"]))
             qpick = st.selectbox("사분면 선택 → 캠페인 보기", list(qsum["사분면"]), key="p14_quad")
             render_messages(d[d["사분면"] == qpick], "ord_cr", f"p14_{qpick}")
         else:
@@ -5441,7 +6024,7 @@ def main():
                                              name=name, line=dict(color=clr, width=2)))
                 lay = base_layout(h=420, title=f"월별 {base_lbl} 합계 추이 (발송/미발송 기획전)", hover="x")
                 lay["showlegend"] = True
-                lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+                lay["legend"] = legend_h()
                 fig.update_layout(**lay)
                 st.plotly_chart(fig, width="stretch")
                 cnt = P2.groupby(["월", "발송"]).size().reset_index(name="기획전수")
@@ -5453,7 +6036,7 @@ def main():
                                               name=name, line=dict(color=clr, width=2)))
                 layc = base_layout(h=300, title="월별 기획전 수 (발송/미발송)", hover="x")
                 layc["showlegend"] = True
-                layc["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+                layc["legend"] = legend_h()
                 figc.update_layout(**layc)
                 st.plotly_chart(figc, width="stretch")
                 st.caption("기획전 런칭 시작월 기준 집계 데이터입니다. 마케팅(발송) 집행이 활성화된 전후 시점의 발송 기획전(녹색 선) 매출 규모 추이를 검토하십시오.")
@@ -5512,14 +6095,56 @@ def main():
                 file_name=f"발송성과_리포트_{datetime.date.today():%Y%m%d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+        # ── 매칭 품질 상시 감시 — 특정 주차부터 매칭이 무너지면(시트 형식 변경 등) 즉시 보이게 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 🧩 매칭 품질 — 주차별 매칭률 추이")
+        _mq = raw.dropna(subset=["dt"]).copy()
+        if len(_mq):
+            _mq["주"] = _mq["dt"].dt.to_period("W").dt.start_time
+            wk_m = (_mq.groupby("주").agg(건수=("af", "size"), 매칭률=("matched", "mean"))
+                    .reset_index().sort_values("주"))
+            _mcolors = [PALETTE["red"] if v < 0.8 else PALETTE["green"] for v in wk_m["매칭률"]]
+            figm = go.Figure(go.Bar(
+                x=wk_m["주"], y=wk_m["매칭률"] * 100, marker_color=_mcolors,
+                customdata=wk_m["건수"],
+                hovertemplate="%{x|%m/%d} 주<br>매칭률 %{y:.0f}% · 캠페인 %{customdata}건<extra></extra>"))
+            laym = base_layout(h=260, title="주차별 문구 매칭률(%) — 80% 미만 주는 빨강")
+            laym["yaxis"]["range"] = [0, 108]
+            figm.update_layout(**laym)
+            st.plotly_chart(figm, width="stretch")
+            _low = wk_m[wk_m["매칭률"] < 0.8]
+            if len(_low):
+                st.caption("⚠️ 매칭률 80% 미만 주: "
+                           + ", ".join(pd.Timestamp(w).strftime("%m/%d") for w in _low["주"])
+                           + " — 해당 주차 기획 시트의 날짜·AF코드 형식을 확인해 보세요.")
+
         st.markdown("##### ⚠️ 매칭 진단 — 실적은 있지만 문구를 못 찾은 건")
-        miss = raw[~raw["matched"]][["date", "af", "cat", "brand", "send", "amt"]]
+        miss = raw[~raw["matched"]][["date", "af", "cat", "brand", "send", "amt"]].copy()
         if len(miss):
+            # 원인 4분류 — 기획 lookup이 세션에 있을 때만 (업로드 1회성 로그를 상시 진단으로)
+            _lk = st.session_state.get("plan_lookup_gs")
+            if _lk:
+                _pdates = {d for (d, a) in _lk}
+                _pafs = {a for (d, a) in _lk}
+
+                def _cause(r):
+                    d_ok = str(r["date"]) in _pdates
+                    a_ok = str(r["af"]) in _pafs
+                    if d_ok and a_ok:
+                        return "날짜·AF 각각은 있음 (조합 불일치)"
+                    if d_ok:
+                        return "AF코드가 기획에 없음"
+                    if a_ok:
+                        return "날짜가 기획에 없음"
+                    return "날짜·AF 모두 없음 (기획 미적재 주차)"
+                miss["원인 추정"] = [_cause(r) for _, r in miss.iterrows()]
+                _cnt = miss["원인 추정"].value_counts()
+                st.caption("원인 분류 — " + " · ".join(f"**{k}** {v}건" for k, v in _cnt.items()))
             st.dataframe(miss.rename(columns={"date": "날짜", "af": "AF코드", "cat": "카테고리",
                                               "brand": "브랜드", "send": "발송", "amt": "거래액"}),
                          hide_index=True, width="stretch")
-            st.caption("AF코드 오타·미등록·날짜 불일치 가능성이 있어요. 기획 파일을 확인해 보세요.")
+            st.caption("AF코드 오타·미등록·날짜 불일치 가능성이 있어요. 기획 파일을 확인해 보세요. "
+                       "(원인 분류는 「기획 문구 가져오기」로 적재된 기획 기준)")
         else:
             st.success("모든 실적 캠페인에 문구가 매칭됐어요.")
         glossary()
@@ -5579,8 +6204,12 @@ def main():
         # ── KPI 카드 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📊 주요 지표 (이상치 제외 기간 기준)")
-        _latest = pc_clean.sort_values("date").iloc[-1]
-        _prev   = pc_clean.sort_values("date").iloc[-8] if len(pc_clean) >= 8 else pc_clean.sort_values("date").iloc[0]
+        _pc_sorted = pc_clean.sort_values("date")
+        _latest = _pc_sorted.iloc[-1]
+        # '최근 7일' 비교는 행 위치(iloc[-8])가 아니라 실제 날짜 기준 — 중간에 결측일이
+        # 있으면 7일 전이 아닌 날과 비교되던 문제 방지
+        _prev_cand = _pc_sorted[_pc_sorted["date"] <= _latest["date"] - pd.Timedelta(days=7)]
+        _prev = _prev_cand.iloc[-1] if len(_prev_cand) else _pc_sorted.iloc[0]
         _consent_now  = int(_latest["consent"])  if pd.notna(_latest["consent"])  else 0
         _consent_prev = int(_prev["consent"])    if pd.notna(_prev["consent"])    else 0
         _consent_delta = _consent_now - _consent_prev
@@ -5624,6 +6253,19 @@ def main():
             st.dataframe(wk_show, hide_index=True, width="stretch", height=360)
             st.caption("**기말 동의수**는 그 주 마지막 날 기준 누적 동의자 수(스냅샷)이고, "
                        "**순증감·신규추가·기존이탈**은 그 주 전체를 더한 값(합계)이에요.")
+
+            # 이탈률 급등 조기 경보 — 최근 주 이탈률이 과거 추세 대비 z>2면 배너
+            if len(wk_df) >= 9:
+                _wr_al = wk_df.sort_values("주시작").copy()
+                _wr_al["이탈률"] = _wr_al["탈퇴합"] / _wr_al["기말동의수"].replace(0, np.nan)
+                _hist_r = _wr_al["이탈률"].iloc[:-1].tail(26).dropna()
+                _now_r = _wr_al["이탈률"].iloc[-1]
+                if len(_hist_r) >= 8 and _hist_r.std(ddof=0) > 0 and pd.notna(_now_r):
+                    _z_r = (float(_now_r) - float(_hist_r.mean())) / float(_hist_r.std(ddof=0))
+                    if _z_r > 2:
+                        st.warning(f"🚨 최근 주 이탈률 {_now_r*100:.2f}%가 과거 26주 평균"
+                                   f"({_hist_r.mean()*100:.2f}%) 대비 +{_z_r:.1f}σ — 급등 신호예요. "
+                                   "최근 발송 강도·캠페인 내용을 점검해 보세요.")
 
             # 주간 CSV 다운로드 — 위에서 계산한 wk_df 재사용 (동일 인자 재계산 제거)
             _wk_raw = wk_df
@@ -5670,8 +6312,9 @@ def main():
             hovertemplate="%{x|%Y-%m-%d}<br>신규추가: %{y:,}명<extra></extra>"))
         fig_addrem.add_trace(go.Bar(
             x=_pc_plot["date"], y=-_pc_plot["removed"],
-            name="기존이탈(음수)", marker_color=PALETTE["red"],
-            hovertemplate="%{x|%Y-%m-%d}<br>기존이탈: %{y:,}명<extra></extra>"))
+            name="기존이탈(아래 방향)", marker_color=PALETTE["red"],
+            customdata=_pc_plot["removed"],           # hover는 양수로 — "-1,234명" 오독 방지
+            hovertemplate="%{x|%Y-%m-%d}<br>기존이탈: %{customdata:,}명<extra></extra>"))
         # 순증감 라인
         fig_addrem.add_trace(go.Scatter(
             x=_pc_plot["date"], y=_pc_plot["diff"],
@@ -5755,7 +6398,7 @@ def main():
                 stackgroup="one", line=dict(color=PALETTE["green"]),
                 hovertemplate="%{x|%Y-%m-%d}<br>신규: %{y:,}명<extra></extra>"))
             
-            lay_stack = base_layout(h=360, title="기존/신규 수신동의 구성 비율 추이")
+            lay_stack = base_layout(h=360, title="기존/신규 수신동의 구성 추이 (절대값 누적)")
             lay_stack["showlegend"] = True
             lay_stack["yaxis"]["gridcolor"] = "#f1f5f9"
             lay_stack["yaxis"]["title"] = "수신동의 수"
@@ -5772,104 +6415,144 @@ def main():
             st.caption("일별은 노이즈가 커서 주간·월간으로 묶어서 봐요. "
                        "발송이 많이 나간 기간에 순증감(신규−탈퇴)이 줄거나 마이너스면 "
                        "‘발송 피로 → 동의 이탈’ 신호예요. (선택한 그룹·기간·이상치 제외 기준)")
-            xc1, xc2 = st.columns(2)
-            _gran = xc1.radio("집계 단위", ["주간", "월간"], horizontal=True, key="pc_x_gran")
-            _sendlab = xc2.selectbox("발송 강도 지표", ["총 발송 건수", "인당 발송 건수"], key="pc_x_send")
-            _sendcol = "totalSend" if _sendlab == "총 발송 건수" else "perSend"
-            _sendagg = "sum" if _sendcol == "totalSend" else "mean"
+            @st.fragment
+            def _cross_analysis_block():
+                # fragment — 집계 단위·지표 변경 시 페이지 전체가 아니라 이 블록만 다시 그린다
+                xc1, xc2 = st.columns(2)
+                _gran = xc1.radio("집계 단위", ["주간", "월간"], horizontal=True, key="pc_x_gran")
+                _sendlab = xc2.selectbox("발송 강도 지표", ["총 발송 건수", "인당 발송 건수"], key="pc_x_send")
+                _sendcol = "totalSend" if _sendlab == "총 발송 건수" else "perSend"
+                _sendagg = "sum" if _sendcol == "totalSend" else "mean"
 
-            def _pk(dts):
-                per = "M" if _gran == "월간" else "W-SUN"
-                return dts.dt.to_period(per).apply(lambda p: p.start_time)
+                def _pk(dts):
+                    per = "M" if _gran == "월간" else "W-SUN"
+                    return dts.dt.to_period(per).apply(lambda p: p.start_time)
 
-            # 동의(선택 그룹·이상치 제외·기간 필터 = pc_clean)를 기간 단위로 집계
-            cc = pc_clean.copy()
-            cc["_pk"] = _pk(cc["date"])
-            cons_g = cc.groupby("_pk").agg(
-                순증감=("diff", "sum"), 신규추가=("added", "sum"),
-                탈퇴=("removed", "sum"), 기말동의=("consent", "last"),
-                동의일수=("date", "count")).reset_index()
-            # MTD 발송(같은 기간 필터)을 기간 단위로 집계
-            _mdf = mtd_data["df"]
-            mm = _mdf[(_mdf["date"] >= _d0) & (_mdf["date"] <= _d1)].copy()
-            mm["_pk"] = _pk(mm["date"])
-            send_g = mm.groupby("_pk").agg(
-                발송지표=(_sendcol, _sendagg), 총발송=("totalSend", "sum"),
-                CTR=("ctr", "mean"), 발송일수=("date", "count")).reset_index()
-            mrg = cons_g.merge(send_g, on="_pk", how="inner").sort_values("_pk")
-            # 주간은 양쪽 4일 이상 있는 기간만(부분 주 왜곡 방지)
-            if _gran == "주간":
-                mrg = mrg[(mrg["동의일수"] >= 4) & (mrg["발송일수"] >= 4)]
+                # 동의(선택 그룹·이상치 제외·기간 필터 = pc_clean)를 기간 단위로 집계
+                cc = pc_clean.copy()
+                cc["_pk"] = _pk(cc["date"])
+                cons_g = cc.groupby("_pk").agg(
+                    순증감=("diff", "sum"), 신규추가=("added", "sum"),
+                    탈퇴=("removed", "sum"), 기말동의=("consent", "last"),
+                    동의일수=("date", "count")).reset_index()
+                # MTD 발송(같은 기간 필터)을 기간 단위로 집계
+                _mdf = mtd_data["df"]
+                mm = _mdf[(_mdf["date"] >= _d0) & (_mdf["date"] <= _d1)].copy()
+                mm["_pk"] = _pk(mm["date"])
+                send_g = mm.groupby("_pk").agg(
+                    발송지표=(_sendcol, _sendagg), 총발송=("totalSend", "sum"),
+                    CTR=("ctr", "mean"), 발송일수=("date", "count")).reset_index()
+                mrg = cons_g.merge(send_g, on="_pk", how="inner").sort_values("_pk")
+                # 주간은 양쪽 4일 이상 있는 기간만(부분 주 왜곡 방지)
+                if _gran == "주간":
+                    mrg = mrg[(mrg["동의일수"] >= 4) & (mrg["발송일수"] >= 4)]
 
-            if len(mrg) < 3:
-                st.warning("두 데이터가 겹치는 기간이 3개 미만이라 크로스 분석을 못 해요. "
-                           "발송(MTD)과 동의 데이터의 기간이 겹치는지 확인해 주세요.")
-            else:
-                _sfx = "" if _sendcol == "totalSend" else "건"
-                fig_x = overlay_dual(
-                    mrg["_pk"], mrg["발송지표"], _sendlab,
-                    mrg["순증감"], "동의 순증감(명)",
-                    PALETTE["slate"], PALETTE["purple"], h=440,
-                    line_suffix="명",
-                    title=f"{_gran} {_sendlab}(좌·막대) ↔ 수신동의 순증감(우·선)")
-                st.plotly_chart(fig_x, width="stretch")
+                if len(mrg) < 3:
+                    st.warning("두 데이터가 겹치는 기간이 3개 미만이라 크로스 분석을 못 해요. "
+                               "발송(MTD)과 동의 데이터의 기간이 겹치는지 확인해 주세요.")
+                else:
+                    _sfx = "" if _sendcol == "totalSend" else "건"
+                    fig_x = overlay_dual(
+                        mrg["_pk"], mrg["발송지표"], _sendlab,
+                        mrg["순증감"], "동의 순증감(명)",
+                        PALETTE["slate"], PALETTE["purple"], h=440,
+                        line_suffix="명",
+                        title=f"{_gran} {_sendlab}(좌·막대) ↔ 수신동의 순증감(우·선)")
+                    st.plotly_chart(fig_x, width="stretch")
 
-                # 상관 + 산점도(추세선) — 발송 강도 vs 순증감
-                x = mrg["발송지표"].values.astype(float)
-                y = mrg["순증감"].values.astype(float)
-                msk = ~np.isnan(x) & ~np.isnan(y)
-                if msk.sum() >= 3 and np.std(x[msk]) > 0 and np.std(y[msk]) > 0:
-                    r = float(np.corrcoef(x[msk], y[msk])[0, 1])
-                    sl, ic, _, p, _ = stats.linregress(x[msk], y[msk])
-                    xs = np.linspace(x[msk].min(), x[msk].max(), 50)
-                    _pk_labels = [pd.Timestamp(d).strftime("%Y-%m-%d")
-                                  for d in mrg["_pk"].to_numpy()[msk]]
-                    fig_sc = go.Figure()
-                    fig_sc.add_trace(go.Scatter(
-                        x=x[msk], y=y[msk], mode="markers",
-                        marker=dict(color=PALETTE["blue"], size=10),
-                        customdata=_pk_labels,
-                        hovertemplate="%{customdata}<br>" + _sendlab + ": %{x:,.0f}"
-                                      + _sfx + "<br>순증감: %{y:+,.0f}명<extra></extra>",
-                        name="기간"))
-                    fig_sc.add_trace(go.Scatter(
-                        x=xs, y=sl * xs + ic, mode="lines", name="추세",
-                        line=dict(color=PALETTE["red"], width=2, dash="dot")))
-                    lay_sc = base_layout(h=340, title=f"{_sendlab} vs 순증감 — 기간 단위 산점도")
-                    lay_sc["showlegend"] = False
-                    lay_sc["yaxis"]["gridcolor"] = "#f1f5f9"
-                    lay_sc["yaxis"]["zeroline"] = True
-                    lay_sc["yaxis"]["zerolinecolor"] = "#cbd5e1"
-                    fig_sc.update_layout(**lay_sc)
-                    st.plotly_chart(fig_sc, width="stretch")
+                    # 상관 + 산점도(추세선) — 발송 강도 vs 순증감
+                    x = mrg["발송지표"].values.astype(float)
+                    y = mrg["순증감"].values.astype(float)
+                    msk = ~np.isnan(x) & ~np.isnan(y)
+                    if msk.sum() >= 3 and np.std(x[msk]) > 0 and np.std(y[msk]) > 0:
+                        r = float(np.corrcoef(x[msk], y[msk])[0, 1])
+                        sl, ic, _, p, _ = stats.linregress(x[msk], y[msk])
+                        xs = np.linspace(x[msk].min(), x[msk].max(), 50)
+                        _pk_labels = [pd.Timestamp(d).strftime("%Y-%m-%d")
+                                      for d in mrg["_pk"].to_numpy()[msk]]
+                        fig_sc = go.Figure()
+                        fig_sc.add_trace(go.Scatter(
+                            x=x[msk], y=y[msk], mode="markers",
+                            marker=dict(color=PALETTE["blue"], size=10),
+                            customdata=_pk_labels,
+                            hovertemplate="%{customdata}<br>" + _sendlab + ": %{x:,.0f}"
+                                          + _sfx + "<br>순증감: %{y:+,.0f}명<extra></extra>",
+                            name="기간"))
+                        fig_sc.add_trace(go.Scatter(
+                            x=xs, y=sl * xs + ic, mode="lines", name="추세",
+                            line=dict(color=PALETTE["red"], width=2, dash="dot")))
+                        lay_sc = base_layout(h=340, title=f"{_sendlab} vs 순증감 — 기간 단위 산점도")
+                        lay_sc["showlegend"] = False
+                        lay_sc["yaxis"]["gridcolor"] = "#f1f5f9"
+                        lay_sc["yaxis"]["zeroline"] = True
+                        lay_sc["yaxis"]["zerolinecolor"] = "#cbd5e1"
+                        fig_sc.update_layout(**lay_sc)
+                        st.plotly_chart(fig_sc, width="stretch")
 
-                    if r <= -0.3:
-                        _msg = ("발송이 많은 기간일수록 순증감이 낮아져요 — <b>발송 피로로 동의가 "
-                                "정체·이탈</b>하는 신호예요. 발송 강도 상한을 검토해 보세요.")
-                    elif r >= 0.3:
-                        _msg = ("발송이 많은 기간에 순증감도 높아요 — 아직 피로 구간은 아니고 "
-                                "발송이 동의 확보와 함께 가는 편이에요.")
-                    else:
-                        _msg = "발송 강도와 순증감 사이에 뚜렷한 관계는 약해요."
-                    st.markdown(
-                        f'<div class="appendix"><b>상관</b> — {_sendlab} ↔ 순증감: r={r:.2f}, '
-                        f'{sig_label(p)}. {_msg}<br>상관은 인과가 아니며 시즌·이벤트가 섞일 수 있어요. '
-                        '순증감이 마이너스인 기간의 발송량을 특히 함께 보세요.</div>',
-                        unsafe_allow_html=True)
+                        if r <= -0.3:
+                            _msg = ("발송이 많은 기간일수록 순증감이 낮아져요 — <b>발송 피로로 동의가 "
+                                    "정체·이탈</b>하는 신호예요. 발송 강도 상한을 검토해 보세요.")
+                        elif r >= 0.3:
+                            _msg = ("발송이 많은 기간에 순증감도 높아요 — 아직 피로 구간은 아니고 "
+                                    "발송이 동의 확보와 함께 가는 편이에요.")
+                        else:
+                            _msg = "발송 강도와 순증감 사이에 뚜렷한 관계는 약해요."
+                        st.markdown(
+                            f'<div class="appendix"><b>상관</b> — {_sendlab} ↔ 순증감: r={r:.2f}, '
+                            f'{sig_label(p)}. {_msg}<br>상관은 인과가 아니며 시즌·이벤트가 섞일 수 있어요. '
+                            '순증감이 마이너스인 기간의 발송량을 특히 함께 보세요.</div>',
+                            unsafe_allow_html=True)
 
-                # 기간별 표 (발송 강도 · 신규추가 · 탈퇴 · 순증감)
-                _xt = mrg.copy()
-                _xt["기간"] = _xt["_pk"].dt.strftime("%Y-%m-%d")
-                _xt["발송지표"] = _xt["발송지표"].map(
-                    lambda v: f"{v:,.0f}" + ("" if _sendcol == "totalSend" else "건"))
-                for _c in ("신규추가", "탈퇴", "총발송"):
-                    _xt[_c] = _xt[_c].map(lambda v: f"{v:,.0f}")
-                _xt["순증감"] = _xt["순증감"].map(lambda v: f"{v:+,.0f}")
-                _xt["CTR"] = _xt["CTR"].map(lambda v: f"{v*100:.2f}%" if pd.notna(v) else "–")
-                st.dataframe(
-                    _xt[["기간", "발송지표", "총발송", "CTR", "신규추가", "탈퇴", "순증감"]]
-                    .rename(columns={"발송지표": _sendlab, "총발송": "총 발송(합)"}),
-                    hide_index=True, width="stretch", height=300)
+                    # 기간별 표 (발송 강도 · 신규추가 · 탈퇴 · 순증감)
+                    _xt = mrg.copy()
+                    _xt["기간"] = _xt["_pk"].dt.strftime("%Y-%m-%d")
+                    _xt["발송지표"] = _xt["발송지표"].map(
+                        lambda v: f"{v:,.0f}" + ("" if _sendcol == "totalSend" else "건"))
+                    for _c in ("신규추가", "탈퇴", "총발송"):
+                        _xt[_c] = _xt[_c].map(lambda v: f"{v:,.0f}")
+                    _xt["순증감"] = _xt["순증감"].map(lambda v: f"{v:+,.0f}")
+                    _xt["CTR"] = _xt["CTR"].map(lambda v: f"{v*100:.2f}%" if pd.notna(v) else "–")
+                    st.dataframe(
+                        _xt[["기간", "발송지표", "총발송", "CTR", "신규추가", "탈퇴", "순증감"]]
+                        .rename(columns={"발송지표": _sendlab, "총발송": "총 발송(합)"}),
+                        hide_index=True, width="stretch", height=300)
+
+                # ── 시차(lead-lag) 탐색 — '이번 주 발송 폭증 → k주 후 이탈'의 선행 신호 ──
+                _cw = pc_clean.copy()
+                _cw["_wk"] = _cw["date"].dt.to_period("W-SUN").dt.start_time
+                _rem_w = _cw.groupby("_wk")["removed"].sum()
+                _mmw = _mdf[(_mdf["date"] >= _d0) & (_mdf["date"] <= _d1)].copy()
+                _mmw["_wk"] = _mmw["date"].dt.to_period("W-SUN").dt.start_time
+                _snd_w = _mmw.groupby("_wk")["totalSend"].sum()
+                _joined = pd.concat([_snd_w.rename("send"), _rem_w.rename("removed")],
+                                    axis=1).dropna().sort_index()
+                if len(_joined) >= 8:
+                    _ll_rows = []
+                    for _k in range(0, 5):
+                        _x = _joined["send"].shift(_k)
+                        _y = _joined["removed"]
+                        _mk = _x.notna() & _y.notna()
+                        if _mk.sum() >= 6 and _x[_mk].std() > 0 and _y[_mk].std() > 0:
+                            _r_k = float(np.corrcoef(_x[_mk], _y[_mk])[0, 1])
+                            _p_k = float(stats.linregress(_x[_mk], _y[_mk]).pvalue)
+                            _ll_rows.append((_k, _r_k, _p_k, int(_mk.sum())))
+                    if _ll_rows:
+                        st.markdown("##### ⏱ 발송량 → 이탈 시차 탐색 (주간)")
+                        _lt = pd.DataFrame(_ll_rows, columns=["시차(주)", "상관 r", "p값", "표본(주)"])
+                        _lt["상관 r"] = _lt["상관 r"].map(lambda v: f"{v:+.2f}")
+                        _lt["p값"] = _lt["p값"].map(lambda v: f"{v:.3f}")
+                        st.dataframe(_lt, hide_index=True, width="stretch")
+                        _best_ll = max(_ll_rows, key=lambda t: abs(t[1]))
+                        if _best_ll[0] > 0 and _best_ll[1] > 0.3 and _best_ll[2] < 0.1:
+                            st.markdown(f'<div class="appendix">발송량 증가가 <b>{_best_ll[0]}주 후</b> '
+                                        f'이탈 증가와 가장 강하게 연결돼요 (r={_best_ll[1]:+.2f}, '
+                                        f'p={_best_ll[2]:.3f}). 발송 폭증 주 이후 {_best_ll[0]}주간은 '
+                                        '이탈 모니터링과 발송 강도 조절을 권장해요.</div>',
+                                        unsafe_allow_html=True)
+                        else:
+                            st.caption("현재 데이터에선 '발송 증가 → 이후 주 이탈 증가'의 뚜렷한 "
+                                       "시차 신호가 없어요 (시차 0~4주 상관 모두 약함).")
+            _cross_analysis_block()
 
         # ── 이상치 제외 목록 ──
         with st.expander(f"⚠️ 제외된 이상치 날짜 ({n_outlier}일)"):
@@ -5883,6 +6566,8 @@ def main():
                 st.caption(f"신규추가 또는 기존이탈이 {PUSH_OUTLIER_THRESHOLD:,}명 초과한 날짜예요. 배치 이관·대규모 재동의 등 특이 이벤트로 판단해 제외했어요.")
             else:
                 st.success("이상치 없음")
+
+        glossary()                                     # 유일하게 빠져 있던 페이지 (개발 규칙)
 
     # ── 페이지 리포트 다운로드 (HTML → 브라우저 인쇄로 PDF) ──
     if _REPORT:

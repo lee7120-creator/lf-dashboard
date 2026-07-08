@@ -409,7 +409,10 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
 ### 차트 공통 규칙
 - **모든 차트 레이아웃은 `base_layout()`** 을 쓴다 — 폰트(Pretendard)·호버라벨·막대 라운딩 포함.
   시계열이면 `base_layout(..., hover="x")` 로 통합 툴팁+크로스헤어를 켠다.
-- **이중축(두 y축) 금지** — 스케일이 다른 두 지표는 `stacked_panels()` (X축 공유 상막대/하선 패널) 사용.
+- 스케일이 다른 두 지표는 기본적으로 `stacked_panels()` (X축 공유 상막대/하선 패널).
+  **이중축이 필요하면 `overlay_dual()` 헬퍼로만** (사용자 명시 요청으로 도입 — 축 색=시리즈 색
+  매칭이 강제됨). 그 외 임의의 이중축 구현 금지, 기존 overlay_dual 사용처를 규칙 위반으로
+  '수정'하지 말 것.
 - **소구 속성 시리즈 색은 `tag_color(속성명)`** — TAG_BOOLS 순서에 고정. 필터가 바뀌어도 같은 속성=같은 색.
 - 시간대(HHMM) 표시는 반드시 `fmt_hhmm()`(차트/표) 또는 `_hm_label()`(셀렉트박스 format_func).
   `int(hour)`를 그대로 문자열에 붙이면 1050 → "1050시" 버그가 된다.
@@ -418,8 +421,19 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
 ### 페이지 작성 규칙
 - 모든 페이지 하단에 **`glossary()`** 호출 (용어 주석 접이식). 새 용어를 쓰면 glossary()에 항목 추가.
 - 문구 표+원문 보기는 `render_messages(df, mcol, key)` 재사용 — 행클릭(on_select) 연동 포함.
-- 행클릭·셀렉트박스를 직접 만들 땐, 지표/정렬 변경으로 세션 선택값이 무효가 될 수 있으니
-  `if st.session_state.get(key) not in opts: st.session_state.pop(key)` 가드를 넣는다.
+- 행클릭·셀렉트박스를 직접 만들 땐 **`guard_select(key, opts)`** 를 selectbox 직전에 호출
+  (지표/필터 변경으로 세션 선택값이 옵션 밖이 되는 문제의 공용 가드).
+- 캠페인/슬롯 **순위·추천은 raw 평균 정렬 금지** — `rank_adjusted(df, col, ascending)` 사용
+  (비율=Jeffreys 경계, 금액=수축 평균 — 소표본 요행의 순위 점령 방지. 표시 값은 원값 유지).
+- 수평 범례는 `legend_h()`, 막대 텍스트 라벨은 `bar_label(v, col, is_pct)` 재사용.
+- 히트맵은 n<3 셀 마스킹 + hover에 표본수(n) 표기 관행 유지.
+
+### 저장 계층 규칙
+- `storage_save()`는 **성공 여부(bool)를 반환** — 반드시 `if storage_save(...):` 로 받아서
+  성공 시에만 세션 갱신·성공 메시지. (읽기 실패 상태에선 덮어쓰기 방지를 위해 저장이 차단됨)
+- push 데이터는 로드 직후 **`finalize_push()`** 통과 필수 (gsheets 라운드트립이 전값을
+  문자열로 되돌림 — campaign의 `_finalize`와 대칭).
+- '오늘' 계산은 `date.today()` 금지 — **`today_kst()`** 사용 (서버 UTC라 KST 새벽에 주 경계가 밀림).
 
 ### 폰트
 - Pretendard 전면 적용: `.streamlit/config.toml`의 `theme.font`+`fontFaces`(표는 캔버스 렌더링이라
