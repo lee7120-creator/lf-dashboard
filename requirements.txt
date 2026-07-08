@@ -1,11 +1,9 @@
-streamlit
+streamlit>=1.58
 pandas
 openpyxl
-plotly
+plotly>=6
 scipy
 numpy
-seaborn
-matplotlib
 streamlit-quill
 google-genai
 gspread>=6.0.0

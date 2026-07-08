@@ -1255,6 +1255,11 @@ def _has(s, words):
     return any(w in s for w in words)
 
 
+# 태그별 키워드 목록을 정규식 1개로 사전 컴파일 — 캠페인 1건당 부분문자열 검사를
+# 250여 회 돌리던 것을 태그당 1회 검색으로 줄인다 (의미는 _has와 동일: '아무 키워드나 포함')
+KW_RE = {k: re.compile("|".join(re.escape(w) for w in ws)) for k, ws in KW.items()}
+
+
 def _s(v):
     """NaN/None/숫자 → 안전한 문자열."""
     if v is None or (isinstance(v, float) and np.isnan(v)):
@@ -1267,7 +1272,7 @@ def tag_copy(title, body=""):
     t = _s(title)
     b = _s(body)
     full = (t + " " + b).strip()
-    d = {k: _has(full, ws) for k, ws in KW.items()}
+    d = {k: bool(KW_RE[k].search(full)) for k in KW}
     
     has_pct = False
     for m in PCT_RE.finditer(full):
@@ -1290,11 +1295,15 @@ TAG_BOOLS = list(KW.keys()) + ["질문형", "이모지"]
 
 
 def add_tags(df):
-    """머지 DataFrame 에 문구 속성 컬럼 추가."""
+    """머지 DataFrame 에 문구 속성 컬럼 추가.
+
+    df.apply(axis=1)는 행마다 Series를 만들어 태깅 자체보다 오버헤드가 크다 —
+    리스트 zip 순회로 대체 (결과 동일, 캐시 미스 재태깅 시 수 배 빠름)."""
     if df.empty:
         return df
-    tags = df.apply(lambda r: tag_copy(r.get("title", ""), r.get("body", "")), axis=1)
-    tdf = pd.DataFrame(list(tags), index=df.index)
+    titles = df["title"].tolist() if "title" in df else [""] * len(df)
+    bodies = df["body"].tolist() if "body" in df else [""] * len(df)
+    tdf = pd.DataFrame([tag_copy(t, b) for t, b in zip(titles, bodies)], index=df.index)
     return pd.concat([df, tdf], axis=1)
 
 
@@ -1748,10 +1757,29 @@ def main():
     @st.cache_data(show_spinner=False)
     def cached_classify(b): return classify_upload("", b)
 
-    # 태깅 체계 버전 키 — TAG_BOOLS(속성 구성)가 바뀌면 prepare_raw 캐시를 무효화한다.
-    # (st.cache_data는 내부에서 호출하는 tag_copy의 변경을 감지하지 못해, 속성 개편 시
-    #  구버전 태그 컬럼이 캐시로 반환되어 페이지들이 KeyError로 죽는 문제 방지)
-    TAGSET_VER = "|".join(TAG_BOOLS)
+    @st.cache_data(show_spinner=False)
+    def cached_compute_mtd(mtd_df):
+        """compute_mtd 캐시 — 어느 페이지에서든 매 rerun마다 groupby 4회+회귀 5회를
+        다시 돌던 것을 데이터가 같으면 건너뛴다."""
+        return compute_mtd(mtd_df)
+
+    # 키워드/이모지 성과 캐시 — iterrows 토큰화가 rerun마다 돌지 않게.
+    # _ver 에 불용어·토큰 규칙 시그니처를 넣어 규칙 변경 시 캐시가 무효화되게 한다.
+    _KWVER = hashlib.md5((TOKEN_RE.pattern + "|".join(sorted(STOPWORDS))).encode()).hexdigest()[:10]
+
+    @st.cache_data(show_spinner=False)
+    def cached_keyword_perf(d, metric_col, min_n, top, _ver=_KWVER):
+        return keyword_perf(d, metric_col, min_n=min_n, top=top)
+
+    @st.cache_data(show_spinner=False)
+    def cached_emoji_perf(d, metric_col, min_n, top, _ver=_KWVER):
+        return emoji_perf(d, metric_col, min_n=min_n, top=top)
+
+    # 태깅 체계 버전 키 — 속성 구성(TAG_BOOLS)뿐 아니라 키워드 '내용'(KW)이 바뀌어도
+    # prepare_raw 캐시를 무효화한다. (st.cache_data는 내부에서 호출하는 tag_copy의 변경을
+    # 감지하지 못해, 태그명이 그대로면 구버전 태깅 결과가 캐시로 반환되던 구멍 방지)
+    TAGSET_VER = (hashlib.md5(json.dumps(KW, ensure_ascii=False, sort_keys=True).encode())
+                  .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS))
 
     @st.cache_data(show_spinner=False)
     def prepare_raw(work_df, tagset_ver):
@@ -2196,7 +2224,7 @@ def main():
                 st.sidebar.success(f"MTD 저장했어요 ✓ ({tgt})")
     else:
         mtd_work = mtd_stored
-    mtd_data = compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
+    mtd_data = cached_compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
 
     # ── 기획전 성과시트 (기획전번호별 매출) 누적 처리 ──
     if "promo_store_df" not in st.session_state:
@@ -2381,35 +2409,45 @@ def main():
             st.warning("저장된 데이터가 0건이에요. 「💾 저장하기」를 눌러야 다음에도 유지돼요.")
 
         # ── 통합 백업: 캠페인+MTD+기획전+앱푸시 데이터를 한 ZIP 파일로 ──
+        # ZIP 생성은 버튼 클릭 시에만 — expander가 접혀 있어도 매 rerun마다 전체 데이터를
+        # CSV 직렬화+압축하던 것이 모든 페이지 상호작용을 느리게 만들던 문제 방지
         st.markdown("##### 📁 통합 백업 (단일 파일)")
         import zipfile as _zf
-        _zbuf = io.BytesIO()
-        _has_any = False
-        with _zf.ZipFile(_zbuf, "w", _zf.ZIP_DEFLATED) as _z:
-            if len(work):
-                _z.writestr("campaign.csv",
-                    work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"))
-                _has_any = True
-            if mtd_work is not None and len(mtd_work):
-                _z.writestr("mtd.csv",
-                    mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"))
-                _has_any = True
-            if promo_work is not None and len(promo_work):
-                _z.writestr("promo.csv",
-                    promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"))
-                _has_any = True
-            # 앱푸시 수신동의 데이터 연동 백업
-            _push_df = st.session_state.get("push_consent_df")
-            if _push_df is not None and not _push_df.empty:
-                _z.writestr("push_consent.csv",
-                    _push_df.to_csv(index=False).encode("utf-8-sig"))
-                _has_any = True
-        if _has_any:
+        _push_df = st.session_state.get("push_consent_df")
+        _bak_sig = (len(work),
+                    0 if mtd_work is None else len(mtd_work),
+                    0 if promo_work is None else len(promo_work),
+                    0 if _push_df is None else len(_push_df))
+        if st.button("📦 백업 파일 만들기", width="stretch", key="bak_make"):
+            _zbuf = io.BytesIO()
+            _has_any = False
+            with _zf.ZipFile(_zbuf, "w", _zf.ZIP_DEFLATED) as _z:
+                if len(work):
+                    _z.writestr("campaign.csv",
+                        work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"))
+                    _has_any = True
+                if mtd_work is not None and len(mtd_work):
+                    _z.writestr("mtd.csv",
+                        mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"))
+                    _has_any = True
+                if promo_work is not None and len(promo_work):
+                    _z.writestr("promo.csv",
+                        promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"))
+                    _has_any = True
+                if _push_df is not None and not _push_df.empty:
+                    _z.writestr("push_consent.csv",
+                        _push_df.to_csv(index=False).encode("utf-8-sig"))
+                    _has_any = True
+            st.session_state["_bak_zip"] = (_bak_sig, _zbuf.getvalue()) if _has_any else None
+        _bak_cached = st.session_state.get("_bak_zip")
+        if _bak_cached:
+            if _bak_cached[0] != _bak_sig:
+                st.caption("⚠️ 데이터가 바뀌었어요 — 「📦 백업 파일 만들기」를 다시 눌러 최신본을 받으세요.")
             st.download_button(
-                "📥 통합 백업 (전체 ZIP)", _zbuf.getvalue(),
-                file_name=f"lf_dashboard_backup_{datetime.date.today():%Y%m%d}.zip", mime="application/zip",
+                "📥 통합 백업 (전체 ZIP)", _bak_cached[1],
+                file_name=f"lf_dashboard_backup_{today_kst():%Y%m%d}.zip", mime="application/zip",
                 width="stretch", key="bak_all")
-            st.caption("캠페인·MTD·기획전·앱푸시 수신동의 데이터를 모두 포함하여 백업합니다. 이 ZIP 파일을 아래에 다시 올리면 원클릭으로 일괄 복원됩니다.")
+        st.caption("캠페인·MTD·기획전·앱푸시 수신동의 데이터를 모두 포함하여 백업합니다. 이 ZIP 파일을 아래에 다시 올리면 원클릭으로 일괄 복원됩니다.")
         _rest_all = st.file_uploader("통합 백업 복원하기 (ZIP/CSV)", type=["zip", "csv"], key="restore_all",
                                      help="통합 백업(ZIP) 또는 예전 캠페인 백업(CSV) 모두 올릴 수 있어요.")
         if _rest_all is not None:
@@ -3167,7 +3205,9 @@ def main():
                 if regen is not None:
                     if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
                                         help="기준주 실적으로 지표 문구를 자동으로 채워요 (기존 내용 대체)"):
-                        store[nkey] = regen
+                        # callable을 받아 클릭 시에만 평가 — 값으로 받으면 매 rerun마다
+                        # 자동 생성 로직(기획 lookup 전수 순회 등)이 실행된다
+                        store[nkey] = regen() if callable(regen) else regen
                         _notes_save(store)
                         st.session_state[ekey] = False
                         st.rerun()
@@ -3192,9 +3232,9 @@ def main():
         with st.expander("📝 보고란 — 전주 주요 지표 현황 · 금주 집행 내용 요약", expanded=True):
             nb1, nb2 = st.columns(2)
             _note_block(nb1, f"kpi_{_wkkey}", "전주 주요 지표 현황",
-                        regen=_auto_kpi_note(), ai_fn=_ai_kpi_note)
+                        regen=_auto_kpi_note, ai_fn=_ai_kpi_note)
             _note_block(nb2, f"exec_{_this_wkkey}", "금주 집행 내용 요약",
-                        regen=_auto_exec_note(), ai_fn=_ai_exec_note)
+                        regen=_auto_exec_note, ai_fn=_ai_exec_note)
             st.caption("내용은 주차별로 저장돼요 — 기준 주차를 바꾸면 그 주차의 보고란이 열려요. "
                        "'금주 집행 내용 요약'은 선택한 기준 주차와 무관하게 **오늘 기준 이번 주** "
                        "기획 시트를 읽어요(아직 실적이 없는 발송 예정 주라서).")
@@ -4612,7 +4652,7 @@ def main():
             return fig
 
         st.markdown("##### 🔤 키워드별 성과 상위")
-        kdf = keyword_perf(base, mcol, min_n=int(kmin), top=int(ktop))
+        kdf = cached_keyword_perf(base, mcol, int(kmin), int(ktop))
         if len(kdf) == 0:
             st.info("조건에 맞는 키워드가 없어요. 기준을 낮춰 보세요.")
         else:
@@ -4629,7 +4669,7 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 😀 이모지별 성과")
         emin = st.number_input("이모지 최소 표본(캠페인 수)", value=3, min_value=2, step=1, key="p10_emin")
-        edf = emoji_perf(base, mcol, min_n=int(emin), top=30)
+        edf = cached_emoji_perf(base, mcol, int(emin), 30)
         if len(edf) == 0:
             st.info("조건에 맞는 이모지가 없어요. 이모지를 쓴 캠페인이 적을 수 있어요.")
         else:
@@ -5470,10 +5510,8 @@ def main():
             st.caption("**기말 동의수**는 그 주 마지막 날 기준 누적 동의자 수(스냅샷)이고, "
                        "**순증감·신규추가·기존이탈**은 그 주 전체를 더한 값(합계)이에요.")
 
-            # 주간 CSV 다운로드
-            _wk_raw = push_weekly(
-                push_consent_df[(push_consent_df["date"] >= _d0) & (push_consent_df["date"] <= _d1)],
-                group=sel_group)
+            # 주간 CSV 다운로드 — 위에서 계산한 wk_df 재사용 (동일 인자 재계산 제거)
+            _wk_raw = wk_df
             if not _wk_raw.empty:
                 st.download_button(
                     "📥 주간 데이터 CSV",
@@ -5539,9 +5577,7 @@ def main():
         # ── 차트 3: 주간 순증감 바차트 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📊 주간 순증감 추이")
-        _wk_chart = push_weekly(
-            push_consent_df[(push_consent_df["date"] >= _d0) & (push_consent_df["date"] <= _d1)],
-            group=sel_group)
+        _wk_chart = wk_df.copy()                      # 동일 인자 재계산 제거 — 상단 주간 집계 재사용
         if not _wk_chart.empty:
             _wk_chart = _wk_chart.sort_values("주시작")
             _colors_wk = [PALETTE["green"] if v >= 0 else PALETTE["red"] for v in _wk_chart["순증감합"]]
