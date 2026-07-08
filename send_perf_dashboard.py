@@ -4139,12 +4139,12 @@ def main():
         llab = mc1.selectbox("막대 지표 (위)", _keys, index=_keys.index("발송량"), key="p08_wk_left")
         rlab = mc2.selectbox("선 지표 (아래)", _keys, index=_keys.index("RPS"), key="p08_wk_right")
         lc, lpct = WKM[llab]; rc, rpct = WKM[rlab]
-        # 스케일이 다른 두 지표는 이중축 대신 X축 공유 상/하 패널로 — 왜곡 없이 시점 비교
-        fig = stacked_panels(wk["주"], wk[lc] * (100 if lpct else 1), llab,
-                             wk[rc] * (100 if rpct else 1), rlab,
-                             PALETTE["slate"], PALETTE["green"], h=430,
-                             bar_suffix=("%" if lpct else ""), line_suffix=("%" if rpct else ""),
-                             title=f"주차별 {llab}(위) vs {rlab}(아래)")
+        # 좌(막대) 우(선) 이중축 오버레이 차트로 변경
+        fig = overlay_dual(wk["주"], wk[lc] * (100 if lpct else 1), llab,
+                           wk[rc] * (100 if rpct else 1), rlab,
+                           PALETTE["slate"], PALETTE["green"], h=430,
+                           bar_suffix=("%" if lpct else ""), line_suffix=("%" if rpct else ""),
+                           title=f"{llab}(좌·막대) ↔ {rlab}(우·선)")
         st.plotly_chart(fig, width="stretch")
         if _wk_dropped:
             st.caption(f"발송이 미미한 주 {_wk_dropped}개는 추세에서 제외했어요 "
