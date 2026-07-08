@@ -256,7 +256,8 @@ def _week_sheet_end_date(title):
 def parse_plan_gsheet(sh, recent=None, progress_cb=None):
     """구글시트(gspread Spreadsheet) → 기획 lookup. 주차(WEEK_RE) 시트만 순회.
 
-    · 시트를 종료 날짜 기준 최신순 정렬하고, 금주·미래 주차는 제외한다.
+    · 시트를 종료 날짜 기준 최신순 정렬하고, 금주까지 포함하되 미래 주차는 제외한다.
+      (주간보고의 '금주 집행 내용 요약'이 이번 주 기획 시트를 읽어야 해서 금주는 포함)
     · recent=N 이면 최신 N개만 읽어 API 호출/속도를 통제한다.
     · progress_cb(i, total, title) 콜백으로 진행 상황을 외부에 알린다.
     반환: (lookup, 읽은_시트명_리스트)
@@ -271,8 +272,8 @@ def parse_plan_gsheet(sh, recent=None, progress_cb=None):
         else:
             undated.append(ws)                       # 날짜를 못 읽은 시트도 버리지 않는다
     dated.sort(key=lambda x: x[0], reverse=True)
-    last_week_end = date.today() - timedelta(days=date.today().weekday() + 1)
-    week_ws = [ws for d, ws in dated if d <= last_week_end]
+    this_week_end = date.today() + timedelta(days=6 - date.today().weekday())
+    week_ws = [ws for d, ws in dated if d <= this_week_end]
     if recent and recent > 0:
         week_ws = week_ws[:recent]
     else:
@@ -2897,6 +2898,74 @@ def main():
                       "마이너스는 △ 표기를 유지하고 수치를 지어내지 마세요. HTML 태그 없이 순수 텍스트로.")
             return ai_generate(system, _auto_kpi_note(), model)
 
+        def _this_week_range():
+            """오늘(실제 달력 기준) 이 속한 주의 월~일 date 쌍. '금주 집행' 은 선택된 기준주(과거 실적
+            비교용)가 아니라 항상 '오늘' 기준 이번 주 — 아직 실적이 없는 발송 예정 주라서 실적 대신
+            기획(문구) 시트에서 읽어야 한다."""
+            _today = datetime.date.today()
+            _mon = _today - datetime.timedelta(days=_today.weekday())
+            return _mon, _mon + datetime.timedelta(days=6)
+
+        def _this_week_plan_rows():
+            """'기획 문구 가져오기'로 세션에 적재된 lookup에서 이번 주(월~일) 항목만 추출.
+            반환: (월요일, 일요일, [(date_str, af, title, body), ...] 날짜순 정렬) — lookup 없으면 rows=None."""
+            lk = st.session_state.get("plan_lookup_gs")
+            mon, sun = _this_week_range()
+            if not lk:
+                return mon, sun, None
+            lo, hi = mon.strftime("%Y%m%d"), sun.strftime("%Y%m%d")
+            seen, rows = set(), []
+            for (d, af), (title, body) in lk.items():
+                if not d or not (lo <= d <= hi):
+                    continue
+                key = (d, title.strip(), body.strip())
+                if key in seen:                          # 같은 문구가 여러 AF코드(세그먼트)로 중복 등록된 경우 1건만
+                    continue
+                seen.add(key)
+                rows.append((d, af, title, body))
+            rows.sort(key=lambda r: (r[0], r[1]))
+            return mon, sun, rows
+
+        def _auto_exec_note():
+            """이번 주 기획 문구를 날짜순 그대로 나열 — AI 없이 즉시 채우는 템플릿."""
+            mon, sun, rows = _this_week_plan_rows()
+            _rng = f"{mon.month}/{mon.day}~{sun.month}/{sun.day}"
+            if rows is None:
+                return (f"[이번 주 {_rng}] 기획 문구가 아직 없어요 — 사이드바 "
+                        "「📥 기획 문구 가져오기」를 눌러 이번 주 시트를 불러온 뒤 다시 시도해 주세요.")
+            if not rows:
+                return f"[이번 주 {_rng}] 기획 시트에 등록된 캠페인이 없어요."
+            lines = [f"[이번 주 {_rng}] 집행 예정 {len(rows)}건"]
+            for d, af, title, body in rows:
+                dd = f"{int(d[4:6])}/{int(d[6:8])}"
+                b = " ".join(_s(body).split())[:40]
+                lines.append(f"- [{dd}] {af} · {title.strip()}" + (f" — {b}" if b else ""))
+            return "\n".join(lines)
+
+        def _ai_exec_note():
+            mon, sun, rows = _this_week_plan_rows()
+            _rng = f"{mon.month}/{mon.day}~{sun.month}/{sun.day}"
+            if rows is None:
+                return None, ("이번 주 기획 문구가 없어요. 사이드바 「📥 기획 문구 가져오기」를 "
+                              "눌러 이번 주 시트를 먼저 불러와 주세요.")
+            if not rows:
+                return None, f"이번 주({_rng}) 기획 시트에 등록된 캠페인이 없어요."
+            lines = [f"[이번 주 {_rng} 집행 예정 — 총 {len(rows)}건]"]
+            for d, af, title, body in rows[:300]:          # 과도한 프롬프트 길이 방지용 안전 상한
+                dd = f"{int(d[4:6])}/{int(d[6:8])}"
+                b = " ".join(_s(body).split())[:50]
+                lines.append(f"- [{dd}] {af} · {title.strip()}" + (f" │ {b}" if b else ""))
+            system = ("당신은 LF몰 CRM 발송 주간보고 작성자입니다. 아래는 이번 주(월~일) 발송 기획에 "
+                      "등록된 캠페인 문구 목록(날짜·AF코드·제목·내용)입니다. 아직 발송 전이라 실적은 "
+                      "없고 계획만 있는 상태예요. 이 목록만 근거로 '금주 집행 내용 요약' 란에 넣을 "
+                      "요약을 한국어 플레인 텍스트로 작성하세요: "
+                      "1) 이번 주 집행 볼륨·전반적 톤에 대한 총평 1~2줄, "
+                      "2) 요일별 또는 소구·오퍼 유형별 주요 캠페인 하이라이트 불릿 4~6개(날짜 표기 포함), "
+                      "3) 눈에 띄는 반복 소구나 프로모션 패턴이 있으면 마지막에 한 줄 언급. "
+                      "목록에 없는 내용(수치·할인율 등)은 지어내지 말고, 목록에 실제로 있는 문구만 "
+                      "근거로 쓰세요. HTML 태그 없이 순수 텍스트, 불릿은 '- '로 시작.")
+            return ai_generate(system, "\n".join(lines), model)
+
         def _note_block(col, nkey, title, regen=None, ai_fn=None):
             """편집/자동 생성/AI 생성 버튼이 달린 보고란 (weekly_report.report_text_block 계승)."""
             store = st.session_state.wr_notes
@@ -2962,12 +3031,18 @@ def main():
                     st.markdown(_note_render(store.get(nkey, "")), unsafe_allow_html=True)
 
         _wkkey = ref_ws.strftime("%Y%m%d")
+        # '금주 집행'은 기준 주차 선택과 무관하게 항상 '오늘' 기준 이번 주를 가리키므로
+        # 저장 키도 ref_ws가 아니라 실제 이번 주 월요일로 고정한다(기준 주차를 바꿔도 안 사라짐).
+        _this_wkkey = _this_week_range()[0].strftime("%Y%m%d")
         with st.expander("📝 보고란 — 전주 주요 지표 현황 · 금주 집행 내용 요약", expanded=True):
             nb1, nb2 = st.columns(2)
             _note_block(nb1, f"kpi_{_wkkey}", "전주 주요 지표 현황",
                         regen=_auto_kpi_note(), ai_fn=_ai_kpi_note)
-            _note_block(nb2, f"exec_{_wkkey}", "금주 집행 내용 요약")
-            st.caption("내용은 주차별로 저장돼요 — 기준 주차를 바꾸면 그 주차의 보고란이 열려요.")
+            _note_block(nb2, f"exec_{_this_wkkey}", "금주 집행 내용 요약",
+                        regen=_auto_exec_note(), ai_fn=_ai_exec_note)
+            st.caption("내용은 주차별로 저장돼요 — 기준 주차를 바꾸면 그 주차의 보고란이 열려요. "
+                       "'금주 집행 내용 요약'은 선택한 기준 주차와 무관하게 **오늘 기준 이번 주** "
+                       "기획 시트를 읽어요(아직 실적이 없는 발송 예정 주라서).")
 
         # ── 월 누계(MTD) — 기준주 일요일 마감 기준 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
