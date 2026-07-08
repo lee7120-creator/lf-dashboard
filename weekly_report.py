@@ -587,24 +587,6 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
     # 제목 + 액션 버튼 (제목 한 줄, 버튼은 그 아래 정상 너비 컬럼)
     st.markdown(f"**{title}**")
 
-    # AI 참고 메모: 데이터에 안 나오는 배경(프로모션·이벤트·이슈)을 적으면
-    # AI 생성 시 [배경 메모]로 분리 주입돼 원인·맥락 해석에 활용된다.
-    memo_val = ""
-    if ai_fn is not None:
-        mkey = f"{key}__memo"
-        if mkey not in store: store[mkey] = ""
-        with st.expander("🧠 AI 참고 메모 (프로모션·이벤트·운영 이슈 등 배경)",
-                         expanded=bool(store[mkey])):
-            memo_val = st.text_area(
-                "데이터에 안 나오는 배경을 적으면 AI가 원인·맥락 해석에 활용합니다. "
-                "(수치는 데이터에서만 인용)",
-                store[mkey], key=f"wr_memo_{key}", height=120)
-            if st.button("메모 저장", key=f"wr_memosave_{key}",
-                         use_container_width=True):
-                store[mkey] = memo_val
-                all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
-                st.rerun()
-
     if st.session_state[ekey]:
         if HAS_QUILL:
             # Word 수준 리치 에디터 (글자 크기·색·굵게·기울임·밑줄·목록·정렬 등)
@@ -636,6 +618,24 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
     else:
         st.markdown(f"<div class='report-box'>{store[key] or '내용을 입력하세요.'}</div>",
                     unsafe_allow_html=True)
+                    
+    # AI 참고 메모: 데이터에 안 나오는 배경(프로모션·이벤트·이슈)을 적으면
+    # AI 생성 시 [배경 메모]로 분리 주입돼 원인·맥락 해석에 활용된다.
+    memo_val = ""
+    if ai_fn is not None:
+        mkey = f"{key}__memo"
+        if mkey not in store: store[mkey] = ""
+        with st.expander("🧠 AI 참고 메모 (프로모션·이벤트·운영 이슈 등 배경)",
+                         expanded=bool(store[mkey])):
+            memo_val = st.text_area(
+                "데이터에 안 나오는 배경을 적으면 AI가 원인·맥락 해석에 활용합니다. "
+                "(수치는 데이터에서만 인용)",
+                store[mkey], key=f"wr_memo_{key}", height=120)
+            if st.button("메모 저장", key=f"wr_memosave_{key}",
+                         use_container_width=True):
+                store[mkey] = memo_val
+                all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
+                st.rerun()
                     
     n = 2 + (1 if regen is not None else 0) + (1 if ai_fn is not None else 0)
     bcols = st.columns(n)
