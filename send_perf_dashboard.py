@@ -2071,6 +2071,17 @@ def main():
             return won(v)
         return f"{v:,.1f}"
 
+    def guard_select(key, opts):
+        """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
+        무효 선택은 버려서 조용한 리셋/예외를 막는다 (개발 규칙의 pop 가드 일원화)."""
+        if key in st.session_state and st.session_state[key] not in opts:
+            st.session_state.pop(key, None)
+
+    def legend_h():
+        """차트 상단 수평 범례 — 페이지마다 복붙되던 dict를 한 곳으로."""
+        return dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                    bgcolor="rgba(0,0,0,0)")
+
     # ══════════════════════════════════════════════════════════════
     # 사이드바 — 업로드 / 필터 / 페이지
     # ══════════════════════════════════════════════════════════════
@@ -2954,6 +2965,7 @@ def main():
                 iy, iw, _ = ws.isocalendar()
                 return f"{iy}년 {iw}주차 ({ws.strftime('%m/%d')}~{we.strftime('%m/%d')})"
             _wopts = ["전체 기간"] + [_wlab(w) for w in _wks]
+            guard_select("p01_week", _wopts)
             _wsel = st.selectbox("📅 주차 선택", _wopts, index=0, key="p01_week",
                                  help="특정 주차만 보려면 선택해 주세요. 최신 주차가 위에 있어요.")
         base_prev = None                              # 주차 선택 시 '직전 주차' — 전주 대비 증감 표시용
@@ -3116,6 +3128,8 @@ def main():
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🤖 AI가 찾은 핵심 포인트")
+        with st.expander("🔍 AI에 전달되는 데이터 미리보기 (외부 API로 전송돼요)"):
+            st.text(build_facts(base))
         if st.button("AI 인사이트 만들기", key="ai_sum"):
             facts = build_facts(base)
             system = ("당신은 LF몰 CRM PUSH 발송 분석가입니다. 주어진 데이터만 근거로 "
@@ -3155,6 +3169,7 @@ def main():
             return (f"{iy}년 {iw}주차 ({ws.strftime('%m/%d')}~"
                     f"{(ws + pd.Timedelta(days=6)).strftime('%m/%d')})")
         _wlabs = [_wklab(w) for w in _wks_all]
+        guard_select("wr_week", _wlabs)
         ref_sel = st.selectbox("기준 주차", _wlabs, index=0, key="wr_week",
                                help="보고 기준이 되는 주(월~일)예요. 최신 주가 위에 있어요.")
         ref_ws = pd.Timestamp(_wks_all[_wlabs.index(ref_sel)])
@@ -4120,7 +4135,8 @@ def main():
         # ── AI 주간보고 코멘트 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🤖 AI 주간보고 코멘트")
-        if st.button("코멘트 생성", key="wr_ai"):
+
+        def _wr_ai_lines():
             lines = [f"[기준주] {_wklab(ref_ws)}"]
             for met in METS:
                 yv = yoy_w[met] if yoy_w else np.nan
@@ -4131,6 +4147,11 @@ def main():
             lines.append(f"[MTD] 당월 거래액 {_fmt('거래액', cur_mtd['거래액'])} "
                          f"(전월비 {_dlt('거래액', cur_mtd['거래액'], prev_mtd['거래액'])}, "
                          f"전년비 {_dlt('거래액', cur_mtd['거래액'], yoy_mtd['거래액'])})")
+            return lines
+        with st.expander("🔍 AI에 전달되는 데이터 미리보기 (외부 API로 전송돼요)"):
+            st.text("\n".join(_wr_ai_lines()))
+        if st.button("코멘트 생성", key="wr_ai"):
+            lines = _wr_ai_lines()
             system = ("당신은 LF몰 CRM 발송 주간보고 작성자입니다. 주어진 수치만 근거로 임원 보고용 "
                       "요약 코멘트를 한국어로 작성하세요: 1) 금주 총평 2줄, "
                       "2) 좋았던 점·주의할 점 각 2개(수치 인용), 3) 다음 주 액션 제안 2개. "
@@ -4334,6 +4355,7 @@ def main():
                         '0 근처면 각자 좋은 걸 합친 것에 불과하다는 뜻이에요.</div>',
                         unsafe_allow_html=True)
 
+            guard_select("p02_combo", list(cdf["조합"]))
             sel_combo = st.selectbox("조합을 골라 실제 메시지를 확인해 보세요", list(cdf["조합"]), key="p02_combo")
             if sel_combo:
                 parts = sel_combo.split("+")
@@ -4418,6 +4440,7 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📋 속성별 실제 메시지 보기")
         avail_tags = [r["속성"] for _, r in adf.iterrows()] if len(adf) else TAG_BOOLS
+        guard_select("p02_tag", avail_tags)
         sel_tag = st.selectbox("속성 선택", avail_tags, key="p02_tag")
         if sel_tag and sel_tag in base.columns:
             sub = base[base[sel_tag]].copy()
@@ -4621,6 +4644,10 @@ def main():
         cat_opts = sorted(base["cat"].dropna().unique()) if "cat" in base else []
         hour_opts = sorted(base["hour"].dropna().unique()) if "hour" in base else []
         dow_opts = [d for d in ["월", "화", "수", "목", "금", "토", "일"] if d in base["dow_k"].values] if "dow_k" in base else []
+        for _k, _o in (("p04_cat", ["전체"] + [str(c) for c in cat_opts]),
+                       ("p04_hour", ["전체"] + [str(h) for h in hour_opts]),
+                       ("p04_dow", ["전체"] + dow_opts)):
+            guard_select(_k, _o)
         sel_cat_d = dc1.selectbox("카테고리", ["전체"] + [str(c) for c in cat_opts], key="p04_cat")
         sel_hour_d = dc2.selectbox("시간대", ["전체"] + [str(h) for h in hour_opts], key="p04_hour",
                                    format_func=lambda v: v if v == "전체" else _hm_label(v))
@@ -4741,6 +4768,8 @@ def main():
         tc1, tc2 = st.columns(2)
         hour_opts5 = sorted(base["hour"].dropna().unique()) if "hour" in base else []
         dow_opts5 = [d for d in ["월", "화", "수", "목", "금", "토", "일"] if d in base["dow_k"].values] if "dow_k" in base else []
+        guard_select("p05_hour", ["전체"] + [str(h) for h in hour_opts5])
+        guard_select("p05_dow", ["전체"] + dow_opts5)
         sel_h5 = tc1.selectbox("시간대", ["전체"] + [str(h) for h in hour_opts5], key="p05_hour",
                                format_func=lambda v: v if v == "전체" else _hm_label(v))
         sel_d5 = tc2.selectbox("요일", ["전체"] + dow_opts5, key="p05_dow")
@@ -4786,6 +4815,8 @@ def main():
                                     if str(c).strip() not in ("", "nan", "None")]
         attr_opts_ai = ["(전체)"] + ([str(x) for x in sorted(base["attr"].dropna().unique())
                                       if str(x).strip() not in ("", "nan", "None")] if "attr" in base else [])
+        guard_select("ai_draft_cat_sel", cat_opts_ai)
+        guard_select("ai_draft_attr_sel", attr_opts_ai)
         draft_cat_sel = dc1.selectbox("대상 카테고리", cat_opts_ai, key="ai_draft_cat_sel")
         draft_attr_sel = dc2.selectbox("대상 속성", attr_opts_ai, key="ai_draft_attr_sel",
                                        help="발송 속성(통합·정상·이월·입점·BPU 등)으로 범위를 좁힙니다.")
@@ -4944,6 +4975,7 @@ def main():
         st.markdown("##### 📋 주차별 캠페인 보기")
         wk_labels = [f"{r['주'].strftime('%Y-%m-%d')} (캠페인 {r['캠페인수']:.0f}건)" for _, r in wk.iterrows()]
         if wk_labels:
+            guard_select("p08_wk", wk_labels)
             sel_wk = st.selectbox("주차 선택", wk_labels, key="p08_wk")
             wk_idx = wk_labels.index(sel_wk)
             wk_start = wk.iloc[wk_idx]["주"]
@@ -5174,6 +5206,8 @@ def main():
         bpu_opts = sorted(base["bpu"].dropna().astype(str).unique()) if "bpu" in base else []
         bpu_opts = [b for b in bpu_opts if b.strip() not in ("", "nan", "None")]
         prio_opts = sorted(base2["_prio"].dropna().unique()) if "_prio" in base2 else []
+        guard_select("p09_bpu", ["전체"] + bpu_opts)
+        guard_select("p09_prio", ["전체"] + [f"{int(p)}순위" for p in prio_opts])
         sel_bpu9 = bc1.selectbox("BPU", ["전체"] + bpu_opts, key="p09_bpu")
         sel_prio9 = bc2.selectbox("우선순위", ["전체"] + [f"{int(p)}순위" for p in prio_opts], key="p09_prio")
         sub9 = base.copy()
@@ -5333,7 +5367,7 @@ def main():
         lay = base_layout(h=420, ysuffix=("%" if is_pct else ""),
                           title=f"속성별 주차 추이 — 평균 {mlabel}", hover="x")
         lay["showlegend"] = True
-        lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+        lay["legend"] = legend_h()
         fig.update_layout(**lay)
         st.plotly_chart(fig, width="stretch")
 
@@ -5418,7 +5452,7 @@ def main():
                                       line=dict(color=tag_color(t), width=2)))
         layf = base_layout(h=320, title="속성별 주차 사용 빈도(캠페인 수)", hover="x")
         layf["showlegend"] = True
-        layf["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+        layf["legend"] = legend_h()
         figf.update_layout(**layf)
         st.plotly_chart(figf, width="stretch")
         st.markdown('<div class="appendix">상관계수(r)가 통계적으로 유의한 음수(-)이면, 반복 소구 노출로 인한 성과 저하(마모) 가능성이 높음을 시사합니다. 집행 빈도 대비 효율 감소세가 지속될 경우 해당 메시지의 소구 휴지기 수립 및 대체 오퍼 도입을 권장합니다. (단, 카테고리 구성 비율이나 시즌 이벤트 영향성이 혼재할 수 있으므로 보조 지표로 참고하십시오)</div>', unsafe_allow_html=True)
@@ -5617,6 +5651,7 @@ def main():
             st.dataframe(qsum.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
             st.caption(f"기준선: CTR 중앙값 {mx*100:.2f}% · 주문CR 중앙값 {my*100:.2f}%. "
                        "🟡 유입O 주문CRX 영역은 오퍼 구조 및 랜딩 페이지 정비를 권장하며, 🔵 유입X 주문CRO 영역은 발송 타겟 확장 및 제목 메시지 보완을 권장합니다.")
+            guard_select("p14_quad", list(qsum["사분면"]))
             qpick = st.selectbox("사분면 선택 → 캠페인 보기", list(qsum["사분면"]), key="p14_quad")
             render_messages(d[d["사분면"] == qpick], "ord_cr", f"p14_{qpick}")
         else:
@@ -5989,7 +6024,7 @@ def main():
                                              name=name, line=dict(color=clr, width=2)))
                 lay = base_layout(h=420, title=f"월별 {base_lbl} 합계 추이 (발송/미발송 기획전)", hover="x")
                 lay["showlegend"] = True
-                lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+                lay["legend"] = legend_h()
                 fig.update_layout(**lay)
                 st.plotly_chart(fig, width="stretch")
                 cnt = P2.groupby(["월", "발송"]).size().reset_index(name="기획전수")
@@ -6001,7 +6036,7 @@ def main():
                                               name=name, line=dict(color=clr, width=2)))
                 layc = base_layout(h=300, title="월별 기획전 수 (발송/미발송)", hover="x")
                 layc["showlegend"] = True
-                layc["legend"] = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+                layc["legend"] = legend_h()
                 figc.update_layout(**layc)
                 st.plotly_chart(figc, width="stretch")
                 st.caption("기획전 런칭 시작월 기준 집계 데이터입니다. 마케팅(발송) 집행이 활성화된 전후 시점의 발송 기획전(녹색 선) 매출 규모 추이를 검토하십시오.")
