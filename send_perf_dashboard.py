@@ -18,13 +18,6 @@ import numpy as np
 import pandas as pd
 
 try:
-    from streamlit import fragment
-except ImportError:
-    def fragment(func):
-        return func
-
-
-try:
     from streamlit_quill import st_quill
     HAS_QUILL = True
 except Exception:
@@ -1565,7 +1558,6 @@ def main():
         except ValueError:
             return PALETTE["slate"]
 
-    @fragment
     def stacked_panels(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
                        h=430, bar_suffix="", line_suffix="", title=""):
         """이중축 대신 X축을 공유하는 상(막대)/하(선) 패널 — 두 지표의 스케일을 섞지 않으면서
@@ -1593,7 +1585,6 @@ def main():
         fig.update_yaxes(ticksuffix=line_suffix, row=2, col=1)
         return fig
 
-    @fragment
     def overlay_dual(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
                      h=430, bar_suffix="", line_suffix="", title=""):
         """한 차트 이중축 오버레이 — 막대(좌축)+선(우축)을 같은 X에 겹쳐 그린다.
@@ -2242,19 +2233,6 @@ def main():
     if parse_log:
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))
-
-    with st.sidebar.expander("📖 지표 용어 사전", expanded=False):
-        st.markdown("""
-        **[ 핵심 성과 지표 ]**
-        * **UV (Unique Visitors)**: 푸시를 클릭하여 앱/웹으로 유입된 순 방문자 수
-        * **CTR (Click-Through Rate)**: 총 발송 건수 대비 클릭 비율
-        * **CR (Conversion Rate)**: 유입된 유저(UV) 대비 실제 구매로 이어진 비율
-        * **AOV (Average Order Value)**: 결제 1건당 평균 구매액 (객단가)
-        * **RPS (Revenue Per Send)**: 푸시 발송 1건당 발생한 평균 매출액
-        
-        **[ 기간 및 기타 지표 ]**
-        * **MTD (Month-to-Date)**: 해당 월 1일부터 현재(기준일)까지의 누적 실적
-        """)
 
     with st.sidebar.expander("데이터 관리"):
         _n_saved = len(stored) if stored is not None else 0
@@ -3719,7 +3697,6 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
 
-        @fragment
         def heat(df, idx, col, title):
             pv = df.pivot_table(index=idx, columns=col, values=mcol, aggfunc="mean")
             if pv.empty:
@@ -3831,7 +3808,6 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
 
-        @fragment
         def barby(key, title, order=None):
             g = base.groupby(key)[mcol].mean()
             if order: g = g.reindex([o for o in order if o in g.index])
@@ -4258,7 +4234,6 @@ def main():
                                 rps=(a / s if s else np.nan), aov=(a / o if o else np.nan), amt=a))
             return pd.DataFrame(out)
 
-        @fragment
         def eff_table(t, keyname):
             ren = {"_key": keyname, "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS",
                    "aov": "객단가", "amt": "거래액"}
