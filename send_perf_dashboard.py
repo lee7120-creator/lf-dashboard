@@ -2972,33 +2972,6 @@ def main():
             ekey = f"_wr_note_edit_{nkey}"
             with col:
                 st.markdown(f"**{title}**")
-                bcols = st.columns(1 + (regen is not None) + (ai_fn is not None))
-                bi = 0
-                editing = st.session_state.get(ekey, False)
-                if bcols[bi].button("보기" if editing else "편집", key=f"btn_e_{nkey}", width="stretch"):
-                    st.session_state[ekey] = not editing
-                    st.rerun()
-                bi += 1
-                if regen is not None:
-                    if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
-                                        help="기준주 실적으로 지표 문구를 자동으로 채워요 (기존 내용 대체)"):
-                        store[nkey] = regen
-                        _notes_save(store)
-                        st.session_state[ekey] = False
-                        st.rerun()
-                    bi += 1
-                if ai_fn is not None:
-                    if bcols[bi].button("AI 생성", key=f"btn_a_{nkey}", width="stretch",
-                                        help="AI가 데이터를 보고 요약 문구를 작성해요 (기존 내용 대체)"):
-                        with st.spinner("AI 작성 중…"):
-                            text, err = ai_fn()
-                        if err:
-                            st.error(err)
-                        else:
-                            store[nkey] = text
-                            _notes_save(store)
-                            st.session_state[ekey] = False
-                            st.rerun()
                 if st.session_state.get(ekey, False):
                     val = store.get(nkey, "")
                     if val and not (val.startswith("<p>") or val.startswith("<ul>") or val.startswith("<li>") or "<div" in val):
@@ -3029,6 +3002,34 @@ def main():
                         st.rerun()
                 else:
                     st.markdown(_note_render(store.get(nkey, "")), unsafe_allow_html=True)
+                
+                bcols = st.columns(1 + (regen is not None) + (ai_fn is not None))
+                bi = 0
+                editing = st.session_state.get(ekey, False)
+                if bcols[bi].button("보기" if editing else "편집", key=f"btn_e_{nkey}", width="stretch"):
+                    st.session_state[ekey] = not editing
+                    st.rerun()
+                bi += 1
+                if regen is not None:
+                    if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
+                                        help="기준주 실적으로 지표 문구를 자동으로 채워요 (기존 내용 대체)"):
+                        store[nkey] = regen
+                        _notes_save(store)
+                        st.session_state[ekey] = False
+                        st.rerun()
+                    bi += 1
+                if ai_fn is not None:
+                    if bcols[bi].button("AI 생성", key=f"btn_a_{nkey}", width="stretch",
+                                        help="AI가 데이터를 보고 요약 문구를 작성해요 (기존 내용 대체)"):
+                        with st.spinner("AI 작성 중…"):
+                            text, err = ai_fn()
+                        if err:
+                            st.error(err)
+                        else:
+                            store[nkey] = text
+                            _notes_save(store)
+                            st.session_state[ekey] = False
+                            st.rerun()
 
         _wkkey = ref_ws.strftime("%Y%m%d")
         # '금주 집행'은 기준 주차 선택과 무관하게 항상 '오늘' 기준 이번 주를 가리키므로

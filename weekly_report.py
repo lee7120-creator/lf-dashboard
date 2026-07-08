@@ -605,35 +605,6 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
                 all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
                 st.rerun()
 
-    n = 2 + (1 if regen is not None else 0) + (1 if ai_fn is not None else 0)
-    bcols = st.columns(n)
-    bi = 0
-    edit_on = st.session_state[ekey]
-    if bcols[bi].button("편집" if not edit_on else "보기",
-                        key=f"wr_edit_{key}", use_container_width=True):
-        st.session_state[ekey] = not edit_on; st.rerun()
-    bi += 1
-    if regen is not None:
-        if bcols[bi].button("자동 생성", key=f"wr_regen_{key}", use_container_width=True,
-                            help="기준 주차 실적으로 템플릿 문구를 채웁니다 (기존 내용 대체)"):
-            store[key] = regen
-            all_d = load_insights(); all_d[key] = regen; save_insights(all_d)
-            st.session_state[ekey] = False; st.rerun()
-        bi += 1
-    if ai_fn is not None:
-        if bcols[bi].button("AI 생성", key=f"wr_ai_{key}", use_container_width=True,
-                            help="Claude가 데이터(+참고 메모)를 보고 인사이트 문구를 작성합니다 (기존 내용 대체)"):
-            store[mkey] = memo_val
-            all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
-            with st.spinner("AI가 인사이트를 작성 중…"):
-                text, err = ai_fn(memo_val)
-            if err:
-                st.error(err)
-            else:
-                store[key] = text
-                all_d = load_insights(); all_d[key] = text; save_insights(all_d)
-                st.session_state[ekey] = False; st.rerun()
-
     if st.session_state[ekey]:
         if HAS_QUILL:
             # Word 수준 리치 에디터 (글자 크기·색·굵게·기울임·밑줄·목록·정렬 등)
@@ -665,6 +636,35 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
     else:
         st.markdown(f"<div class='report-box'>{store[key] or '내용을 입력하세요.'}</div>",
                     unsafe_allow_html=True)
+                    
+    n = 2 + (1 if regen is not None else 0) + (1 if ai_fn is not None else 0)
+    bcols = st.columns(n)
+    bi = 0
+    edit_on = st.session_state[ekey]
+    if bcols[bi].button("편집" if not edit_on else "보기",
+                        key=f"wr_edit_{key}", use_container_width=True):
+        st.session_state[ekey] = not edit_on; st.rerun()
+    bi += 1
+    if regen is not None:
+        if bcols[bi].button("자동 생성", key=f"wr_regen_{key}", use_container_width=True,
+                            help="기준 주차 실적으로 템플릿 문구를 채웁니다 (기존 내용 대체)"):
+            store[key] = regen
+            all_d = load_insights(); all_d[key] = regen; save_insights(all_d)
+            st.session_state[ekey] = False; st.rerun()
+        bi += 1
+    if ai_fn is not None:
+        if bcols[bi].button("AI 생성", key=f"wr_ai_{key}", use_container_width=True,
+                            help="Claude가 데이터(+참고 메모)를 보고 인사이트 문구를 작성합니다 (기존 내용 대체)"):
+            store[mkey] = memo_val
+            all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
+            with st.spinner("AI가 인사이트를 작성 중…"):
+                text, err = ai_fn(memo_val)
+            if err:
+                st.error(err)
+            else:
+                store[key] = text
+                all_d = load_insights(); all_d[key] = text; save_insights(all_d)
+                st.session_state[ekey] = False; st.rerun()
     return store[key]
 
 # ══════════════════════════════════════════════════════
