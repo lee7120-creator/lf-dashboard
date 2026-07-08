@@ -1404,6 +1404,39 @@ def fdr_bh(pvals):
     return out
 
 
+# 순위 보정용 지표 → (분자, 분모) 매핑 — 캠페인/슬롯 레벨 공용
+RANK_ND = {"ord_cr": ("oc", "uv"), "infl_cr": ("uv", "send"),
+           "rps": ("amt", "send"), "aov": ("amt", "oc")}
+
+
+def rank_adjusted(d, col, ascending=False):
+    """순위용 표본 보정 점수 — UV 수십 건짜리 캠페인(또는 슬롯)이 우연 하나로
+    TOP/BOTTOM을 점령하는 것을 막는다. 표시 값은 그대로 두고 '정렬 순서'에만 쓴다.
+
+    · 비율 지표(주문CR=주문/UV, CTR=UV/발송): Jeffreys 신뢰구간 경계
+      - TOP(내림차순)은 하한 — 표본이 작을수록 점수가 깎여 순위에서 밀린다
+      - BOTTOM(오름차순)은 상한 — 소표본의 '가짜 0%'가 바닥을 점령하지 않는다
+    · 금액 지표(RPS=거래액/발송, 객단가=거래액/주문): 전체 가중평균으로의 수축
+      (분자 + k·전체평균) / (분모 + k), k=분모 중앙값(통상 캠페인 1건의 무게)
+    · 그 외(거래액 등 절대값): 원값 그대로 반환.
+    """
+    nd = RANK_ND.get(col)
+    if nd is None or nd[0] not in d or nd[1] not in d:
+        return pd.to_numeric(d[col], errors="coerce") if col in d else pd.Series(np.nan, index=d.index)
+    num = pd.to_numeric(d[nd[0]], errors="coerce").fillna(0.0).clip(lower=0)
+    den = pd.to_numeric(d[nd[1]], errors="coerce").fillna(0.0).clip(lower=0)
+    if col in ("ord_cr", "infl_cr"):
+        import scipy.stats as ss
+        x = np.minimum(num, den)                     # 분자>분모 데이터 오류 방어
+        q = 0.95 if ascending else 0.05
+        return pd.Series(ss.beta.ppf(q, x + 0.5, (den - x) + 0.5), index=d.index)
+    gden = den.sum()
+    prior = (num.sum() / gden) if gden else 0.0
+    pos = den[den > 0]
+    k = float(np.median(pos)) if len(pos) else 1.0
+    return (num + k * prior) / (den + k)
+
+
 def ols_effects(df, attr_cols, ctrl_cols, ycol):
     """속성(0/1) + 통제변수(카테고리·시간대 등 더미) 다중회귀 → 속성별 '순효과' 계수·표준오차·p값.
 
@@ -2772,8 +2805,12 @@ def main():
         def _date_only(r):
             t = r.get("dt")
             return f"{t.year}년 {t.month}월 {t.day}일" if (t is not None and not pd.isna(t)) else "–"
-        win = recent7.sort_values(_rk_col, ascending=False).head(8).copy()
-        los = recent7.sort_values(_rk_col).head(8).copy()
+        # 순위는 표본 보정 점수(rank_adjusted) 기준 — UV 겨우 넘긴 캠페인이 주문 한두 건으로
+        # TOP/BOTTOM을 점령하는 것을 막는다. 표에 보이는 값은 원래 지표 그대로.
+        win = (recent7.assign(_rk=rank_adjusted(recent7, _rk_col, ascending=False))
+               .sort_values("_rk", ascending=False).head(8).copy())
+        los = (recent7.assign(_rk=rank_adjusted(recent7, _rk_col, ascending=True))
+               .sort_values("_rk").head(8).copy())
         for _w in (win, los):
             _w["발송일자"] = _w.apply(_date_only, axis=1)
             _w["발송시간"] = _w["hour"].map(fmt_hhmm) if "hour" in _w else "–"
@@ -2786,7 +2823,8 @@ def main():
         _rng = f"{(_last - pd.Timedelta(days=7)).date()} ~ {_last.date()}" if _last is not None else drange
         _scope_txt = f"최근 7일({_rng})" if scope_label == "최근 7일" else scope_label
         st.caption(f"{_scope_txt} 기준 · UV가 적으면 1건만 주문해도 전환율이 크게 튀어서, "
-                   "UV 100 이상인 캠페인만 순위에 넣었어요.")
+                   "UV 100 이상인 캠페인만 순위에 넣고, 순위 자체도 표본 크기를 반영한 "
+                   "보정 점수(작은 표본일수록 전체 평균 쪽으로)로 매겨요. 표의 값은 원래 지표예요.")
         _tbcols = ["발송일자", "발송시간", "title", "_body", "cat", "send", "infl_cr", "ord_cr", "rps", "aov", "amt"]
         _tbren = {"발송일자": "발송일자", "발송시간": "발송시간", "title": "제목", "_body": "내용",
                   "cat": "카테고리", "send": "발송", "infl_cr": "CTR",
@@ -2807,10 +2845,18 @@ def main():
         st.markdown("##### 🚩 눈여겨볼 캠페인")
         st.caption("전환율이 평균에서 크게 벗어난 캠페인을 자동으로 찾았어요. "
                    "급등은 '성공 공식', 급락은 '점검 대상'이에요.")
-        av = base["ord_cr"].dropna()
-        if len(av) >= 8 and av.std(ddof=0) > 0:
-            mu, sd = float(av.mean()), float(av.std(ddof=0))
-            bz = base.copy()
+        # TOP/BOTTOM과 같은 UV 가드 — 저UV 캠페인이 '급등' 목록을 요행으로 채우지 않게.
+        # 기준도 평균±σ 대신 중앙값±robust σ(MAD) — 전환율은 우측으로 길게 치우친 분포라
+        # 평균·표준편차가 이상치 자체에 오염되어 탐지가 무뎌진다.
+        _bo = base[base["uv"].fillna(0) >= 100] if "uv" in base else base
+        av = _bo["ord_cr"].dropna()
+        _med = float(av.median()) if len(av) else np.nan
+        _rsd = float((av - _med).abs().median() * 1.4826) if len(av) else 0.0
+        if _rsd == 0 and len(av):
+            _rsd = float(av.std(ddof=0))              # MAD가 0(값 절반 이상 동일)이면 표준편차 폴백
+        if len(av) >= 8 and _rsd > 0:
+            mu, sd = _med, _rsd
+            bz = _bo.copy()
             bz["_z"] = (bz["ord_cr"] - mu) / sd
             hi = bz[bz["_z"] >= 2].sort_values("_z", ascending=False)
             lo = bz[bz["_z"] <= -2].sort_values("_z")
@@ -2828,7 +2874,8 @@ def main():
                                     hide_index=True, width="stretch")
             _show_outliers(hi, oc1, "🔼", "급등 (성공 공식)")
             _show_outliers(lo, oc2, "🔽", "급락 (점검 대상)")
-            st.markdown(f'<div class="appendix">기준: 평균 주문CR {mu*100:.2f}% ± 2σ({sd*100:.2f}%p). '
+            st.markdown(f'<div class="appendix">기준: UV 100 이상 캠페인의 중앙값 주문CR {mu*100:.2f}% '
+                        f'± 2 robust σ({sd*100:.2f}%p, MAD 기반 — 치우친 분포에서도 안정적). '
                         f'급등 건의 문구·오퍼·타이밍을 다음에 써 보고, 급락 건은 원인을 확인해 보세요.</div>',
                         unsafe_allow_html=True)
         else:
@@ -2916,6 +2963,38 @@ def main():
             d = (cur / prev - 1) * 100
             return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
 
+        def _prop_z_p(met, a, b):
+            """CTR/주문CR 증감의 두 비율 z검정 p값 — a·b는 _agg 결과 dict."""
+            if b is None:
+                return np.nan
+            if met == "CTR":
+                x1, n1, x2, n2 = a["UV"], a["발송"], b["UV"], b["발송"]
+            elif met == "주문CR":
+                x1, n1, x2, n2 = a["주문건수"], a["UV"], b["주문건수"], b["UV"]
+            else:
+                return np.nan
+            try:
+                x1, n1, x2, n2 = float(x1), float(n1), float(x2), float(n2)
+            except Exception:
+                return np.nan
+            if (not n1) or (not n2) or any(pd.isna(v) for v in (x1, n1, x2, n2)):
+                return np.nan
+            p = (x1 + x2) / (n1 + n2)
+            se = np.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+            if (not se) or pd.isna(se):
+                return np.nan
+            z = (x1 / n1 - x2 / n2) / se
+            return float(2 * (1 - stats.norm.cdf(abs(z))))
+
+        def _dlt_sig(met, a, b):
+            """_dlt에 유의성 마크를 더한 버전 — 비율 지표(CTR·주문CR)의 ±가 통계적으로
+            유의(✱, p<0.05)한 변화인지 우연 변동인지 구분해 준다. a·b는 _agg dict."""
+            s = _dlt(met, a[met], (b[met] if b else np.nan))
+            if s == "–" or met not in RATE:
+                return s
+            pv = _prop_z_p(met, a, b)
+            return s + (" ✱" if (pd.notna(pv) and pv < 0.05) else "")
+
         def _rng_short(ws):
             """짧은 기간 라벨 — 컬럼 헤더용. 예: '26년 6/22~6/28'."""
             ws = pd.Timestamp(ws); we_ = ws + pd.Timedelta(days=6)
@@ -2925,19 +3004,42 @@ def main():
             """마크다운 안전 문자열 — '~'가 취소선으로 해석되지 않게 이스케이프."""
             return str(s).replace("~", "\\~")
 
-        cur_w = _agg(_slice(ref_ws, ref_we))
+        # 기준주가 '진행 중인 이번 주'면 동요일 누계 비교 — 화요일에 열면 기준주 2일치가
+        # 전주 7일치와 비교되어 전주비 △70%대의 가짜 급락이 뜨는 착시 방지. 비교 기간
+        # (전주·전월 동주·전년 동주)도 전부 기준주와 같은 요일까지만 잘라 집계한다.
+        _today_k = today_kst()
+        _is_live_week = ref_ws.date() <= _today_k <= ref_we.date()
+        _elapsed = 6
+        if _is_live_week:
+            _ref_rows = _slice(ref_ws, ref_we)
+            if len(_ref_rows):
+                _elapsed = min(int((_ref_rows["dt"].max().normalize() - ref_ws).days), 6)
+            else:
+                _elapsed = min((pd.Timestamp(_today_k) - ref_ws).days, 6)
+            _elapsed = max(_elapsed, 0)
+
+        def _aggw(ws):
+            """주 시작 ws부터 기준주와 같은 경과 요일까지 집계 (완결 주면 월~일 전체)."""
+            return _agg(_slice(pd.Timestamp(ws), pd.Timestamp(ws) + pd.Timedelta(days=_elapsed)))
+
+        cur_w = _aggw(ref_ws)
         prev_ws = ref_ws - pd.Timedelta(days=7)
-        prev_w = _agg(_slice(prev_ws, ref_we - pd.Timedelta(days=7)))
+        prev_w = _aggw(prev_ws)
         # 전월 동주 — 기준주 시작일의 '한 달 전' 날짜가 속한 주(월~일)
         pm_ws = pd.Timestamp((ref_ws - pd.DateOffset(months=1)).to_period("W").start_time)
-        pm_w = _agg(_slice(pm_ws, pm_ws + pd.Timedelta(days=6)))
+        pm_w = _aggw(pm_ws)
         try:                                             # 전년 동주 — ISO 주차 번호 기준
             _iy, _iw, _ = ref_ws.isocalendar()
             yo_ws = pd.Timestamp(datetime.date.fromisocalendar(_iy - 1, _iw, 1))
-            yoy_w = _agg(_slice(yo_ws, yo_ws + pd.Timedelta(days=6)))
+            yoy_w = _aggw(yo_ws)
             yo_lab = _wklab(yo_ws)
         except ValueError:                               # 53주차 등 전년에 없는 주
             yo_ws, yoy_w, yo_lab = None, None, "–"
+        if _elapsed < 6:
+            _dowk = ["월", "화", "수", "목", "금", "토", "일"][_elapsed]
+            st.info(f"⏳ 기준주가 진행 중이라 **월~{_dowk} 동요일 누계**로 비교해요 — "
+                    "전주·전월 동주·전년 동주도 같은 요일까지만 집계해 부분 주 착시를 없앴어요. "
+                    "주가 끝나면 자동으로 월~일 전체 비교로 돌아가요.")
 
         # ── KPI 카드 (전주비·전년비) — △ 표기 방향이 st.metric 화살표와 어긋나서 커스텀 카드 사용 ──
         def _delta_line(d, label):
@@ -2950,8 +3052,8 @@ def main():
                     f'{d} {label} 대비</div>')
         k = st.columns(6)
         for col, met in zip(k, ["발송", "UV", "CTR", "주문CR", "거래액", "RPS"]):
-            _d = _dlt(met, cur_w[met], prev_w[met])
-            _y = _dlt(met, cur_w[met], (yoy_w[met] if yoy_w else np.nan))
+            _d = _dlt_sig(met, cur_w, prev_w)
+            _y = _dlt_sig(met, cur_w, yoy_w)
             col.markdown(
                 f'<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;'
                 f'padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
@@ -2972,10 +3074,10 @@ def main():
             yv = yoy_w[met] if yoy_w else np.nan
             rows.append({"지표": met,
                          col_prev: _fmt(met, prev_w[met]), col_cur: _fmt(met, cur_w[met]),
-                         "전주비": _dlt(met, cur_w[met], prev_w[met]),
+                         "전주비": _dlt_sig(met, cur_w, prev_w),
                          col_pm: _fmt(met, pm_w[met]),
-                         "전월비": _dlt(met, cur_w[met], pm_w[met]),
-                         col_yoy: _fmt(met, yv), "전년비": _dlt(met, cur_w[met], yv)})
+                         "전월비": _dlt_sig(met, cur_w, pm_w),
+                         col_yoy: _fmt(met, yv), "전년비": _dlt_sig(met, cur_w, yoy_w)})
         wr_tbl = pd.DataFrame(rows)
 
         def _clr(v):
@@ -2989,7 +3091,9 @@ def main():
                      hide_index=True, width="stretch", height=360)
         st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
-                   "전월비는 기준주 시작일의 한 달 전 날짜가 속한 주(전월 동주)와 비교해요.")
+                   "전월비는 기준주 시작일의 한 달 전 날짜가 속한 주(전월 동주)와 비교해요. "
+                   "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
+                   "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
 
         # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 저장 백엔드에 영속 ──
         # 구글시트(설정 시) 또는 로컬 CSV에 {key:text}를 저장 → 세션이 끊겨도 유지된다.
@@ -3267,9 +3371,9 @@ def main():
         for met in METS:
             rows.append({"지표": met,
                          _pm_lab: _fmt(met, prev_mtd[met]), _cur_lab: _fmt(met, cur_mtd[met]),
-                         "전월비": _dlt(met, cur_mtd[met], prev_mtd[met]),
+                         "전월비": _dlt_sig(met, cur_mtd, prev_mtd),
                          _py_lab: _fmt(met, yoy_mtd[met]),
-                         "전년비": _dlt(met, cur_mtd[met], yoy_mtd[met])})
+                         "전년비": _dlt_sig(met, cur_mtd, yoy_mtd)})
         st.dataframe(pd.DataFrame(rows).style.map(_clr, subset=["전월비", "전년비"]),
                      hide_index=True, width="stretch", height=360)
         st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
@@ -4139,8 +4243,12 @@ def main():
             g = g.dropna(subset=["hour"])
             slot = g.groupby(["dow_k", "hour"]).agg(
                 캠페인수=("af", "size"), 평균=(mcol, "mean"),
-                발송=("send", "sum"), 거래액=("amt", "sum")).reset_index()
-            slot = slot[slot["캠페인수"] >= smin].sort_values("평균", ascending=False)
+                발송=("send", "sum"), 거래액=("amt", "sum"),
+                _uv=("uv", "sum"), _oc=("oc", "sum")).reset_index()
+            # 정렬은 슬롯 합산 기준 표본 보정 점수 — n을 겨우 넘긴 슬롯의 요행 1위 방지
+            _sf = slot.rename(columns={"_uv": "uv", "_oc": "oc", "발송": "send", "거래액": "amt"})
+            slot["_rk"] = rank_adjusted(_sf, mcol, ascending=False).values
+            slot = slot[slot["캠페인수"] >= smin].sort_values("_rk", ascending=False)
             if len(slot) == 0:
                 st.info("조건에 맞는 슬롯이 없어요. 기준을 낮춰 보세요.")
             else:
@@ -4173,9 +4281,9 @@ def main():
                 best = slot.iloc[0]
                 bv = best["평균"] * (100 if is_pct else 1)
                 bstr = f"{bv:.2f}%" if is_pct else (won(best["평균"]) if mcol in ("rps", "aov", "amt") else f"{bv:,.1f}")
-                st.markdown(f'<div class="appendix">💡 추천: <b>{best["dow_k"]}요일 {fmt_hhmm(best["hour"])}</b> 슬롯이 '
-                            f'평균 {mlabel} <b>{bstr}</b>(n={int(best["캠페인수"])})로 가장 높아요. '
-                            f'카테고리·상품 구성 차이가 섞일 수 있으니 표본수와 함께 보세요.</div>',
+                st.markdown(f'<div class="appendix">💡 추천: <b>{best["dow_k"]}요일 {fmt_hhmm(best["hour"])}</b> 슬롯 — '
+                            f'평균 {mlabel} <b>{bstr}</b>(n={int(best["캠페인수"])}), 표본 크기까지 반영한 '
+                            f'보정 순위 1위예요. 카테고리·상품 구성 차이가 섞일 수 있으니 표본수와 함께 보세요.</div>',
                             unsafe_allow_html=True)
 
         # ── 드릴다운: 시간대·요일 선택 → 메시지 목록 ──
@@ -5080,8 +5188,11 @@ def main():
         st.markdown("##### 📅 추천 발송 슬롯 (요일 × 시간)")
         if "dow_k" in base and "hour" in base:
             slot = base.dropna(subset=["hour"]).groupby(["dow_k", "hour"]).agg(
-                캠페인수=("hour", "size"), 지표=(gcol, "mean"), 발송=("send", "sum")).reset_index()
-            slot = slot[slot["캠페인수"] >= 2].sort_values("지표", ascending=False).head(8)
+                캠페인수=("hour", "size"), 지표=(gcol, "mean"), 발송=("send", "sum"),
+                _uv=("uv", "sum"), _oc=("oc", "sum"), _amt=("amt", "sum")).reset_index()
+            _sf = slot.rename(columns={"_uv": "uv", "_oc": "oc", "발송": "send", "_amt": "amt"})
+            slot["_rk"] = rank_adjusted(_sf, gcol, ascending=False).values
+            slot = slot[slot["캠페인수"] >= 2].sort_values("_rk", ascending=False).head(8)
             if len(slot):
                 sshow = slot.copy()
                 sshow["시간"] = sshow["hour"].map(fmt_hhmm)
@@ -5123,18 +5234,20 @@ def main():
                     continue
                 row = {"세그먼트": sname}
                 if "cat" in sg and sg["cat"].fillna("").ne("").any():
-                    cm = sg.groupby("cat")[gcol].mean()
-                    cn = sg.groupby("cat").size()
-                    cm = cm[cn >= 2]
-                    if len(cm):
-                        row["추천 카테고리"] = cm.idxmax()
+                    # 카테고리 추천도 합산+표본 보정 점수로 — n=2 raw 평균 argmax는 노이즈 추첨
+                    cg = sg.groupby("cat").agg(n=("af", "size"), oc=("oc", "sum"), uv=("uv", "sum"),
+                                               send=("send", "sum"), amt=("amt", "sum"))
+                    cg = cg[cg["n"] >= 2]
+                    if len(cg):
+                        row["추천 카테고리"] = (cg.assign(_rk=rank_adjusted(cg, gcol))
+                                            .sort_values("_rk", na_position="first").index[-1])
                 best = None
                 for tag in TAG_BOOLS:
                     if tag not in sg:
                         continue
                     yes = sg.loc[sg[tag] == True, gcol].dropna()
                     no = sg.loc[sg[tag] != True, gcol].dropna()
-                    if len(yes) < 2 or len(no) < 2:
+                    if len(yes) < 3 or len(no) < 3:          # n=2 argmax는 우연 — 최소 3건
                         continue
                     lift = yes.mean() - no.mean()
                     if best is None or lift > best[1]:
@@ -5142,9 +5255,11 @@ def main():
                 if best:
                     row["추천 소구"] = best[0]
                 if "dow_k" in sg and "hour" in sg and sg["hour"].notna().any():
-                    sl = sg.dropna(subset=["hour"]).groupby(["dow_k", "hour"])[gcol].mean()
+                    sl = sg.dropna(subset=["hour"]).groupby(["dow_k", "hour"]).agg(
+                        oc=("oc", "sum"), uv=("uv", "sum"), send=("send", "sum"), amt=("amt", "sum"))
                     if len(sl):
-                        bd, bh = sl.idxmax()
+                        bd, bh = (sl.assign(_rk=rank_adjusted(sl, gcol))
+                                  .sort_values("_rk", na_position="first").index[-1])
                         row["추천 슬롯"] = f"{bd} {fmt_hhmm(bh)}"
                 row["기대 " + goal] = _fmtv(sg[gcol].mean())
                 play.append(row)
@@ -5800,8 +5915,18 @@ def build_facts(df, with_attr=False, metric_col="ord_cr"):
     def _bodyprev(r):
         b = " ".join(_s(r.get("body", "")).split())
         return f" │ 내용: {b[:50]}" if b else ""
-    win = df.sort_values(metric_col, ascending=False).head(6)
-    los = df.sort_values(metric_col).head(6)
+    # 상·하위 선정: UV 100 이상(충분할 때) + 표본 보정 순위 — AI가 소표본 요행 캠페인을
+    # '성공/실패 공식'으로 학습해 지어낸 패턴을 서술하는 것을 막는다
+    rank_base = df
+    if "uv" in df:
+        _big = df[df["uv"].fillna(0) >= 100]
+        if len(_big) >= 12:
+            rank_base = _big
+            lines.append("[순위 기준] UV 100 이상 캠페인만 · 표본 크기 보정 순위 (소표본 요행 제외)")
+    _rk_top = rank_adjusted(rank_base, metric_col, ascending=False)
+    _rk_bot = rank_adjusted(rank_base, metric_col, ascending=True)
+    win = rank_base.assign(_rk=_rk_top).sort_values("_rk", ascending=False).head(6)
+    los = rank_base.assign(_rk=_rk_bot).sort_values("_rk").head(6)
 
     def _send_n(r):
         v = r.get("send")
@@ -5813,14 +5938,31 @@ def build_facts(df, with_attr=False, metric_col="ord_cr"):
     for _, r in los.iterrows():
         lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {_send_n(r):,} / {r['cat']} / “{r['title']}”{_bodyprev(r)}")
     if with_attr:
-        lines.append("\n[문구 속성별 평균 주문전환율 (보유 vs 미보유)]")
+        lines.append("\n[문구 속성별 평균 주문전환율 (보유 vs 미보유)] — '유의'가 붙지 않은 차이는 "
+                     "우연일 수 있으니 단정적으로 서술하지 말 것")
+
+        def _welch_p(a, b):
+            try:
+                from scipy import stats as _ss
+                a = np.asarray(a, float); a = a[~np.isnan(a)]
+                b = np.asarray(b, float); b = b[~np.isnan(b)]
+                if len(a) < 3 or len(b) < 3:
+                    return np.nan
+                return float(_ss.ttest_ind(a, b, equal_var=False).pvalue)
+            except Exception:
+                return np.nan
+        _rows = []
         for tag in TAG_BOOLS:
             if tag not in df: continue
             yes = df[df[tag]]["ord_cr"]; no = df[~df[tag]]["ord_cr"]
             if len(yes) and len(no):
-                lines.append(f" - {tag}: 보유 {yes.mean()*100:.2f}%(n={len(yes)}) vs "
-                             f"미보유 {no.mean()*100:.2f}%(n={len(no)}) "
-                             f"→ {(yes.mean()-no.mean())*100:+.2f}%p")
+                _rows.append((tag, yes, no, _welch_p(yes.values, no.values)))
+        _adj = fdr_bh([r[3] for r in _rows]) if _rows else []
+        for (tag, yes, no, _p), pa in zip(_rows, _adj):
+            mark = "[유의함]" if (not np.isnan(pa) and pa < 0.05) else "(유의하지 않음·참고만)"
+            lines.append(f" - {tag}: 보유 {yes.mean()*100:.2f}%(n={len(yes)}) vs "
+                         f"미보유 {no.mean()*100:.2f}%(n={len(no)}) "
+                         f"→ {(yes.mean()-no.mean())*100:+.2f}%p {mark}")
     return "\n".join(lines)
 
 
