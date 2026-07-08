@@ -18,13 +18,6 @@ import numpy as np
 import pandas as pd
 
 try:
-    from streamlit import fragment
-except ImportError:
-    def fragment(func):
-        return func
-
-
-try:
     from streamlit_quill import st_quill
     HAS_QUILL = True
 except Exception:
@@ -418,7 +411,7 @@ def classify_upload(name, file_bytes):
         for r in head:
             flat_head.extend(r)
         flat_head = "".join(flat_head)
-        if any(k in flat_head for k in ("기존 이탈", "기존탈", "신규추가")):
+        if any(k in flat_head for k in ("기존 이탈", "기존이탈", "신규추가")):
             return "push"
 
         # 3) 기획전 성과시트 — 첫 칸이 '기획전 번호'
@@ -878,21 +871,21 @@ def compute_mtd(df):
 
 # ══════════════════════════════════════════════════════════════════════
 # 앱푸시 동의 현황 파싱 (PUSH (1).xlsx 형태)
-# 구조: 행1=Date헤더, 행2=날짜(m/d), 행3~6=기존(수신동의/증감/신규추가/기존탈),
-#        행7~10=신규(수신동의/증감/신규추가/기존탈), 행11~14=Total(수신동의/증감/신규추가/기존탈)
+# 구조: 행1=Date헤더, 행2=날짜(m/d), 행3~6=기존(수신동의/증감/신규추가/기존이탈),
+#        행7~10=신규(수신동의/증감/신규추가/기존이탈), 행11~14=Total(수신동의/증감/신규추가/기존이탈)
 # ══════════════════════════════════════════════════════════════════════
 
-PUSH_OUTLIER_THRESHOLD = 10000   # 신규추가 또는 기존탈 > 이 값이면 배치/이관 이벤트로 판단, 제외
+PUSH_OUTLIER_THRESHOLD = 10000   # 신규추가 또는 기존이탈 > 이 값이면 배치/이관 이벤트로 판단, 제외
 
 
 def parse_push_consent_bytes(file_bytes, start_year=2024):
     """앱푸시 수신동의 현황 Excel → 일별 DataFrame.
 
-    · 열 구조: A=그룹(기존/신규/Total), B=지표(수신동의/증감/신규추가/기존탈), C열부터=날짜별 값
+    · 열 구조: A=그룹(기존/신규/Total), B=지표(수신동의/증감/신규추가/기존이탈), C열부터=날짜별 값
     · 날짜는 'm/d' 형식이며 연도는 start_year 기준 순서대로 할당(연말 넘어가면 +1년)
-    · 이상치(신규추가>PUSH_OUTLIER_THRESHOLD 또는 기존탈>PUSH_OUTLIER_THRESHOLD)는 is_outlier=True 플래그
+    · 이상치(신규추가>PUSH_OUTLIER_THRESHOLD 또는 기존이탈>PUSH_OUTLIER_THRESHOLD)는 is_outlier=True 플래그
     반환 컬럼: date(datetime), group(기존/신규/Total), consent(수신동의수), diff(증감),
-               added(신규추가), removed(기존탈), is_outlier(bool)
+               added(신규추가), removed(기존이탈), is_outlier(bool)
     """
     import openpyxl, datetime as _dt
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
@@ -962,7 +955,7 @@ def parse_push_consent_bytes(file_bytes, start_year=2024):
                 "added":   data.get((g, "added"),   [None] * n)[i],
                 "removed": data.get((g, "removed"), [None] * n)[i],
             }
-            # 이상치 플래그: 배치 이관 이벤트 (신규추가·기존탈·순증감 급락 > 임계값)
+            # 이상치 플래그: 배치 이관 이벤트 (신규추가·기존이탈·순증감 급락 > 임계값)
             added_v  = rec["added"]  if rec["added"]  is not None else 0
             removed_v = rec["removed"] if rec["removed"] is not None else 0
             diff_v   = rec["diff"]   if rec["diff"]   is not None else 0
@@ -1565,7 +1558,6 @@ def main():
         except ValueError:
             return PALETTE["slate"]
 
-    @fragment
     def stacked_panels(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
                        h=430, bar_suffix="", line_suffix="", title=""):
         """이중축 대신 X축을 공유하는 상(막대)/하(선) 패널 — 두 지표의 스케일을 섞지 않으면서
@@ -1593,7 +1585,6 @@ def main():
         fig.update_yaxes(ticksuffix=line_suffix, row=2, col=1)
         return fig
 
-    @fragment
     def overlay_dual(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
                      h=430, bar_suffix="", line_suffix="", title=""):
         """한 차트 이중축 오버레이 — 막대(좌축)+선(우축)을 같은 X에 겹쳐 그린다.
@@ -2243,19 +2234,6 @@ def main():
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))
 
-    with st.sidebar.expander("📖 지표 용어 사전", expanded=False):
-        st.markdown("""
-        **[ 핵심 성과 지표 ]**
-        * **UV (Unique Visitors)**: 푸시를 클릭하여 앱/웹으로 유입된 순 방문자 수
-        * **CTR (Click-Through Rate)**: 총 발송 건수 대비 클릭 비율
-        * **CR (Conversion Rate)**: 유입된 유저(UV) 대비 실제 구매로 이어진 비율
-        * **AOV (Average Order Value)**: 결제 1건당 평균 구매액 (객단가)
-        * **RPS (Revenue Per Send)**: 푸시 발송 1건당 발생한 평균 매출액
-        
-        **[ 기간 및 기타 지표 ]**
-        * **MTD (Month-to-Date)**: 해당 월 1일부터 현재(기준일)까지의 누적 실적
-        """)
-
     with st.sidebar.expander("데이터 관리"):
         _n_saved = len(stored) if stored is not None else 0
         _n_new = len(new_raw) if new_raw is not None else 0
@@ -2432,6 +2410,9 @@ def main():
             "- **마모**: 같은 소구를 반복할수록 반응이 무뎌지는 현상이에요.\n"
             "- **MTD·인당 발송 건수**: 전사 기준 일별 집계예요. 인당 발송 건수는 고객 1명이 "
             "하루에 받은 평균 메시지 수(발송 강도)예요.\n"
+            "- **기말(期末)**: '주말(weekend)'이 아니라 **그 기간의 마지막 날**이라는 뜻이에요. "
+            "'기말 동의수'는 그 주 마지막 날 기준 누적 값(스냅샷)이고, 신규추가·기존이탈·순증감처럼 "
+            "그 주를 다 더한 '합계'와는 달라요.\n"
             "- **전주비·전월비·전년비**: 기준 기간을 직전 주·전월 동주(한 달 전 같은 주)·작년 같은 "
             "기간과 비교한 증감이에요. 비율 지표(CTR·CR)는 %p 차이, 나머지는 증감률(%)로 표시해요.\n"
             "- **△ 표기**: 마이너스(감소)를 뜻해요 — 회사 보고 양식이에요. 예: △8.9% = 8.9% 감소.\n")
@@ -3070,13 +3051,14 @@ def main():
                     # 날짜 정보를 컬럼명에 동적으로 기입하기 위해 포맷팅 문자열 생성
                     _cur_range = _rng_short(_cur_ws)
                     _prev_range = _rng_short(_prev_ws)
-                    col_consent = f"주말 동의수 ({_cur_range})"
+                    col_consent = f"기말 동의수 ({_cur_range})"
                     col_added = f"주간 신규추가 ({_cur_range})"
-                    col_removed = f"주간 기존탈 ({_cur_range})"
+                    col_removed = f"주간 기존이탈 ({_cur_range})"
                     col_diff = f"주간 순증감 ({_cur_range})"
                     col_con_diff = "동의수 증감(전주비)"
                     col_add_pct = "신규추가 전주비"
-                    col_rem_pct = "기존탈 전주비"
+                    col_rem_pct = "기존이탈 전주비"
+                    col_dif_diff = "순증감 전주비"
 
                     push_summary.append({
                         "구분": g,
@@ -3086,17 +3068,21 @@ def main():
                         col_add_pct: _d_str(c_add, p_add),
                         col_removed: f"{c_rem:,.0f}명" if pd.notna(c_rem) else "–",
                         col_rem_pct: _d_str(c_rem, p_rem),
-                        col_diff: f"{c_dif:+,.0f}명" if pd.notna(c_dif) else "–"
+                        col_diff: f"{c_dif:+,.0f}명" if pd.notna(c_dif) else "–",
+                        col_dif_diff: _d_val_str(c_dif, p_dif),
                     })
 
             if push_summary:
                 push_sum_df = pd.DataFrame(push_summary)
                 st.dataframe(
-                    push_sum_df.style.map(_clr, subset=[col_con_diff, col_add_pct, col_rem_pct]),
+                    push_sum_df.style.map(_clr, subset=[col_con_diff, col_add_pct, col_rem_pct, col_dif_diff]),
                     hide_index=True, width="stretch"
                 )
                 st.caption(f"기준주 ({_md(_rng_short(_cur_ws))}) vs 전주 ({_md(_rng_short(_prev_ws))}) 앱푸시 수신동의 지표 비교 데이터예요. "
-                           f"마이너스 수치는 **△** 로 표기되며 붉은색으로 강조돼요.")
+                           f"마이너스 수치는 **△** 로 표기되며 붉은색으로 강조돼요.\n\n"
+                           "**기말 동의수**는 그 주 마지막 날 기준 누적 동의자 수(스냅샷)이고, "
+                           "**신규추가·기존이탈·순증감**은 그 주 전체를 더한 값(합계)이에요 — "
+                           "주말/평일로 나뉜 게 아니라 '시점값 하나 + 합계값 셋'이에요.")
             else:
                 st.info("해당 기간의 앱푸시 동의 현황 데이터가 부재합니다.")
 
@@ -3719,7 +3705,6 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
 
-        @fragment
         def heat(df, idx, col, title):
             pv = df.pivot_table(index=idx, columns=col, values=mcol, aggfunc="mean")
             if pv.empty:
@@ -3831,7 +3816,6 @@ def main():
         is_pct = mcol in ("ord_cr", "infl_cr")
         base = fdf
 
-        @fragment
         def barby(key, title, order=None):
             g = base.groupby(key)[mcol].mean()
             if order: g = g.reindex([o for o in order if o in g.index])
@@ -4258,7 +4242,6 @@ def main():
                                 rps=(a / s if s else np.nan), aov=(a / o if o else np.nan), amt=a))
             return pd.DataFrame(out)
 
-        @fragment
         def eff_table(t, keyname):
             ren = {"_key": keyname, "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS",
                    "aov": "객단가", "amt": "거래액"}
@@ -5160,7 +5143,7 @@ def main():
         # date 컬럼을 안전하게 datetime 형식으로 통일
         push_consent_df = push_consent_df.copy()
         push_consent_df["date"] = pd.to_datetime(push_consent_df["date"])
-        # 이상치 재계산(런타임) — 신규추가·기존탈뿐 아니라 '순증감(diff) 급락'도 배치/이관
+        # 이상치 재계산(런타임) — 신규추가·기존이탈뿐 아니라 '순증감(diff) 급락'도 배치/이관
         # 이벤트로 보고 제외한다. (예전에 저장된 데이터도 재업로드 없이 −20k 스파이크가 걸러짐)
         for _c in ("added", "removed", "diff"):
             if _c in push_consent_df:
@@ -5216,7 +5199,7 @@ def main():
         k1.metric("총 수신동의 수", f"{_consent_now:,}명",
                   delta=f"{_consent_delta:+,}명 (최근 7일)", delta_color="normal")
         k2.metric("일평균 신규추가",  f"{_avg_added:,.0f}명")
-        k3.metric("일평균 기존탈",    f"{_avg_removed:,.0f}명")
+        k3.metric("일평균 기존이탈",    f"{_avg_removed:,.0f}명")
         k4.metric("일평균 순증감",    f"{_avg_diff:+,.0f}명",
                   delta_color="normal")
         k5.metric("신규추가 대비 순증 비율", f"{_net_ratio:.1f}%",
@@ -5225,7 +5208,7 @@ def main():
         if n_outlier > 0:
             st.caption(
                 f"⚠️ 배치/이관 이벤트로 추정되는 이상치 **{n_outlier}일** 은 KPI·차트에서 제외됐어요 "
-                f"(신규추가 또는 기존탈 > {PUSH_OUTLIER_THRESHOLD:,}건 기준).")
+                f"(신규추가 또는 기존이탈 > {PUSH_OUTLIER_THRESHOLD:,}건 기준).")
 
         # ── 주간 지표 테이블 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -5241,9 +5224,11 @@ def main():
             wk_show["신규추가합"] = wk_show["신규추가합"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
             wk_show["탈퇴합"]   = wk_show["탈퇴합"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
             wk_show.rename(columns={
-                "주차": "주차", "일수": "집계일수", "기말동의수": "주말 동의수",
-                "순증감합": "순증감(합)", "신규추가합": "신규추가(합)", "탈퇴합": "기존탈(합)"}, inplace=True)
+                "주차": "주차", "일수": "집계일수", "기말동의수": "기말 동의수",
+                "순증감합": "순증감(합)", "신규추가합": "신규추가(합)", "탈퇴합": "기존이탈(합)"}, inplace=True)
             st.dataframe(wk_show, hide_index=True, width="stretch", height=360)
+            st.caption("**기말 동의수**는 그 주 마지막 날 기준 누적 동의자 수(스냅샷)이고, "
+                       "**순증감·신규추가·기존이탈**은 그 주 전체를 더한 값(합계)이에요.")
 
             # 주간 CSV 다운로드
             _wk_raw = push_weekly(
@@ -5280,11 +5265,11 @@ def main():
         lay_consent["yaxis"]["gridcolor"] = "#f1f5f9"
         lay_consent["yaxis"]["title"] = "수신동의 수"
         fig_consent.update_layout(**lay_consent)
-        st.plotly_chart(fig_consent, use_container_width=True)
+        st.plotly_chart(fig_consent, width="stretch")
 
-        # ── 차트 2: 신규추가 / 기존탈 추이 (일별) ──
+        # ── 차트 2: 신규추가 / 기존이탈 추이 (일별) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📊 일별 신규추가 · 기존탈 추이")
+        st.markdown("##### 📊 일별 신규추가 · 기존이탈 추이")
         fig_addrem = go.Figure()
         fig_addrem.add_trace(go.Bar(
             x=_pc_plot["date"], y=_pc_plot["added"],
@@ -5292,8 +5277,8 @@ def main():
             hovertemplate="%{x|%Y-%m-%d}<br>신규추가: %{y:,}명<extra></extra>"))
         fig_addrem.add_trace(go.Bar(
             x=_pc_plot["date"], y=-_pc_plot["removed"],
-            name="기존탈(음수)", marker_color=PALETTE["red"],
-            hovertemplate="%{x|%Y-%m-%d}<br>기존탈: %{y:,}명<extra></extra>"))
+            name="기존이탈(음수)", marker_color=PALETTE["red"],
+            hovertemplate="%{x|%Y-%m-%d}<br>기존이탈: %{y:,}명<extra></extra>"))
         # 순증감 라인
         fig_addrem.add_trace(go.Scatter(
             x=_pc_plot["date"], y=_pc_plot["diff"],
@@ -5301,7 +5286,7 @@ def main():
             line=dict(color=PALETTE["amber"], width=2),
             hovertemplate="%{x|%Y-%m-%d}<br>순증감: %{y:+,}명<extra></extra>"))
         
-        lay_addrem = base_layout(h=360, title="일별 신규추가 및 기존탈 추이")
+        lay_addrem = base_layout(h=360, title="일별 신규추가 및 기존이탈 추이")
         lay_addrem["showlegend"] = True
         lay_addrem["barmode"] = "overlay"
         lay_addrem["yaxis"]["gridcolor"] = "#f1f5f9"
@@ -5309,7 +5294,7 @@ def main():
         lay_addrem["yaxis"]["zerolinecolor"] = "#cbd5e1"
         lay_addrem["yaxis"]["title"] = "명"
         fig_addrem.update_layout(**lay_addrem)
-        st.plotly_chart(fig_addrem, use_container_width=True)
+        st.plotly_chart(fig_addrem, width="stretch")
 
         # ── 차트 3: 주간 순증감 바차트 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -5336,10 +5321,10 @@ def main():
                 hovertemplate="%{customdata}<br>신규추가: %{y:,.0f}명<extra></extra>"))
             fig_wk.add_trace(go.Scatter(
                 x=_wk_chart["주시작"], y=_wk_chart["탈퇴합"],
-                mode="lines+markers", name="주간 기존탈",
+                mode="lines+markers", name="주간 기존이탈",
                 line=dict(color=PALETTE["amber"], width=2),
                 customdata=_wk_custom,
-                hovertemplate="%{customdata}<br>기존탈: %{y:,.0f}명<extra></extra>"))
+                hovertemplate="%{customdata}<br>기존이탈: %{y:,.0f}명<extra></extra>"))
             
             lay_wk = base_layout(h=400, title="주간 신규추가/탈퇴 및 순증감 추이")
             lay_wk["showlegend"] = True
@@ -5351,7 +5336,7 @@ def main():
             lay_wk["xaxis"]["tickformat"] = "%Y-%m"  # 연도-월 형태로 눈금 깔끔하게 포맷
             lay_wk["xaxis"]["dtick"] = "M3"  # 3개월 간격으로 격자선 및 눈금 표시
             fig_wk.update_layout(**lay_wk)
-            st.plotly_chart(fig_wk, use_container_width=True)
+            st.plotly_chart(fig_wk, width="stretch")
 
         # ── 차트 4: 기존 vs 신규 동의수 비교 (스택 영역) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -5384,7 +5369,7 @@ def main():
             lay_stack["yaxis"]["gridcolor"] = "#f1f5f9"
             lay_stack["yaxis"]["title"] = "수신동의 수"
             fig_stack.update_layout(**lay_stack)
-            st.plotly_chart(fig_stack, use_container_width=True)
+            st.plotly_chart(fig_stack, width="stretch")
 
         # ── 크로스 분석: 발송 강도(MTD) ↔ 수신동의 증감 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -5502,9 +5487,9 @@ def main():
                 st.dataframe(
                     _outlier_rows.rename(columns={
                         "date": "날짜", "consent": "수신동의수", "diff": "증감",
-                        "added": "신규추가", "removed": "기존탈"}),
+                        "added": "신규추가", "removed": "기존이탈"}),
                     hide_index=True, width="stretch")
-                st.caption(f"신규추가 또는 기존탈이 {PUSH_OUTLIER_THRESHOLD:,}명 초과한 날짜예요. 배치 이관·대규모 재동의 등 특이 이벤트로 판단해 제외했어요.")
+                st.caption(f"신규추가 또는 기존이탈이 {PUSH_OUTLIER_THRESHOLD:,}명 초과한 날짜예요. 배치 이관·대규모 재동의 등 특이 이벤트로 판단해 제외했어요.")
             else:
                 st.success("이상치 없음")
 
