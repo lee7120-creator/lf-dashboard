@@ -1604,13 +1604,17 @@ def main():
         st._orig_plotly_chart = st.plotly_chart
     if not hasattr(st, "_orig_dataframe"):
         st._orig_dataframe = st.dataframe
-    _REPORT = []
+    # 캡처 버퍼는 session_state에 — st 모듈 속성은 프로세스(멀티유저) 공유라 클로저
+    # 리스트에 쌓으면 동시 접속한 다른 사용자의 차트/표가 내 리포트에 섞인다.
+    # session_state 프록시는 '호출 시점' 세션 컨텍스트를 따라가므로 항상 자기 세션에 쌓인다.
+    st.session_state["_page_report"] = []
+    _REPORT = st.session_state["_page_report"]
 
     def _cap_plotly(*a, **k):
         try:
             f = a[0] if a else k.get("figure_or_data")
             if f is not None:
-                _REPORT.append(("fig", f))
+                st.session_state.setdefault("_page_report", []).append(("fig", f))
         except Exception:
             pass
         return st._orig_plotly_chart(*a, **k)
@@ -1619,7 +1623,7 @@ def main():
         try:
             d = a[0] if a else k.get("data")
             if d is not None:
-                _REPORT.append(("table", d))
+                st.session_state.setdefault("_page_report", []).append(("table", d))
         except Exception:
             pass
         return st._orig_dataframe(*a, **k)
@@ -1787,6 +1791,12 @@ def main():
     @st.cache_data(show_spinner=False)
     def cached_promo(b): return parse_promo_bytes(b)
 
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def cached_plan_gsheet(url, recent_n_, _sh, _cb):
+        """기획 구글시트 파싱 캐시(1시간) — 브라우저 새로고침 후 「기획 문구 가져오기」를
+        다시 눌러도 주차 시트들을 API로 재순회하지 않고 즉시 반환한다."""
+        return parse_plan_gsheet(_sh, recent=recent_n_, progress_cb=_cb)
+
     @st.cache_data(show_spinner=False)
     def cached_classify(b): return classify_upload("", b)
 
@@ -1901,6 +1911,39 @@ def main():
 
     BK = init_storage()
 
+    def _preload_stores_parallel():
+        """gsheets 첫 세션 로드 최적화 — campaign·push·mtd·promo 4개 워크시트를
+        순차(각 0.5~1초 → 합 2~4초)가 아니라 동시에 읽는다. 어떤 이유로든 실패하면
+        조용히 반환해 기존 개별 로드 경로가 그대로 처리한다."""
+        keys = {"camp_store": "campaign", "push_consent_df": "push",
+                "mtd_store_df": "mtd", "promo_store_df": "promo"}
+        missing = {sk: kind for sk, kind in keys.items() if sk not in st.session_state}
+        if BK["mode"] != "gsheets" or len(missing) < 2:
+            return
+
+        def _load_one(kind):
+            cols = _STORE_COLS_BY_KIND[kind]
+            try:
+                return gs_read_ws(BK["sh"], GS_TITLES[kind], cols), None
+            except Exception as e:
+                return pd.DataFrame(columns=cols), str(e)[:120]
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(missing)) as ex:
+                futs = {sk: ex.submit(_load_one, kind) for sk, kind in missing.items()}
+                res = {sk: f.result() for sk, f in futs.items()}
+        except Exception:
+            return
+        for sk, (df, err) in res.items():
+            kind = keys[sk]
+            if err:                                   # 읽기 실패 플래그 — storage_save가 차단
+                st.session_state[f"_load_failed_{kind}"] = err
+            else:
+                st.session_state.pop(f"_load_failed_{kind}", None)
+            st.session_state[sk] = finalize_push(df) if sk == "push_consent_df" else df
+
+    _preload_stores_parallel()
+
     AI_MODELS = {
         "Gemini 2.5 Pro (최고 품질)": "gemini-2.5-pro",
         "Gemini 2.5 Flash (균형)": "gemini-2.5-flash",
@@ -1919,27 +1962,57 @@ def main():
                 return v
         return None
 
+    @st.cache_resource(show_spinner=False)
+    def _gemini_client(key):
+        """클라이언트 1회 생성 재사용 — 호출마다 신규 생성하던 오버헤드 제거. 120초 타임아웃."""
+        from google import genai
+        return genai.Client(api_key=key, http_options={"timeout": 120_000})
+
+    def _ai_transient(e):
+        s = str(e).lower()
+        return any(t in s for t in ("429", "500", "503", "quota", "rate", "timeout",
+                                    "deadline", "unavailable", "overloaded"))
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _ai_gen_cached(system, user, model, _key):
+        """같은 (지시문·데이터·모델) 재클릭 시 1시간 내 재과금·재대기 없이 재사용.
+        데이터가 바뀌면 user 텍스트가 달라져 자동으로 새로 생성된다.
+        실패·빈 응답은 예외로 올려 캐시에 남기지 않는다 (재클릭 시 재시도 가능)."""
+        from google.genai import types
+        client = _gemini_client(_key)
+        last_err = None
+        for wait in (0, 3):                       # 일시 오류(429·5xx·타임아웃) 1회 백오프 재시도
+            if wait:
+                time.sleep(wait)
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=user,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system,
+                        max_output_tokens=8000,
+                    ),
+                )
+                text = (resp.text or "").strip()
+                if not text:
+                    raise RuntimeError("빈 응답 — 잠시 후 다시 시도해 주세요.")
+                return text
+            except Exception as e:
+                last_err = e
+                if not _ai_transient(e):
+                    break
+        raise RuntimeError(str(last_err)[:200])
+
     def ai_generate(system, user, model):
         key = gemini_key()
         if not key:
             return None, "GEMINI_API_KEY 미설정 — Streamlit Secrets 또는 환경변수에 추가하세요."
         try:
-            from google import genai
-            from google.genai import types
+            import google.genai                     # noqa: F401 — 설치 여부만 확인
         except ImportError:
             return None, "google-genai 패키지가 없습니다. requirements.txt 반영 후 재배포하세요."
         try:
-            client = genai.Client(api_key=key)
-            resp = client.models.generate_content(
-                model=model,
-                contents=user,
-                config=types.GenerateContentConfig(
-                    system_instruction=system,
-                    max_output_tokens=8000,
-                ),
-            )
-            text = (resp.text or "").strip()
-            return (text or None), (None if text else "빈 응답")
+            return _ai_gen_cached(system, user, model, _key=key), None
         except Exception as e:
             return None, f"생성 오류: {e}"
 
@@ -1988,7 +2061,8 @@ def main():
                 prog = st.sidebar.progress(0.0, text="기획 시트를 읽고 있어요…")
                 def _cb(i, total, title):
                     prog.progress(i / max(total, 1), text=f"가져오는 중 {i}/{total} — {title[:16]}")
-                lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_cb)
+                lk, read = cached_plan_gsheet(_PLAN_SHEET_URL, (recent_n or None),
+                                              _sh=sh_plan, _cb=_cb)
                 prog.empty()
                 st.session_state.plan_lookup_gs = lk
                 st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
@@ -2023,12 +2097,24 @@ def main():
                     try:
                         _push_hash = hashlib.md5(b).hexdigest()
                         if st.session_state.get("push_consent_hash") != _push_hash:
-                            parsed_df = parse_push_consent_bytes(b)
-                            st.session_state["push_consent_df"] = parsed_df
+                            parsed_df = finalize_push(parse_push_consent_bytes(b))
+                            # 기존 누적과 병합 (date+group 키, 신규 우선) — 기간 짧은 새 파일을
+                            # 올리면 과거 일자 데이터가 통째로 사라지던 '교체 저장' 문제 방지
+                            _cur = st.session_state.get("push_consent_df")
+                            if _cur is not None and len(_cur):
+                                merged_push = pd.concat([finalize_push(_cur), parsed_df],
+                                                        ignore_index=True)
+                                merged_push = (merged_push
+                                               .drop_duplicates(subset=["date", "group"], keep="last")
+                                               .sort_values(["date", "group"]).reset_index(drop=True))
+                            else:
+                                merged_push = parsed_df
+                            st.session_state["push_consent_df"] = merged_push
                             st.session_state["push_consent_hash"] = _push_hash
-                            push_consent_df = parsed_df
-                            if storage_save(BK, "push", parsed_df):
-                                st.sidebar.success("📱 앱푸시 동의 데이터를 캐시에 저장했어요.")
+                            push_consent_df = merged_push
+                            if storage_save(BK, "push", merged_push):
+                                st.sidebar.success("📱 앱푸시 동의 데이터를 병합 저장했어요 "
+                                                   f"(총 {len(merged_push)//3:,}일치).")
                     except Exception as _e:
                         st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
 
@@ -2134,10 +2220,13 @@ def main():
         st.sidebar.success(f"신규 {len(new_raw)}건 → 누적 {len(work)}건 "
                            f"(추가 {len(kn - ko)} · 갱신 {len(kn & ko)})")
         if st.sidebar.button("💾 저장하기", width="stretch"):
-            if storage_save(BK, "campaign", work):
-                st.session_state.camp_store = work
+            # 낙관적 병합: 저장 직전 시트를 다시 읽어 합친다 — 두 세션이 각자 스냅샷으로
+            # 저장하면 나중 저장이 먼저 저장분을 지우던 last-write-wins 유실 방지
+            _tosave = merge_store(storage_load(BK, "campaign"), work)
+            if storage_save(BK, "campaign", _tosave):
+                st.session_state.camp_store = _tosave
                 tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-                st.sidebar.success(f"저장했어요 ✓ ({tgt}) — 다음에도 유지돼요.")
+                st.sidebar.success(f"저장했어요 ✓ ({tgt}, 총 {len(_tosave):,}건) — 다음에도 유지돼요.")
         st.sidebar.caption("※ 저장을 눌러야 반영돼요. 안 누르면 이번 세션에서만 볼 수 있어요.")
     else:
         work = stored
@@ -2172,6 +2261,16 @@ def main():
                     if storage_save(BK, "promo", m):
                         st.session_state.promo_store_df = m
                         done.append(f"기획전 {len(m):,}")
+                elif "note" in base:
+                    df = pd.read_csv(data, encoding="utf-8-sig", dtype=str).fillna("")
+                    try:
+                        _cur_n = notes_df_to_dict(storage_load(BK, "notes"))
+                    except Exception:
+                        _cur_n = {}
+                    merged_n = {**_cur_n, **notes_df_to_dict(df)}      # 같은 키는 백업 우선
+                    if storage_save(BK, "notes", notes_dict_to_df(merged_n)):
+                        st.session_state.wr_notes = merged_n
+                        done.append(f"보고란 {len(merged_n):,}")
                 elif "push" in base or "consent" in base:
                     # dtype 정규화 후 병합 — 문자열/Timestamp 혼재로 dedupe가 실패해
                     # 같은 날이 두 벌 남던 문제 방지
@@ -2251,8 +2350,9 @@ def main():
         mtd_work = merge_mtd_store(mtd_stored, mtd_new)
         st.sidebar.success(f"MTD 새로 {len(mtd_new)}일 → 합쳐서 {len(mtd_work)}일 (미리보기)")
         if st.sidebar.button("💾 MTD 저장하기", width="stretch", key="save_mtd"):
-            if storage_save(BK, "mtd", mtd_work):
-                st.session_state.mtd_store_df = mtd_work
+            _tosave = merge_mtd_store(storage_load(BK, "mtd"), mtd_work)   # 낙관적 병합
+            if storage_save(BK, "mtd", _tosave):
+                st.session_state.mtd_store_df = _tosave
                 tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
                 st.sidebar.success(f"MTD 저장했어요 ✓ ({tgt})")
     else:
@@ -2270,8 +2370,9 @@ def main():
             promo_work = merge_promo_store(promo_stored, pnew)
             st.sidebar.success(f"기획전 시트 {len(pnew):,}건 → 합쳐서 {len(promo_work):,}건 (미리보기)")
             if st.sidebar.button("💾 기획전 저장하기", width="stretch", key="save_promo"):
-                if storage_save(BK, "promo", promo_work):
-                    st.session_state.promo_store_df = promo_work
+                _tosave = merge_promo_store(storage_load(BK, "promo"), promo_work)   # 낙관적 병합
+                if storage_save(BK, "promo", _tosave):
+                    st.session_state.promo_store_df = _tosave
                     tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
                     st.sidebar.success(f"기획전 저장했어요 ✓ ({tgt})")
             st.sidebar.caption("※ 저장을 눌러야 반영돼요.")
@@ -2471,6 +2572,15 @@ def main():
                     _z.writestr("push_consent.csv",
                         _push_df.to_csv(index=False).encode("utf-8-sig"))
                     _has_any = True
+                # 보고란(notes)도 백업에 포함 — 재배포(로컬 CSV 초기화) 시 유일한 복구 수단
+                try:
+                    _nd = st.session_state.get("wr_notes")
+                    _notes_df = notes_dict_to_df(_nd) if _nd else storage_load(BK, "notes")
+                    if _notes_df is not None and len(_notes_df):
+                        _z.writestr("notes.csv", _notes_df.to_csv(index=False).encode("utf-8-sig"))
+                        _has_any = True
+                except Exception:
+                    pass
             st.session_state["_bak_zip"] = (_bak_sig, _zbuf.getvalue()) if _has_any else None
         _bak_cached = st.session_state.get("_bak_zip")
         if _bak_cached:
@@ -2648,8 +2758,12 @@ def main():
             g1.markdown(biz_md)
             g2.markdown(stats_md)
 
+    @st.fragment
     def render_messages(d, mcol, key, n=200):
-        """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기."""
+        """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기.
+
+        fragment — 행 클릭·원문 선택 때 전체 스크립트(필터·사이드바·전 페이지)가
+        다시 돌지 않고 이 블록만 다시 그린다. 자기 완결 블록(외부 컨테이너 미사용)."""
         if d is None or len(d) == 0:
             st.info("해당 조건에 맞는 메시지가 없어요."); return
         dd = d.sort_values(mcol, ascending=False).head(n).reset_index(drop=True).copy()
@@ -3252,82 +3366,90 @@ def main():
                       "근거로 쓰세요. HTML 태그 없이 순수 텍스트로 출력하세요.")
             return ai_generate(system, "\n".join(lines), model)
 
-        def _note_block(col, nkey, title, regen=None, ai_fn=None):
-            """편집/자동 생성/AI 생성 버튼이 달린 보고란 (weekly_report.report_text_block 계승)."""
+        @st.fragment
+        def _note_block_body(nkey, title, regen=None, ai_fn=None):
+            """편집/자동 생성/AI 생성 버튼이 달린 보고란 본문 (weekly_report.report_text_block 계승).
+
+            fragment — 편집 토글·quill 입력 등 상호작용 시 전체 스크립트가 아니라 이 보고란만
+            다시 그린다. 저장/생성 버튼은 st.rerun()으로 전체 갱신(다른 표시 영역 반영)."""
             store = st.session_state.wr_notes
             ekey = f"_wr_note_edit_{nkey}"
-            with col:
-                st.markdown(f"**{title}**")
-                if st.session_state.get(ekey, False):
-                    val = store.get(nkey, "")
-                    if val and not (val.startswith("<p>") or val.startswith("<ul>") or val.startswith("<li>") or "<div" in val):
-                        if val.strip().startswith("-"):
-                            # '-'로 시작하는 줄만 접두어를 떼고, 'ㄴ'(세부) 줄은 텍스트를
-                            # 그대로 보존한다 — 무조건 첫 글자를 자르면 계층 구조가 깨진다
-                            items = []
-                            for item in val.strip().split("\n"):
-                                t = item.strip()
-                                if not t:
-                                    continue
-                                if t.startswith("-"):
-                                    items.append(f"<li>{t[1:].strip()}</li>")
-                                else:
-                                    items.append(f"<li>{t}</li>")
-                            val = f"<ul>{''.join(items)}</ul>"
-                        else:
-                            val = "".join(f"<p>{line}</p>" for line in val.split("\n"))
-                    
-                    if HAS_QUILL:
-                        toolbar = [
-                            [{"size": ["small", False, "large", "huge"]}],
-                            ["bold", "italic", "underline", "strike"],
-                            [{"color": []}, {"background": []}],
-                            [{"list": "ordered"}, {"list": "bullet"}],
-                            [{"align": []}], ["clean"],
-                        ]
-                        new = st_quill(value=val, html=True, toolbar=toolbar,
-                                       key=f"quill_{nkey}")
+            st.markdown(f"**{title}**")
+            if st.session_state.get(ekey, False):
+                val = store.get(nkey, "")
+                if val and not (val.startswith("<p>") or val.startswith("<ul>") or val.startswith("<li>") or "<div" in val):
+                    if val.strip().startswith("-"):
+                        # '-'로 시작하는 줄만 접두어를 떼고, 'ㄴ'(세부) 줄은 텍스트를
+                        # 그대로 보존한다 — 무조건 첫 글자를 자르면 계층 구조가 깨진다
+                        items = []
+                        for item in val.strip().split("\n"):
+                            t = item.strip()
+                            if not t:
+                                continue
+                            if t.startswith("-"):
+                                items.append(f"<li>{t[1:].strip()}</li>")
+                            else:
+                                items.append(f"<li>{t}</li>")
+                        val = f"<ul>{''.join(items)}</ul>"
                     else:
-                        new = st.text_area("내용", val, key=f"ta_{nkey}",
-                                           height=200, label_visibility="collapsed")
-                    
-                    if st.button("저장", key=f"btn_s_{nkey}", type="primary", width="stretch"):
-                        store[nkey] = new if new is not None else val
-                        _notes_save(store)
-                        st.session_state[ekey] = False
-                        st.rerun()
-                else:
-                    st.markdown(_note_render(store.get(nkey, "")), unsafe_allow_html=True)
+                        val = "".join(f"<p>{line}</p>" for line in val.split("\n"))
                 
-                bcols = st.columns(1 + (regen is not None) + (ai_fn is not None))
-                bi = 0
-                editing = st.session_state.get(ekey, False)
-                if bcols[bi].button("보기" if editing else "편집", key=f"btn_e_{nkey}", width="stretch"):
-                    st.session_state[ekey] = not editing
+                if HAS_QUILL:
+                    toolbar = [
+                        [{"size": ["small", False, "large", "huge"]}],
+                        ["bold", "italic", "underline", "strike"],
+                        [{"color": []}, {"background": []}],
+                        [{"list": "ordered"}, {"list": "bullet"}],
+                        [{"align": []}], ["clean"],
+                    ]
+                    new = st_quill(value=val, html=True, toolbar=toolbar,
+                                   key=f"quill_{nkey}")
+                else:
+                    new = st.text_area("내용", val, key=f"ta_{nkey}",
+                                       height=200, label_visibility="collapsed")
+                
+                if st.button("저장", key=f"btn_s_{nkey}", type="primary", width="stretch"):
+                    store[nkey] = new if new is not None else val
+                    _notes_save(store)
+                    st.session_state[ekey] = False
+                    st.rerun()
+            else:
+                st.markdown(_note_render(store.get(nkey, "")), unsafe_allow_html=True)
+            
+            bcols = st.columns(1 + (regen is not None) + (ai_fn is not None))
+            bi = 0
+            editing = st.session_state.get(ekey, False)
+            if bcols[bi].button("보기" if editing else "편집", key=f"btn_e_{nkey}", width="stretch"):
+                st.session_state[ekey] = not editing
+                st.rerun()
+            bi += 1
+            if regen is not None:
+                if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
+                                    help="기준주 실적으로 지표 문구를 자동으로 채워요 (기존 내용 대체)"):
+                    # callable을 받아 클릭 시에만 평가 — 값으로 받으면 매 rerun마다
+                    # 자동 생성 로직(기획 lookup 전수 순회 등)이 실행된다
+                    store[nkey] = regen() if callable(regen) else regen
+                    _notes_save(store)
+                    st.session_state[ekey] = False
                     st.rerun()
                 bi += 1
-                if regen is not None:
-                    if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
-                                        help="기준주 실적으로 지표 문구를 자동으로 채워요 (기존 내용 대체)"):
-                        # callable을 받아 클릭 시에만 평가 — 값으로 받으면 매 rerun마다
-                        # 자동 생성 로직(기획 lookup 전수 순회 등)이 실행된다
-                        store[nkey] = regen() if callable(regen) else regen
+            if ai_fn is not None:
+                if bcols[bi].button("AI 생성", key=f"btn_a_{nkey}", width="stretch",
+                                    help="AI가 데이터를 보고 요약 문구를 작성해요 (기존 내용 대체)"):
+                    with st.spinner("AI 작성 중…"):
+                        text, err = ai_fn()
+                    if err:
+                        st.error(err)
+                    else:
+                        store[nkey] = text
                         _notes_save(store)
                         st.session_state[ekey] = False
                         st.rerun()
-                    bi += 1
-                if ai_fn is not None:
-                    if bcols[bi].button("AI 생성", key=f"btn_a_{nkey}", width="stretch",
-                                        help="AI가 데이터를 보고 요약 문구를 작성해요 (기존 내용 대체)"):
-                        with st.spinner("AI 작성 중…"):
-                            text, err = ai_fn()
-                        if err:
-                            st.error(err)
-                        else:
-                            store[nkey] = text
-                            _notes_save(store)
-                            st.session_state[ekey] = False
-                            st.rerun()
+
+
+        def _note_block(col, nkey, title, regen=None, ai_fn=None):
+            with col:                     # 컨테이너 진입은 fragment 밖에서 (외부 컨테이너 제약)
+                _note_block_body(nkey, title, regen, ai_fn)
 
         _wkkey = ref_ws.strftime("%Y%m%d")
         # '금주 집행'은 기준 주차 선택과 무관하게 항상 '오늘' 기준 이번 주를 가리키므로
@@ -5772,104 +5894,108 @@ def main():
             st.caption("일별은 노이즈가 커서 주간·월간으로 묶어서 봐요. "
                        "발송이 많이 나간 기간에 순증감(신규−탈퇴)이 줄거나 마이너스면 "
                        "‘발송 피로 → 동의 이탈’ 신호예요. (선택한 그룹·기간·이상치 제외 기준)")
-            xc1, xc2 = st.columns(2)
-            _gran = xc1.radio("집계 단위", ["주간", "월간"], horizontal=True, key="pc_x_gran")
-            _sendlab = xc2.selectbox("발송 강도 지표", ["총 발송 건수", "인당 발송 건수"], key="pc_x_send")
-            _sendcol = "totalSend" if _sendlab == "총 발송 건수" else "perSend"
-            _sendagg = "sum" if _sendcol == "totalSend" else "mean"
+            @st.fragment
+            def _cross_analysis_block():
+                # fragment — 집계 단위·지표 변경 시 페이지 전체가 아니라 이 블록만 다시 그린다
+                xc1, xc2 = st.columns(2)
+                _gran = xc1.radio("집계 단위", ["주간", "월간"], horizontal=True, key="pc_x_gran")
+                _sendlab = xc2.selectbox("발송 강도 지표", ["총 발송 건수", "인당 발송 건수"], key="pc_x_send")
+                _sendcol = "totalSend" if _sendlab == "총 발송 건수" else "perSend"
+                _sendagg = "sum" if _sendcol == "totalSend" else "mean"
 
-            def _pk(dts):
-                per = "M" if _gran == "월간" else "W-SUN"
-                return dts.dt.to_period(per).apply(lambda p: p.start_time)
+                def _pk(dts):
+                    per = "M" if _gran == "월간" else "W-SUN"
+                    return dts.dt.to_period(per).apply(lambda p: p.start_time)
 
-            # 동의(선택 그룹·이상치 제외·기간 필터 = pc_clean)를 기간 단위로 집계
-            cc = pc_clean.copy()
-            cc["_pk"] = _pk(cc["date"])
-            cons_g = cc.groupby("_pk").agg(
-                순증감=("diff", "sum"), 신규추가=("added", "sum"),
-                탈퇴=("removed", "sum"), 기말동의=("consent", "last"),
-                동의일수=("date", "count")).reset_index()
-            # MTD 발송(같은 기간 필터)을 기간 단위로 집계
-            _mdf = mtd_data["df"]
-            mm = _mdf[(_mdf["date"] >= _d0) & (_mdf["date"] <= _d1)].copy()
-            mm["_pk"] = _pk(mm["date"])
-            send_g = mm.groupby("_pk").agg(
-                발송지표=(_sendcol, _sendagg), 총발송=("totalSend", "sum"),
-                CTR=("ctr", "mean"), 발송일수=("date", "count")).reset_index()
-            mrg = cons_g.merge(send_g, on="_pk", how="inner").sort_values("_pk")
-            # 주간은 양쪽 4일 이상 있는 기간만(부분 주 왜곡 방지)
-            if _gran == "주간":
-                mrg = mrg[(mrg["동의일수"] >= 4) & (mrg["발송일수"] >= 4)]
+                # 동의(선택 그룹·이상치 제외·기간 필터 = pc_clean)를 기간 단위로 집계
+                cc = pc_clean.copy()
+                cc["_pk"] = _pk(cc["date"])
+                cons_g = cc.groupby("_pk").agg(
+                    순증감=("diff", "sum"), 신규추가=("added", "sum"),
+                    탈퇴=("removed", "sum"), 기말동의=("consent", "last"),
+                    동의일수=("date", "count")).reset_index()
+                # MTD 발송(같은 기간 필터)을 기간 단위로 집계
+                _mdf = mtd_data["df"]
+                mm = _mdf[(_mdf["date"] >= _d0) & (_mdf["date"] <= _d1)].copy()
+                mm["_pk"] = _pk(mm["date"])
+                send_g = mm.groupby("_pk").agg(
+                    발송지표=(_sendcol, _sendagg), 총발송=("totalSend", "sum"),
+                    CTR=("ctr", "mean"), 발송일수=("date", "count")).reset_index()
+                mrg = cons_g.merge(send_g, on="_pk", how="inner").sort_values("_pk")
+                # 주간은 양쪽 4일 이상 있는 기간만(부분 주 왜곡 방지)
+                if _gran == "주간":
+                    mrg = mrg[(mrg["동의일수"] >= 4) & (mrg["발송일수"] >= 4)]
 
-            if len(mrg) < 3:
-                st.warning("두 데이터가 겹치는 기간이 3개 미만이라 크로스 분석을 못 해요. "
-                           "발송(MTD)과 동의 데이터의 기간이 겹치는지 확인해 주세요.")
-            else:
-                _sfx = "" if _sendcol == "totalSend" else "건"
-                fig_x = overlay_dual(
-                    mrg["_pk"], mrg["발송지표"], _sendlab,
-                    mrg["순증감"], "동의 순증감(명)",
-                    PALETTE["slate"], PALETTE["purple"], h=440,
-                    line_suffix="명",
-                    title=f"{_gran} {_sendlab}(좌·막대) ↔ 수신동의 순증감(우·선)")
-                st.plotly_chart(fig_x, width="stretch")
+                if len(mrg) < 3:
+                    st.warning("두 데이터가 겹치는 기간이 3개 미만이라 크로스 분석을 못 해요. "
+                               "발송(MTD)과 동의 데이터의 기간이 겹치는지 확인해 주세요.")
+                else:
+                    _sfx = "" if _sendcol == "totalSend" else "건"
+                    fig_x = overlay_dual(
+                        mrg["_pk"], mrg["발송지표"], _sendlab,
+                        mrg["순증감"], "동의 순증감(명)",
+                        PALETTE["slate"], PALETTE["purple"], h=440,
+                        line_suffix="명",
+                        title=f"{_gran} {_sendlab}(좌·막대) ↔ 수신동의 순증감(우·선)")
+                    st.plotly_chart(fig_x, width="stretch")
 
-                # 상관 + 산점도(추세선) — 발송 강도 vs 순증감
-                x = mrg["발송지표"].values.astype(float)
-                y = mrg["순증감"].values.astype(float)
-                msk = ~np.isnan(x) & ~np.isnan(y)
-                if msk.sum() >= 3 and np.std(x[msk]) > 0 and np.std(y[msk]) > 0:
-                    r = float(np.corrcoef(x[msk], y[msk])[0, 1])
-                    sl, ic, _, p, _ = stats.linregress(x[msk], y[msk])
-                    xs = np.linspace(x[msk].min(), x[msk].max(), 50)
-                    _pk_labels = [pd.Timestamp(d).strftime("%Y-%m-%d")
-                                  for d in mrg["_pk"].to_numpy()[msk]]
-                    fig_sc = go.Figure()
-                    fig_sc.add_trace(go.Scatter(
-                        x=x[msk], y=y[msk], mode="markers",
-                        marker=dict(color=PALETTE["blue"], size=10),
-                        customdata=_pk_labels,
-                        hovertemplate="%{customdata}<br>" + _sendlab + ": %{x:,.0f}"
-                                      + _sfx + "<br>순증감: %{y:+,.0f}명<extra></extra>",
-                        name="기간"))
-                    fig_sc.add_trace(go.Scatter(
-                        x=xs, y=sl * xs + ic, mode="lines", name="추세",
-                        line=dict(color=PALETTE["red"], width=2, dash="dot")))
-                    lay_sc = base_layout(h=340, title=f"{_sendlab} vs 순증감 — 기간 단위 산점도")
-                    lay_sc["showlegend"] = False
-                    lay_sc["yaxis"]["gridcolor"] = "#f1f5f9"
-                    lay_sc["yaxis"]["zeroline"] = True
-                    lay_sc["yaxis"]["zerolinecolor"] = "#cbd5e1"
-                    fig_sc.update_layout(**lay_sc)
-                    st.plotly_chart(fig_sc, width="stretch")
+                    # 상관 + 산점도(추세선) — 발송 강도 vs 순증감
+                    x = mrg["발송지표"].values.astype(float)
+                    y = mrg["순증감"].values.astype(float)
+                    msk = ~np.isnan(x) & ~np.isnan(y)
+                    if msk.sum() >= 3 and np.std(x[msk]) > 0 and np.std(y[msk]) > 0:
+                        r = float(np.corrcoef(x[msk], y[msk])[0, 1])
+                        sl, ic, _, p, _ = stats.linregress(x[msk], y[msk])
+                        xs = np.linspace(x[msk].min(), x[msk].max(), 50)
+                        _pk_labels = [pd.Timestamp(d).strftime("%Y-%m-%d")
+                                      for d in mrg["_pk"].to_numpy()[msk]]
+                        fig_sc = go.Figure()
+                        fig_sc.add_trace(go.Scatter(
+                            x=x[msk], y=y[msk], mode="markers",
+                            marker=dict(color=PALETTE["blue"], size=10),
+                            customdata=_pk_labels,
+                            hovertemplate="%{customdata}<br>" + _sendlab + ": %{x:,.0f}"
+                                          + _sfx + "<br>순증감: %{y:+,.0f}명<extra></extra>",
+                            name="기간"))
+                        fig_sc.add_trace(go.Scatter(
+                            x=xs, y=sl * xs + ic, mode="lines", name="추세",
+                            line=dict(color=PALETTE["red"], width=2, dash="dot")))
+                        lay_sc = base_layout(h=340, title=f"{_sendlab} vs 순증감 — 기간 단위 산점도")
+                        lay_sc["showlegend"] = False
+                        lay_sc["yaxis"]["gridcolor"] = "#f1f5f9"
+                        lay_sc["yaxis"]["zeroline"] = True
+                        lay_sc["yaxis"]["zerolinecolor"] = "#cbd5e1"
+                        fig_sc.update_layout(**lay_sc)
+                        st.plotly_chart(fig_sc, width="stretch")
 
-                    if r <= -0.3:
-                        _msg = ("발송이 많은 기간일수록 순증감이 낮아져요 — <b>발송 피로로 동의가 "
-                                "정체·이탈</b>하는 신호예요. 발송 강도 상한을 검토해 보세요.")
-                    elif r >= 0.3:
-                        _msg = ("발송이 많은 기간에 순증감도 높아요 — 아직 피로 구간은 아니고 "
-                                "발송이 동의 확보와 함께 가는 편이에요.")
-                    else:
-                        _msg = "발송 강도와 순증감 사이에 뚜렷한 관계는 약해요."
-                    st.markdown(
-                        f'<div class="appendix"><b>상관</b> — {_sendlab} ↔ 순증감: r={r:.2f}, '
-                        f'{sig_label(p)}. {_msg}<br>상관은 인과가 아니며 시즌·이벤트가 섞일 수 있어요. '
-                        '순증감이 마이너스인 기간의 발송량을 특히 함께 보세요.</div>',
-                        unsafe_allow_html=True)
+                        if r <= -0.3:
+                            _msg = ("발송이 많은 기간일수록 순증감이 낮아져요 — <b>발송 피로로 동의가 "
+                                    "정체·이탈</b>하는 신호예요. 발송 강도 상한을 검토해 보세요.")
+                        elif r >= 0.3:
+                            _msg = ("발송이 많은 기간에 순증감도 높아요 — 아직 피로 구간은 아니고 "
+                                    "발송이 동의 확보와 함께 가는 편이에요.")
+                        else:
+                            _msg = "발송 강도와 순증감 사이에 뚜렷한 관계는 약해요."
+                        st.markdown(
+                            f'<div class="appendix"><b>상관</b> — {_sendlab} ↔ 순증감: r={r:.2f}, '
+                            f'{sig_label(p)}. {_msg}<br>상관은 인과가 아니며 시즌·이벤트가 섞일 수 있어요. '
+                            '순증감이 마이너스인 기간의 발송량을 특히 함께 보세요.</div>',
+                            unsafe_allow_html=True)
 
-                # 기간별 표 (발송 강도 · 신규추가 · 탈퇴 · 순증감)
-                _xt = mrg.copy()
-                _xt["기간"] = _xt["_pk"].dt.strftime("%Y-%m-%d")
-                _xt["발송지표"] = _xt["발송지표"].map(
-                    lambda v: f"{v:,.0f}" + ("" if _sendcol == "totalSend" else "건"))
-                for _c in ("신규추가", "탈퇴", "총발송"):
-                    _xt[_c] = _xt[_c].map(lambda v: f"{v:,.0f}")
-                _xt["순증감"] = _xt["순증감"].map(lambda v: f"{v:+,.0f}")
-                _xt["CTR"] = _xt["CTR"].map(lambda v: f"{v*100:.2f}%" if pd.notna(v) else "–")
-                st.dataframe(
-                    _xt[["기간", "발송지표", "총발송", "CTR", "신규추가", "탈퇴", "순증감"]]
-                    .rename(columns={"발송지표": _sendlab, "총발송": "총 발송(합)"}),
-                    hide_index=True, width="stretch", height=300)
+                    # 기간별 표 (발송 강도 · 신규추가 · 탈퇴 · 순증감)
+                    _xt = mrg.copy()
+                    _xt["기간"] = _xt["_pk"].dt.strftime("%Y-%m-%d")
+                    _xt["발송지표"] = _xt["발송지표"].map(
+                        lambda v: f"{v:,.0f}" + ("" if _sendcol == "totalSend" else "건"))
+                    for _c in ("신규추가", "탈퇴", "총발송"):
+                        _xt[_c] = _xt[_c].map(lambda v: f"{v:,.0f}")
+                    _xt["순증감"] = _xt["순증감"].map(lambda v: f"{v:+,.0f}")
+                    _xt["CTR"] = _xt["CTR"].map(lambda v: f"{v*100:.2f}%" if pd.notna(v) else "–")
+                    st.dataframe(
+                        _xt[["기간", "발송지표", "총발송", "CTR", "신규추가", "탈퇴", "순증감"]]
+                        .rename(columns={"발송지표": _sendlab, "총발송": "총 발송(합)"}),
+                        hide_index=True, width="stretch", height=300)
+            _cross_analysis_block()
 
         # ── 이상치 제외 목록 ──
         with st.expander(f"⚠️ 제외된 이상치 날짜 ({n_outlier}일)"):
