@@ -13,9 +13,16 @@ LF몰 CRM 발송성과 대시보드
 Streamlit 의존이 없는 순수 함수이며 모듈 import 만으로 테스트 가능하다.
 앱 UI 는 main() 안에 있고 `python -m streamlit run` 시에만 실행된다.
 """
-import io, os, re, json, hashlib, datetime
+import io, os, re, json, hashlib, datetime, time
 import numpy as np
 import pandas as pd
+
+
+def today_kst():
+    """'오늘'을 한국 시간 기준으로 — 서버(Streamlit Cloud)가 UTC라 KST 자정~09시 사이에
+    date.today()를 쓰면 '이번 주/금주' 경계가 하루 전으로 밀리는 문제 방지."""
+    from zoneinfo import ZoneInfo
+    return datetime.datetime.now(ZoneInfo("Asia/Seoul")).date()
 
 try:
     from streamlit_quill import st_quill
@@ -145,8 +152,10 @@ def _finalize(df):
     for c in NUM_COLS:
         if c in df:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["rps"] = np.where(df["send"].fillna(0) > 0, df["amt"] / df["send"], 0.0)   # 발송건당 거래액
-    df["aov"] = np.where(df["oc"].fillna(0) > 0, df["amt"] / df["oc"], 0.0)       # 객단가
+    # 분모(발송/주문)가 0·결측이면 0이 아니라 NaN — 0으로 넣으면 평균·BOTTOM 순위가
+    # '가짜 0원 캠페인'에 체계적으로 끌려 내려간다 (표시부는 NaN을 '–'로 처리)
+    df["rps"] = np.where(df["send"].fillna(0) > 0, df["amt"] / df["send"], np.nan)  # 발송건당 거래액
+    df["aov"] = np.where(df["oc"].fillna(0) > 0, df["amt"] / df["oc"], np.nan)      # 객단가
     df["dt"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
     df["dow"] = df["dt"].dt.dayofweek
     return df
@@ -210,7 +219,7 @@ def _week_sheet_end_date(title):
     무슬래시형은 구분자가 없어 'N월' 접두어를 힌트로 끝 토큰을 월/일로 분해한다.
     시트명엔 연도가 없으므로 '미래가 아닌 가장 가까운 과거 연도'를 택한다(최대 2년 전까지)."""
     from datetime import date, timedelta
-    today = date.today()
+    today = today_kst()
 
     def _pick_year(em, ed):
         for yr in (today.year, today.year - 1, today.year - 2):
@@ -272,7 +281,8 @@ def parse_plan_gsheet(sh, recent=None, progress_cb=None):
         else:
             undated.append(ws)                       # 날짜를 못 읽은 시트도 버리지 않는다
     dated.sort(key=lambda x: x[0], reverse=True)
-    this_week_end = date.today() + timedelta(days=6 - date.today().weekday())
+    _today = today_kst()
+    this_week_end = _today + timedelta(days=6 - _today.weekday())
     week_ws = [ws for d, ws in dated if d <= this_week_end]
     if recent and recent > 0:
         week_ws = week_ws[:recent]
@@ -467,12 +477,26 @@ def store_key_frame(d):
 
 
 def merge_store(old, new):
-    """기존 누적 + 신규 업로드 병합 — 같은 발송키(STORE_KEY_COLS)는 신규 우선."""
+    """기존 누적 + 신규 업로드 병합 — 같은 발송키(STORE_KEY_COLS)는 신규 우선.
+
+    단, 신규가 문구 미매칭(matched=False)이고 기존이 이미 매칭돼 있으면 기존 행을 유지한다.
+    (기획 lookup을 최근 N주만 적재한 상태에서 옛 실적 파일을 재업로드하면, 이미 매칭돼
+     저장된 문구가 빈 값으로 덮어써져 영구 유실되던 문제 방지)"""
     def _pick(d):
         if d is None or len(d) == 0:
             return pd.DataFrame(columns=STORE_COLS)
         return d[[c for c in STORE_COLS if c in d]].copy()
-    both = pd.concat([_pick(old), _pick(new)], ignore_index=True)
+    o, n = _pick(old), _pick(new)
+    if len(o) and len(n) and "matched" in o.columns and "matched" in n.columns:
+        o_m = o["matched"].map(_to_bool)
+        matched_old_keys = set(map(tuple, store_key_frame(o).loc[o_m.values].values))
+        if matched_old_keys:
+            n_m = n["matched"].map(_to_bool)
+            n_keys = list(map(tuple, store_key_frame(n).values))
+            drop = [(k in matched_old_keys) and (not m) for k, m in zip(n_keys, n_m.values)]
+            if any(drop):
+                n = n.loc[[not x for x in drop]]
+    both = pd.concat([o, n], ignore_index=True)
     if both.empty:
         return both
     both["date"] = both["date"].astype(str).str.replace(r'\.0$', '', regex=True)
@@ -759,6 +783,27 @@ def save_push_store(df):
     out.to_csv(PUSH_STORE, index=False, encoding="utf-8-sig")
 
 
+def finalize_push(df):
+    """push 저장소 로드 공통 — 표준 dtype 복구 (campaign의 _finalize와 같은 역할).
+
+    구글시트 라운드트립은 모든 값을 문자열로 되돌리는데 push만 복구 함수가 없어서,
+    저장 후 새 세션에서 주간보고·앱푸시 페이지가 date 비교/`~is_outlier`/int(consent)
+    에서 크래시하던 문제 방지. 어떤 소스(gsheets/CSV/파싱 직후)든 통과시켜도 안전하다."""
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=PUSH_STORE_COLS)
+    d = df.copy()
+    if "date" in d:
+        d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    for c in ("consent", "diff", "added", "removed"):
+        if c in d:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+    if "group" in d:
+        d["group"] = d["group"].astype(str).str.strip()
+    d["is_outlier"] = d["is_outlier"].map(_to_bool) if "is_outlier" in d else False
+    d = d.dropna(subset=["date"]) if "date" in d else d
+    return d.reset_index(drop=True)
+
+
 # ── 주간보고 보고란(전주 지표 현황·금주 집행) 영속 저장 — 주차별 key/text ──
 NOTES_STORE = "send_perf_notes.csv"
 NOTES_STORE_COLS = ["key", "text"]
@@ -879,11 +924,13 @@ def compute_mtd(df):
 PUSH_OUTLIER_THRESHOLD = 10000   # 신규추가 또는 기존이탈 > 이 값이면 배치/이관 이벤트로 판단, 제외
 
 
-def parse_push_consent_bytes(file_bytes, start_year=2024):
+def parse_push_consent_bytes(file_bytes, start_year=None):
     """앱푸시 수신동의 현황 Excel → 일별 DataFrame.
 
     · 열 구조: A=그룹(기존/신규/Total), B=지표(수신동의/증감/신규추가/기존이탈), C열부터=날짜별 값
     · 날짜는 'm/d' 형식이며 연도는 start_year 기준 순서대로 할당(연말 넘어가면 +1년)
+    · start_year=None 이면 자동 추론 — '마지막 날짜가 미래로 가지 않는 가장 최근 연도'를
+      택한다 (예전 2024 하드코딩은 새해 시작 파일을 전부 과거 연도로 오배정했음)
     · 이상치(신규추가>PUSH_OUTLIER_THRESHOLD 또는 기존이탈>PUSH_OUTLIER_THRESHOLD)는 is_outlier=True 플래그
     반환 컬럼: date(datetime), group(기존/신규/Total), consent(수신동의수), diff(증감),
                added(신규추가), removed(기존이탈), is_outlier(bool)
@@ -923,24 +970,45 @@ def parse_push_consent_bytes(file_bytes, start_year=2024):
             vals = rows[ri][2:2 + n]
             data[(g, m)] = [v if isinstance(v, (int, float)) else None for v in vals]
 
-    # 날짜 파싱 — m/d 형식, start_year 기준 순서 할당
-    cur_year = start_year
-    prev_month = None
-    parsed_dates = []
+    # 날짜 파싱 — m/d 형식, start_year 기준 순서 할당 (월이 줄면 연도 +1 롤오버)
+    md_pairs = []
     for ds in date_strs:
         if ds is None:
-            parsed_dates.append(None)
+            md_pairs.append(None)
             continue
-        s = str(ds).strip()
         try:
-            parts = s.split("/")
-            m_val, d_val = int(parts[0]), int(parts[1])
+            parts = str(ds).strip().split("/")
+            md_pairs.append((int(parts[0]), int(parts[1])))
+        except Exception:
+            md_pairs.append(None)
+
+    def _assign_years(start_y):
+        cur_year, prev_month, out = start_y, None, []
+        for md in md_pairs:
+            if md is None:
+                out.append(None)
+                continue
+            m_val, d_val = md
             if prev_month is not None and m_val < prev_month:
                 cur_year += 1
             prev_month = m_val
-            parsed_dates.append(_dt.date(cur_year, m_val, d_val))
-        except Exception:
-            parsed_dates.append(None)
+            try:
+                out.append(_dt.date(cur_year, m_val, d_val))
+            except ValueError:
+                out.append(None)
+        return out
+
+    if start_year is None:
+        # 연도 추론: 롤오버까지 시뮬레이션했을 때 마지막 날짜가 미래(+7일 여유)로
+        # 가지 않는 가장 최근 시작 연도를 택한다. 다년치 파일도 올바르게 잡힌다.
+        _today = today_kst()
+        start_year = _today.year - 3
+        for cand in range(_today.year, _today.year - 4, -1):
+            _dates = [d for d in _assign_years(cand) if d is not None]
+            if _dates and max(_dates) <= _today + _dt.timedelta(days=7):
+                start_year = cand
+                break
+    parsed_dates = _assign_years(start_year)
 
     # 레코드 조합
     records = []
@@ -1060,13 +1128,35 @@ def gs_open(creds_dict, spreadsheet):
         return gc.open_by_key(sp)
 
 
+def _is_ws_not_found(e):
+    """gspread WorksheetNotFound 판별 — 시트가 진짜 없는 것과 API 오류(쿼터·네트워크)를
+    구분한다. API 오류까지 '빈 저장소'로 위장하면 이후 저장 때 데이터가 유실된다."""
+    return type(e).__name__ == "WorksheetNotFound"
+
+
+def _gs_retry(fn, tries=3):
+    """일시 오류(쿼터 429·네트워크)용 지수 백오프 재시도."""
+    last = None
+    for i in range(tries):
+        if i:
+            time.sleep(2 ** i)
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+    raise last
+
+
 def gs_read_ws(sh, title, cols):
-    """워크시트 → DataFrame (모든 값 문자열). 없으면 빈 프레임(cols)."""
+    """워크시트 → DataFrame (모든 값 문자열). 시트가 없으면 빈 프레임(cols).
+    읽기 API 오류는 삼키지 않고 올린다 — 호출부(storage_load)가 실패 플래그로 처리."""
     try:
         ws = sh.worksheet(title)
-    except Exception:
-        return pd.DataFrame(columns=cols)
-    vals = ws.get_all_values()
+    except Exception as e:
+        if _is_ws_not_found(e):
+            return pd.DataFrame(columns=cols)
+        raise
+    vals = _gs_retry(ws.get_all_values)
     if not vals or len(vals) < 2:
         return pd.DataFrame(columns=cols)
     df = pd.DataFrame(vals[1:], columns=vals[0])
@@ -1077,7 +1167,11 @@ def gs_read_ws(sh, title, cols):
 
 
 def gs_write_ws(sh, title, df, cols):
-    """DataFrame 으로 워크시트 전체 덮어쓰기."""
+    """DataFrame 으로 워크시트 전체 덮어쓰기.
+
+    clear→update 순서가 아니라 update→resize 순서 — clear 후 update가 실패하면
+    시트가 빈 채로 남아 누적 데이터가 통째로 날아가던 문제 방지. update가 실패해도
+    기존 데이터는 그대로 남고, 성공 후에만 그리드를 새 크기로 줄여 옛 잔여 행을 지운다."""
     out = df.copy()
     for c in cols:
         if c not in out.columns:
@@ -1085,10 +1179,17 @@ def gs_write_ws(sh, title, df, cols):
     out = out[cols].fillna("").astype(str)
     try:
         ws = sh.worksheet(title)
-    except Exception:
+    except Exception as e:
+        if not _is_ws_not_found(e):
+            raise
         ws = sh.add_worksheet(title=title, rows=max(len(out) + 10, 100), cols=max(len(cols), 10))
-    ws.clear()
-    ws.update(values=[cols] + out.values.tolist(), range_name="A1")
+    values = [cols] + out.values.tolist()
+    if ws.row_count < len(values) or ws.col_count < len(cols):
+        _gs_retry(lambda: ws.resize(rows=max(ws.row_count, len(values)),
+                                    cols=max(ws.col_count, len(cols))))
+    _gs_retry(lambda: ws.update(values=values, range_name="A1"))
+    if ws.row_count > len(values):                     # 새 데이터보다 아래에 남은 옛 행 제거
+        _gs_retry(lambda: ws.resize(rows=len(values)))
 
 
 def gs_clear_ws(sh, title, cols):
@@ -1699,17 +1800,34 @@ def main():
         cols = _STORE_COLS_BY_KIND[kind]
         if bk["mode"] == "gsheets":
             try:
-                return gs_read_ws(bk["sh"], GS_TITLES[kind], cols)
-            except Exception:
+                out = gs_read_ws(bk["sh"], GS_TITLES[kind], cols)
+                st.session_state.pop(f"_load_failed_{kind}", None)
+                return out
+            except Exception as e:
+                # 읽기 실패(쿼터·네트워크)를 '빈 저장소'로 위장하면, 이후 저장 때 빈
+                # 스냅샷으로 시트 전체를 덮어써 누적 데이터가 유실된다 — 실패 플래그를
+                # 남겨 storage_save 가 저장을 차단하게 한다.
+                st.session_state[f"_load_failed_{kind}"] = str(e)[:120]
                 return pd.DataFrame(columns=cols)
         return _LOCAL_LOAD[kind]()
 
+    _KIND_LABEL = {"campaign": "캠페인", "mtd": "MTD", "promo": "기획전",
+                   "push": "앱푸시", "notes": "보고란"}
+
     def storage_save(bk, kind, df):
+        """저장 성공 여부(bool) 반환 — 클라우드 읽기가 실패한 상태면 덮어쓰기 방지를 위해 차단."""
+        err = st.session_state.get(f"_load_failed_{kind}")
+        if err:
+            st.error(f"⛔ {_KIND_LABEL.get(kind, kind)} 저장을 차단했어요 — 기존 클라우드 데이터를 "
+                     f"읽지 못한 상태에서 저장하면 누적분이 덮어써져요. 사이드바 「🔄 새로 불러오기」로 "
+                     f"다시 읽은 뒤 저장해 주세요. (읽기 실패 원인: {err})")
+            return False
         cols = _STORE_COLS_BY_KIND[kind]
         if bk["mode"] == "gsheets":
             gs_write_ws(bk["sh"], GS_TITLES[kind], df, cols)
         else:
             _LOCAL_SAVE[kind](df)
+        return True
 
     def storage_clear(bk, kind):
         cols = _STORE_COLS_BY_KIND[kind]
@@ -1791,7 +1909,7 @@ def main():
              "자동으로 분류돼요. ZIP 파일도 돼요.")
 
     if "push_consent_df" not in st.session_state:
-        st.session_state.push_consent_df = storage_load(BK, "push")
+        st.session_state.push_consent_df = finalize_push(storage_load(BK, "push"))
     push_consent_df = st.session_state.push_consent_df
 
     # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
@@ -1848,8 +1966,8 @@ def main():
                             st.session_state["push_consent_df"] = parsed_df
                             st.session_state["push_consent_hash"] = _push_hash
                             push_consent_df = parsed_df
-                            storage_save(BK, "push", parsed_df)
-                            st.sidebar.success("📱 앱푸시 동의 데이터를 캐시에 저장했어요.")
+                            if storage_save(BK, "push", parsed_df):
+                                st.sidebar.success("📱 앱푸시 동의 데이터를 캐시에 저장했어요.")
                     except Exception as _e:
                         st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
 
@@ -1870,7 +1988,9 @@ def main():
     st.sidebar.caption(BK["status"])
     if st.sidebar.button("🔄 새로 불러오기", width="stretch"):
         for k in ("camp_store", "mtd_store_df", "promo_store_df", "push_consent_df", "push_consent_hash",
-                  "_merge_sig", "_merge_new_raw", "_merge_parse_log"):
+                  "_merge_sig", "_merge_new_raw", "_merge_parse_log", "wr_notes"):
+            st.session_state.pop(k, None)
+        for k in [k for k in st.session_state if str(k).startswith("_load_failed_")]:
             st.session_state.pop(k, None)
         st.cache_data.clear()
     if "camp_store" not in st.session_state:
@@ -1899,7 +2019,13 @@ def main():
                 _perf_sig = tuple((getattr(f, "name", ""), len(f.getvalue())) for f in perf_files)
             except Exception:
                 _perf_sig = None
-            _merge_sig = (_perf_sig, len(plan_lookup))
+            # 기획 lookup은 건수가 아니라 '내용'으로 시그니처를 만든다 — 문구를 고쳐서
+            # 다시 가져와도 건수가 같으면 옛 문구로 머지 캐시가 재사용되던 문제 방지
+            try:
+                _plan_sig = hash(frozenset(plan_lookup.items()))
+            except Exception:
+                _plan_sig = len(plan_lookup)
+            _merge_sig = (_perf_sig, _plan_sig)
             if (_perf_sig is not None and st.session_state.get("_merge_sig") == _merge_sig
                     and "_merge_new_raw" in st.session_state):
                 new_raw = st.session_state["_merge_new_raw"]
@@ -1947,10 +2073,10 @@ def main():
         st.sidebar.success(f"신규 {len(new_raw)}건 → 누적 {len(work)}건 "
                            f"(추가 {len(kn - ko)} · 갱신 {len(kn & ko)})")
         if st.sidebar.button("💾 저장하기", width="stretch"):
-            storage_save(BK, "campaign", work)
-            st.session_state.camp_store = work
-            tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-            st.sidebar.success(f"저장했어요 ✓ ({tgt}) — 다음에도 유지돼요.")
+            if storage_save(BK, "campaign", work):
+                st.session_state.camp_store = work
+                tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
+                st.sidebar.success(f"저장했어요 ✓ ({tgt}) — 다음에도 유지돼요.")
         st.sidebar.caption("※ 저장을 눌러야 반영돼요. 안 누르면 이번 세션에서만 볼 수 있어요.")
     else:
         work = stored
@@ -1969,35 +2095,47 @@ def main():
                 data = io.BytesIO(z.read(nm))
                 if "mtd" in base:
                     df = pd.read_csv(data, encoding="utf-8-sig")
-                    m = merge_mtd_store(st.session_state.get("mtd_store_df"), df)
-                    storage_save(BK, "mtd", m); st.session_state.mtd_store_df = m
-                    done.append(f"MTD {len(m):,}")
+                    _cur = st.session_state.get("mtd_store_df")
+                    if _cur is None:                      # 빈 화면 복원 경로 — 아직 로드 전이면
+                        _cur = storage_load(BK, "mtd")    # 기존 저장분을 읽어와 병합(덮어쓰기 방지)
+                    m = merge_mtd_store(_cur, df)
+                    if storage_save(BK, "mtd", m):
+                        st.session_state.mtd_store_df = m
+                        done.append(f"MTD {len(m):,}")
                 elif "promo" in base:
                     df = pd.read_csv(data, encoding="utf-8-sig", dtype={"promo": str})
-                    m = merge_promo_store(st.session_state.get("promo_store_df"), df)
-                    storage_save(BK, "promo", m); st.session_state.promo_store_df = m
-                    done.append(f"기획전 {len(m):,}")
+                    _cur = st.session_state.get("promo_store_df")
+                    if _cur is None:
+                        _cur = storage_load(BK, "promo")
+                    m = merge_promo_store(_cur, df)
+                    if storage_save(BK, "promo", m):
+                        st.session_state.promo_store_df = m
+                        done.append(f"기획전 {len(m):,}")
                 elif "push" in base or "consent" in base:
-                    df = pd.read_csv(data, encoding="utf-8-sig", dtype={"date": str, "group": str})
+                    # dtype 정규화 후 병합 — 문자열/Timestamp 혼재로 dedupe가 실패해
+                    # 같은 날이 두 벌 남던 문제 방지
+                    df = finalize_push(pd.read_csv(data, encoding="utf-8-sig", dtype={"group": str}))
                     cur_push = st.session_state.get("push_consent_df")
                     if cur_push is not None and not cur_push.empty:
-                        m = pd.concat([cur_push, df], ignore_index=True)
+                        m = pd.concat([finalize_push(cur_push), df], ignore_index=True)
                         m = m.drop_duplicates(subset=["date", "group"], keep="last")
                     else:
                         m = df
-                    storage_save(BK, "push", m)
-                    st.session_state.push_consent_df = m
-                    done.append(f"앱푸시 {len(m)//3:,}일")
+                    if storage_save(BK, "push", m):
+                        st.session_state.push_consent_df = m
+                        done.append(f"앱푸시 {len(m)//3:,}일")
                 else:
                     df = pd.read_csv(data, encoding="utf-8-sig", dtype={"date": str, "af": str})
                     m = merge_store(stored, df)
-                    storage_save(BK, "campaign", m); st.session_state.camp_store = m
-                    done.append(f"캠페인 {len(m):,}")
+                    if storage_save(BK, "campaign", m):
+                        st.session_state.camp_store = m
+                        done.append(f"캠페인 {len(m):,}")
         else:
             df = pd.read_csv(file, encoding="utf-8-sig", dtype={"date": str, "af": str})
             m = merge_store(stored, df)
-            storage_save(BK, "campaign", m); st.session_state.camp_store = m
-            done.append(f"캠페인 {len(m):,}")
+            if storage_save(BK, "campaign", m):
+                st.session_state.camp_store = m
+                done.append(f"캠페인 {len(m):,}")
         st.cache_data.clear()
         return " · ".join(done) if done else "복원할 데이터가 없어요"
 
@@ -2052,10 +2190,10 @@ def main():
         mtd_work = merge_mtd_store(mtd_stored, mtd_new)
         st.sidebar.success(f"MTD 새로 {len(mtd_new)}일 → 합쳐서 {len(mtd_work)}일 (미리보기)")
         if st.sidebar.button("💾 MTD 저장하기", width="stretch", key="save_mtd"):
-            storage_save(BK, "mtd", mtd_work)
-            st.session_state.mtd_store_df = mtd_work
-            tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-            st.sidebar.success(f"MTD 저장했어요 ✓ ({tgt})")
+            if storage_save(BK, "mtd", mtd_work):
+                st.session_state.mtd_store_df = mtd_work
+                tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
+                st.sidebar.success(f"MTD 저장했어요 ✓ ({tgt})")
     else:
         mtd_work = mtd_stored
     mtd_data = compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
@@ -2071,10 +2209,10 @@ def main():
             promo_work = merge_promo_store(promo_stored, pnew)
             st.sidebar.success(f"기획전 시트 {len(pnew):,}건 → 합쳐서 {len(promo_work):,}건 (미리보기)")
             if st.sidebar.button("💾 기획전 저장하기", width="stretch", key="save_promo"):
-                storage_save(BK, "promo", promo_work)
-                st.session_state.promo_store_df = promo_work
-                tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-                st.sidebar.success(f"기획전 저장했어요 ✓ ({tgt})")
+                if storage_save(BK, "promo", promo_work):
+                    st.session_state.promo_store_df = promo_work
+                    tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
+                    st.sidebar.success(f"기획전 저장했어요 ✓ ({tgt})")
             st.sidebar.caption("※ 저장을 눌러야 반영돼요.")
         except Exception as e:
             st.sidebar.error(f"기획전 시트를 읽지 못했어요: {str(e)[:90]}")
@@ -2327,10 +2465,10 @@ def main():
                 try:
                     dp = pd.read_csv(rest_p, encoding="utf-8-sig", dtype={"promo": str})
                     merged_p = merge_promo_store(st.session_state.get("promo_store_df"), dp)
-                    storage_save(BK, "promo", merged_p)
-                    st.session_state.promo_store_df = merged_p
-                    st.cache_data.clear()
-                    st.success("기획전 복원했어요 ✓ 새로고침해 주세요")
+                    if storage_save(BK, "promo", merged_p):
+                        st.session_state.promo_store_df = merged_p
+                        st.cache_data.clear()
+                        st.success("기획전 복원했어요 ✓ 새로고침해 주세요")
                 except Exception as e:
                     st.error(f"기획전 복원하지 못했어요: {e}")
             if st.button("🧹 기획전 저장소 초기화", width="stretch", key="clear_promo"):
@@ -2820,8 +2958,9 @@ def main():
         def _notes_save(d):
             try:
                 storage_save(BK, "notes", notes_dict_to_df(d))
-            except Exception:
-                pass
+            except Exception as e:
+                # 실패를 삼키면 사용자는 저장된 줄 알고 떠난다 — 명시적으로 알린다
+                st.error(f"보고란 저장에 실패했어요 — 잠시 후 다시 시도해 주세요. ({str(e)[:80]})")
 
         if "wr_notes" not in st.session_state:
             try:
@@ -2905,7 +3044,7 @@ def main():
             """오늘(실제 달력 기준) 이 속한 주의 월~일 date 쌍. '금주 집행' 은 선택된 기준주(과거 실적
             비교용)가 아니라 항상 '오늘' 기준 이번 주 — 아직 실적이 없는 발송 예정 주라서 실적 대신
             기획(문구) 시트에서 읽어야 한다."""
-            _today = datetime.date.today()
+            _today = today_kst()
             _mon = _today - datetime.timedelta(days=_today.weekday())
             return _mon, _mon + datetime.timedelta(days=6)
 
@@ -2981,7 +3120,17 @@ def main():
                     val = store.get(nkey, "")
                     if val and not (val.startswith("<p>") or val.startswith("<ul>") or val.startswith("<li>") or "<div" in val):
                         if val.strip().startswith("-"):
-                            items = [f"<li>{item.strip()[1:].strip()}</li>" for item in val.strip().split("\n") if item.strip()]
+                            # '-'로 시작하는 줄만 접두어를 떼고, 'ㄴ'(세부) 줄은 텍스트를
+                            # 그대로 보존한다 — 무조건 첫 글자를 자르면 계층 구조가 깨진다
+                            items = []
+                            for item in val.strip().split("\n"):
+                                t = item.strip()
+                                if not t:
+                                    continue
+                                if t.startswith("-"):
+                                    items.append(f"<li>{t[1:].strip()}</li>")
+                                else:
+                                    items.append(f"<li>{t}</li>")
                             val = f"<ul>{''.join(items)}</ul>"
                         else:
                             val = "".join(f"<p>{line}</p>" for line in val.split("\n"))
@@ -3049,6 +3198,12 @@ def main():
             st.caption("내용은 주차별로 저장돼요 — 기준 주차를 바꾸면 그 주차의 보고란이 열려요. "
                        "'금주 집행 내용 요약'은 선택한 기준 주차와 무관하게 **오늘 기준 이번 주** "
                        "기획 시트를 읽어요(아직 실적이 없는 발송 예정 주라서).")
+            # 지난 주차의 '금주 집행' 노트도 열람 가능하게 — 주가 넘어가면 키가 바뀌어
+            # 저장소에는 남는데 UI에서 영영 접근 불가하던 문제 방지 (기준 주차 선택과 연동)
+            _past_exec = st.session_state.wr_notes.get(f"exec_{_wkkey}")
+            if _wkkey != _this_wkkey and _past_exec:
+                with st.expander(f"🗂 {_md(ref_sel)} 당시의 '금주 집행 내용 요약' 보기"):
+                    st.markdown(_note_render(_past_exec), unsafe_allow_html=True)
 
         # ── 월 누계(MTD) — 기준주 일요일 마감 기준 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -5611,12 +5766,16 @@ def build_facts(df, with_attr=False, metric_col="ord_cr"):
         return f" │ 내용: {b[:50]}" if b else ""
     win = df.sort_values(metric_col, ascending=False).head(6)
     los = df.sort_values(metric_col).head(6)
+
+    def _send_n(r):
+        v = r.get("send")
+        return 0 if (v is None or pd.isna(v)) else int(v)   # 최소 발송수 0이면 NaN 발송 행이 섞임
     lines.append("\n[주문전환율 상위 문구] (제목 │ 내용)")
     for _, r in win.iterrows():
-        lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {int(r['send']):,} / {r['cat']} / “{r['title']}”{_bodyprev(r)}")
+        lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {_send_n(r):,} / {r['cat']} / “{r['title']}”{_bodyprev(r)}")
     lines.append("\n[주문전환율 하위 문구] (제목 │ 내용)")
     for _, r in los.iterrows():
-        lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {int(r['send']):,} / {r['cat']} / “{r['title']}”{_bodyprev(r)}")
+        lines.append(f" - CR {r['ord_cr']*100:.2f}% / 발송 {_send_n(r):,} / {r['cat']} / “{r['title']}”{_bodyprev(r)}")
     if with_attr:
         lines.append("\n[문구 속성별 평균 주문전환율 (보유 vs 미보유)]")
         for tag in TAG_BOOLS:
