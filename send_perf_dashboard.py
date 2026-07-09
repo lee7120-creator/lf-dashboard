@@ -69,7 +69,9 @@ def _norm_attr(x):
 def _norm_date(v):
     """엑셀 셀 값 → 'YYYYMMDD' 문자열 또는 None.
     8자리(YYYYMMDD)는 그대로, 6자리(YYMMDD, 예: '250111')는 '20'을 붙여 복구한다.
-    (기획 시트에 'YYYY' 앞 두 자리가 빠진 날짜 오타가 있어 매칭에서 누락되던 문제 대응)"""
+    구분자형(2025-01-11·2025.1.11·2025/1/11)도 구분자를 떼고 표준 8자리로 복구한다.
+    (기획 시트에 'YYYY' 앞 두 자리가 빠진 날짜 오타·셀 표시형식 변경으로 매칭에서
+     누락되던 문제 대응)"""
     if v is None:
         return None
     if isinstance(v, (datetime.datetime, datetime.date)):
@@ -79,6 +81,15 @@ def _norm_date(v):
         return s
     if re.match(r'^\d{6}$', s):                       # YYMMDD → 20YYMMDD (실제 날짜인지 검증)
         cand = '20' + s
+        try:
+            datetime.datetime.strptime(cand, '%Y%m%d')
+            return cand
+        except ValueError:
+            return None
+    # 구분자형(-, ., /, 공백) — YYYY[sep]M[sep]D. 구분자를 떼고 zero-pad 후 검증.
+    md = re.match(r'^(\d{4})[.\-/\s]+(\d{1,2})[.\-/\s]+(\d{1,2})$', s)
+    if md:
+        cand = f"{int(md.group(1)):04d}{int(md.group(2)):02d}{int(md.group(3)):02d}"
         try:
             datetime.datetime.strptime(cand, '%Y%m%d')
             return cand
@@ -554,6 +565,9 @@ def parse_mtd_bytes(file_bytes):
     """전사 MTD 발송상세(날짜=열, 지표=행) → 일자별 DataFrame. 시작 열 자동 탐지."""
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
     ws = pd.read_excel(xls, header=None, sheet_name=xls.sheet_names[0])
+    # 날짜행(2행)·값행이 없는 시트(오분류된 1~2행짜리 파일)는 iloc[1] IndexError 대신 빈 반환
+    if ws.shape[0] < 3 or ws.shape[1] < 2:
+        return pd.DataFrame()
     date_row = ws.iloc[1, :]
     start = None
     for j in range(1, ws.shape[1]):
