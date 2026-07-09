@@ -149,6 +149,11 @@ def _finalize(df):
     # 속성(attr) 오타·표기흔들림 머지 (예: 마켸팅→마케팅). 공백도 정리.
     if "attr" in df:
         df["attr"] = df["attr"].map(_norm_attr)
+    # promo(기획전번호)는 실적 파싱에서 int(100328)와 str('장바구니')가 섞여 들어온다 —
+    # 문자열로 통일하지 않으면 st.dataframe의 Arrow 직렬화가 매번 실패(자동 복구로 성능
+    # 저하+로그 오염)한다. norm_promo로 기획전 매칭 키와도 같은 형식으로 맞춘다.
+    if "promo" in df:
+        df["promo"] = df["promo"].map(norm_promo)
     for c in NUM_COLS:
         if c in df:
             df[c] = pd.to_numeric(df[c], errors="coerce")
