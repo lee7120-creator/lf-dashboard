@@ -5407,8 +5407,10 @@ def main():
             _order = np.argsort(_days)
             _ds = _days[_order]
             y = vals[mcol].values.astype(float)[_order]
-            # 노출 강도 = 각 캠페인 '직전 28일' 동안 같은 소구 캠페인 수
-            expo = (np.searchsorted(_ds, _ds, side="left")
+            # 노출 강도 = 각 캠페인 시점 직전 28일간 같은 소구 캠페인 수(같은 날 포함, 자기 제외).
+            # side="left"로 하면 같은 날 캠페인을 통째로 빼서 노출을 과소 추정한다 — 실데이터는
+            # 같은 소구를 같은 날 여러 세그먼트로 보내는 비율이 99%라 (자기≤, 자기 1개만 제외)로 세야 정확.
+            expo = (np.searchsorted(_ds, _ds, side="right") - 1
                     - np.searchsorted(_ds, _ds - 28, side="left")).astype(float)
             wk_idx = (_ds - _ds.min()) / 7.0                # 주차 추세 통제 (시즌 드리프트 분리)
             X = np.column_stack([np.ones(len(y)), expo, wk_idx])
