@@ -3257,17 +3257,24 @@ def main():
             """마크다운 안전 문자열 — '~'가 취소선으로 해석되지 않게 이스케이프."""
             return str(s).replace("~", "\\~")
 
-        # 기준주가 '진행 중인 이번 주'면 동요일 누계 비교 — 화요일에 열면 기준주 2일치가
-        # 전주 7일치와 비교되어 전주비 △70%대의 가짜 급락이 뜨는 착시 방지. 비교 기간
-        # (전주·전월 동주·전년 동주)도 전부 기준주와 같은 요일까지만 잘라 집계한다.
+        # 기준주가 '부분 주'(아직 일요일까지 데이터가 안 참)면 동요일 누계 비교 — 화요일에
+        # 열면 기준주 2일치가 전주 7일치와 비교되어 전주비 △70%대의 가짜 급락이 뜨는 착시
+        # 방지. 비교 기간(전주·전월 동주·전년 동주)도 전부 기준주와 같은 요일까지만 잘라 집계.
+        # 부분 주 = 달력상 진행 중 주(_is_live_week) 또는 데이터상 가장 최근 주인데 일요일까지
+        # 안 온 경우(_is_latest_partial). 후자를 안 보면 '지난 주지만 실적이 목요일까지만
+        # 업로드된' 최신 주가 완결로 처리돼 전주 전체와 비교되어 가짜 하락이 뜬다.
         _today_k = today_kst()
         _is_live_week = ref_ws.date() <= _today_k <= ref_we.date()
+        _latest_data = g0["dt"].max()
+        _is_latest_week = bool(ref_ws <= _latest_data <= ref_we)
+        _is_latest_partial = _is_latest_week and (_latest_data.normalize() < ref_we.normalize())
+        _partial = _is_live_week or _is_latest_partial
         _elapsed = 6
-        if _is_live_week:
+        if _partial:
             _ref_rows = _slice(ref_ws, ref_we)
             if len(_ref_rows):
                 _elapsed = min(int((_ref_rows["dt"].max().normalize() - ref_ws).days), 6)
-            else:
+            elif _is_live_week:
                 _elapsed = min((pd.Timestamp(_today_k) - ref_ws).days, 6)
             _elapsed = max(_elapsed, 0)
 
@@ -3290,9 +3297,10 @@ def main():
             yo_ws, yoy_w, yo_lab = None, None, "–"
         if _elapsed < 6:
             _dowk = ["월", "화", "수", "목", "금", "토", "일"][_elapsed]
-            st.info(f"⏳ 기준주가 진행 중이라 **월~{_dowk} 동요일 누계**로 비교해요 — "
+            _why = "진행 중이라" if _is_live_week else "실적이 아직 다 안 들어와서"
+            st.info(f"⏳ 기준주가 {_why} **월~{_dowk} 동요일 누계**로 비교해요 — "
                     "전주·전월 동주·전년 동주도 같은 요일까지만 집계해 부분 주 착시를 없앴어요. "
-                    "주가 끝나면 자동으로 월~일 전체 비교로 돌아가요.")
+                    "주가 끝나고 데이터가 다 차면 자동으로 월~일 전체 비교로 돌아가요.")
 
         # ── KPI 카드 (전주비·전년비) — △ 표기 방향이 st.metric 화살표와 어긋나서 커스텀 카드 사용 ──
         def _delta_line(d, label):
@@ -3740,8 +3748,21 @@ def main():
         # ① 거래액 전주 대비 — 카테고리 기여 분해 (워터폴)
         with tabW:
             st.markdown("##### 거래액 전주 대비 — 어느 카테고리가 끌어올리고/깎아먹었나")
-            cwd = _slice(ref_ws, ref_we)
-            pwd = _slice(ref_ws - pd.Timedelta(days=7), ref_we - pd.Timedelta(days=7))
+            def _catfill(d):
+                """cat 결측/공백을 '(미분류)'로 채운 사본 — groupby('cat')는 NaN 행을 드롭하고
+                아래 union/성분합은 공백 카테고리를 제외하는데, 총합(prev_tot·s1t·ΔCTR)은 전체
+                행 기준이라 무카테고리 행이 있으면 워터폴·믹스분해 항등식이 깨진다(합≠총증감).
+                하나의 카테고리로 포함시켜 총합을 보존한다."""
+                dd = d.copy()
+                if "cat" in dd.columns:
+                    _c = dd["cat"]
+                    # isna()를 명시적으로 OR — astype(str)이 일부 pandas 버전에서 NaN을
+                    # 'nan' 문자열로 안 바꿔(nullable dtype) isin이 결측을 놓치는 것 방지
+                    _blank = _c.isna() | _c.astype(str).str.strip().isin(["", "nan", "None", "NaN"])
+                    dd["cat"] = np.where(_blank, "(미분류)", _c.astype(str))
+                return dd
+            cwd = _catfill(_slice(ref_ws, ref_we))
+            pwd = _catfill(_slice(ref_ws - pd.Timedelta(days=7), ref_we - pd.Timedelta(days=7)))
             if "cat" not in cwd.columns or len(pwd) == 0:
                 st.info("전주 데이터가 없어 분해할 수 없어요.")
             else:
@@ -3907,9 +3928,11 @@ def main():
                     def _pp(v):
                         return f"△{abs(v)*100:.2f}%p" if v < 0 else f"+{v*100:.2f}%p"
                     st.markdown(f'<div class="appendix"><b>가중 CTR 전주 대비 {_pp(_dctr)}</b> = '
-                                f'실질 효율 {_pp(_real)} + 카테고리 믹스 {_pp(_mix)}. '
-                                '믹스 성분이 크면 CTR 변화가 문구·타깃 효율 문제가 아니라 '
-                                '카테고리 발송 비중 변화 때문이라는 뜻이에요.</div>',
+                                f'실질 효율 {_pp(_real)} + 카테고리 믹스 {_pp(_mix)} '
+                                '(두 성분의 합은 총 증감과 일치). 믹스 성분이 크면 CTR 변화가 '
+                                '문구·타깃 효율 문제가 아니라 카테고리 발송 비중 변화 때문이에요. '
+                                '단, 이번 주 새로 시작하거나 중단한 카테고리의 효과는 실질 효율 '
+                                '쪽에 섞일 수 있어요.</div>',
                                 unsafe_allow_html=True)
 
         # ② 금주 하이라이트 · 로우라이트
@@ -4043,13 +4066,23 @@ def main():
         # ── 최근 13주 추이 (발송량·CTR·주문CR·거래액) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📈 최근 13주 추이")
-        wk13 = [w for w in sorted(g0["주"].unique()) if pd.Timestamp(w) <= ref_ws][-13:]
+        # 기준주가 부분 주면 추이에서 제외 — 마지막 점만 부분 데이터라 꼬리가 인위적으로
+        # 급락하는 착시 방지 (KPI/표는 동요일 누계로 공정 비교하지만 추이는 풀주 창이라 불일치)
+        _wk_upto = [w for w in sorted(g0["주"].unique()) if pd.Timestamp(w) <= ref_ws]
+        # 2주 이상 있을 때만 부분 기준주를 제외 (1주뿐이면 빈 추이가 되므로 부분이라도 표시)
+        _drop_ref = (_partial and len(_wk_upto) >= 2 and pd.Timestamp(_wk_upto[-1]) == ref_ws)
+        if _drop_ref:
+            _wk_upto = _wk_upto[:-1]
+        wk13 = _wk_upto[-13:]
         trows = []
         for w in wk13:
             a = _agg(_slice(pd.Timestamp(w), pd.Timestamp(w) + pd.Timedelta(days=6)))
             a["주"] = pd.Timestamp(w)
             trows.append(a)
         tdf = pd.DataFrame(trows)
+        if _drop_ref:
+            st.caption("※ 진행 중(또는 실적 미완결)인 기준주는 부분 데이터라 추이에서 제외했어요 "
+                       "— 완결된 주만 표시해요.")
         WRT_BAR = {"발송량": "발송", "거래액": "거래액", "캠페인수": "캠페인수"}
         WRT_LINE = {"CTR": ("CTR", "%"), "주문CR": ("주문CR", "%"), "RPS": ("RPS", "")}
         tsel1, tsel2 = st.columns(2)
