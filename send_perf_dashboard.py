@@ -1876,11 +1876,9 @@ def main():
     @st.cache_data(show_spinner=False)
     def cached_promo(b): return parse_promo_bytes(b)
 
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def cached_plan_gsheet(url, recent_n_, _sh, _cb):
-        """기획 구글시트 파싱 캐시(1시간) — 브라우저 새로고침 후 「기획 문구 가져오기」를
-        다시 눌러도 주차 시트들을 API로 재순회하지 않고 즉시 반환한다."""
-        return parse_plan_gsheet(_sh, recent=recent_n_, progress_cb=_cb)
+    # (기획 시트 파싱은 캐시하지 않는다 — 「기획 문구 가져오기」는 '지금 시트를 다시 읽어라'는
+    #  명시적 사용자 액션인데, 캐시하면 시트 문구를 수정하고 다시 눌러도 최대 1시간 옛 값이
+    #  반환돼 기능 의도를 정면으로 해친다. 매 클릭 fresh 로드.)
 
     @st.cache_data(show_spinner=False)
     def cached_classify(b): return classify_upload("", b)
@@ -1996,38 +1994,9 @@ def main():
 
     BK = init_storage()
 
-    def _preload_stores_parallel():
-        """gsheets 첫 세션 로드 최적화 — campaign·push·mtd·promo 4개 워크시트를
-        순차(각 0.5~1초 → 합 2~4초)가 아니라 동시에 읽는다. 어떤 이유로든 실패하면
-        조용히 반환해 기존 개별 로드 경로가 그대로 처리한다."""
-        keys = {"camp_store": "campaign", "push_consent_df": "push",
-                "mtd_store_df": "mtd", "promo_store_df": "promo"}
-        missing = {sk: kind for sk, kind in keys.items() if sk not in st.session_state}
-        if BK["mode"] != "gsheets" or len(missing) < 2:
-            return
-
-        def _load_one(kind):
-            cols = _STORE_COLS_BY_KIND[kind]
-            try:
-                return gs_read_ws(BK["sh"], GS_TITLES[kind], cols), None
-            except Exception as e:
-                return pd.DataFrame(columns=cols), str(e)[:120]
-        try:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=len(missing)) as ex:
-                futs = {sk: ex.submit(_load_one, kind) for sk, kind in missing.items()}
-                res = {sk: f.result() for sk, f in futs.items()}
-        except Exception:
-            return
-        for sk, (df, err) in res.items():
-            kind = keys[sk]
-            if err:                                   # 읽기 실패 플래그 — storage_save가 차단
-                st.session_state[f"_load_failed_{kind}"] = err
-            else:
-                st.session_state.pop(f"_load_failed_{kind}", None)
-            st.session_state[sk] = finalize_push(df) if sk == "push_consent_df" else df
-
-    _preload_stores_parallel()
+    # (병렬 프리로드는 단일 gspread 클라이언트를 여러 스레드가 공유해 토큰 refresh·세션
+    #  경합 위험이 있고, 얻는 2~4초보다 간헐 로드 실패 리스크가 커서 제거 — 아래 각
+    #  storage_load 개별(순차) 로드 경로가 그대로 처리한다.)
 
     AI_MODELS = {
         "Gemini 2.5 Pro (최고 품질)": "gemini-2.5-pro",
@@ -2111,11 +2080,22 @@ def main():
     def bar_label(v, col, pct):
         """막대 텍스트 라벨 — 비율은 %, 통화 지표는 원화 축약.
         (RPS·거래액 라벨이 '1234567.89'처럼 콤마·단위 없이 찍히던 문제 통일)"""
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return "–"                                # 결측 버킷 라벨이 'nan%'로 노출되던 것 방지
         if pct:
             return f"{v:.2f}%"
         if col in ("rps", "aov", "amt", "revenue", "avgOrderVal", "unitPrice"):
             return won(v)
         return f"{v:,.1f}"
+
+    def bar_xrange(yv, mult=1.18):
+        """수평 막대 x축 상한 — 값이 전부 0/NaN이면 None(자동)으로 둬 축이 [0,0]·[0,NaN]으로
+        붕괴해 막대·라벨이 안 보이는 빈 차트가 되는 것을 막는다."""
+        arr = np.asarray(yv, float)
+        if not len(arr):
+            return None
+        mx = float(np.nanmax(arr)) if np.isfinite(arr).any() else 0.0
+        return [0, mx * mult] if (np.isfinite(mx) and mx > 0) else None
 
     def guard_select(key, opts):
         """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
@@ -2166,8 +2146,7 @@ def main():
                 prog = st.sidebar.progress(0.0, text="기획 시트를 읽고 있어요…")
                 def _cb(i, total, title):
                     prog.progress(i / max(total, 1), text=f"가져오는 중 {i}/{total} — {title[:16]}")
-                lk, read = cached_plan_gsheet(_PLAN_SHEET_URL, (recent_n or None),
-                                              _sh=sh_plan, _cb=_cb)
+                lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_cb)
                 prog.empty()
                 st.session_state.plan_lookup_gs = lk
                 st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
@@ -2696,10 +2675,22 @@ def main():
         st.markdown("##### 📁 통합 백업 (단일 파일)")
         import zipfile as _zf
         _push_df = st.session_state.get("push_consent_df")
-        _bak_sig = (len(work),
-                    0 if mtd_work is None else len(mtd_work),
-                    0 if promo_work is None else len(promo_work),
-                    0 if _push_df is None else len(_push_df))
+        # 백업 신선도 시그니처 — 행 '개수'만 보면 dedup 덮어쓰기(개수 불변)나 노트 수정을
+        # 놓쳐 옛 ZIP을 최신인 양 내려준다. 내용 해시 + notes 포함으로 실제 변경을 감지.
+        def _dfsig(d):
+            if d is None or len(d) == 0:
+                return 0
+            try:
+                return int(pd.util.hash_pandas_object(d.astype(str), index=False).sum())
+            except Exception:
+                return len(d)
+        try:
+            _notes_now = st.session_state.get("wr_notes") or {}
+            _notes_sig = hash(frozenset((k, str(v)) for k, v in _notes_now.items()))
+        except Exception:
+            _notes_sig = 0
+        _bak_sig = (len(work), _dfsig(work),
+                    _dfsig(mtd_work), _dfsig(promo_work), _dfsig(_push_df), _notes_sig)
         if st.button("📦 백업 파일 만들기", width="stretch", key="bak_make"):
             _zbuf = io.BytesIO()
             _has_any = False
@@ -2941,7 +2932,7 @@ def main():
         for i, r in dd.iterrows():
             cr = r["ord_cr"] if ("ord_cr" in dd.columns and pd.notna(r["ord_cr"])) else 0
             # 순번 프리픽스 — 같은 날짜·제목·CR 행이 있어도 라벨이 겹쳐 사라지지 않게
-            opts[f"{i+1}. [{r['date']}] {str(r['title'])[:44]} (주문CR {cr*100:.2f}%)"] = i
+            opts[f"{i+1}. [{r.get('date', '–')}] {str(r['title'])[:44]} (주문CR {cr*100:.2f}%)"] = i
         if opts:
             keys_list = list(opts.keys())
             # 클릭한 행 위치 파악
@@ -3097,10 +3088,13 @@ def main():
             return f"{t.year}년 {t.month}월 {t.day}일" if (t is not None and not pd.isna(t)) else "–"
         # 순위는 표본 보정 점수(rank_adjusted) 기준 — UV 겨우 넘긴 캠페인이 주문 한두 건으로
         # TOP/BOTTOM을 점령하는 것을 막는다. 표에 보이는 값은 원래 지표 그대로.
+        # mergesort(안정 정렬)로 동점 순서를 결정적으로. BOTTOM은 TOP에 든 행을 제외해
+        # 점수가 전부 동점일 때 같은 캠페인이 '최고'이자 '최악'으로 뜨는 것을 막는다.
         win = (recent7.assign(_rk=rank_adjusted(recent7, _rk_col, ascending=False))
-               .sort_values("_rk", ascending=False).head(8).copy())
-        los = (recent7.assign(_rk=rank_adjusted(recent7, _rk_col, ascending=True))
-               .sort_values("_rk").head(8).copy())
+               .sort_values("_rk", ascending=False, kind="mergesort").head(8).copy())
+        _los_pool = recent7.drop(index=win.index) if len(recent7) > 8 else recent7
+        los = (_los_pool.assign(_rk=rank_adjusted(_los_pool, _rk_col, ascending=True))
+               .sort_values("_rk", kind="mergesort").head(8).copy())
         for _w in (win, los):
             _w["발송일자"] = _w.apply(_date_only, axis=1)
             _w["발송시간"] = _w["hour"].map(fmt_hhmm) if "hour" in _w else "–"
@@ -3401,7 +3395,17 @@ def main():
         # 구글시트(설정 시) 또는 로컬 CSV에 {key:text}를 저장 → 세션이 끊겨도 유지된다.
         def _notes_save(d):
             try:
-                storage_save(BK, "notes", notes_dict_to_df(d))
+                # 저장 직전 시트를 다시 읽어 병합 — 캠페인/MTD/기획전 저장과 동일한 낙관적 병합.
+                # 이게 없으면 A세션이 노트를 저장할 때 B세션이 추가한 '다른 주차' 노트가
+                # A의 스냅샷으로 덮어써져 사라진다(같은 키는 방금 편집한 A값 우선).
+                try:
+                    _fresh = notes_df_to_dict(storage_load(BK, "notes"))
+                except Exception:
+                    _fresh = {}
+                merged = {**_fresh, **d}
+                st.session_state.wr_notes = merged
+                if storage_save(BK, "notes", notes_dict_to_df(merged)):
+                    d.clear(); d.update(merged)         # 호출부의 store 참조도 병합본으로 동기화
             except Exception as e:
                 # 실패를 삼키면 사용자는 저장된 줄 알고 떠난다 — 명시적으로 알린다
                 st.error(f"보고란 저장에 실패했어요 — 잠시 후 다시 시도해 주세요. ({str(e)[:80]})")
@@ -3826,6 +3830,10 @@ def main():
                 union = [c for c in union if str(c).strip() not in ("", "nan", "None")]
                 dif = (curS.reindex(union).fillna(0) - prvS.reindex(union).fillna(0))
                 dif = dif[dif != 0].sort_values(ascending=False)
+                # 카테고리별 증감이 전부 0이면 워터폴은 건너뛰고 안내만 (LMDI·믹스는 계속).
+                # dif가 비면 아래 워터폴/표는 자연히 빈 값이 되지만, 안내로 오해를 막는다.
+                if dif.empty:
+                    st.info("전주 대비 카테고리별 거래액 증감이 없어요 (동일하거나 데이터 없음).")
                 # 기여 큰 8개만 개별 표시, 나머지는 '기타'로 합산
                 if len(dif) > 8:
                     top8 = dif.reindex(dif.abs().sort_values(ascending=False).head(8).index)
@@ -4124,6 +4132,9 @@ def main():
         if _drop_ref:
             st.caption("※ 진행 중(또는 실적 미완결)인 기준주는 부분 데이터라 추이에서 제외했어요 "
                        "— 완결된 주만 표시해요.")
+        if len(tdf) < 2:
+            st.info("추이를 그리려면 완결된 주가 2주 이상 필요해요. 실적을 더 쌓아 주세요.")
+            st.stop()
         WRT_BAR = {"발송량": "발송", "거래액": "거래액", "캠페인수": "캠페인수"}
         WRT_LINE = {"CTR": ("CTR", "%"), "주문CR": ("주문CR", "%"), "RPS": ("RPS", "")}
         tsel1, tsel2 = st.columns(2)
@@ -4393,7 +4404,7 @@ def main():
                 textposition="outside",
                 hovertemplate="%{y}<br>평균 " + mlabel + ": %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
             lay = base_layout(h=440, title=f"속성 {ksize}개 조합별 평균 {mlabel} (상위 12 · 전체평균 점선)")
-            lay["xaxis"]["range"] = [0, float(yv.max()) * 1.18] if len(yv) else None
+            lay["xaxis"]["range"] = bar_xrange(yv, 1.18)
             figc.update_layout(**lay)
             figc.update_yaxes(autorange="reversed")
             bm = base_mean * (100 if is_pct else 1)
@@ -4635,6 +4646,9 @@ def main():
             # n<min_cell_n 셀 마스킹 — 캠페인 1건짜리 우연값이 가장 진한 색으로 강조되는 것 방지
             pv = pv.where(cnt >= min_cell_n)
             z = pv.values * (100 if is_pct else 1)
+            if not np.isfinite(z).any():              # 전 셀이 마스킹되면 빈 히트맵이 '데이터 있는 척'
+                st.info(f"표본이 충분한(캠페인 {min_cell_n}건 이상) 조합이 없어 히트맵을 그릴 수 없어요.")
+                return
             n_arr = cnt.fillna(0).values
             txt_arr = np.where(np.isnan(z), "", np.round(z, 2).astype(str))
             fig = go.Figure(go.Heatmap(
@@ -4813,7 +4827,7 @@ def main():
                     text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, top["캠페인수"])],
                     textposition="outside"))
                 lay = base_layout(h=380, title=f"효율 상위 발송 슬롯 — 평균 {mlabel}")
-                lay["xaxis"]["range"] = [0, float(yv.max()) * 1.2] if len(yv) else None
+                lay["xaxis"]["range"] = bar_xrange(yv, 1.2)
                 figs.update_layout(**lay)
                 figs.update_yaxes(autorange="reversed")
                 st.plotly_chart(figs, width="stretch")
@@ -5332,7 +5346,7 @@ def main():
                 textposition="outside",
                 hovertemplate="%{y}<br>평균: %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
             lay = base_layout(h=h, title=title)
-            lay["xaxis"]["range"] = [0, float(yv.max()) * 1.18] if len(yv) else None
+            lay["xaxis"]["range"] = bar_xrange(yv, 1.18)
             fig.update_layout(**lay)
             fig.update_yaxes(autorange="reversed")
             return fig
@@ -5711,7 +5725,9 @@ def main():
             d["사분면"] = d.apply(_quad, axis=1)
             cmap = {"🟢 둘다 좋음": PALETTE["green"], "🟡 유입O 주문X(오퍼/랜딩 점검)": PALETTE["amber"],
                     "🔵 유입X 주문O(타겟/제목 점검)": PALETTE["blue"], "🔴 둘다 약함": PALETTE["red"]}
-            _smax = float(d["send"].max() or 1) if "send" in d else 1.0
+            # send 전부 NaN이면 `nan or 1`이 nan(truthy)을 반환 → 마커 크기가 NaN이 됨. 명시 가드.
+            _sm = d["send"].max() if "send" in d else np.nan
+            _smax = float(_sm) if (pd.notna(_sm) and _sm > 0) else 1.0
             fig = go.Figure()
             for q, sub in d.groupby("사분면"):
                 _sz = 8 + (sub["send"].fillna(0) / _smax * 22) if "send" in sub else 10
@@ -5812,7 +5828,7 @@ def main():
                 textposition="outside"))
             fig.add_vline(x=overall, line_dash="dash", line_color=PALETTE["red"])
             lay = base_layout(h=max(280, 40 + 28 * len(g)), title=f"{title} — 평균 {mlabel} (빨간선=전체평균)")
-            lay["xaxis"]["range"] = [0, float(yv.max()) * 1.22] if len(yv) else None
+            lay["xaxis"]["range"] = bar_xrange(yv, 1.22)
             fig.update_layout(**lay); fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, width="stretch")
             gs = g.copy()
@@ -6362,10 +6378,13 @@ def main():
         st.markdown("##### 📈 수신동의 수 추이 (일별)")
         _pc_plot = pc_clean.sort_values("date")
         fig_consent = go.Figure()
+        # 단일 날짜면 lines만으론 아무것도 안 그려짐(라인은 2점 필요) → 마커 포함
+        _cons_mode = "lines" if len(_pc_plot) >= 2 else "markers"
         fig_consent.add_trace(go.Scatter(
             x=_pc_plot["date"], y=_pc_plot["consent"],
-            mode="lines", name="수신동의 수",
+            mode=_cons_mode, name="수신동의 수",
             line=dict(color=PALETTE["blue"], width=2),
+            marker=dict(color=PALETTE["blue"], size=7),
             hovertemplate="%{x|%Y-%m-%d}<br>수신동의: %{y:,}명<extra></extra>"))
         # 7일 이동평균
         if len(_pc_plot) >= 7:
