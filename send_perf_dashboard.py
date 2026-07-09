@@ -69,16 +69,31 @@ def _norm_attr(x):
 def _norm_date(v):
     """엑셀 셀 값 → 'YYYYMMDD' 문자열 또는 None.
     8자리(YYYYMMDD)는 그대로, 6자리(YYMMDD, 예: '250111')는 '20'을 붙여 복구한다.
-    (기획 시트에 'YYYY' 앞 두 자리가 빠진 날짜 오타가 있어 매칭에서 누락되던 문제 대응)"""
+    구분자형(2025-01-11·2025.1.11·2025/1/11)도 구분자를 떼고 표준 8자리로 복구한다.
+    (기획 시트에 'YYYY' 앞 두 자리가 빠진 날짜 오타·셀 표시형식 변경으로 매칭에서
+     누락되던 문제 대응)"""
     if v is None:
         return None
     if isinstance(v, (datetime.datetime, datetime.date)):
         return v.strftime("%Y%m%d")
     s = re.sub(r'\.0$', '', str(v).strip())
-    if re.match(r'^\d{8}$', s):
-        return s
+    if re.match(r'^\d{8}$', s):                        # YYYYMMDD — 6자리와 대칭으로 유효성 검증
+        try:
+            datetime.datetime.strptime(s, '%Y%m%d')
+            return s
+        except ValueError:
+            return None
     if re.match(r'^\d{6}$', s):                       # YYMMDD → 20YYMMDD (실제 날짜인지 검증)
         cand = '20' + s
+        try:
+            datetime.datetime.strptime(cand, '%Y%m%d')
+            return cand
+        except ValueError:
+            return None
+    # 구분자형(-, ., /, 공백) — YYYY[sep]M[sep]D. 구분자를 떼고 zero-pad 후 검증.
+    md = re.match(r'^(\d{4})[.\-/\s]+(\d{1,2})[.\-/\s]+(\d{1,2})$', s)
+    if md:
+        cand = f"{int(md.group(1)):04d}{int(md.group(2)):02d}{int(md.group(3)):02d}"
         try:
             datetime.datetime.strptime(cand, '%Y%m%d')
             return cand
@@ -112,7 +127,15 @@ def parse_perf_bytes(file_bytes):
     if not rows:
         return pd.DataFrame()
     hdr = [str(x).strip() if x is not None else "" for x in rows[0]]
-    idx = {h: i for i, h in enumerate(hdr)}
+    # 헤더를 공백 제거 키로 인덱싱 — 'AF 코드'·'주문 금액'처럼 내부 공백이 섞이면
+    # 정확일치 조회('AF코드')가 None이 돼 열 전체(또는 전 행)가 유실되던 문제 방지.
+    # 중복 헤더는 첫 등장 우선(setdefault) — dict 컴프리헨션의 '마지막 승리'로 앞 열이 묻히던 문제.
+    idx = {}
+    for i, h in enumerate(hdr):
+        idx.setdefault(h, i)
+        _hns = h.replace(" ", "")
+        if _hns:
+            idx.setdefault(_hns, i)
     # 날짜 컬럼 헤더 변형 대응. PERF_COLMAP은 '날짜' 키로 날짜를 읽으므로, '날짜'가 없으면
     # '일자'/'날짜'를 포함하거나 '발송일'류인 헤더를 '날짜'로 매핑한다.
     #   예) '일자', '일자(8자리)', '발송일', '발송일자' … (← 이게 없으면 날짜가 전부 비어 매칭 0%)
@@ -127,8 +150,8 @@ def parse_perf_bytes(file_bytes):
         afi = idx.get("AF코드")
         if afi is None or afi >= len(r) or r[afi] is None:
             continue
-        af = str(r[afi]).strip()
-        if not AF_RE.match(af):
+        af = str(r[afi]).strip().upper()             # 대문자 정규화 — 실적↔기획 대소문자
+        if not AF_RE.match(af):                        # 불일치로 인한 미매칭·저장소 중복 방지
             continue
         rec = {}
         for kcol, key in PERF_COLMAP.items():
@@ -173,6 +196,7 @@ def _parse_plan_sheet(rows, lookup):
     행마다 '누적' 갱신하며 AF코드 행을 파싱한다. 엑셀/구글시트 공용.
     """
     c_af = c_date = c_title = c_body = None
+    _last_date = None                                # 병합셀 forward-fill용 직전 유효 날짜
     for row in rows:
         cells = [("" if v is None else str(v)) for v in row[:45]]
         for j, c in enumerate(cells):
@@ -187,15 +211,23 @@ def _parse_plan_sheet(rows, lookup):
                 c_date = j
         if c_af is None or c_af >= len(cells):
             continue
-        af = cells[c_af].strip()
+        af = cells[c_af].strip().upper()             # 대문자 정규화 (실적 파서와 대칭)
         if not AF_RE.match(af):
             continue
         d = _norm_date(row[c_date]) if (c_date is not None and c_date < len(row)) else None
         if d is None:                                # 날짜열이 비면 보통 B열(index 1)에 있음
             d = _norm_date(row[1]) if len(row) > 1 else None
+        if d is None:
+            # 병합셀(첫 행에만 날짜, 이하 None) → 직전 유효 날짜를 이어받는다.
+            # 이게 없으면 (None, af) 키로 저장돼 실적의 실제 날짜와 절대 매칭 안 됨(문구 유실).
+            d = _last_date
+        else:
+            _last_date = d
         title = cells[c_title].strip() if (c_title is not None and c_title < len(cells)) else ""
         body = cells[c_body].strip() if (c_body is not None and c_body < len(cells)) else ""
         if title or body:
+            if d is None:
+                continue                             # 끝내 날짜를 못 구하면 오염 대신 스킵
             lookup[(d, af)] = (title, body)
 
 
@@ -475,7 +507,12 @@ def store_key_frame(d):
     k = pd.DataFrame(index=d.index)
     for c in STORE_KEY_COLS:
         if c in d.columns:
-            k[c] = d[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            s = d[c].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            # 결측을 한 토큰('')으로 통일 — 컬럼 부재('')와 값 결측이 서로 다른 키가 돼
+            # 같은 발송이 중복 누적(이중 집계)되던 비대칭 제거. isna()를 명시적으로 OR하는
+            # 이유는 astype(str)이 일부 pandas 버전에서 NaN을 'nan' 문자열로 안 바꾸기 때문.
+            _blank = d[c].isna() | s.str.lower().isin(["nan", "none", "nat", ""])
+            k[c] = np.where(_blank, "", s)
         else:
             k[c] = ""
     return k
@@ -554,6 +591,9 @@ def parse_mtd_bytes(file_bytes):
     """전사 MTD 발송상세(날짜=열, 지표=행) → 일자별 DataFrame. 시작 열 자동 탐지."""
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
     ws = pd.read_excel(xls, header=None, sheet_name=xls.sheet_names[0])
+    # 날짜행(2행)·값행이 없는 시트(오분류된 1~2행짜리 파일)는 iloc[1] IndexError 대신 빈 반환
+    if ws.shape[0] < 3 or ws.shape[1] < 2:
+        return pd.DataFrame()
     date_row = ws.iloc[1, :]
     start = None
     for j in range(1, ws.shape[1]):
@@ -968,11 +1008,12 @@ def parse_push_consent_bytes(file_bytes, start_year=None):
         13: ("Total", "removed"),
     }
 
-    # 그룹별 값 배열
+    # 그룹별 값 배열 — 반드시 길이 n으로 패딩. 뒤쪽 빈칸이 trim된 짧은(ragged) 지표행이면
+    # 슬라이스가 n보다 짧아지고, 아래 레코드 조합의 [i] 접근이 IndexError로 파싱 전체 실패.
     data = {(g, m): [None] * n for (g, m) in ROW_MAP.values()}
     for ri, (g, m) in ROW_MAP.items():
         if ri < len(rows):
-            vals = rows[ri][2:2 + n]
+            vals = (list(rows[ri][2:2 + n]) + [None] * n)[:n]
             data[(g, m)] = [v if isinstance(v, (int, float)) else None for v in vals]
 
     # 날짜 파싱 — m/d 형식, start_year 기준 순서 할당 (월이 줄면 연도 +1 롤오버)
