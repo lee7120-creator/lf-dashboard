@@ -1645,6 +1645,10 @@ def main():
                     push_val = pick(df, "일", "앱푸시수신동의", "*TOTAL", ref_year, d, "final")
                     join_val = pick(df, "일", "가입자수", "*TOTAL", ref_year, d, "final")
                     
+                    # 4/24 이상치 하드코딩 제거 (비정상 스파이크)
+                    if str(d).strip() in ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]:
+                        push_val = np.nan
+                        
                     rate = np.nan
                     if not np.isnan(push_val) and not np.isnan(join_val) and join_val > 0:
                         rate = push_val / join_val
