@@ -1313,6 +1313,27 @@ def _s(v):
     return str(v)
 
 
+def esc(v):
+    """사용자 업로드 문구를 unsafe_allow_html로 렌더하기 전 HTML 이스케이프.
+    엑셀 셀의 <, >, & (예: '크리스F&C', '침구<특가>')가 태그/엔티티로 오해석돼 레이아웃이
+    깨지거나 주입되는 것을 막는다 (CLAUDE.md esc() 원칙). 줄바꿈은 이스케이프 후 <br>로."""
+    import html as _html
+    return _html.escape(_s(v)).replace("\n", "<br>")
+
+
+def safe_ai_html(s):
+    """AI 응답을 unsafe_allow_html로 렌더하기 전 위험 태그/속성만 제거.
+    AI 프롬프트에는 사용자 업로드 문구가 들어가므로, 악의적 문구가 AI를 조종해 <script>·
+    onerror= 등을 출력하면 iframe 내에서 실행될 여지가 있다. 의도된 span/b/br 색상 마크업은
+    보존하고 실행 벡터(script·iframe·style·이벤트 핸들러·javascript:)만 걷어낸다."""
+    s = _s(s)
+    s = re.sub(r'(?is)<\s*(script|iframe|style|object|embed|link|meta)\b.*?(</\s*\1\s*>|$)', '', s)
+    s = re.sub(r'(?is)<\s*/?\s*(script|iframe|style|object|embed|link|meta)\b[^>]*>', '', s)
+    s = re.sub(r'(?i)\son\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', '', s)   # onclick·onerror 등
+    s = re.sub(r'(?i)(href|src)\s*=\s*(["\']?)\s*javascript:', r'\1=\2#', s)
+    return s
+
+
 def tag_copy(title, body=""):
     """제목+내용 → CRM 실무형 문구 속성 dict. 분석의 핵심 축. (제목·본문 조합 기준)"""
     t = _s(title)
@@ -2953,8 +2974,8 @@ def main():
                 st.session_state.pop(f"msg_{key}", None)
             sel = st.selectbox("문구 원문 보기 (표에서 행을 클릭해도 돼요)", keys_list, key=f"msg_{key}")
             r = dd.loc[opts.get(sel, list(opts.values())[0])]
-            body = str(r["body"]).replace("\n", "<br>") if ("body" in dd.columns and pd.notna(r["body"]) and str(r["body"]).strip()) else "—"
-            st.markdown(f'<div class="vg"><b>제목</b><br>{str(r["title"])}<br><br>'
+            body = esc(r["body"]) if ("body" in dd.columns and pd.notna(r["body"]) and str(r["body"]).strip()) else "—"
+            st.markdown(f'<div class="vg"><b>제목</b><br>{esc(r["title"])}<br><br>'
                         f'<b>내용</b><br>{body}</div>', unsafe_allow_html=True)
 
     # ── 전 페이지 공통: PDF 저장 버튼 (브라우저 인쇄 → PDF, 인쇄 시 사이드바·툴바 자동 숨김) ──
@@ -3182,7 +3203,7 @@ def main():
             if err: st.warning(err)
             else: st.session_state["ai_sum_txt"] = txt
         if st.session_state.get("ai_sum_txt"):
-            st.markdown(f'<div class="vg">{st.session_state["ai_sum_txt"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="vg">{safe_ai_html(st.session_state["ai_sum_txt"])}</div>', unsafe_allow_html=True)
 
         glossary()
 
@@ -4255,7 +4276,7 @@ def main():
             else:
                 st.session_state["wr_ai_txt"] = txt
         if st.session_state.get("wr_ai_txt"):
-            st.markdown(f'<div class="vg">{st.session_state["wr_ai_txt"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="vg">{safe_ai_html(st.session_state["wr_ai_txt"])}</div>', unsafe_allow_html=True)
 
         glossary()
 
@@ -4615,9 +4636,9 @@ def main():
         else:
             r = None
         if r is not None:
-            _body = (str(r["body"]).replace(chr(10), "<br>")
+            _body = (esc(r["body"])
                      if ("body" in base_r.columns and pd.notna(r["body"]) and str(r["body"]).strip()) else "—")
-            st.markdown(f'<div class="vg"><b>제목</b><br>{str(r["title"])}<br><br>'
+            st.markdown(f'<div class="vg"><b>제목</b><br>{esc(r["title"])}<br><br>'
                         f'<b>내용</b><br>{_body}</div>', unsafe_allow_html=True)
         glossary()
 
@@ -4895,7 +4916,7 @@ def main():
             if err: st.warning(err)
             else: st.session_state["ai_rx_txt"] = txt
         if st.session_state.get("ai_rx_txt"):
-            st.markdown(f'<div class="vg">{st.session_state["ai_rx_txt"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="vg">{safe_ai_html(st.session_state["ai_rx_txt"])}</div>', unsafe_allow_html=True)
         with st.expander("AI에 전달되는 데이터 미리보기"):
             st.text(build_facts(base, with_attr=True))
 
@@ -4956,7 +4977,7 @@ def main():
             else:
                 st.session_state["ai_draft_txt"] = txt
         if st.session_state.get("ai_draft_txt"):
-            st.markdown(f'<div class="vg">{st.session_state["ai_draft_txt"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="vg">{safe_ai_html(st.session_state["ai_draft_txt"])}</div>', unsafe_allow_html=True)
 
         with st.expander("ℹ️ 카피 초안은 어떻게 만들어지나요? (참고)", expanded=False):
             st.markdown(
