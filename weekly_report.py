@@ -382,15 +382,41 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
     if not target_row: return pd.DataFrame()
     
     date_row = rows[1]
-    records = []
+    
+    # 1) 유효한 날짜 컬럼을 모두 추출하고 월(month)을 파싱
+    date_cols = []
     for ci in range(2, len(date_row)):
         d = _cell(date_row[ci])
-        if not re.match(r"^\d{1,2}/\d{1,2}$", d): continue
+        m = re.match(r"^(\d{1,2})/\d{1,2}$", d)
+        if m:
+            date_cols.append((ci, d, int(m.group(1))))
+            
+    if not date_cols:
+        return pd.DataFrame()
+        
+    # 2) 뒤에서부터 역순으로 읽으면서 해(year)가 바뀌는 지점 계산
+    # 맨 마지막 데이터를 0으로 두고, (1월 <- 12월)로 넘어갈 때마다 연도를 -1
+    rel_years = {}
+    current_rel_year = 0
+    last_month = date_cols[-1][2]
+    
+    for ci, d, month in reversed(date_cols):
+        # 역순으로 읽을 때 월이 1에서 12로 커지면 (실제로는 12월 -> 1월) 해가 바뀐 것
+        if last_month < 6 and month > 6:
+            current_rel_year -= 1
+        elif last_month > 6 and month < 6:
+            current_rel_year += 1
+            
+        rel_years[ci] = current_rel_year
+        last_month = month
+
+    records = []
+    for ci, d, month in date_cols:
         val = _num(target_row[ci] if ci < len(target_row) else None)
         if pd.isna(val): continue
         records.append({
             "gran": "일", "metric": "앱푸시수신동의", "segment": "*TOTAL",
-            "year": 0, "label": d, "sortkey": 0, "close": "final", "value": val
+            "year": rel_years[ci], "label": d, "sortkey": 0, "close": "final", "value": val
         })
     return pd.DataFrame(records)
 
@@ -415,12 +441,12 @@ def combine_files(file_tuples) -> pd.DataFrame:
     default_year = int(max(inferred_years)) if inferred_years else datetime.date.today().year
     
     for pf in push_frames:
-        pf["year"] = default_year
-        def make_sortkey(label):
-            m = re.match(r"(\d+)/(\d+)", label)
-            if m: return default_year * 10000 + int(m.group(1))*100 + int(m.group(2))
+        pf["year"] = default_year + pf["year"]
+        def calc_sortkey(row):
+            m = re.match(r"(\d+)/(\d+)", str(row["label"]))
+            if m: return int(row["year"]) * 10000 + int(m.group(1))*100 + int(m.group(2))
             return 0
-        pf["sortkey"] = pf["label"].apply(make_sortkey)
+        pf["sortkey"] = pf.apply(calc_sortkey, axis=1)
         frames.append(pf)
 
     if not frames: return pd.DataFrame()
