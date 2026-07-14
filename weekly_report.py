@@ -1648,6 +1648,9 @@ def main():
                     rate = np.nan
                     if not np.isnan(push_val) and not np.isnan(join_val) and join_val > 0:
                         rate = push_val / join_val
+                        # 이상치 제거: 100% 초과 시 데이터 글리치로 간주
+                        if rate > 1.0:
+                            rate = np.nan
                         
                     rows.append({
                         "날짜": d,
@@ -1672,7 +1675,7 @@ def main():
                     xaxis=dict(type="category", tickangle=-45),
                     yaxis=dict(title="명", gridcolor="#f1f5f9"),
                     yaxis2=dict(title="%", overlaying="y", side="right", range=[0, max_rate * 1.2], gridcolor="rgba(0,0,0,0)"),
-                    legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(255,255,255,0.8)"),
                     barmode="group",
                     height=450,
                     margin=dict(l=10, r=10, t=40, b=10),
