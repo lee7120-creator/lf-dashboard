@@ -119,6 +119,7 @@ METRIC_UNIT = {
     "첫구매 거래액": ("백만원", 1e6), "첫구매 고객수": ("명", 1),
     "첫구매 객단가": ("원", 1), "비회원트래픽": ("명", 1),
     "가입자수": ("명", 1), "가입율": ("%", 1), "당일가입CR": ("%", 1),
+    "앱푸시수신동의": ("명", 1),
 }
 
 def fmt_value(metric, v):
@@ -359,11 +360,69 @@ def expand_uploads(uploads):
             out.append((f.name, data))
     return out
 
+def parse_push_file(name, data: bytes) -> pd.DataFrame:
+    try:
+        rows = read_grid(name, data)
+    except Exception:
+        return pd.DataFrame()
+    if not rows or len(rows) < 8: return pd.DataFrame()
+    if not any("Date" in str(c) for c in rows[0]): return pd.DataFrame()
+    
+    target_row = None
+    in_new_section = False
+    for ri, row in enumerate(rows):
+        c0 = _cell(row[0] if len(row) > 0 else "")
+        c1 = _cell(row[1] if len(row) > 1 else "")
+        if c0 == "신규":
+            in_new_section = True
+        if in_new_section and c1 == "신규추가(+)":
+            target_row = row
+            break
+            
+    if not target_row: return pd.DataFrame()
+    
+    date_row = rows[1]
+    records = []
+    for ci in range(2, len(date_row)):
+        d = _cell(date_row[ci])
+        if not re.match(r"^\d{1,2}/\d{1,2}$", d): continue
+        val = _num(target_row[ci] if ci < len(target_row) else None)
+        if pd.isna(val): continue
+        records.append({
+            "gran": "일", "metric": "앱푸시수신동의", "segment": "*TOTAL",
+            "year": 0, "label": d, "sortkey": 0, "close": "final", "value": val
+        })
+    return pd.DataFrame(records)
+
 @st.cache_data(show_spinner=False)
 def combine_files(file_tuples) -> pd.DataFrame:
     """업로드 파일들 → 통합 long DF. 동일 키는 마지막 파일 우선"""
-    frames = [parse_file(n, b) for n, b in file_tuples]
-    frames = [f for f in frames if not f.empty]
+    frames = []
+    push_frames = []
+    for n, b in file_tuples:
+        if "PUSH" in n.upper() and n.lower().endswith((".xlsx", ".xls")):
+            pf = parse_push_file(n, b)
+            if not pf.empty: push_frames.append(pf)
+        else:
+            df = parse_file(n, b)
+            if not df.empty: frames.append(df)
+            
+    inferred_years = set()
+    for f in frames:
+        if "year" in f.columns:
+            inferred_years.update(f["year"].dropna().unique())
+            
+    default_year = int(max(inferred_years)) if inferred_years else datetime.date.today().year
+    
+    for pf in push_frames:
+        pf["year"] = default_year
+        def make_sortkey(label):
+            m = re.match(r"(\d+)/(\d+)", label)
+            if m: return default_year * 10000 + int(m.group(1))*100 + int(m.group(2))
+            return 0
+        pf["sortkey"] = pf["label"].apply(make_sortkey)
+        frames.append(pf)
+
     if not frames: return pd.DataFrame()
     df = pd.concat(frames, ignore_index=True)
     df = df.drop_duplicates(subset=KEY_COLS, keep="last")
@@ -1197,7 +1256,7 @@ def main():
                  "전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동 인식합니다.")
         st.markdown("---")
         PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
-                 "04. 채널별 실적", "05. 회원 실적", "06. 통합 데이터·다운로드"]
+                 "04. 채널별 실적", "05. 회원 실적", "06. 통합 데이터·다운로드", "07. 앱푸시 동의 현황"]
         page = st.radio("페이지", PAGES, key="wr_page")
 
     stored = load_store()
@@ -1491,7 +1550,7 @@ def main():
 
     # ════════════ 04. 채널별 실적 ════════════
     elif page == "04. 채널별 실적":
-        st.markdown("## 채널별 실적")
+        st.markdown("## 채널(BPU)별 실적")
         avail = [m for m in METRICS7 if (df["metric"] == m).any()]
         met = st.selectbox("지표 선택", avail, key="wr_chmet")
 
@@ -1542,7 +1601,7 @@ def main():
         render_member_page(mdf, chart_years)
 
     # ════════════ 06. 통합 데이터·다운로드 ════════════
-    else:
+    elif page == "06. 통합 데이터·다운로드":
         st.markdown("## 통합 데이터 · 다운로드")
         st.caption("업로드한 모든 파일을 합친 통합 long 데이터입니다.")
         st.dataframe(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
@@ -1566,6 +1625,68 @@ def main():
             st.download_button("회원 실적 데이터 CSV",
                                mdf.to_csv(index=False).encode("utf-8-sig"),
                                "회원실적데이터.csv", "text/csv")
+
+    # ════════════ 07. 앱푸시 동의 현황 ════════════
+    elif page == "07. 앱푸시 동의 현황":
+        st.markdown("## 앱푸시 동의 현황 (일자별)")
+        df_daily = df[df["gran"] == "일"]
+        
+        if df_daily.empty:
+            st.info("일자별 데이터가 없습니다. PUSH(7) 및 일_가입자수 파일을 업로드해주세요.")
+        else:
+            st.subheader(f"{ref_year}년 신규가입 대비 앱푸시 수신동의율 추이")
+            dates = labels_sorted(df, "일", [ref_year])
+            
+            if not dates:
+                st.info(f"{ref_year}년 일자별 데이터가 없습니다.")
+            else:
+                rows = []
+                for d in dates:
+                    push_val = pick(df, "일", "앱푸시수신동의", "*TOTAL", ref_year, d, "final")
+                    join_val = pick(df, "일", "가입자수", "*TOTAL", ref_year, d, "final")
+                    
+                    rate = np.nan
+                    if not np.isnan(push_val) and not np.isnan(join_val) and join_val > 0:
+                        rate = push_val / join_val
+                        
+                    rows.append({
+                        "날짜": d,
+                        "앱푸시수신동의": push_val,
+                        "가입자수": join_val,
+                        "동의율": rate
+                    })
+                
+                res_df = pd.DataFrame(rows)
+                
+                fig = go.Figure()
+                fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["가입자수"], name="가입자수", marker_color=clr("slate"), opacity=0.6, yaxis="y1"))
+                fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["앱푸시수신동의"], name="앱푸시수신동의", marker_color=clr("blue"), opacity=0.8, yaxis="y1"))
+                fig.add_trace(go.Scatter(x=res_df["날짜"], y=res_df["동의율"]*100, name="동의율(%)", mode="lines+markers", line=dict(color=clr("red"), width=2), yaxis="y2"))
+                
+                max_rate = max(res_df["동의율"].dropna()*100, default=10)
+                if pd.isna(max_rate) or max_rate == 0:
+                    max_rate = 10
+                
+                fig.update_layout(
+                    title="일자별 신규가입 및 앱푸시 수신동의 현황",
+                    xaxis=dict(type="category", tickangle=-45),
+                    yaxis=dict(title="명", gridcolor="#f1f5f9"),
+                    yaxis2=dict(title="%", overlaying="y", side="right", range=[0, max_rate * 1.2], gridcolor="rgba(0,0,0,0)"),
+                    legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)"),
+                    barmode="group",
+                    height=450,
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    paper_bgcolor="rgba(248,249,252,0)", plot_bgcolor="rgba(248,249,252,0)"
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.markdown("### 상세 데이터")
+                disp_df = res_df.copy()
+                disp_df["앱푸시수신동의"] = disp_df["앱푸시수신동의"].apply(lambda x: f"{int(x):,}" if not pd.isna(x) else "–")
+                disp_df["가입자수"] = disp_df["가입자수"].apply(lambda x: f"{int(x):,}" if not pd.isna(x) else "–")
+                disp_df["동의율"] = disp_df["동의율"].apply(lambda x: f"{x*100:.1f}%" if not pd.isna(x) else "–")
+                st.dataframe(disp_df.set_index("날짜"), use_container_width=True)
 
 
 if st.runtime.exists():
