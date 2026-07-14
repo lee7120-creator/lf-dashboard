@@ -2071,6 +2071,14 @@ def main():
                 text = (resp.text or "").strip()
                 if not text:
                     raise RuntimeError("빈 응답 — 잠시 후 다시 시도해 주세요.")
+                # 길이 제한으로 잘린 응답을 '완전한 결과'처럼 보여주지 않게 감지·표시
+                try:
+                    _fr = str(resp.candidates[0].finish_reason or "")
+                except Exception:
+                    _fr = ""
+                if "MAX_TOKENS" in _fr.upper():
+                    text += ("\n\n(⚠️ 응답이 길이 제한으로 중간에 잘렸어요 — 필터로 데이터 범위를 "
+                             "좁히거나 다시 생성해 보세요.)")
                 return text
             except Exception as e:
                 last_err = e
@@ -2089,7 +2097,9 @@ def main():
         try:
             return _ai_gen_cached(system, user, model, _key=key), None
         except Exception as e:
-            return None, f"생성 오류: {e}"
+            # 예외 문자열에 API 키가 섞여(요청 URL·설정 repr 등) 화면에 노출되지 않게 마스킹
+            _msg = str(e).replace(str(key), "***KEY***")[:300]
+            return None, f"생성 오류: {_msg}"
 
     # 숫자 포맷 헬퍼
     def won(v):

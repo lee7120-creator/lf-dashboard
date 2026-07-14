@@ -427,6 +427,9 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   (비율=Jeffreys 경계, 금액=수축 평균 — 소표본 요행의 순위 점령 방지. 표시 값은 원값 유지).
 - 수평 범례는 `legend_h()`, 막대 텍스트 라벨은 `bar_label(v, col, is_pct)` 재사용.
 - 히트맵은 n<3 셀 마스킹 + hover에 표본수(n) 표기 관행 유지.
+- **업로드 문구(title/body)를 unsafe_allow_html로 렌더할 땐 반드시 `esc()`** (실데이터에
+  'F&C' 같은 &·< 포함 문구가 있어 태그로 오해석됨). **AI 응답 렌더는 `safe_ai_html()`**
+  (프롬프트에 사용자 문구가 들어가므로 script/이벤트핸들러 제거 — span 색상은 보존됨).
 
 ### 저장 계층 규칙
 - `storage_save()`는 **성공 여부(bool)를 반환** — 반드시 `if storage_save(...):` 로 받아서
