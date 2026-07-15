@@ -520,125 +520,15 @@ def merge_store(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     return (pd.concat([old[STORE_COLS], new[STORE_COLS]], ignore_index=True)
             .drop_duplicates(subset=KEY_COLS, keep="last"))
 
-# ══════════════════════════════════════════════════════
-# 회원 실적 데이터셋 (신규/기존 세그먼트 × 9지표, 월 단위)
-# ══════════════════════════════════════════════════════
-MEMBER_STORE = "wr_member_store.csv"
-MEMBER_KEY = ["metric", "segment", "year", "label"]
-MEMBER_COLS = MEMBER_KEY + ["sortkey", "value"]
-MEMBER_SEGS = ["Total", "당월신규", "기가입신규", "기존"]
-MEMBER_METRICS = ["유효회원수", "UV", "월방문율(%)", "구매고객수", "CR(%)",
-                  "객단가", "거래액 (VAT제외)", "유효회원당 거래액", "활동고객수"]
-MEMBER_PCT = {"월방문율(%)", "CR(%)"}
-
-def is_member_grid(rows):
-    """헤더에 회원구분/회원구분상세 + 유효회원수 지표가 있으면 회원 실적 파일"""
-    head = " ".join(_cell(c) for ri in range(min(3, len(rows))) for c in rows[ri])
-    col0 = " ".join(_cell(rows[ri][0]) for ri in range(len(rows)) if rows[ri])
-    return ("회원구분" in head and "회원구분상세" in head
-            and "유효회원수" in col0)
-
-def fmt_member(metric, v):
-    if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
-    if metric in MEMBER_PCT: return f"{v*100:.2f}%"
-    if metric == "거래액 (VAT제외)": return f"{v/1e8:,.1f}억"
-    if metric in ("객단가", "유효회원당 거래액"): return f"{v:,.0f}원"
-    return f"{int(v):,}"
-
-def parse_member_file(name, data: bytes) -> pd.DataFrame:
-    # 회원 백업 CSV 복원
-    if name.lower().endswith(".csv"):
-        first = data[:300].decode("utf-8", "ignore").splitlines()[0] if data else ""
-        if "metric" in first and "segment" in first and "sortkey" in first and "gran" not in first:
-            try:
-                d = pd.read_csv(io.BytesIO(data), encoding="utf-8-sig")
-                if set(MEMBER_COLS) <= set(d.columns) and set(d["segment"]) <= set(MEMBER_SEGS) | {"Total"}:
-                    return d[MEMBER_COLS]
-            except Exception:
-                pass
-    try:
-        rows = read_grid(name, data)
-    except Exception:
-        return pd.DataFrame()
-    if not rows or not is_member_grid(rows): return pd.DataFrame()
-
-    # 헤더: 0행 연도(ffill), 1행 차원명+월라벨. 데이터는 2행부터
-    year_row, label_row = rows[0], rows[1]
-    # 월 라벨이 시작되는 컬럼 = '가입연차' 다음 (보통 7열)
-    data_c0 = 7
-    col_year, cur = {}, None
-    for ci in range(len(year_row)):
-        m = re.search(r"(20\d{2})", _cell(year_row[ci]))
-        if m: cur = int(m.group(1))
-        col_year[ci] = cur
-    data_cols = [ci for ci in range(data_c0, len(label_row))
-                 if re.match(r"^\d{1,2}월$", _cell(label_row[ci])) and col_year.get(ci)]
-
-    records, cur_metric = [], None
-    for ri in range(2, len(rows)):
-        row = rows[ri]
-        m0 = _cell(row[0]) if len(row) > 0 else ""
-        if m0: cur_metric = m0
-        if cur_metric not in MEMBER_METRICS: continue
-        seg = _cell(row[2]) if len(row) > 2 else ""   # 회원구분상세
-        # 등급/성별/연령대/가입연차(3~6열)는 Total인 행만 (현재 분해 없음)
-        dims = [_cell(row[ci]) if len(row) > ci else "" for ci in range(3, 7)]
-        if any(d and d != "Total" for d in dims): continue
-        if seg not in MEMBER_SEGS: continue
-        for ci in data_cols:
-            mo = int(re.match(r"(\d{1,2})월", _cell(label_row[ci])).group(1))
-            yr = col_year[ci]
-            records.append({"metric": cur_metric, "segment": seg, "year": yr,
-                            "label": f"{mo}월", "sortkey": yr * 100 + mo,
-                            "value": _num(row[ci] if ci < len(row) else None)})
-    return pd.DataFrame(records)
-
-def combine_member(file_tuples) -> pd.DataFrame:
-    frames = [parse_member_file(n, b) for n, b in file_tuples]
-    frames = [f for f in frames if not f.empty]
-    if not frames: return pd.DataFrame()
-    return (pd.concat(frames, ignore_index=True)
-            .drop_duplicates(subset=MEMBER_KEY, keep="last"))
-
-def load_member_store() -> pd.DataFrame:
-    if os.path.exists(MEMBER_STORE):
-        try:
-            d = pd.read_csv(MEMBER_STORE, encoding="utf-8-sig")
-            if set(MEMBER_COLS) <= set(d.columns): return d[MEMBER_COLS]
-        except Exception:
-            pass
-    return pd.DataFrame()
-
-def save_member_store(df): df[MEMBER_COLS].to_csv(MEMBER_STORE, index=False, encoding="utf-8-sig")
-
-def merge_member(old, new):
-    if old is None or old.empty: return new
-    if new is None or new.empty: return old
-    return (pd.concat([old[MEMBER_COLS], new[MEMBER_COLS]], ignore_index=True)
-            .drop_duplicates(subset=MEMBER_KEY, keep="last"))
-
 def _period_set(d, cols):
     if d is None or d.empty: return set()
     return set(map(tuple, d[cols].drop_duplicates().values.tolist()))
 
-def upload_diff(stored, df_new, member_stored, member_new):
+def upload_diff(stored, df_new):
     """업로드 데이터가 기존 누적 대비 추가/갱신하는 기간 수 (저장 전 미리보기용)"""
-    cols_c, cols_m = ["gran", "year", "label"], ["year", "label"]
-    nc, oc = _period_set(df_new, cols_c), _period_set(stored, cols_c)
-    nm, om = _period_set(member_new, cols_m), _period_set(member_stored, cols_m)
-    added = len(nc - oc) + len(nm - om)
-    updated = len(nc & oc) + len(nm & om)
-    return added, updated
-
-
-def member_pick(mdf, metric, seg, year, mo):
-    s = mdf[(mdf["metric"] == metric) & (mdf["segment"] == seg) &
-            (mdf["year"] == year) & (mdf["label"] == f"{mo}월")]["value"].dropna()
-    return s.iloc[-1] if len(s) else np.nan
-
-def member_series(mdf, metric, seg, year):
-    s = mdf[(mdf["metric"] == metric) & (mdf["segment"] == seg) & (mdf["year"] == year)]
-    return s.sort_values("sortkey").set_index("label")["value"]
+    cols = ["gran", "year", "label"]
+    nc, oc = _period_set(df_new, cols), _period_set(stored, cols)
+    return len(nc - oc), len(nc & oc)
 
 
 # ══════════════════════════════════════════════════════
@@ -1179,128 +1069,7 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
         return None, f"생성 중 오류: {e}"
 
 # ══════════════════════════════════════════════════════
-# 회원 실적 페이지
-# ══════════════════════════════════════════════════════
-def member_delta(metric, cur, prev):
-    if cur is None or prev is None: return None
-    if isinstance(cur, float) and np.isnan(cur): return None
-    if isinstance(prev, float) and np.isnan(prev): return None
-    if metric in MEMBER_PCT:
-        d = (cur - prev) * 100
-        return f"△{abs(d):.2f}%p" if d < 0 else f"+{d:.2f}%p"
-    if prev == 0: return None
-    d = (cur - prev) / prev * 100
-    return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
-
-def render_member_page(mdf, chart_years=None):
-    st.markdown("## 회원 실적 — 신규/기존 세그먼트")
-    if mdf.empty:
-        st.info("회원 실적 데이터가 없습니다. 회원 실적 엑셀을 업로드해주세요.")
-        return
-    years = sorted(mdf["year"].dropna().unique().astype(int))
-    last_y = years[-1]
-    last_mo = int(mdf[mdf["year"] == last_y]["sortkey"].max() % 100)
-    st.caption(f"최신: {last_y}년 {last_mo}월 · {years[0]}–{years[-1]}년")
-
-    # KPI 카드 — 유효회원수/구매고객수/거래액/CR (Total, 전월·전년비)
-    pm_y, pm_m = (last_y, last_mo - 1) if last_mo > 1 else (last_y - 1, 12)
-    kpis = ["유효회원수", "구매고객수", "거래액 (VAT제외)", "CR(%)"]
-    cols = st.columns(4)
-    for col, met in zip(cols, kpis):
-        cur = member_pick(mdf, met, "Total", last_y, last_mo)
-        mom = member_pick(mdf, met, "Total", pm_y, pm_m)
-        yoy = member_pick(mdf, met, "Total", last_y - 1, last_mo)
-        pills = ""
-        for d, lab in [(member_delta(met, cur, mom), "전월비"),
-                       (member_delta(met, cur, yoy), "전년비")]:
-            if d:
-                neg = d.startswith("△")
-                pills += (f'<div class="kpi-delta {"down" if neg else "up"}">'
-                          f'{"" if neg else "↑ "}{d} ({lab})</div>')
-            else:
-                pills += f'<div class="kpi-delta na">– ({lab})</div>'
-        col.markdown(f'<div class="kpi-card"><div class="kpi-label">{met} ({last_mo}월)</div>'
-                     f'<div class="kpi-value">{fmt_member(met, cur)}</div>{pills}</div>',
-                     unsafe_allow_html=True)
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-
-    # 신규/기존 구성비 (유효회원수 최신월)
-    st.subheader(f"회원 구성 — {last_y}년 {last_mo}월 (유효회원수)")
-    comp = {s: member_pick(mdf, "유효회원수", s, last_y, last_mo)
-            for s in ["당월신규", "기가입신규", "기존"]}
-    total = member_pick(mdf, "유효회원수", "Total", last_y, last_mo)
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        fig = go.Figure(go.Pie(
-            labels=list(comp.keys()), values=[v for v in comp.values()],
-            hole=0.55, marker=dict(colors=[clr("blue"), clr("teal"), clr("slate")]),
-            textinfo="label+percent"))
-        fig.update_layout(**{**base_layout(280, title="유효회원 구성비"), "showlegend": False})
-        st.plotly_chart(fig, width="stretch")
-    with c2:
-        rows = []
-        for s in ["Total", "당월신규", "기가입신규", "기존"]:
-            v = member_pick(mdf, "유효회원수", s, last_y, last_mo)
-            share = (v / total * 100) if (total and not np.isnan(v)) else np.nan
-            rows.append({"세그먼트": s, "유효회원수": fmt_member("유효회원수", v),
-                         "비중": "–" if np.isnan(share) else f"{share:.1f}%"})
-        st.dataframe(pd.DataFrame(rows).set_index("세그먼트"), width="stretch")
-
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-
-    # 지표 선택 → 세그먼트별 YoY 추이
-    met = st.selectbox("지표 선택", MEMBER_METRICS, key="wr_mem_metric")
-    cyears = chart_years or years[-2:]
-    cyears = [y for y in cyears if y in years] or years[-2:]
-    div = 1e8 if met == "거래액 (VAT제외)" else 1
-    unit = "억" if met == "거래액 (VAT제외)" else ("%" if met in MEMBER_PCT else "")
-    if met in MEMBER_PCT: div = 0.01
-
-    st.subheader(f"{met} — 세그먼트별 월 추이 ({last_y}년)")
-    x_all = [f"{i}월" for i in range(1, 13)]
-    fig = go.Figure()
-    seg_color = {"Total": "slate", "당월신규": "blue", "기가입신규": "teal", "기존": "amber"}
-    for s in MEMBER_SEGS:
-        ser = member_series(mdf, met, s, last_y).reindex(x_all).dropna()
-        if ser.empty: continue
-        fig.add_trace(go.Scatter(x=ser.index.tolist(), y=(ser / div).tolist(),
-                                 mode="lines+markers", name=s,
-                                 line=dict(color=clr(seg_color[s]), width=2), marker=dict(size=5)))
-    ly = base_layout(320, ysuffix=unit if unit == "%" else "", title=f"{met} ({unit})")
-    ly["xaxis"]["categoryorder"] = "array"; ly["xaxis"]["categoryarray"] = x_all
-    fig.update_layout(**ly)
-    st.plotly_chart(fig, width="stretch")
-
-    # Total 전년 비교
-    st.subheader(f"{met} — Total 전년 비교")
-    fig2 = go.Figure()
-    for i, y in enumerate(sorted(cyears)):
-        ser = member_series(mdf, met, "Total", y).reindex(x_all).dropna()
-        if ser.empty: continue
-        fig2.add_trace(go.Scatter(x=ser.index.tolist(), y=(ser / div).tolist(),
-                                  mode="lines+markers", name=str(y),
-                                  line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
-                                  marker=dict(size=5)))
-    ly2 = base_layout(320, ysuffix=unit if unit == "%" else "", title=f"{met} Total ({unit})")
-    ly2["xaxis"]["categoryorder"] = "array"; ly2["xaxis"]["categoryarray"] = x_all
-    fig2.update_layout(**ly2)
-    st.plotly_chart(fig2, width="stretch")
-
-    # 세그먼트 × 월 표 (최신 연도)
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader(f"{met} — 세그먼트 × 월 ({last_y}년)")
-    rows = []
-    for s in MEMBER_SEGS:
-        ser = member_series(mdf, met, s, last_y)
-        row = {"세그먼트": s}
-        for lb in x_all:
-            if lb in ser.index and not (isinstance(ser[lb], float) and np.isnan(ser[lb])):
-                row[lb] = fmt_member(met, ser[lb])
-        rows.append(row)
-    st.dataframe(pd.DataFrame(rows).set_index("세그먼트"), width="stretch")
-
-# ══════════════════════════════════════════════════════
-# 07. 앱푸시 동의 현황 페이지
+# 06. 앱푸시 동의 현황 페이지
 # ══════════════════════════════════════════════════════
 def render_push_page(df, ref_year, chart_years):
     st.markdown("## 앱푸시 동의 현황")
@@ -1553,18 +1322,15 @@ def main():
                  "전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동 인식합니다.")
         st.markdown("---")
         PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
-                 "04. 채널별 실적", "05. 회원 실적", "06. 통합 데이터·다운로드", "07. 앱푸시 동의 현황", "08. 첫구매 고객 세그먼트 성과"]
+                 "04. 채널별 실적", "05. 통합 데이터·다운로드", "06. 앱푸시 동의 현황", "07. 첫구매 고객 세그먼트 성과"]
         page = st.radio("페이지", PAGES, key="wr_page")
 
     stored = load_store()
-    member_stored = load_member_store()
     expanded = expand_uploads(files) if files else []
     df_new = combine_files(tuple(expanded)) if expanded else pd.DataFrame()
-    member_new = combine_member(tuple(expanded)) if expanded else pd.DataFrame()
 
-    has_any = (not stored.empty or not member_stored.empty
-               or not df_new.empty or not member_new.empty)
-    if files and df_new.empty and member_new.empty and stored.empty and member_stored.empty:
+    has_any = not stored.empty or not df_new.empty
+    if files and df_new.empty and stored.empty:
         st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
         st.stop()
     if not has_any:
@@ -1572,7 +1338,6 @@ def main():
         st.markdown("""
 - **마스터**: `전체관점 - 일자별/주별/월별 실적 (기본)`
 - **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
-- **회원 실적**: 신규/기존 회원별 9개 지표 월별 파일 (유효회원수·UV·구매고객수·CR 등)
 - 주간 폴더를 **zip으로 묶어 통째로** 올려도 됩니다. 파일 내용으로 단위·지표를 자동 감지합니다.
 - 업로드 후 **저장**을 누르면 누적됩니다. 다음에 기간이 다른 파일을 올리면 **겹치는 기간은 최신값으로 갱신**되고 나머지는 이어붙습니다.
 """)
@@ -1580,13 +1345,12 @@ def main():
 
     # 누적 저장소와 병합 — 미리보기(저장 전까지 영구 반영 안 함)
     df = merge_store(stored, df_new)
-    mdf = merge_member(member_stored, member_new)
 
-    has_new = (not df_new.empty) or (not member_new.empty)
+    has_new = not df_new.empty
     sig = tuple(sorted((n, len(b)) for n, b in expanded))
     with st.sidebar:
         if has_new:
-            added, updated = upload_diff(stored, df_new, member_stored, member_new)
+            added, updated = upload_diff(stored, df_new)
             saved = st.session_state.get("wr_saved_sig") == sig
             if saved:
                 st.success("저장됨 ✓ (누적 반영 완료)")
@@ -1596,16 +1360,11 @@ def main():
                 if st.button("💾 저장 (누적 반영)", key="wr_commit",
                              type="primary", width="stretch"):
                     if not df_new.empty: save_store(df)
-                    if not member_new.empty: save_member_store(mdf)
                     st.session_state["wr_saved_sig"] = sig
                     st.rerun()
 
-    # 코어 데이터가 비어 회원 데이터만 있을 때: 회원 페이지로 안내
     if df.empty:
-        st.warning("첫구매(전체관점/지표별) 데이터가 없습니다. **05. 회원 실적** 페이지를 이용하세요.")
-        if not mdf.empty:
-            print_button()
-            render_member_page(mdf)
+        st.warning("첫구매(전체관점/지표별) 데이터가 없습니다. 원천 파일을 업로드해주세요.")
         st.stop()
 
     # ── 인식 결과 + 필터
@@ -1665,13 +1424,7 @@ def main():
                            df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
                            "wr_data_store.csv", "text/csv", width="stretch",
                            help="앱 재배포 시 누적 데이터가 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 업로드하면 복원됩니다.")
-        if not mdf.empty:
-            st.caption(f"회원 실적 {len(mdf):,}행")
-            st.download_button("💾 회원 실적 백업 (CSV)",
-                               mdf[MEMBER_COLS].to_csv(index=False).encode("utf-8-sig"),
-                               "wr_member_store.csv", "text/csv", width="stretch")
         if st.button("🗑 누적 데이터 초기화", key="wr_clear_store", width="stretch"):
-            if os.path.exists(MEMBER_STORE): os.remove(MEMBER_STORE)
             if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
             st.cache_data.clear()
             st.rerun()
@@ -1892,12 +1645,8 @@ def main():
             rows.append(row)
         st.dataframe(pd.DataFrame(rows).set_index("채널"), width="stretch")
 
-    # ════════════ 05. 회원 실적 ════════════
-    elif page == "05. 회원 실적":
-        render_member_page(mdf, chart_years)
-
-    # ════════════ 06. 통합 데이터·다운로드 ════════════
-    elif page == "06. 통합 데이터·다운로드":
+    # ════════════ 05. 통합 데이터·다운로드 ════════════
+    elif page == "05. 통합 데이터·다운로드":
         st.markdown("## 통합 데이터 · 다운로드")
         st.caption("업로드한 모든 파일을 합친 통합 long 데이터입니다.")
         st.dataframe(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
@@ -1917,17 +1666,13 @@ def main():
 
         csv = df.to_csv(index=False).encode("utf-8-sig")
         st.download_button("통합 long 데이터 CSV", csv, "통합데이터.csv", "text/csv")
-        if not mdf.empty:
-            st.download_button("회원 실적 데이터 CSV",
-                               mdf.to_csv(index=False).encode("utf-8-sig"),
-                               "회원실적데이터.csv", "text/csv")
 
-    # ════════════ 07. 앱푸시 동의 현황 ════════════
-    elif page == "07. 앱푸시 동의 현황":
+    # ════════════ 06. 앱푸시 동의 현황 ════════════
+    elif page == "06. 앱푸시 동의 현황":
         render_push_page(df, ref_year, chart_years)
 
-    # ════════════ 08. 첫구매 고객 세그먼트 성과 ════════════
-    elif page == "08. 첫구매 고객 세그먼트 성과":
+    # ════════════ 07. 첫구매 고객 세그먼트 성과 ════════════
+    elif page == "07. 첫구매 고객 세그먼트 성과":
         st.markdown("## 첫구매 고객 세그먼트 성과")
         
         # 세그먼트 선택 필터 추가
