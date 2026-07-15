@@ -1282,7 +1282,7 @@ def main():
                  "전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동 인식합니다.")
         st.markdown("---")
         PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
-                 "04. 채널별 실적", "05. 회원 실적", "06. 통합 데이터·다운로드", "07. 앱푸시 동의 현황"]
+                 "04. 채널별 실적", "05. 회원 실적", "06. 통합 데이터·다운로드", "07. 앱푸시 동의 현황", "08. 첫구매 고객 세그먼트 성과"]
         page = st.radio("페이지", PAGES, key="wr_page")
 
     stored = load_store()
@@ -1673,14 +1673,33 @@ def main():
                         rows = []
                         prev_year = chart_years[-2] if len(chart_years) >= 2 else None
                         
+                        # PUSH 데이터 집계용 (일자별 데이터를 주/월로 변환)
+                        df_push_daily = df[(df["metric"] == "앱푸시수신동의") & (df["gran"] == "일") & (df["segment"] == "*TOTAL") & (df["close"] == "final")].copy()
+                        if not df_push_daily.empty:
+                            df_push_daily["month"] = df_push_daily["label"].apply(lambda x: int(str(x).split('/')[0]) if '/' in str(x) else 0)
+                            df_push_daily["day"] = df_push_daily["label"].apply(lambda x: int(str(x).split('/')[1]) if '/' in str(x) else 0)
+                            # 4/24 이상치 제거
+                            df_push_daily.loc[(df_push_daily["month"] == 4) & (df_push_daily["day"] == 24), "value"] = float('nan')
+                            
+                            df_push_daily["주"] = df_push_daily.apply(lambda r: f"{r['month']:02d}월 {(int(r['day'])-1)//7 + 1}주차" if r['month']>0 else "", axis=1)
+                            df_push_daily["월"] = df_push_daily.apply(lambda r: f"{r['month']}월" if r['month']>0 else "", axis=1)
+                            df_push_daily["일"] = df_push_daily["label"]
+                            
+                            # 집계
+                            push_agg = df_push_daily.groupby(["year", sel_gran])["value"].sum().reset_index()
+                        else:
+                            push_agg = pd.DataFrame()
+                        
                         for d in dates:
-                            push_val = pick(df, sel_gran, "앱푸시수신동의", "*TOTAL", ref_year, d, "final")
                             join_val = pick(df, sel_gran, "가입자수", "*TOTAL", ref_year, d, "final")
                             
-                            # 4/24 이상치 하드코딩 제거 (비정상 스파이크)
-                            if sel_gran == "일" and str(d).strip() in ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]:
-                                push_val = float('nan')
-                                
+                            push_val = float('nan')
+                            if not push_agg.empty:
+                                v = push_agg[(push_agg["year"] == ref_year) & (push_agg[sel_gran] == d)]["value"]
+                                if not v.empty:
+                                    push_val = v.values[0]
+                                    if push_val == 0: push_val = float('nan')
+                                    
                             rate = float('nan')
                             if pd.notna(push_val) and pd.notna(join_val) and join_val > 0:
                                 rate = push_val / join_val
@@ -1689,19 +1708,22 @@ def main():
                                     
                             prev_rate = float('nan')
                             if prev_year:
-                                prev_push_val = pick(df, sel_gran, "앱푸시수신동의", "*TOTAL", prev_year, d, "final")
                                 prev_join_val = pick(df, sel_gran, "가입자수", "*TOTAL", prev_year, d, "final")
+                                prev_push_val = float('nan')
                                 
-                                if sel_gran == "일" and str(d).strip() in ["4/24", "04/24", "2025/04/24", "2025-04-24", "4-24", "04-24"]:
-                                    prev_push_val = float('nan')
-                                    
+                                if not push_agg.empty:
+                                    v = push_agg[(push_agg["year"] == prev_year) & (push_agg[sel_gran] == d)]["value"]
+                                    if not v.empty:
+                                        prev_push_val = v.values[0]
+                                        if prev_push_val == 0: prev_push_val = float('nan')
+                                        
                                 if pd.notna(prev_push_val) and pd.notna(prev_join_val) and prev_join_val > 0:
                                     prev_rate = prev_push_val / prev_join_val
                                     if prev_rate > 1.0:
                                         prev_rate = float('nan')
-                                        
-                            rows.append({
-                                "날짜": d,
+                                    
+                        rows.append({
+                            "날짜": d,
                                 "가입자수": join_val if pd.notna(join_val) else 0,
                                 "앱푸시수신동의": push_val if pd.notna(push_val) else 0,
                                 "동의율": rate,
@@ -1844,6 +1866,99 @@ def main():
                 disp_df["동의율"] = disp_df["동의율"].apply(lambda x: f"{x*100:.1f}%" if not pd.isna(x) else "–")
                 st.dataframe(disp_df.set_index("날짜"), use_container_width=True)
 
+
+    # ════════════ 08. 첫구매 고객 세그먼트 성과 ════════════
+    elif page == "08. 첫구매 고객 세그먼트 성과":
+        st.markdown("## 첫구매 고객 세그먼트 성과")
+        gran_opt = st.radio("차트 보기 기준", ["일자별", "주차별", "월별"], horizontal=True, key="seg_gran_opt")
+        gran_map = {"일자별": "일", "주차별": "주", "월별": "월"}
+        sel_gran = gran_map[gran_opt]
+        
+        df_gran = df[df["gran"] == sel_gran]
+        if df_gran.empty:
+            st.info(f"{sel_gran} 단위 데이터가 없습니다. (전체관점-세그먼트 성과 파일이 필요합니다)")
+        else:
+            metric_opt = st.selectbox("지표 선택", ["거래액", "고객수", "객단가", "CR"])
+            
+            # 유연한 지표명 매칭 (총거래액, 합계 등 파일마다 다를 수 있음)
+            def get_metric_name(base_name):
+                # 정확히 일치하는게 있는지 먼저 확인
+                metrics = df_gran["metric"].dropna().unique()
+                for m in metrics:
+                    if base_name in str(m):
+                        return m
+                return base_name
+                
+            m_name = ""
+            if metric_opt == "거래액":
+                m_name = "거래액" if "거래액" in df_gran["metric"].values else get_metric_name("거래액")
+            elif metric_opt == "고객수":
+                m_name = "구매고객수" if "구매고객수" in df_gran["metric"].values else get_metric_name("고객수")
+            elif metric_opt == "객단가":
+                m_name = "객단가" if "객단가" in df_gran["metric"].values else get_metric_name("객단가")
+            elif metric_opt == "CR":
+                m_name = "CR"
+            
+            segs = ["1_신규", "2_기가입신규", "3_기존"]
+            
+            st.subheader(f"{ref_year}년 {gran_opt} 세그먼트별 {metric_opt} 추이")
+            dates = labels_sorted(df, sel_gran, [ref_year])
+            
+            if not dates:
+                st.info(f"{ref_year}년 {gran_opt} 데이터가 없습니다.")
+            else:
+                fig = go.Figure()
+                colors = {"1_신규": "#2563eb", "2_기가입신규": "#16a34a", "3_기존": "#d97706"}
+                
+                rows = []
+                for d in dates:
+                    row_data = {"날짜": d}
+                    for seg in segs:
+                        val = pick(df, sel_gran, m_name, seg, ref_year, d, "final")
+                        
+                        # 객단가나 CR이 없을 경우 자동 계산 시도
+                        if pd.isna(val):
+                            if metric_opt == "객단가":
+                                rev_name = get_metric_name("거래액")
+                                cust_name = get_metric_name("고객수")
+                                rev = pick(df, sel_gran, rev_name, seg, ref_year, d, "final")
+                                cust = pick(df, sel_gran, cust_name, seg, ref_year, d, "final")
+                                if pd.notna(rev) and pd.notna(cust) and cust > 0:
+                                    val = rev / cust
+                        
+                        row_data[seg] = val
+                    rows.append(row_data)
+                
+                res_df = pd.DataFrame(rows)
+                
+                for seg in segs:
+                    y_vals = res_df[seg].tolist()
+                    fig.add_trace(go.Scatter(
+                        x=dates, y=y_vals,
+                        mode="lines+markers+text",
+                        name=seg,
+                        line=dict(width=2, color=colors.get(seg, "#000000")),
+                        marker=dict(size=8),
+                        text=[fmt_value(metric_opt, v) if pd.notna(v) else "" for v in y_vals],
+                        textposition="top center"
+                    ))
+                
+                fig.update_layout(
+                    height=500, margin=dict(l=0, r=0, t=30, b=0),
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                if metric_opt in PCT_METRICS or metric_opt == "CR":
+                    fig.update_layout(yaxis=dict(tickformat=".1%"))
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # 표
+                st.markdown("### 상세 데이터")
+                disp_df = res_df.copy()
+                for seg in segs:
+                    disp_df[seg] = disp_df[seg].apply(lambda x: fmt_value(metric_opt, x) if pd.notna(x) else "-")
+                st.dataframe(disp_df.set_index("날짜"), use_container_width=True)
 
 if st.runtime.exists():
     main()
