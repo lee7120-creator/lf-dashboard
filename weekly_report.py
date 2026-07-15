@@ -1694,7 +1694,7 @@ def main():
                 fig = go.Figure()
                 fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["가입자수"], name="가입자수", marker_color=clr("slate"), opacity=0.6, yaxis="y1"))
                 fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["앱푸시수신동의"], name="앱푸시수신동의", marker_color=clr("blue"), opacity=0.8, yaxis="y1"))
-                fig.add_trace(go.Scatter(x=res_df["날짜"], y=res_df["동의율"]*100, name="동의율(%)", mode="lines+markers", line=dict(color=clr("red"), width=2), yaxis="y2"))
+                fig.add_trace(go.Scatter(x=res_df["날짜"], y=res_df["동의율"]*100, name="동의율(%)", mode="lines+markers", line=dict(color=clr("red"), width=2), connectgaps=True, yaxis="y2"))
                 
                 max_rate = max(res_df["동의율"].dropna()*100, default=10)
                 if pd.isna(max_rate) or max_rate == 0:
