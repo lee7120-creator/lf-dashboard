@@ -1881,13 +1881,25 @@ def main():
     elif page == "08. 첫구매 고객 세그먼트 성과":
         st.markdown("## 첫구매 고객 세그먼트 성과")
         
-        # 지표 선택 제거하고 모든 지표 표시
-        segs = ["1_신규", "1_당월신규", "2_기가입신규", "3_기존"]  # 1_당월신규 추가 (스크린샷 참고)
+        # 세그먼트 선택 필터 추가
+        all_segs = ["1_신규", "1_당월신규", "2_기가입신규", "3_기존"]
+        
+        # 데이터프레임에 존재하는 세그먼트만 추출
+        available_segs = []
+        for s in all_segs:
+            if not df[df["segment"] == s].empty:
+                available_segs.append(s)
+                
+        if not available_segs:
+            available_segs = all_segs
+            
+        sel_seg = st.selectbox("세그먼트 선택", available_segs)
+        segs = [sel_seg]
         
         def wow_segment_table(wy, wlabel):
             df_gran = df[df["gran"] == "주"]
-            # 해당 세그먼트들에 존재하는 모든 지표 추출 (순서 유지)
-            metrics = df_gran[df_gran["segment"].isin(segs)]["metric"].dropna().unique().tolist()
+            # 해당 세그먼트에 존재하는 모든 지표 추출 (순서 유지)
+            metrics = df_gran[df_gran["segment"] == sel_seg]["metric"].dropna().unique().tolist()
             if not metrics:
                 metrics = ["거래액", "고객수", "객단가", "CR"]
                 
@@ -1910,26 +1922,24 @@ def main():
                 return v
 
             for seg in segs:
-                # 데이터가 하나라도 있는 세그먼트만 표시
                 if not df_gran[df_gran["segment"] == seg].empty:
                     for met in metrics:
                         cur = _get_val(wy, wlabel, "mtd", seg, met)
                         prv = _get_val(py, plb, "final", seg, met) if plb else np.nan
                         yoy = _get_val(wy - 1, wlabel, "final", seg, met)
                         rows.append({
-                            "구분": seg,
                             "지표": met,
                             cols[0]: fmt_value(met, prv), cols[1]: fmt_value(met, cur),
                             cols[2]: fmt_delta(met, cur, prv) or "-",
                             cols[3]: fmt_value(met, yoy), cols[4]: fmt_delta(met, cur, yoy) or "-",
                         })
             if rows:
-                return pd.DataFrame(rows).set_index(["구분", "지표"])
-            return pd.DataFrame(columns=["구분", "지표"] + cols).set_index(["구분", "지표"])
+                return pd.DataFrame(rows).set_index("지표")
+            return pd.DataFrame(columns=["지표"] + cols).set_index("지표")
             
         def yoy_segment_table(ry, rm):
             df_gran = df[df["gran"] == "월"]
-            metrics = df_gran[df_gran["segment"].isin(segs)]["metric"].dropna().unique().tolist()
+            metrics = df_gran[df_gran["segment"] == sel_seg]["metric"].dropna().unique().tolist()
             if not metrics:
                 metrics = ["거래액", "고객수", "객단가", "CR"]
                 
@@ -1959,7 +1969,6 @@ def main():
                         cm_prev = _get_val(ry - 1, rm, "mtd", seg, met)
                         cm_cur  = _get_val(ry, rm, "mtd", seg, met)
                         rows.append({
-                            "구분": seg,
                             "지표": met,
                             cols[0]: fmt_value(met, pm_prev), cols[1]: fmt_value(met, pm_cur),
                             cols[2]: fmt_delta(met, pm_cur, pm_prev) or "-",
@@ -1967,8 +1976,8 @@ def main():
                             cols[5]: fmt_delta(met, cm_cur, cm_prev) or "-",
                         })
             if rows:
-                return pd.DataFrame(rows).set_index(["구분", "지표"]), (pm_y, pm_m)
-            return pd.DataFrame(columns=["구분", "지표"] + cols).set_index(["구분", "지표"]), (pm_y, pm_m)
+                return pd.DataFrame(rows).set_index("지표"), (pm_y, pm_m)
+            return pd.DataFrame(columns=["지표"] + cols).set_index("지표"), (pm_y, pm_m)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
