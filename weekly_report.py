@@ -1,7 +1,7 @@
-"""주간보고 — 첫구매 통합 실적 대시보드
-여러 원천 엑셀(전체관점 마스터 + 지표별 파일)을 업로드하면 하나의 통합 뷰로 종합하고,
-전년(YoY)·전주(WoW) 증감현황과 보고란을 갖춘 주간보고 화면을 만든다.
-통합 결과는 (월/주/첫구매_요약 + 차트) 엑셀 워크북으로 다운로드할 수 있다.
+﻿"""二쇨컙蹂닿퀬 ??泥リ뎄留??듯빀 ?ㅼ쟻 ??쒕낫??
+?щ윭 ?먯쿇 ?묒?(?꾩껜愿??留덉뒪??+ 吏?쒕퀎 ?뚯씪)???낅줈?쒗븯硫??섎굹???듯빀 酉곕줈 醫낇빀?섍퀬,
+?꾨뀈(YoY)쨌?꾩＜(WoW) 利앷컧?꾪솴怨?蹂닿퀬???媛뽰텣 二쇨컙蹂닿퀬 ?붾㈃??留뚮뱺??
+?듯빀 寃곌낵??(??二?泥リ뎄留??붿빟 + 李⑦듃) ?묒? ?뚰겕遺곸쑝濡??ㅼ슫濡쒕뱶?????덈떎.
 """
 
 import datetime
@@ -18,10 +18,10 @@ try:
 except Exception:
     HAS_QUILL = False
 
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 # CONFIG
-# ══════════════════════════════════════════════════════
-st.set_page_config(page_title="주간보고 — 첫구매 통합 실적", page_icon="📋",
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+st.set_page_config(page_title="二쇨컙蹂닿퀬 ??泥リ뎄留??듯빀 ?ㅼ쟻", page_icon="?뱥",
                    layout="wide", initial_sidebar_state="expanded")
 
 INSIGHT_FILE = "wr_insights.json"
@@ -51,17 +51,17 @@ st.markdown("""
   [data-testid="stAppViewContainer"], .main, .block-container { background:#fff !important; }
   .block-container { max-width:100% !important; padding-top:0 !important; }
 
-  /* 겹침 방지: 레이아웃 블록을 정적 배치하고 넘침을 그대로 노출 */
+  /* 寃뱀묠 諛⑹?: ?덉씠?꾩썐 釉붾줉???뺤쟻 諛곗튂?섍퀬 ?섏묠??洹몃?濡??몄텧 */
   [data-testid="stVerticalBlock"], [data-testid="stHorizontalBlock"],
   [data-testid="stVerticalBlockBorderWrapper"], [data-testid="column"],
   .element-container { position:static !important; transform:none !important;
     overflow:visible !important; }
 
-  /* 인쇄 시 Plotly 차트 높이 붕괴 → 아래 요소가 제목 위로 밀려 겹치는 문제 차단 */
+  /* ?몄뇙 ??Plotly 李⑦듃 ?믪씠 遺뺢눼 ???꾨옒 ?붿냼媛 ?쒕ぉ ?꾨줈 諛??寃뱀튂??臾몄젣 李⑤떒 */
   .stPlotlyChart, .js-plotly-plot, [data-testid="stPlotlyChart"] {
     min-height:240px !important; break-inside:avoid; page-break-inside:avoid; }
 
-  /* 제목이 투명 배경으로 다른 요소와 겹쳐 보이지 않도록 */
+  /* ?쒕ぉ???щ챸 諛곌꼍?쇰줈 ?ㅻⅨ ?붿냼? 寃뱀퀜 蹂댁씠吏 ?딅룄濡?*/
   h1, h2, h3, h4 { background:#fff !important; position:relative; z-index:1;
     page-break-after:avoid; break-after:avoid; }
 
@@ -69,15 +69,15 @@ st.markdown("""
   [data-testid="stMetric"], [data-testid="column"] {
     break-inside:avoid; page-break-inside:avoid; }
 
-  /* 증감 색상(빨강/초록) 인쇄에 유지 */
+  /* 利앷컧 ?됱긽(鍮④컯/珥덈줉) ?몄뇙???좎? */
   * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════
-# 색상 팔레트 (기존 first_purchase 와 동일 계열)
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# ?됱긽 ?붾젅??(湲곗〈 first_purchase ? ?숈씪 怨꾩뿴)
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 PALETTE = {
     "blue":   ("rgba(79,143,255,1)",  "rgba(79,143,255,0.15)"),
     "red":    ("rgba(245,101,101,1)", "rgba(245,101,101,0.15)"),
@@ -92,62 +92,62 @@ def clr(n): return PALETTE.get(n, PALETTE["blue"])[0]
 def cbg(n): return PALETTE.get(n, PALETTE["blue"])[1]
 
 CHANNEL_PAL = {
-    "직접": "blue", "광고": "amber", "EP": "green", "PUSH": "purple",
-    "제휴": "red", "브랜드광고": "teal", "미디어커머스": "orange", "*TOTAL": "slate",
+    "吏곸젒": "blue", "愿묎퀬": "amber", "EP": "green", "PUSH": "purple",
+    "?쒗쑕": "red", "釉뚮옖?쒓킅怨?: "teal", "誘몃뵒?댁빱癒몄뒪": "orange", "*TOTAL": "slate",
 }
-CHANNELS = ["직접", "광고", "EP", "PUSH", "제휴", "브랜드광고", "미디어커머스"]
+CHANNELS = ["吏곸젒", "愿묎퀬", "EP", "PUSH", "?쒗쑕", "釉뚮옖?쒓킅怨?, "誘몃뵒?댁빱癒몄뒪"]
 YEAR_PAL = ["slate", "blue", "red", "green", "purple", "amber", "teal"]
 
-# ══════════════════════════════════════════════════════
-# 지표 정의
-# ══════════════════════════════════════════════════════
-METRICS7 = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가",
-            "비회원트래픽", "가입자수", "가입율", "당일가입CR"]
-PCT_METRICS = {"가입율", "당일가입CR", "유입율", "CR", "거래액비중", "고객비중"}
-# 마스터 파일 지표 → 보고서 지표 매핑
-MASTER_MAP = {"일평균거래액": "첫구매 거래액", "일평균고객수": "첫구매 고객수",
-              "일평균객단가": "첫구매 객단가"}
-# 지표별 파일명 → 보고서 지표 매핑 (공백 제거 후 매칭)
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# 吏???뺤쓽
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+METRICS7 = ["泥リ뎄留?嫄곕옒??, "泥リ뎄留?怨좉컼??, "泥リ뎄留?媛앸떒媛",
+            "鍮꾪쉶?먰듃?섑뵿", "媛?낆옄??, "媛?낆쑉", "?뱀씪媛?꿂R"]
+PCT_METRICS = {"媛?낆쑉", "?뱀씪媛?꿂R", "?좎엯??, "CR", "嫄곕옒?〓퉬以?, "怨좉컼鍮꾩쨷"}
+# 留덉뒪???뚯씪 吏????蹂닿퀬??吏??留ㅽ븨
+MASTER_MAP = {"?쇳룊洹좉굅?섏븸": "泥リ뎄留?嫄곕옒??, "?쇳룊洹좉퀬媛앹닔": "泥リ뎄留?怨좉컼??,
+              "?쇳룊洹좉컼?④?": "泥リ뎄留?媛앸떒媛"}
+# 吏?쒕퀎 ?뚯씪紐???蹂닿퀬??吏??留ㅽ븨 (怨듬갚 ?쒓굅 ??留ㅼ묶)
 METRIC_FILE_MAP = {
-    "가입율": "가입율", "가입률": "가입율",
-    "가입자수": "가입자수",
-    "당일가입첫구매율": "당일가입CR", "당일가입CR": "당일가입CR",
-    "비회원트래픽": "비회원트래픽",
+    "媛?낆쑉": "媛?낆쑉", "媛?낅쪧": "媛?낆쑉",
+    "媛?낆옄??: "媛?낆옄??,
+    "?뱀씪媛?낆껀援щℓ??: "?뱀씪媛?꿂R", "?뱀씪媛?꿂R": "?뱀씪媛?꿂R",
+    "鍮꾪쉶?먰듃?섑뵿": "鍮꾪쉶?먰듃?섑뵿",
 }
 
 METRIC_UNIT = {
-    "첫구매 거래액": ("백만원", 1e6), "첫구매 고객수": ("명", 1),
-    "첫구매 객단가": ("원", 1), "비회원트래픽": ("명", 1),
-    "가입자수": ("명", 1), "가입율": ("%", 1), "당일가입CR": ("%", 1),
-    "앱푸시수신동의": ("명", 1),
+    "泥リ뎄留?嫄곕옒??: ("諛깅쭔??, 1e6), "泥リ뎄留?怨좉컼??: ("紐?, 1),
+    "泥リ뎄留?媛앸떒媛": ("??, 1), "鍮꾪쉶?먰듃?섑뵿": ("紐?, 1),
+    "媛?낆옄??: ("紐?, 1), "媛?낆쑉": ("%", 1), "?뱀씪媛?꿂R": ("%", 1),
+    "?깊뫖?쒖닔?좊룞??: ("紐?, 1),
 }
 
 def fmt_value(metric, v):
-    if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
+    if v is None or (isinstance(v, float) and np.isnan(v)): return "??
     if metric in PCT_METRICS: return f"{v*100:.2f}%"
-    if metric == "첫구매 거래액": return f"{v/1e6:,.1f}백만원"
-    if metric == "첫구매 객단가": return f"{v:,.0f}원"
-    return f"{int(v):,}명"  # 명 단위(고객수 등)는 소수점 버림
+    if metric == "泥リ뎄留?嫄곕옒??: return f"{v/1e6:,.1f}諛깅쭔??
+    if metric == "泥リ뎄留?媛앸떒媛": return f"{v:,.0f}??
+    return f"{int(v):,}紐?  # 紐??⑥쐞(怨좉컼???????뚯닔??踰꾨┝
 
 def fmt_delta(metric, cur, prev):
-    """전년비/전주비 문자열: 비율 지표는 %p 차이, 그 외 증감율"""
+    """?꾨뀈鍮??꾩＜鍮?臾몄옄?? 鍮꾩쑉 吏?쒕뒗 %p 李⑥씠, 洹???利앷컧??""
     if cur is None or prev is None: return None
     if isinstance(cur, float) and np.isnan(cur): return None
     if isinstance(prev, float) and np.isnan(prev): return None
     if metric in PCT_METRICS:
         d = (cur - prev) * 100
-        return f"△{abs(d):.2f}%p" if d < 0 else f"+{d:.2f}%p"
+        return f"??abs(d):.2f}%p" if d < 0 else f"+{d:.2f}%p"
     if prev == 0: return None
     d = (cur - prev) / prev * 100
-    return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
+    return f"??abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
 
 def style_delta_cols(tbl):
-    """증감 컬럼(△/+)에 빨강/초록 색상 적용한 Styler 반환"""
+    """利앷컧 而щ읆(??+)??鍮④컯/珥덈줉 ?됱긽 ?곸슜??Styler 諛섑솚"""
     delta_cols = [c for c in tbl.columns
-                  if any(k in str(c) for k in ("전년비", "전주비", "전월비", "증감"))]
+                  if any(k in str(c) for k in ("?꾨뀈鍮?, "?꾩＜鍮?, "?꾩썡鍮?, "利앷컧"))]
     def _color(v):
         s = str(v)
-        if s.startswith("△"): return "color:#dc2626;font-weight:600"
+        if s.startswith("??): return "color:#dc2626;font-weight:600"
         if s.startswith("+"): return "color:#16a34a;font-weight:600"
         return ""
     try:
@@ -155,37 +155,37 @@ def style_delta_cols(tbl):
     except Exception:
         return tbl
 
-# ══════════════════════════════════════════════════════
-# 파싱 — 원천 파일 → 통합 long DataFrame
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# ?뚯떛 ???먯쿇 ?뚯씪 ???듯빀 long DataFrame
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 YEAR_RE   = re.compile(r"^(20\d{2})(\.0)?$")
-PERIOD_RE = re.compile(r"^\s*(\d{1,2}\s*월(\s*\d\s*주차)?|\d{1,2}/\d{1,2})\s*$")
+PERIOD_RE = re.compile(r"^\s*(\d{1,2}\s*??\s*\d\s*二쇱감)?|\d{1,2}/\d{1,2})\s*$")
 
 def detect_file(name):
-    """파일명에서 (kind, granularity 힌트, metric) 감지.
-    단위(일/주/월)와 마스터 여부는 parse_file에서 내용으로 최종 판별하므로 여기선 힌트만."""
+    """?뚯씪紐낆뿉??(kind, granularity ?뚰듃, metric) 媛먯?.
+    ?⑥쐞(??二???? 留덉뒪???щ???parse_file?먯꽌 ?댁슜?쇰줈 理쒖쥌 ?먮퀎?섎?濡??ш린???뚰듃留?"""
     base = os.path.basename(name)
     base = re.sub(r"\.(xlsx|xls|csv)$", "", base, flags=re.I)
     key = base.replace(" ", "")
-    # 단위 힌트: 일자별/주별/월별 키워드 또는 일_/주_/월_ 접두사
+    # ?⑥쐞 ?뚰듃: ?쇱옄蹂?二쇰퀎/?붾퀎 ?ㅼ썙???먮뒗 ??/二?/?? ?묐몢??
     gran = None
-    if "일자별" in key or "데일리" in key: gran = "일"
-    elif "주별" in key or "주간" in key:   gran = "주"
-    elif "월별" in key or "월간" in key:   gran = "월"
+    if "?쇱옄蹂? in key or "?곗씪由? in key: gran = "??
+    elif "二쇰퀎" in key or "二쇨컙" in key:   gran = "二?
+    elif "?붾퀎" in key or "?붽컙" in key:   gran = "??
     else:
-        m = re.match(r"^(일|주|월)[_\s]", base)
+        m = re.match(r"^(??二???[_\s]", base)
         if m: gran = m.group(1)
-    if "전체관점" in key or "마스터" in key:
+    if "?꾩껜愿?? in key or "留덉뒪?? in key:
         return "master", gran, None
-    # 지표 키워드는 파일명 어느 위치에 있어도 인식
+    # 吏???ㅼ썙?쒕뒗 ?뚯씪紐??대뒓 ?꾩튂???덉뼱???몄떇
     for k, v in METRIC_FILE_MAP.items():
         if k.replace(" ", "") in key:
             return "metric", gran, v
-    # 접두사형(월_xxx)인데 모르는 지표면 정리된 이름 그대로 사용
-    m = re.match(r"^(일|주|월)[_\s]+(.+)$", base)
+    # ?묐몢?ы삎(??xxx)?몃뜲 紐⑤Ⅴ??吏?쒕㈃ ?뺣━???대쫫 洹몃?濡??ъ슜
+    m = re.match(r"^(??二???[_\s]+(.+)$", base)
     if m:
         rest = re.sub(r"\(.*?\)", "", m.group(2)).strip()
-        return "metric", m.group(1), rest or "기타"
+        return "metric", m.group(1), rest or "湲고?"
     return None, gran, None
 
 def _decode_text(data: bytes) -> str:
@@ -195,7 +195,7 @@ def _decode_text(data: bytes) -> str:
     return data.decode("utf-8", "replace")
 
 def read_grid(name, data: bytes):
-    """csv(UTF-16/탭 포함)·xlsx 모두 2차원 셀 그리드로 읽는다"""
+    """csv(UTF-16/???ы븿)쨌xlsx 紐⑤몢 2李⑥썝 ? 洹몃━?쒕줈 ?쎈뒗??""
     if name.lower().endswith((".csv", ".txt", ".tsv")):
         text = _decode_text(data)
         return [line.split("\t") for line in text.splitlines()]
@@ -208,11 +208,11 @@ def _cell(v):
     return "" if v is None else str(v).strip()
 
 def _num(v):
-    """셀 값 → float (콤마·% 처리, %는 비율로 변환)"""
+    """? 媛???float (肄ㅻ쭏쨌% 泥섎━, %??鍮꾩쑉濡?蹂??"""
     if v is None: return np.nan
     if isinstance(v, (int, float)): return float(v)
     s = str(v).strip().replace(",", "")
-    if s in ("", "-", "–"): return np.nan
+    if s in ("", "-", "??): return np.nan
     pct = s.endswith("%")
     if pct: s = s[:-1]
     try: f = float(s)
@@ -220,25 +220,25 @@ def _num(v):
     return f / 100 if pct else f
 
 def period_parts(gran, year, plabel):
-    """기간 라벨 → (표준라벨, 정렬키)"""
+    """湲곌컙 ?쇰꺼 ??(?쒖??쇰꺼, ?뺣젹??"""
     p = plabel.replace(" ", "")
-    if gran == "월":
-        m = re.match(r"(\d{1,2})월", p)
+    if gran == "??:
+        m = re.match(r"(\d{1,2})??, p)
         if not m: return None
         mo = int(m.group(1))
-        return f"{mo}월", year * 10000 + mo * 100
-    if gran == "주":
-        m = re.match(r"(\d{1,2})월(\d)주차", p)
+        return f"{mo}??, year * 10000 + mo * 100
+    if gran == "二?:
+        m = re.match(r"(\d{1,2})??\d)二쇱감", p)
         if not m: return None
         mo, wk = int(m.group(1)), int(m.group(2))
-        return f"{mo:02d}월 {wk}주차", year * 10000 + mo * 100 + wk
+        return f"{mo:02d}??{wk}二쇱감", year * 10000 + mo * 100 + wk
     m = re.match(r"(\d{1,2})/(\d{1,2})", p)
     if not m: return None
     mo, dd = int(m.group(1)), int(m.group(2))
     return f"{mo}/{dd}", year * 10000 + mo * 100 + dd
 
 def parse_file(name, data: bytes) -> pd.DataFrame:
-    # 누적 데이터 백업 CSV(long 포맷) 재업로드 시 그대로 복원
+    # ?꾩쟻 ?곗씠??諛깆뾽 CSV(long ?щ㎎) ?ъ뾽濡쒕뱶 ??洹몃?濡?蹂듭썝
     if name.lower().endswith(".csv"):
         first = data[:400].decode("utf-8", "ignore").splitlines()[0] if data else ""
         if "gran" in first and "metric" in first and "sortkey" in first:
@@ -255,27 +255,27 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
         return pd.DataFrame()
     if not rows: return pd.DataFrame()
 
-    # 헤더 행 탐색 (앞 6행): 연도 / 기간라벨 / 마감구분
+    # ?ㅻ뜑 ???먯깋 (??6??: ?곕룄 / 湲곌컙?쇰꺼 / 留덇컧援щ텇
     year_row = period_row = close_row = None
     for ri in range(min(6, len(rows))):
         cells = [_cell(c) for c in rows[ri]]
         nY = sum(1 for c in cells if YEAR_RE.match(c))
         nP = sum(1 for c in cells if PERIOD_RE.match(c))
-        nC = sum(1 for c in cells if "마감" in c)
+        nC = sum(1 for c in cells if "留덇컧" in c)
         if year_row is None and nY >= 1 and nP == 0: year_row = ri
         if period_row is None and nP >= 2: period_row = ri
         if close_row is None and nC >= 2: close_row = ri
     if period_row is None: return pd.DataFrame()
     data_start = max(r for r in (year_row, period_row, close_row) if r is not None) + 1
 
-    # ── 내용 기반 최종 판별 (파일명은 힌트일 뿐)
-    # 단위: 기간 라벨 형태가 결정 (N월 N주차 → 주, N/N → 일, N월 → 월)
+    # ?? ?댁슜 湲곕컲 理쒖쥌 ?먮퀎 (?뚯씪紐낆? ?뚰듃??肉?
+    # ?⑥쐞: 湲곌컙 ?쇰꺼 ?뺥깭媛 寃곗젙 (N??N二쇱감 ??二? N/N ???? N??????
     plabels = [_cell(c) for c in rows[period_row] if PERIOD_RE.match(_cell(c))]
-    if any("주차" in p for p in plabels):  gran = "주"
-    elif any("/" in p for p in plabels):   gran = "일"
-    else:                                   gran = "월"
-    # 마스터 여부: 헤더에 '구분01'이 있으면 마스터(전체관점) 구조
-    if any("구분01" in _cell(c) for ri in range(data_start) for c in rows[ri]):
+    if any("二쇱감" in p for p in plabels):  gran = "二?
+    elif any("/" in p for p in plabels):   gran = "??
+    else:                                   gran = "??
+    # 留덉뒪???щ?: ?ㅻ뜑??'援щ텇01'???덉쑝硫?留덉뒪???꾩껜愿?? 援ъ“
+    if any("援щ텇01" in _cell(c) for ri in range(data_start) for c in rows[ri]):
         kind = "master"
     if kind is None or (kind == "metric" and not file_metric):
         return pd.DataFrame()
@@ -284,13 +284,13 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
     def cell(ri, ci):
         return _cell(rows[ri][ci]) if ri is not None and ci < len(rows[ri]) else ""
 
-    # 컬럼별 연도(좌측 ffill)·기간·마감
+    # 而щ읆蹂??곕룄(醫뚯륫 ffill)쨌湲곌컙쨌留덇컧
     col_year, cur_y = {}, None
     for ci in range(ncols):
         m = YEAR_RE.match(cell(year_row, ci)) if year_row is not None else None
         if m: cur_y = int(m.group(1))
         col_year[ci] = cur_y
-    # 기간 라벨이 빈 셀(병합)인 일마감/MTD 컬럼은 직전 라벨을 이어받는다
+    # 湲곌컙 ?쇰꺼??鍮??(蹂묓빀)???쇰쭏媛?MTD 而щ읆? 吏곸쟾 ?쇰꺼???댁뼱諛쏅뒗??
     data_cols, col_label, last_lbl = [], {}, None
     for ci in range(ncols):
         lbl = cell(period_row, ci)
@@ -298,7 +298,7 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
             last_lbl = lbl
             col_label[ci] = lbl
             data_cols.append(ci)
-        elif (close_row is not None and "마감" in cell(close_row, ci)
+        elif (close_row is not None and "留덇컧" in cell(close_row, ci)
               and last_lbl and col_year[ci]):
             col_label[ci] = last_lbl
             data_cols.append(ci)
@@ -308,12 +308,12 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
     for ri in range(data_start, len(rows)):
         if kind == "master":
             m0 = cell(ri, 0)
-            if m0 and m0 not in ("-", "–"): cur_metric = m0
+            if m0 and m0 not in ("-", "??): cur_metric = m0
             metric = MASTER_MAP.get(cur_metric, cur_metric)
         else:
             metric = file_metric
         seg = cell(ri, seg_col)
-        if not seg or seg in ("-", "–") or metric is None: continue
+        if not seg or seg in ("-", "??) or metric is None: continue
         for ci in data_cols:
             pp = period_parts(gran, col_year[ci], col_label[ci])
             if pp is None: continue
@@ -322,13 +322,13 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
             records.append({
                 "gran": gran, "metric": metric, "segment": seg,
                 "year": col_year[ci], "label": label, "sortkey": sortkey,
-                "close": "mtd" if "일마감" in close and gran != "일" else "final",
+                "close": "mtd" if "?쇰쭏媛? in close and gran != "?? else "final",
                 "value": _num(rows[ri][ci] if ci < len(rows[ri]) else None),
             })
     return pd.DataFrame(records)
 
 def _zip_entry_name(info):
-    """zip 내 한글 파일명 복원 (UTF-8 플래그 없으면 cp437→cp949 재해석)"""
+    """zip ???쒓? ?뚯씪紐?蹂듭썝 (UTF-8 ?뚮옒洹??놁쑝硫?cp437?뭖p949 ?ы빐??"""
     if info.flag_bits & 0x800:
         return info.filename
     for enc in ("cp949", "utf-8", "euc-kr"):
@@ -337,7 +337,7 @@ def _zip_entry_name(info):
     return info.filename
 
 def expand_uploads(uploads):
-    """업로드 목록 → (이름, bytes) 목록. zip은 풀어서 내부 엑셀/CSV를 꺼낸다"""
+    """?낅줈??紐⑸줉 ??(?대쫫, bytes) 紐⑸줉. zip? ??댁꽌 ?대? ?묒?/CSV瑜?爰쇰궦??""
     out = []
     for f in uploads:
         data = f.getvalue()
@@ -373,9 +373,9 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
     for ri, row in enumerate(rows):
         c0 = _cell(row[0] if len(row) > 0 else "")
         c1 = _cell(row[1] if len(row) > 1 else "")
-        if c0 == "신규":
+        if c0 == "?좉퇋":
             in_new_section = True
-        if in_new_section and c1 == "신규추가(+)":
+        if in_new_section and c1 == "?좉퇋異붽?(+)":
             target_row = row
             break
             
@@ -383,7 +383,7 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
     
     date_row = rows[1]
     
-    # 1) 유효한 날짜 컬럼을 모두 추출하고 월(month)을 파싱
+    # 1) ?좏슚???좎쭨 而щ읆??紐⑤몢 異붿텧?섍퀬 ??month)???뚯떛
     date_cols = []
     for ci in range(2, len(date_row)):
         d = _cell(date_row[ci])
@@ -394,14 +394,14 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
     if not date_cols:
         return pd.DataFrame()
         
-    # 2) 뒤에서부터 역순으로 읽으면서 해(year)가 바뀌는 지점 계산
-    # 맨 마지막 데이터를 0으로 두고, (1월 <- 12월)로 넘어갈 때마다 연도를 -1
+    # 2) ?ㅼ뿉?쒕?????닚?쇰줈 ?쎌쑝硫댁꽌 ??year)媛 諛붾뚮뒗 吏??怨꾩궛
+    # 留?留덉?留??곗씠?곕? 0?쇰줈 ?먭퀬, (1??<- 12??濡??섏뼱媛??뚮쭏???곕룄瑜?-1
     rel_years = {}
     current_rel_year = 0
     last_month = date_cols[-1][2]
     
     for ci, d, month in reversed(date_cols):
-        # 역순으로 읽을 때 월이 1에서 12로 커지면 (실제로는 12월 -> 1월) 해가 바뀐 것
+        # ??닚?쇰줈 ?쎌쓣 ???붿씠 1?먯꽌 12濡?而ㅼ?硫?(?ㅼ젣濡쒕뒗 12??-> 1?? ?닿? 諛붾?寃?
         if last_month < 6 and month > 6:
             current_rel_year -= 1
         elif last_month > 6 and month < 6:
@@ -415,14 +415,14 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
         val = _num(target_row[ci] if ci < len(target_row) else None)
         if pd.isna(val): continue
         records.append({
-            "gran": "일", "metric": "앱푸시수신동의", "segment": "*TOTAL",
+            "gran": "??, "metric": "?깊뫖?쒖닔?좊룞??, "segment": "*TOTAL",
             "year": rel_years[ci], "label": d, "sortkey": 0, "close": "final", "value": val
         })
     return pd.DataFrame(records)
 
 @st.cache_data(show_spinner=False)
 def combine_files(file_tuples) -> pd.DataFrame:
-    """업로드 파일들 → 통합 long DF. 동일 키는 마지막 파일 우선"""
+    """?낅줈???뚯씪?????듯빀 long DF. ?숈씪 ?ㅻ뒗 留덉?留??뚯씪 ?곗꽑"""
     frames = []
     push_frames = []
     for n, b in file_tuples:
@@ -454,9 +454,9 @@ def combine_files(file_tuples) -> pd.DataFrame:
     df = df.drop_duplicates(subset=KEY_COLS, keep="last")
     return df
 
-# ══════════════════════════════════════════════════════
-# 데이터 누적 저장소 — 업로드할 때마다 병합·저장
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# ?곗씠???꾩쟻 ??μ냼 ???낅줈?쒗븷 ?뚮쭏??蹂묓빀쨌???
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 DATA_STORE = "wr_data_store.csv"
 KEY_COLS = ["gran", "metric", "segment", "year", "label", "close"]
 STORE_COLS = KEY_COLS + ["sortkey", "value"]
@@ -475,39 +475,39 @@ def save_store(df: pd.DataFrame):
     df[STORE_COLS].to_csv(DATA_STORE, index=False, encoding="utf-8-sig")
 
 def merge_store(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
-    """기존 누적 + 신규 업로드 병합 — 같은 (단위·지표·채널·기간) 키는 신규 우선"""
+    """湲곗〈 ?꾩쟻 + ?좉퇋 ?낅줈??蹂묓빀 ??媛숈? (?⑥쐞쨌吏?쑣룹콈?먃룰린媛? ?ㅻ뒗 ?좉퇋 ?곗꽑"""
     if old is None or old.empty: return new
     if new is None or new.empty: return old
     return (pd.concat([old[STORE_COLS], new[STORE_COLS]], ignore_index=True)
             .drop_duplicates(subset=KEY_COLS, keep="last"))
 
-# ══════════════════════════════════════════════════════
-# 회원 실적 데이터셋 (신규/기존 세그먼트 × 9지표, 월 단위)
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# ?뚯썝 ?ㅼ쟻 ?곗씠?곗뀑 (?좉퇋/湲곗〈 ?멸렇癒쇳듃 횞 9吏?? ???⑥쐞)
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 MEMBER_STORE = "wr_member_store.csv"
 MEMBER_KEY = ["metric", "segment", "year", "label"]
 MEMBER_COLS = MEMBER_KEY + ["sortkey", "value"]
-MEMBER_SEGS = ["Total", "당월신규", "기가입신규", "기존"]
-MEMBER_METRICS = ["유효회원수", "UV", "월방문율(%)", "구매고객수", "CR(%)",
-                  "객단가", "거래액 (VAT제외)", "유효회원당 거래액", "활동고객수"]
-MEMBER_PCT = {"월방문율(%)", "CR(%)"}
+MEMBER_SEGS = ["Total", "?뱀썡?좉퇋", "湲곌??낆떊洹?, "湲곗〈"]
+MEMBER_METRICS = ["?좏슚?뚯썝??, "UV", "?붾갑臾몄쑉(%)", "援щℓ怨좉컼??, "CR(%)",
+                  "媛앸떒媛", "嫄곕옒??(VAT?쒖쇅)", "?좏슚?뚯썝??嫄곕옒??, "?쒕룞怨좉컼??]
+MEMBER_PCT = {"?붾갑臾몄쑉(%)", "CR(%)"}
 
 def is_member_grid(rows):
-    """헤더에 회원구분/회원구분상세 + 유효회원수 지표가 있으면 회원 실적 파일"""
+    """?ㅻ뜑???뚯썝援щ텇/?뚯썝援щ텇?곸꽭 + ?좏슚?뚯썝??吏?쒓? ?덉쑝硫??뚯썝 ?ㅼ쟻 ?뚯씪"""
     head = " ".join(_cell(c) for ri in range(min(3, len(rows))) for c in rows[ri])
     col0 = " ".join(_cell(rows[ri][0]) for ri in range(len(rows)) if rows[ri])
-    return ("회원구분" in head and "회원구분상세" in head
-            and "유효회원수" in col0)
+    return ("?뚯썝援щ텇" in head and "?뚯썝援щ텇?곸꽭" in head
+            and "?좏슚?뚯썝?? in col0)
 
 def fmt_member(metric, v):
-    if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
+    if v is None or (isinstance(v, float) and np.isnan(v)): return "??
     if metric in MEMBER_PCT: return f"{v*100:.2f}%"
-    if metric == "거래액 (VAT제외)": return f"{v/1e8:,.1f}억"
-    if metric in ("객단가", "유효회원당 거래액"): return f"{v:,.0f}원"
+    if metric == "嫄곕옒??(VAT?쒖쇅)": return f"{v/1e8:,.1f}??
+    if metric in ("媛앸떒媛", "?좏슚?뚯썝??嫄곕옒??): return f"{v:,.0f}??
     return f"{int(v):,}"
 
 def parse_member_file(name, data: bytes) -> pd.DataFrame:
-    # 회원 백업 CSV 복원
+    # ?뚯썝 諛깆뾽 CSV 蹂듭썝
     if name.lower().endswith(".csv"):
         first = data[:300].decode("utf-8", "ignore").splitlines()[0] if data else ""
         if "metric" in first and "segment" in first and "sortkey" in first and "gran" not in first:
@@ -523,9 +523,9 @@ def parse_member_file(name, data: bytes) -> pd.DataFrame:
         return pd.DataFrame()
     if not rows or not is_member_grid(rows): return pd.DataFrame()
 
-    # 헤더: 0행 연도(ffill), 1행 차원명+월라벨. 데이터는 2행부터
+    # ?ㅻ뜑: 0???곕룄(ffill), 1??李⑥썝紐??붾씪踰? ?곗씠?곕뒗 2?됰???
     year_row, label_row = rows[0], rows[1]
-    # 월 라벨이 시작되는 컬럼 = '가입연차' 다음 (보통 7열)
+    # ???쇰꺼???쒖옉?섎뒗 而щ읆 = '媛?낆뿰李? ?ㅼ쓬 (蹂댄넻 7??
     data_c0 = 7
     col_year, cur = {}, None
     for ci in range(len(year_row)):
@@ -533,7 +533,7 @@ def parse_member_file(name, data: bytes) -> pd.DataFrame:
         if m: cur = int(m.group(1))
         col_year[ci] = cur
     data_cols = [ci for ci in range(data_c0, len(label_row))
-                 if re.match(r"^\d{1,2}월$", _cell(label_row[ci])) and col_year.get(ci)]
+                 if re.match(r"^\d{1,2}??", _cell(label_row[ci])) and col_year.get(ci)]
 
     records, cur_metric = [], None
     for ri in range(2, len(rows)):
@@ -541,16 +541,16 @@ def parse_member_file(name, data: bytes) -> pd.DataFrame:
         m0 = _cell(row[0]) if len(row) > 0 else ""
         if m0: cur_metric = m0
         if cur_metric not in MEMBER_METRICS: continue
-        seg = _cell(row[2]) if len(row) > 2 else ""   # 회원구분상세
-        # 등급/성별/연령대/가입연차(3~6열)는 Total인 행만 (현재 분해 없음)
+        seg = _cell(row[2]) if len(row) > 2 else ""   # ?뚯썝援щ텇?곸꽭
+        # ?깃툒/?깅퀎/?곕졊?/媛?낆뿰李?3~6????Total???됰쭔 (?꾩옱 遺꾪빐 ?놁쓬)
         dims = [_cell(row[ci]) if len(row) > ci else "" for ci in range(3, 7)]
         if any(d and d != "Total" for d in dims): continue
         if seg not in MEMBER_SEGS: continue
         for ci in data_cols:
-            mo = int(re.match(r"(\d{1,2})월", _cell(label_row[ci])).group(1))
+            mo = int(re.match(r"(\d{1,2})??, _cell(label_row[ci])).group(1))
             yr = col_year[ci]
             records.append({"metric": cur_metric, "segment": seg, "year": yr,
-                            "label": f"{mo}월", "sortkey": yr * 100 + mo,
+                            "label": f"{mo}??, "sortkey": yr * 100 + mo,
                             "value": _num(row[ci] if ci < len(row) else None)})
     return pd.DataFrame(records)
 
@@ -583,7 +583,7 @@ def _period_set(d, cols):
     return set(map(tuple, d[cols].drop_duplicates().values.tolist()))
 
 def upload_diff(stored, df_new, member_stored, member_new):
-    """업로드 데이터가 기존 누적 대비 추가/갱신하는 기간 수 (저장 전 미리보기용)"""
+    """?낅줈???곗씠?곌? 湲곗〈 ?꾩쟻 ?鍮?異붽?/媛깆떊?섎뒗 湲곌컙 ??(?????誘몃━蹂닿린??"""
     cols_c, cols_m = ["gran", "year", "label"], ["year", "label"]
     nc, oc = _period_set(df_new, cols_c), _period_set(stored, cols_c)
     nm, om = _period_set(member_new, cols_m), _period_set(member_stored, cols_m)
@@ -594,7 +594,7 @@ def upload_diff(stored, df_new, member_stored, member_new):
 
 def member_pick(mdf, metric, seg, year, mo):
     s = mdf[(mdf["metric"] == metric) & (mdf["segment"] == seg) &
-            (mdf["year"] == year) & (mdf["label"] == f"{mo}월")]["value"].dropna()
+            (mdf["year"] == year) & (mdf["label"] == f"{mo}??)]["value"].dropna()
     return s.iloc[-1] if len(s) else np.nan
 
 def member_series(mdf, metric, seg, year):
@@ -602,9 +602,9 @@ def member_series(mdf, metric, seg, year):
     return s.sort_values("sortkey").set_index("label")["value"]
 
 
-# ══════════════════════════════════════════════════════
-# 조회 헬퍼 — mtd(당월/당주 일마감) vs final 선택
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# 議고쉶 ?ы띁 ??mtd(?뱀썡/?뱀＜ ?쇰쭏媛? vs final ?좏깮
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 def pick(df, gran, metric, seg, year, label, prefer="final"):
     sub = df[(df["gran"] == gran) & (df["metric"] == metric) &
              (df["segment"] == seg) & (df["year"] == year) & (df["label"] == label)]
@@ -616,7 +616,7 @@ def pick(df, gran, metric, seg, year, label, prefer="final"):
     return np.nan
 
 def series_by_label(df, gran, metric, seg, year, prefer="final"):
-    """한 연도의 기간라벨 → 값 Series (sortkey 순)"""
+    """???곕룄??湲곌컙?쇰꺼 ??媛?Series (sortkey ??"""
     sub = df[(df["gran"] == gran) & (df["metric"] == metric) &
              (df["segment"] == seg) & (df["year"] == year)].copy()
     if sub.empty: return pd.Series(dtype=float)
@@ -632,14 +632,14 @@ def labels_sorted(df, gran, years=None):
             .drop_duplicates("label").sort_values("k")["label"].tolist())
 
 def latest_period(df, gran):
-    """가장 최근 (year, label)"""
+    """媛??理쒓렐 (year, label)"""
     sub = df[(df["gran"] == gran) & df["value"].notna()]
     if sub.empty: return None, None
     row = sub.loc[sub["sortkey"].idxmax()]
     return int(row["year"]), row["label"]
 
 def prev_label(df, gran, year, label):
-    """직전 기간 (연도 경계 포함)"""
+    """吏곸쟾 湲곌컙 (?곕룄 寃쎄퀎 ?ы븿)"""
     sub = (df[(df["gran"] == gran) & df["value"].notna()]
            [["year", "label", "sortkey"]].drop_duplicates().sort_values("sortkey"))
     keys = sub[["year", "label"]].apply(tuple, axis=1).tolist()
@@ -647,9 +647,9 @@ def prev_label(df, gran, year, label):
     except ValueError: return None, None
     return keys[i - 1] if i > 0 else (None, None)
 
-# ══════════════════════════════════════════════════════
-# 보고란 영속화
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# 蹂닿퀬? ?곸냽??
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 def load_insights():
     if os.path.exists(INSIGHT_FILE):
         with open(INSIGHT_FILE, "r", encoding="utf-8") as f:
@@ -661,20 +661,20 @@ def save_insights(d):
         json.dump(d, f, ensure_ascii=False, indent=2)
 
 def report_text_block(key, title, default="", regen=None, ai_fn=None):
-    """편집 가능한 보고란 텍스트 박스 (JSON 저장).
-    regen 텍스트를 주면 '자동 생성'(템플릿) 버튼, ai_fn을 주면 'AI 생성'(Claude) 버튼이 뜬다.
-    좁은 컬럼 안에서도 안 깨지도록 버튼은 박스 위/아래에 배치한다."""
+    """?몄쭛 媛?ν븳 蹂닿퀬? ?띿뒪??諛뺤뒪 (JSON ???.
+    regen ?띿뒪?몃? 二쇰㈃ '?먮룞 ?앹꽦'(?쒗뵆由? 踰꾪듉, ai_fn??二쇰㈃ 'AI ?앹꽦'(Claude) 踰꾪듉???щ떎.
+    醫곸? 而щ읆 ?덉뿉?쒕룄 ??源⑥??꾨줉 踰꾪듉? 諛뺤뒪 ???꾨옒??諛곗튂?쒕떎."""
     store = st.session_state.wr_texts
     if not store.get(key): store[key] = default
     ekey = f"__wr_edit_{key}__"
     if ekey not in st.session_state: st.session_state[ekey] = False
 
-    # 제목 + 액션 버튼 (제목 한 줄, 버튼은 그 아래 정상 너비 컬럼)
+    # ?쒕ぉ + ?≪뀡 踰꾪듉 (?쒕ぉ ??以? 踰꾪듉? 洹??꾨옒 ?뺤긽 ?덈퉬 而щ읆)
     st.markdown(f"**{title}**")
 
     if st.session_state[ekey]:
         if HAS_QUILL:
-            # Word 수준 리치 에디터 (글자 크기·색·굵게·기울임·밑줄·목록·정렬 등)
+            # Word ?섏? 由ъ튂 ?먮뵒??(湲???ш린쨌?됀룰도寃뙿룰린?몄엫쨌諛묒쨪쨌紐⑸줉쨌?뺣젹 ??
             toolbar = [
                 [{"size": ["small", False, "large", "huge"]}],
                 ["bold", "italic", "underline", "strike"],
@@ -682,9 +682,9 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
                 [{"list": "ordered"}, {"list": "bullet"}],
                 [{"align": []}], ["clean"],
             ]
-            # value(초기값)는 최초 진입 또는 store[key]가 바뀐 경우에만 주입한다.
-            # 매 rerun마다 value를 다시 넣으면 타이핑 중 저장값으로 되돌아가
-            # '계속 리프레시'되는 버그가 발생한다. (st_quill은 입력마다 rerun 유발)
+            # value(珥덇린媛???理쒖큹 吏꾩엯 ?먮뒗 store[key]媛 諛붾?寃쎌슦?먮쭔 二쇱엯?쒕떎.
+            # 留?rerun留덈떎 value瑜??ㅼ떆 ?ｌ쑝硫???댄븨 以???κ컪?쇰줈 ?섎룎?꾧?
+            # '怨꾩냽 由ы봽?덉떆'?섎뒗 踰꾧렇媛 諛쒖깮?쒕떎. (st_quill? ?낅젰留덈떎 rerun ?좊컻)
             qkey = f"wr_quill_{key}"
             skey = f"{qkey}__seed"
             if st.session_state.get(skey) != store[key]:
@@ -695,28 +695,28 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
         else:
             new = st.text_area("", store[key], key=f"wr_ta_{key}", height=180,
                                label_visibility="collapsed")
-        if st.button("저장", key=f"wr_save_{key}", type="primary",
+        if st.button("???, key=f"wr_save_{key}", type="primary",
                      use_container_width=True):
             store[key] = new if new is not None else store[key]
             all_d = load_insights(); all_d[key] = store[key]; save_insights(all_d)
             st.session_state[ekey] = False; st.rerun()
     else:
-        st.markdown(f"<div class='report-box'>{store[key] or '내용을 입력하세요.'}</div>",
+        st.markdown(f"<div class='report-box'>{store[key] or '?댁슜???낅젰?섏꽭??'}</div>",
                     unsafe_allow_html=True)
                     
-    # AI 참고 메모: 데이터에 안 나오는 배경(프로모션·이벤트·이슈)을 적으면
-    # AI 생성 시 [배경 메모]로 분리 주입돼 원인·맥락 해석에 활용된다.
+    # AI 李멸퀬 硫붾え: ?곗씠?곗뿉 ???섏삤??諛곌꼍(?꾨줈紐⑥뀡쨌?대깽?맞룹씠?????곸쑝硫?
+    # AI ?앹꽦 ??[諛곌꼍 硫붾え]濡?遺꾨━ 二쇱엯???먯씤쨌留λ씫 ?댁꽍???쒖슜?쒕떎.
     memo_val = ""
     if ai_fn is not None:
         mkey = f"{key}__memo"
         if mkey not in store: store[mkey] = ""
-        with st.expander("🧠 AI 참고 메모 (프로모션·이벤트·운영 이슈 등 배경)",
+        with st.expander("?쭬 AI 李멸퀬 硫붾え (?꾨줈紐⑥뀡쨌?대깽?맞룹슫???댁뒋 ??諛곌꼍)",
                          expanded=bool(store[mkey])):
             memo_val = st.text_area(
-                "데이터에 안 나오는 배경을 적으면 AI가 원인·맥락 해석에 활용합니다. "
-                "(수치는 데이터에서만 인용)",
+                "?곗씠?곗뿉 ???섏삤??諛곌꼍???곸쑝硫?AI媛 ?먯씤쨌留λ씫 ?댁꽍???쒖슜?⑸땲?? "
+                "(?섏튂???곗씠?곗뿉?쒕쭔 ?몄슜)",
                 store[mkey], key=f"wr_memo_{key}", height=120)
-            if st.button("메모 저장", key=f"wr_memosave_{key}",
+            if st.button("硫붾え ???, key=f"wr_memosave_{key}",
                          use_container_width=True):
                 store[mkey] = memo_val
                 all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
@@ -726,23 +726,23 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
     bcols = st.columns(n)
     bi = 0
     edit_on = st.session_state[ekey]
-    if bcols[bi].button("편집" if not edit_on else "보기",
+    if bcols[bi].button("?몄쭛" if not edit_on else "蹂닿린",
                         key=f"wr_edit_{key}", use_container_width=True):
         st.session_state[ekey] = not edit_on; st.rerun()
     bi += 1
     if regen is not None:
-        if bcols[bi].button("자동 생성", key=f"wr_regen_{key}", use_container_width=True,
-                            help="기준 주차 실적으로 템플릿 문구를 채웁니다 (기존 내용 대체)"):
+        if bcols[bi].button("?먮룞 ?앹꽦", key=f"wr_regen_{key}", use_container_width=True,
+                            help="湲곗? 二쇱감 ?ㅼ쟻?쇰줈 ?쒗뵆由?臾멸뎄瑜?梨꾩썎?덈떎 (湲곗〈 ?댁슜 ?泥?"):
             store[key] = regen
             all_d = load_insights(); all_d[key] = regen; save_insights(all_d)
             st.session_state[ekey] = False; st.rerun()
         bi += 1
     if ai_fn is not None:
-        if bcols[bi].button("AI 생성", key=f"wr_ai_{key}", use_container_width=True,
-                            help="Claude가 데이터(+참고 메모)를 보고 인사이트 문구를 작성합니다 (기존 내용 대체)"):
+        if bcols[bi].button("AI ?앹꽦", key=f"wr_ai_{key}", use_container_width=True,
+                            help="Claude媛 ?곗씠??+李멸퀬 硫붾え)瑜?蹂닿퀬 ?몄궗?댄듃 臾멸뎄瑜??묒꽦?⑸땲??(湲곗〈 ?댁슜 ?泥?"):
             store[mkey] = memo_val
             all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
-            with st.spinner("AI가 인사이트를 작성 중…"):
+            with st.spinner("AI媛 ?몄궗?댄듃瑜??묒꽦 以묅?):
                 text, err = ai_fn(memo_val)
             if err:
                 st.error(err)
@@ -752,55 +752,55 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
                 st.session_state[ekey] = False; st.rerun()
     return store[key]
 
-# ══════════════════════════════════════════════════════
-# YoY 요약표 / 추이표 빌더
-# ══════════════════════════════════════════════════════
-def month_label(n): return f"{n}월"
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# YoY ?붿빟??/ 異붿씠??鍮뚮뜑
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+def month_label(n): return f"{n}??
 
 def week_disp(year, label):
-    """주차 표시: 2026년 06월 2주차"""
-    return f"{year}년 {label}" if label else "-"
+    """二쇱감 ?쒖떆: 2026??06??2二쇱감"""
+    return f"{year}??{label}" if label else "-"
 
 def wow_summary_table(df, wy, wlabel, metrics):
-    """전주비 요약표 (실적 요약과 동일 구조): 전주·기준주·전주비 + 전년동주·전년비"""
-    py, plb = prev_label(df, "주", wy, wlabel)
-    cols = [week_disp(py, plb), week_disp(wy, wlabel), "전주비",
-            week_disp(wy - 1, wlabel), "전년비"]
+    """?꾩＜鍮??붿빟??(?ㅼ쟻 ?붿빟怨??숈씪 援ъ“): ?꾩＜쨌湲곗?二셋룹쟾二쇰퉬 + ?꾨뀈?숈＜쨌?꾨뀈鍮?""
+    py, plb = prev_label(df, "二?, wy, wlabel)
+    cols = [week_disp(py, plb), week_disp(wy, wlabel), "?꾩＜鍮?,
+            week_disp(wy - 1, wlabel), "?꾨뀈鍮?]
     rows = []
     for met in metrics:
-        cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
-        prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-        yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
+        cur = pick(df, "二?, met, "*TOTAL", wy, wlabel, "mtd")
+        prv = pick(df, "二?, met, "*TOTAL", py, plb, "final") if plb else np.nan
+        yoy = pick(df, "二?, met, "*TOTAL", wy - 1, wlabel, "final")
         rows.append({
-            "구분": met,
+            "援щ텇": met,
             cols[0]: fmt_value(met, prv), cols[1]: fmt_value(met, cur),
-            cols[2]: fmt_delta(met, cur, prv) or "–",
-            cols[3]: fmt_value(met, yoy), cols[4]: fmt_delta(met, cur, yoy) or "–",
+            cols[2]: fmt_delta(met, cur, prv) or "??,
+            cols[3]: fmt_value(met, yoy), cols[4]: fmt_delta(met, cur, yoy) or "??,
         })
-    return pd.DataFrame(rows).set_index("구분")
+    return pd.DataFrame(rows).set_index("援щ텇")
 
 def yoy_summary_table(df, ref_year, ref_month, metrics):
-    """참고본 '실적 요약' 표: 전월·당월 × (전년, 당년, 전년비)"""
+    """李멸퀬蹂?'?ㅼ쟻 ?붿빟' ?? ?꾩썡쨌?뱀썡 횞 (?꾨뀈, ?밸뀈, ?꾨뀈鍮?"""
     rows = []
     pm_y, pm_m = (ref_year, ref_month - 1) if ref_month > 1 else (ref_year - 1, 12)
-    cols = [f"{pm_y-1}년 {pm_m}월", f"{pm_y}년 {pm_m}월", "전년비(전월)",
-            f"{ref_year-1}년 {ref_month}월", f"{ref_year}년 {ref_month}월", "전년비(당월)"]
+    cols = [f"{pm_y-1}??{pm_m}??, f"{pm_y}??{pm_m}??, "?꾨뀈鍮??꾩썡)",
+            f"{ref_year-1}??{ref_month}??, f"{ref_year}??{ref_month}??, "?꾨뀈鍮??뱀썡)"]
     for met in metrics:
-        pm_prev = pick(df, "월", met, "*TOTAL", pm_y - 1, month_label(pm_m), "final")
-        pm_cur  = pick(df, "월", met, "*TOTAL", pm_y,     month_label(pm_m), "final")
-        cm_prev = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
-        cm_cur  = pick(df, "월", met, "*TOTAL", ref_year,     month_label(ref_month), "mtd")
+        pm_prev = pick(df, "??, met, "*TOTAL", pm_y - 1, month_label(pm_m), "final")
+        pm_cur  = pick(df, "??, met, "*TOTAL", pm_y,     month_label(pm_m), "final")
+        cm_prev = pick(df, "??, met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
+        cm_cur  = pick(df, "??, met, "*TOTAL", ref_year,     month_label(ref_month), "mtd")
         rows.append({
-            "구분": met,
+            "援щ텇": met,
             cols[0]: fmt_value(met, pm_prev), cols[1]: fmt_value(met, pm_cur),
-            cols[2]: fmt_delta(met, pm_cur, pm_prev) or "–",
+            cols[2]: fmt_delta(met, pm_cur, pm_prev) or "??,
             cols[3]: fmt_value(met, cm_prev), cols[4]: fmt_value(met, cm_cur),
-            cols[5]: fmt_delta(met, cm_cur, cm_prev) or "–",
+            cols[5]: fmt_delta(met, cm_cur, cm_prev) or "??,
         })
-    return pd.DataFrame(rows).set_index("구분"), (pm_y, pm_m)
+    return pd.DataFrame(rows).set_index("援щ텇"), (pm_y, pm_m)
 
 def trend_table(df, gran, metrics, years, seg="*TOTAL"):
-    """추이표: 행=지표, 열=(연도, 기간)"""
+    """異붿씠?? ??吏?? ??(?곕룄, 湲곌컙)"""
     out, columns = {}, []
     for y in years:
         for lb in labels_sorted(df, gran, [y]):
@@ -815,19 +815,19 @@ def trend_table(df, gran, metrics, years, seg="*TOTAL"):
         for y, lb in columns:
             vals.append(pick(df, gran, met, seg, y, lb, "final"))
         out[met] = vals
-    tbl = pd.DataFrame(out, index=pd.MultiIndex.from_tuples(columns, names=["연도", "기간"])).T
+    tbl = pd.DataFrame(out, index=pd.MultiIndex.from_tuples(columns, names=["?곕룄", "湲곌컙"])).T
     return tbl
 
 def style_trend(tbl, metrics):
-    # 최신 pandas는 float 컬럼에 문자열 대입을 금지하므로 object로 변환 후 포맷
+    # 理쒖떊 pandas??float 而щ읆??臾몄옄????낆쓣 湲덉??섎?濡?object濡?蹂?????щ㎎
     disp = tbl.astype(object).copy()
     for met in disp.index:
         disp.loc[met] = [fmt_value(met, v) for v in tbl.loc[met]]
     return disp
 
-# ══════════════════════════════════════════════════════
-# YoY 라인차트 (Plotly)
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# YoY ?쇱씤李⑦듃 (Plotly)
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 def base_layout(h=300, ysuffix="", title=""):
     return dict(
         paper_bgcolor="rgba(248,249,252,0)", plot_bgcolor="rgba(248,249,252,0)",
@@ -845,31 +845,31 @@ def base_layout(h=300, ysuffix="", title=""):
 def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
     unit, div = METRIC_UNIT.get(metric, ("", 1))
     if metric in PCT_METRICS: div, unit = 0.01, "%"
-    if gran == "월":
+    if gran == "??:
         x_all = [month_label(i) for i in range(1, 13)]
     else:
         x_all = labels_sorted(df, gran, years)
     fig = go.Figure()
     for i, y in enumerate(sorted(years)):
-        # 연도마다 없는 주차(5주차 등)는 건너뛰고 선을 잇는다
+        # ?곕룄留덈떎 ?녿뒗 二쇱감(5二쇱감 ????嫄대꼫?곌퀬 ?좎쓣 ?뉖뒗??
         s = series_by_label(df, gran, metric, seg, y, prefer="final").reindex(x_all).dropna()
         fig.add_trace(go.Scatter(
             x=s.index.tolist(), y=(s / div).tolist(), mode="lines+markers", name=str(y),
             line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
             marker=dict(size=5),
         ))
-    gname = "월별" if gran == "월" else "주차별"
+    gname = "?붾퀎" if gran == "?? else "二쇱감蹂?
     ly = base_layout(h, ysuffix=unit if unit == "%" else "",
-                     title=f"{metric} {gname} 추이 ({unit})")
+                     title=f"{metric} {gname} 異붿씠 ({unit})")
     ly["xaxis"]["categoryorder"] = "array"
     ly["xaxis"]["categoryarray"] = x_all
-    if gran == "주": ly["xaxis"]["tickangle"] = -45; ly["xaxis"]["nticks"] = 20
+    if gran == "二?: ly["xaxis"]["tickangle"] = -45; ly["xaxis"]["nticks"] = 20
     fig.update_layout(**ly)
     return fig
 
-# ══════════════════════════════════════════════════════
-# 엑셀 워크북 내보내기 (월/주/첫구매_요약 + 차트)
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# ?묒? ?뚰겕遺??대낫?닿린 (??二?泥リ뎄留??붿빟 + 李⑦듃)
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 def build_workbook(df, texts, ref_year, ref_month, chart_years):
     from openpyxl import Workbook
     from openpyxl.chart import LineChart, Reference
@@ -881,9 +881,9 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
     head_fill = PatternFill("solid", fgColor="EEF3FA")
     title_font = Font(bold=True, size=13)
 
-    # ── 데이터 시트 (월/주): 지표 블록 스택
+    # ?? ?곗씠???쒗듃 (??二?: 吏??釉붾줉 ?ㅽ깮
     extra_metrics = [m for m in df["metric"].unique() if m not in METRICS7]
-    for gran, sheet in (("월", "월"), ("주", "주")):
+    for gran, sheet in (("??, "??), ("二?, "二?)):
         ws = wb.create_sheet(sheet)
         sub_g = df[df["gran"] == gran]
         if sub_g.empty: continue
@@ -909,17 +909,17 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
                         c.number_format = "0.00%" if met in PCT_METRICS else "#,##0"
             r += 2 + len(segs) + 2
 
-    # ── 요약 시트
-    ws = wb.create_sheet("첫구매_요약", 0)
+    # ?? ?붿빟 ?쒗듃
+    ws = wb.create_sheet("泥リ뎄留??붿빟", 0)
     wb.remove(wb["Sheet"])
     r = 1
-    ws.cell(r, 1, f"첫구매 주간보고 — {ref_year}년 {ref_month}월 기준").font = Font(bold=True, size=15)
+    ws.cell(r, 1, f"泥リ뎄留?二쇨컙蹂닿퀬 ??{ref_year}??{ref_month}??湲곗?").font = Font(bold=True, size=15)
     r += 2
 
-    # 실적 요약 YoY 표
-    ws.cell(r, 1, "실적 요약 (일평균)").font = title_font; r += 1
+    # ?ㅼ쟻 ?붿빟 YoY ??
+    ws.cell(r, 1, "?ㅼ쟻 ?붿빟 (?쇳룊洹?").font = title_font; r += 1
     tbl, _ = yoy_summary_table(df, ref_year, ref_month, METRICS7)
-    ws.cell(r, 1, "구분").font = head_font
+    ws.cell(r, 1, "援щ텇").font = head_font
     for j, cname in enumerate(tbl.columns):
         c = ws.cell(r, 2 + j, cname); c.font = head_font; c.fill = head_fill
     red_font = Font(color="DC2626")
@@ -929,14 +929,14 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
         for j, cname in enumerate(tbl.columns):
             c = ws.cell(r + 1 + i, 2 + j, tbl.loc[met, cname])
             s = str(c.value)
-            if "전년비" in str(cname):
-                if s.startswith("△"): c.font = red_font
+            if "?꾨뀈鍮? in str(cname):
+                if s.startswith("??): c.font = red_font
                 elif s.startswith("+"): c.font = green_font
     r += len(tbl) + 3
 
-    # 보고란
-    ws.cell(r, 1, "전주 주요 지표 현황").font = title_font
-    ws.cell(r, 8, "금주 집행 내용 요약").font = title_font
+    # 蹂닿퀬?
+    ws.cell(r, 1, "?꾩＜ 二쇱슂 吏???꾪솴").font = title_font
+    ws.cell(r, 8, "湲덉＜ 吏묓뻾 ?댁슜 ?붿빟").font = title_font
     c1 = ws.cell(r + 1, 1, texts.get("wr_metrics_summary", ""))
     c2 = ws.cell(r + 1, 8, texts.get("wr_exec_summary", ""))
     for c in (c1, c2): c.alignment = Alignment(wrap_text=True, vertical="top")
@@ -944,15 +944,15 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
     ws.merge_cells(start_row=r + 1, start_column=8, end_row=r + 8, end_column=13)
     r += 11
 
-    # 차트 데이터 블록 + 라인차트 (월별/주차별 × 거래액·고객수·객단가)
-    chart_metrics = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]
-    for gran, gname in (("월", "월별"), ("주", "주차별")):
-        x_all = ([month_label(i) for i in range(1, 13)] if gran == "월"
+    # 李⑦듃 ?곗씠??釉붾줉 + ?쇱씤李⑦듃 (?붾퀎/二쇱감蹂?횞 嫄곕옒?≤룰퀬媛앹닔쨌媛앸떒媛)
+    chart_metrics = ["泥リ뎄留?嫄곕옒??, "泥リ뎄留?怨좉컼??, "泥リ뎄留?媛앸떒媛"]
+    for gran, gname in (("??, "?붾퀎"), ("二?, "二쇱감蹂?)):
+        x_all = ([month_label(i) for i in range(1, 13)] if gran == "??
                  else labels_sorted(df, gran, chart_years))
         if not x_all: continue
         anchor_row = r
         for k, met in enumerate(chart_metrics):
-            ws.cell(r, 1, f"{met} {gname} (차트 데이터)").font = head_font
+            ws.cell(r, 1, f"{met} {gname} (李⑦듃 ?곗씠??").font = head_font
             for j, lb in enumerate(x_all):
                 ws.cell(r, 2 + j, lb).fill = head_fill
             nrow = 0
@@ -967,7 +967,7 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
                         c.number_format = "#,##0"
             if nrow:
                 ch = LineChart()
-                ch.title = f"{met} {gname} 추이"
+                ch.title = f"{met} {gname} 異붿씠"
                 ch.height, ch.width = 7.5, 13
                 data = Reference(ws, min_col=1, min_row=r + 1,
                                  max_col=1 + len(x_all), max_row=r + nrow)
@@ -978,23 +978,23 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
             r += nrow + 2
         r += 14
 
-    # 채널별 실적 (당월 YoY)
-    ws.cell(r, 1, f"채널별 실적 — {ref_year}년 {ref_month}월 (전년비)").font = title_font; r += 1
+    # 梨꾨꼸蹂??ㅼ쟻 (?뱀썡 YoY)
+    ws.cell(r, 1, f"梨꾨꼸蹂??ㅼ쟻 ??{ref_year}??{ref_month}??(?꾨뀈鍮?").font = title_font; r += 1
     for met in chart_metrics:
         ws.cell(r, 1, met).font = head_font
-        heads = [f"{ref_year-1}년 {ref_month}월", f"{ref_year}년 {ref_month}월", "전년비"]
+        heads = [f"{ref_year-1}??{ref_month}??, f"{ref_year}??{ref_month}??, "?꾨뀈鍮?]
         for j, hd in enumerate(heads):
             c = ws.cell(r, 2 + j, hd); c.font = head_font; c.fill = head_fill
         segs = ["*TOTAL"] + CHANNELS
         for i, seg in enumerate(segs):
-            pv = pick(df, "월", met, seg, ref_year - 1, month_label(ref_month), "mtd")
-            cv = pick(df, "월", met, seg, ref_year, month_label(ref_month), "mtd")
+            pv = pick(df, "??, met, seg, ref_year - 1, month_label(ref_month), "mtd")
+            cv = pick(df, "??, met, seg, ref_year, month_label(ref_month), "mtd")
             ws.cell(r + 1 + i, 1, seg)
             ws.cell(r + 1 + i, 2, None if np.isnan(pv) else pv).number_format = "#,##0"
             ws.cell(r + 1 + i, 3, None if np.isnan(cv) else cv).number_format = "#,##0"
-            dcell = ws.cell(r + 1 + i, 4, fmt_delta(met, cv, pv) or "–")
+            dcell = ws.cell(r + 1 + i, 4, fmt_delta(met, cv, pv) or "??)
             ds = str(dcell.value)
-            if ds.startswith("△"): dcell.font = red_font
+            if ds.startswith("??): dcell.font = red_font
             elif ds.startswith("+"): dcell.font = green_font
         r += len(segs) + 3
 
@@ -1003,51 +1003,51 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
     wb.save(buf)
     return buf.getvalue()
 
-# ══════════════════════════════════════════════════════
-# 자동 보고 초안
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# ?먮룞 蹂닿퀬 珥덉븞
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 def _delta_html(d):
-    """증감 문자열 → 색상 span (역신장 △ 빨강 / 신장 + 초록)"""
+    """利앷컧 臾몄옄?????됱긽 span (??떊????鍮④컯 / ?좎옣 + 珥덈줉)"""
     if not d: return ""
-    if d.startswith("△"): return f'<span style="color:#dc2626;font-weight:700">{d}</span>'
+    if d.startswith("??): return f'<span style="color:#dc2626;font-weight:700">{d}</span>'
     return f'<span style="color:#16a34a;font-weight:700">{d}</span>'
 
 def auto_draft(df, ref_year, ref_month, ref_week=None):
-    """기준 주차(없으면 기준 월) 실적으로 보고 문구 자동 생성 (HTML, 역신장 빨강)"""
+    """湲곗? 二쇱감(?놁쑝硫?湲곗? ?? ?ㅼ쟻?쇰줈 蹂닿퀬 臾멸뎄 ?먮룞 ?앹꽦 (HTML, ??떊??鍮④컯)"""
     lines = []
     for met in METRICS7:
         if ref_week:
-            cur = pick(df, "주", met, "*TOTAL", ref_year, ref_week, "mtd")
+            cur = pick(df, "二?, met, "*TOTAL", ref_year, ref_week, "mtd")
             if isinstance(cur, float) and np.isnan(cur): continue
-            py, plb = prev_label(df, "주", ref_year, ref_week)
-            prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-            yoy = pick(df, "주", met, "*TOTAL", ref_year - 1, ref_week, "final")
-            parts = [f" - {met} — {fmt_value(met, cur)}"]
+            py, plb = prev_label(df, "二?, ref_year, ref_week)
+            prv = pick(df, "二?, met, "*TOTAL", py, plb, "final") if plb else np.nan
+            yoy = pick(df, "二?, met, "*TOTAL", ref_year - 1, ref_week, "final")
+            parts = [f" - {met} ??{fmt_value(met, cur)}"]
             d_w = fmt_delta(met, cur, prv)
             d_y = fmt_delta(met, cur, yoy)
-            if d_w: parts.append(f"전주비 {_delta_html(d_w)}")
-            if d_y: parts.append(f"전년비 {_delta_html(d_y)}")
+            if d_w: parts.append(f"?꾩＜鍮?{_delta_html(d_w)}")
+            if d_y: parts.append(f"?꾨뀈鍮?{_delta_html(d_y)}")
             lines.append(", ".join(parts))
         else:
-            cur = pick(df, "월", met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
-            prv = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
+            cur = pick(df, "??, met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
+            prv = pick(df, "??, met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
             if isinstance(cur, float) and np.isnan(cur): continue
             d = fmt_delta(met, cur, prv)
-            tail = f", 전년비 {_delta_html(d)}" if d else ""
-            lines.append(f" - {met} — {fmt_value(met, cur)}" + tail)
+            tail = f", ?꾨뀈鍮?{_delta_html(d)}" if d else ""
+            lines.append(f" - {met} ??{fmt_value(met, cur)}" + tail)
     return "<br>".join(lines)
 
-# ══════════════════════════════════════════════════════
-# AI 인사이트 생성 (Claude API) — 모델 교체 가능
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# AI ?몄궗?댄듃 ?앹꽦 (Claude API) ??紐⑤뜽 援먯껜 媛??
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 AI_MODELS = {
-    "Claude Sonnet 4.6 (균형·기본)": "claude-sonnet-4-6",
-    "Claude Opus 4.8 (최고 품질)": "claude-opus-4-8",
-    "Claude Haiku 4.5 (빠름·저렴)": "claude-haiku-4-5",
+    "Claude Sonnet 4.6 (洹좏삎쨌湲곕낯)": "claude-sonnet-4-6",
+    "Claude Opus 4.8 (理쒓퀬 ?덉쭏)": "claude-opus-4-8",
+    "Claude Haiku 4.5 (鍮좊쫫쨌???": "claude-haiku-4-5",
 }
 
 def _anthropic_key():
-    """Streamlit secrets 또는 환경변수에서 API 키 조회"""
+    """Streamlit secrets ?먮뒗 ?섍꼍蹂?섏뿉??API ??議고쉶"""
     try:
         if "ANTHROPIC_API_KEY" in st.secrets:
             return st.secrets["ANTHROPIC_API_KEY"]
@@ -1056,68 +1056,68 @@ def _anthropic_key():
     return os.environ.get("ANTHROPIC_API_KEY")
 
 def _ai_metric_facts(df, ref_year, ref_month, ref_week=None):
-    """모델에 넘길 지표·증감 요약 텍스트"""
+    """紐⑤뜽???섍만 吏?쑣룹쬆媛??붿빟 ?띿뒪??""
     rows = []
     for met in METRICS7:
         if ref_week:
-            cur = pick(df, "주", met, "*TOTAL", ref_year, ref_week, "mtd")
+            cur = pick(df, "二?, met, "*TOTAL", ref_year, ref_week, "mtd")
             if isinstance(cur, float) and np.isnan(cur): continue
-            py, plb = prev_label(df, "주", ref_year, ref_week)
-            prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-            yoy = pick(df, "주", met, "*TOTAL", ref_year - 1, ref_week, "final")
-            wm = re.match(r"(\d{1,2})월 (\d)주차", ref_week)
+            py, plb = prev_label(df, "二?, ref_year, ref_week)
+            prv = pick(df, "二?, met, "*TOTAL", py, plb, "final") if plb else np.nan
+            yoy = pick(df, "二?, met, "*TOTAL", ref_year - 1, ref_week, "final")
+            wm = re.match(r"(\d{1,2})??(\d)二쇱감", ref_week)
             mom = np.nan
             if wm:
                 mo, wk = int(wm.group(1)), int(wm.group(2))
                 my, mm = (ref_year, mo - 1) if mo > 1 else (ref_year - 1, 12)
-                mom = pick(df, "주", met, "*TOTAL", my, f"{mm:02d}월 {wk}주차", "final")
+                mom = pick(df, "二?, met, "*TOTAL", my, f"{mm:02d}??{wk}二쇱감", "final")
             rows.append(f"- {met}: {fmt_value(met, cur)} "
-                        f"(전주비 {fmt_delta(met, cur, prv) or '–'}, "
-                        f"전월비 {fmt_delta(met, cur, mom) or '–'}, "
-                        f"전년비 {fmt_delta(met, cur, yoy) or '–'})")
+                        f"(?꾩＜鍮?{fmt_delta(met, cur, prv) or '??}, "
+                        f"?꾩썡鍮?{fmt_delta(met, cur, mom) or '??}, "
+                        f"?꾨뀈鍮?{fmt_delta(met, cur, yoy) or '??})")
         else:
-            cur = pick(df, "월", met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
-            prv = pick(df, "월", met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
+            cur = pick(df, "??, met, "*TOTAL", ref_year, month_label(ref_month), "mtd")
+            prv = pick(df, "??, met, "*TOTAL", ref_year - 1, month_label(ref_month), "mtd")
             if isinstance(cur, float) and np.isnan(cur): continue
-            rows.append(f"- {met}: {fmt_value(met, cur)} (전년비 {fmt_delta(met, cur, prv) or '–'})")
+            rows.append(f"- {met}: {fmt_value(met, cur)} (?꾨뀈鍮?{fmt_delta(met, cur, prv) or '??})")
     return "\n".join(rows)
 
 def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
-                        focus="전주 주요 지표 현황", memo=""):
-    """Claude API로 보고 인사이트 생성 → HTML(역신장 빨강) 반환. (텍스트, 에러) 튜플.
-    memo: 사용자가 적은 정성 배경(프로모션·이벤트 등). 수치와 분리해 [배경 메모]로 주입."""
+                        focus="?꾩＜ 二쇱슂 吏???꾪솴", memo=""):
+    """Claude API濡?蹂닿퀬 ?몄궗?댄듃 ?앹꽦 ??HTML(??떊??鍮④컯) 諛섑솚. (?띿뒪?? ?먮윭) ?쒗뵆.
+    memo: ?ъ슜?먭? ?곸? ?뺤꽦 諛곌꼍(?꾨줈紐⑥뀡쨌?대깽????. ?섏튂? 遺꾨━??[諛곌꼍 硫붾え]濡?二쇱엯."""
     key = _anthropic_key()
     if not key:
-        return None, ("ANTHROPIC_API_KEY가 설정되지 않았습니다. "
-                      "Streamlit Cloud → Settings → Secrets에 ANTHROPIC_API_KEY를 추가하세요.")
+        return None, ("ANTHROPIC_API_KEY媛 ?ㅼ젙?섏? ?딆븯?듬땲?? "
+                      "Streamlit Cloud ??Settings ??Secrets??ANTHROPIC_API_KEY瑜?異붽??섏꽭??")
     try:
         import anthropic
     except ImportError:
-        return None, "anthropic 패키지가 설치되지 않았습니다. requirements.txt 반영 후 재배포하세요."
+        return None, "anthropic ?⑦궎吏媛 ?ㅼ튂?섏? ?딆븯?듬땲?? requirements.txt 諛섏쁺 ???щ같?ы븯?몄슂."
 
-    period = f"{ref_year}년 {ref_week}" if ref_week else f"{ref_year}년 {ref_month}월"
+    period = f"{ref_year}??{ref_week}" if ref_week else f"{ref_year}??{ref_month}??
     facts = _ai_metric_facts(df, ref_year, ref_month, ref_week)
     system = (
-        "당신은 LF몰 CRM 첫구매 보고서를 작성하는 데이터 분석가입니다. "
-        "한국어 실무 보고 문구를 작성할 때, 긴 문장형 불릿(• ...은 ...으로 ...)을 피하고 "
-        "반드시 '- '(메인 요약)와 'ㄴ '(세부 수치/해석)를 사용하는 계층형 불릿 구조로 출력하세요.\n\n"
-        "예시:\n"
-        "- 첫구매 거래액 및 고객수 동반 감소\n"
-        "ㄴ 거래액 88.9백만원 (전주비 △1.5% · 전년비 △24.9%)\n"
-        "ㄴ 고객수 639명 (전주비 △3.7% · 전년비 △34.1%)\n"
-        "ㄴ 프로모션 종료 여파로 유입 대비 전환 효율이 저조한 것으로 보임\n\n"
-        "[확정 수치]에 있는 숫자만 인용하고 수치를 지어내지 마세요. "
-        "[배경 메모]는 원인 추정/해석에만 활용하며(단정짓지 말고 '~로 보임' 등 사용), 비어있으면 수치 팩트만 기재하세요. "
-        "출력은 HTML로만 (<br> 로 줄바꿈). "
-        "증감 수치 중 역신장(감소)은 <span style=\"color:#dc2626;font-weight:700\">…</span>, "
-        "신장(증가)은 <span style=\"color:#16a34a;font-weight:700\">…</span>로 감싸세요. "
-        "서론·맺음말 없이 바로 계층형 불릿만 출력하세요."
+        "?뱀떊? LF紐?CRM 泥リ뎄留?蹂닿퀬?쒕? ?묒꽦?섎뒗 ?곗씠??遺꾩꽍媛?낅땲?? "
+        "?쒓뎅???ㅻТ 蹂닿퀬 臾멸뎄瑜??묒꽦???? 湲?臾몄옣??遺덈┸(??...? ...?쇰줈 ...)???쇳븯怨?"
+        "諛섎뱶??'- '(硫붿씤 ?붿빟)? '??'(?몃? ?섏튂/?댁꽍)瑜??ъ슜?섎뒗 怨꾩링??遺덈┸ 援ъ“濡?異쒕젰?섏꽭??\n\n"
+        "?덉떆:\n"
+        "- 泥リ뎄留?嫄곕옒??諛?怨좉컼???숇컲 媛먯냼\n"
+        "??嫄곕옒??88.9諛깅쭔??(?꾩＜鍮???.5% 쨌 ?꾨뀈鍮???4.9%)\n"
+        "??怨좉컼??639紐?(?꾩＜鍮???.7% 쨌 ?꾨뀈鍮???4.1%)\n"
+        "???꾨줈紐⑥뀡 醫낅즺 ?ы뙆濡??좎엯 ?鍮??꾪솚 ?⑥쑉???議고븳 寃껋쑝濡?蹂댁엫\n\n"
+        "[?뺤젙 ?섏튂]???덈뒗 ?レ옄留??몄슜?섍퀬 ?섏튂瑜?吏?대궡吏 留덉꽭?? "
+        "[諛곌꼍 硫붾え]???먯씤 異붿젙/?댁꽍?먮쭔 ?쒖슜?섎ŉ(?⑥젙吏볦? 留먭퀬 '~濡?蹂댁엫' ???ъ슜), 鍮꾩뼱?덉쑝硫??섏튂 ?⑺듃留?湲곗옱?섏꽭?? "
+        "異쒕젰? HTML濡쒕쭔 (<br> 濡?以꾨컮轅?. "
+        "利앷컧 ?섏튂 以???떊??媛먯냼)? <span style=\"color:#dc2626;font-weight:700\">??/span>, "
+        "?좎옣(利앷?)? <span style=\"color:#16a34a;font-weight:700\">??/span>濡?媛먯떥?몄슂. "
+        "?쒕줎쨌留븐쓬留??놁씠 諛붾줈 怨꾩링??遺덈┸留?異쒕젰?섏꽭??"
     )
-    memo_block = (memo or "").strip() or "(없음)"
-    user = (f"[기준: {period}]\n\n"
-            f"[확정 수치]\n{facts}\n\n"
-            f"[배경 메모]\n{memo_block}\n\n"
-            f"위 자료로 '{focus}' 문구를 작성하세요.")
+    memo_block = (memo or "").strip() or "(?놁쓬)"
+    user = (f"[湲곗?: {period}]\n\n"
+            f"[?뺤젙 ?섏튂]\n{facts}\n\n"
+            f"[諛곌꼍 硫붾え]\n{memo_block}\n\n"
+            f"???먮즺濡?'{focus}' 臾멸뎄瑜??묒꽦?섏꽭??")
     try:
         client = anthropic.Anthropic(api_key=key)
         resp = client.messages.create(
@@ -1125,96 +1125,132 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
             messages=[{"role": "user", "content": user}],
         )
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
-        return (text or None), (None if text else "빈 응답이 반환됐습니다.")
+        return (text or None), (None if text else "鍮??묐떟??諛섑솚?먯뒿?덈떎.")
     except anthropic.AuthenticationError:
-        return None, "API 키 인증에 실패했습니다. 키를 확인하세요."
+        return None, "API ???몄쬆???ㅽ뙣?덉뒿?덈떎. ?ㅻ? ?뺤씤?섏꽭??"
     except anthropic.RateLimitError:
-        return None, "요청이 많아 일시적으로 제한됐습니다. 잠시 후 다시 시도하세요."
+        return None, "?붿껌??留롮븘 ?쇱떆?곸쑝濡??쒗븳?먯뒿?덈떎. ?좎떆 ???ㅼ떆 ?쒕룄?섏꽭??"
     except Exception as e:
-        return None, f"생성 중 오류: {e}"
+        return None, f"?앹꽦 以??ㅻ쪟: {e}"
 
-# ══════════════════════════════════════════════════════
-# 회원 실적 페이지
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# ?뚯썝 ?ㅼ쟻 ?섏씠吏
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 def member_delta(metric, cur, prev):
     if cur is None or prev is None: return None
     if isinstance(cur, float) and np.isnan(cur): return None
     if isinstance(prev, float) and np.isnan(prev): return None
     if metric in MEMBER_PCT:
         d = (cur - prev) * 100
-        return f"△{abs(d):.2f}%p" if d < 0 else f"+{d:.2f}%p"
+        return f"??abs(d):.2f}%p" if d < 0 else f"+{d:.2f}%p"
     if prev == 0: return None
     d = (cur - prev) / prev * 100
-    return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
+    return f"??abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
 
 def render_member_page(mdf, chart_years=None):
-    st.markdown("## 회원 실적 — 신규/기존 세그먼트")
+    st.markdown("## ?뚯썝 ?ㅼ쟻 ???좉퇋/湲곗〈 ?멸렇癒쇳듃")
     if mdf.empty:
-        st.info("회원 실적 데이터가 없습니다. 회원 실적 엑셀을 업로드해주세요.")
+        st.info("?뚯썝 ?ㅼ쟻 ?곗씠?곌? ?놁뒿?덈떎. ?뚯썝 ?ㅼ쟻 ?묒????낅줈?쒗빐二쇱꽭??")
         return
     years = sorted(mdf["year"].dropna().unique().astype(int))
     last_y = years[-1]
     last_mo = int(mdf[mdf["year"] == last_y]["sortkey"].max() % 100)
-    st.caption(f"최신: {last_y}년 {last_mo}월 · {years[0]}–{years[-1]}년")
+    st.caption(f"理쒖떊: {last_y}??{last_mo}??쨌 {years[0]}??years[-1]}??)
 
-    # KPI 카드 — 유효회원수/구매고객수/거래액/CR (Total, 전월·전년비)
+    # KPI 移대뱶 ???좏슚?뚯썝??援щℓ怨좉컼??嫄곕옒??CR (Total, ?꾩썡쨌?꾨뀈鍮?
     pm_y, pm_m = (last_y, last_mo - 1) if last_mo > 1 else (last_y - 1, 12)
-    kpis = ["유효회원수", "구매고객수", "거래액 (VAT제외)", "CR(%)"]
+    kpis = ["?좏슚?뚯썝??, "援щℓ怨좉컼??, "嫄곕옒??(VAT?쒖쇅)", "CR(%)"]
     cols = st.columns(4)
     for col, met in zip(cols, kpis):
         cur = member_pick(mdf, met, "Total", last_y, last_mo)
         mom = member_pick(mdf, met, "Total", pm_y, pm_m)
         yoy = member_pick(mdf, met, "Total", last_y - 1, last_mo)
         pills = ""
-        for d, lab in [(member_delta(met, cur, mom), "전월비"),
-                       (member_delta(met, cur, yoy), "전년비")]:
+        for d, lab in [(member_delta(met, cur, mom), "?꾩썡鍮?),
+                       (member_delta(met, cur, yoy), "?꾨뀈鍮?)]:
             if d:
-                neg = d.startswith("△")
+                neg = d.startswith("??)
                 pills += (f'<div class="kpi-delta {"down" if neg else "up"}">'
-                          f'{"" if neg else "↑ "}{d} ({lab})</div>')
+                          f'{"" if neg else "??"}{d} ({lab})</div>')
             else:
-                pills += f'<div class="kpi-delta na">– ({lab})</div>'
-        col.markdown(f'<div class="kpi-card"><div class="kpi-label">{met} ({last_mo}월)</div>'
+                pills += f'<div class="kpi-delta na">??({lab})</div>'
+        col.markdown(f'<div class="kpi-card"><div class="kpi-label">{met} ({last_mo}??</div>'
                      f'<div class="kpi-value">{fmt_member(met, cur)}</div>{pills}</div>',
                      unsafe_allow_html=True)
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
-    # 신규/기존 구성비 (유효회원수 최신월)
-    st.subheader(f"회원 구성 — {last_y}년 {last_mo}월 (유효회원수)")
-    comp = {s: member_pick(mdf, "유효회원수", s, last_y, last_mo)
-            for s in ["당월신규", "기가입신규", "기존"]}
-    total = member_pick(mdf, "유효회원수", "Total", last_y, last_mo)
+    # ?좉퇋/湲곗〈 援ъ꽦鍮?(?좏슚?뚯썝??理쒖떊??
+    st.subheader(f"?뚯썝 援ъ꽦 ??{last_y}??{last_mo}??(?좏슚?뚯썝??")
+    comp = {s: member_pick(mdf, "?좏슚?뚯썝??, s, last_y, last_mo)
+            for s in ["?뱀썡?좉퇋", "湲곌??낆떊洹?, "湲곗〈"]}
+    total = member_pick(mdf, "?좏슚?뚯썝??, "Total", last_y, last_mo)
     c1, c2 = st.columns([1, 1])
     with c1:
         fig = go.Figure(go.Pie(
             labels=list(comp.keys()), values=[v for v in comp.values()],
             hole=0.55, marker=dict(colors=[clr("blue"), clr("teal"), clr("slate")]),
             textinfo="label+percent"))
-        fig.update_layout(**{**base_layout(280, title="유효회원 구성비"), "showlegend": False})
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(**{**base_layout(280, title="?좏슚?뚯썝 援ъ꽦鍮?), "showlegend": False})
+                            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.subheader("월별 추이표 (합계 및 평균 동의율)")
+            
+            # 일별 데이터를 월별 합계로 집계하여 전년비 표 생성
+            push_metrics = ["가입자수", "앱푸시수신동의", "동의율"]
+            sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"]))].copy()
+            
+            if not sub.empty:
+                # 4/24 이상치 제거 반영 (집계 시에도 제외되도록)
+                glitch_dates = ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]
+                sub = sub[~sub["label"].astype(str).str.strip().isin(glitch_dates)]
+                
+                sub["month"] = sub["label"].apply(lambda x: int(str(x).split('/')[0]) if '/' in str(x) else 0)
+                grp = sub.groupby(["year", "month", "metric"])["value"].sum().unstack("metric").reset_index()
+                
+                if "가입자수" in grp.columns and "앱푸시수신동의" in grp.columns:
+                    grp["동의율"] = grp["앱푸시수신동의"] / grp["가입자수"]
+                    grp.loc[grp["동의율"] > 1.0, "동의율"] = np.nan
+                else:
+                    grp["동의율"] = np.nan
+                    
+                cols = []
+                out_tbl = {}
+                for y in chart_years:
+                    for m in range(1, 13):
+                        row = grp[(grp["year"] == y) & (grp["month"] == m)]
+                        if not row.empty:
+                            cols.append((y, f"{m}월"))
+                            for met in push_metrics:
+                                if met not in out_tbl: out_tbl[met] = []
+                                out_tbl[met].append(row[met].values[0] if met in row.columns else np.nan)
+                                
+                if cols:
+                    tbl_df = pd.DataFrame(out_tbl, index=pd.MultiIndex.from_tuples(cols, names=["연도", "기간"])).T
+                    st.dataframe(style_trend(tbl_df, push_metrics), use_container_width=True)
     with c2:
         rows = []
-        for s in ["Total", "당월신규", "기가입신규", "기존"]:
-            v = member_pick(mdf, "유효회원수", s, last_y, last_mo)
+        for s in ["Total", "?뱀썡?좉퇋", "湲곌??낆떊洹?, "湲곗〈"]:
+            v = member_pick(mdf, "?좏슚?뚯썝??, s, last_y, last_mo)
             share = (v / total * 100) if (total and not np.isnan(v)) else np.nan
-            rows.append({"세그먼트": s, "유효회원수": fmt_member("유효회원수", v),
-                         "비중": "–" if np.isnan(share) else f"{share:.1f}%"})
-        st.dataframe(pd.DataFrame(rows).set_index("세그먼트"), use_container_width=True)
+            rows.append({"?멸렇癒쇳듃": s, "?좏슚?뚯썝??: fmt_member("?좏슚?뚯썝??, v),
+                         "鍮꾩쨷": "?? if np.isnan(share) else f"{share:.1f}%"})
+        st.dataframe(pd.DataFrame(rows).set_index("?멸렇癒쇳듃"), use_container_width=True)
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
-    # 지표 선택 → 세그먼트별 YoY 추이
-    met = st.selectbox("지표 선택", MEMBER_METRICS, key="wr_mem_metric")
+    # 吏???좏깮 ???멸렇癒쇳듃蹂?YoY 異붿씠
+    met = st.selectbox("吏???좏깮", MEMBER_METRICS, key="wr_mem_metric")
     cyears = chart_years or years[-2:]
     cyears = [y for y in cyears if y in years] or years[-2:]
-    div = 1e8 if met == "거래액 (VAT제외)" else 1
-    unit = "억" if met == "거래액 (VAT제외)" else ("%" if met in MEMBER_PCT else "")
+    div = 1e8 if met == "嫄곕옒??(VAT?쒖쇅)" else 1
+    unit = "?? if met == "嫄곕옒??(VAT?쒖쇅)" else ("%" if met in MEMBER_PCT else "")
     if met in MEMBER_PCT: div = 0.01
 
-    st.subheader(f"{met} — 세그먼트별 월 추이 ({last_y}년)")
-    x_all = [f"{i}월" for i in range(1, 13)]
+    st.subheader(f"{met} ???멸렇癒쇳듃蹂???異붿씠 ({last_y}??")
+    x_all = [f"{i}?? for i in range(1, 13)]
     fig = go.Figure()
-    seg_color = {"Total": "slate", "당월신규": "blue", "기가입신규": "teal", "기존": "amber"}
+    seg_color = {"Total": "slate", "?뱀썡?좉퇋": "blue", "湲곌??낆떊洹?: "teal", "湲곗〈": "amber"}
     for s in MEMBER_SEGS:
         ser = member_series(mdf, met, s, last_y).reindex(x_all).dropna()
         if ser.empty: continue
@@ -1224,10 +1260,46 @@ def render_member_page(mdf, chart_years=None):
     ly = base_layout(320, ysuffix=unit if unit == "%" else "", title=f"{met} ({unit})")
     ly["xaxis"]["categoryorder"] = "array"; ly["xaxis"]["categoryarray"] = x_all
     fig.update_layout(**ly)
-    st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True)
 
-    # Total 전년 비교
-    st.subheader(f"{met} — Total 전년 비교")
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.subheader("월별 추이표 (합계 및 평균 동의율)")
+            
+            # 일별 데이터를 월별 합계로 집계하여 전년비 표 생성
+            push_metrics = ["가입자수", "앱푸시수신동의", "동의율"]
+            sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"]))].copy()
+            
+            if not sub.empty:
+                # 4/24 이상치 제거 반영 (집계 시에도 제외되도록)
+                glitch_dates = ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]
+                sub = sub[~sub["label"].astype(str).str.strip().isin(glitch_dates)]
+                
+                sub["month"] = sub["label"].apply(lambda x: int(str(x).split('/')[0]) if '/' in str(x) else 0)
+                grp = sub.groupby(["year", "month", "metric"])["value"].sum().unstack("metric").reset_index()
+                
+                if "가입자수" in grp.columns and "앱푸시수신동의" in grp.columns:
+                    grp["동의율"] = grp["앱푸시수신동의"] / grp["가입자수"]
+                    grp.loc[grp["동의율"] > 1.0, "동의율"] = np.nan
+                else:
+                    grp["동의율"] = np.nan
+                    
+                cols = []
+                out_tbl = {}
+                for y in chart_years:
+                    for m in range(1, 13):
+                        row = grp[(grp["year"] == y) & (grp["month"] == m)]
+                        if not row.empty:
+                            cols.append((y, f"{m}월"))
+                            for met in push_metrics:
+                                if met not in out_tbl: out_tbl[met] = []
+                                out_tbl[met].append(row[met].values[0] if met in row.columns else np.nan)
+                                
+                if cols:
+                    tbl_df = pd.DataFrame(out_tbl, index=pd.MultiIndex.from_tuples(cols, names=["연도", "기간"])).T
+                    st.dataframe(style_trend(tbl_df, push_metrics), use_container_width=True)
+
+    # Total ?꾨뀈 鍮꾧탳
+    st.subheader(f"{met} ??Total ?꾨뀈 鍮꾧탳")
     fig2 = go.Figure()
     for i, y in enumerate(sorted(cyears)):
         ser = member_series(mdf, met, "Total", y).reindex(x_all).dropna()
@@ -1241,49 +1313,49 @@ def render_member_page(mdf, chart_years=None):
     fig2.update_layout(**ly2)
     st.plotly_chart(fig2, use_container_width=True)
 
-    # 세그먼트 × 월 표 (최신 연도)
+    # ?멸렇癒쇳듃 횞 ????(理쒖떊 ?곕룄)
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader(f"{met} — 세그먼트 × 월 ({last_y}년)")
+    st.subheader(f"{met} ???멸렇癒쇳듃 횞 ??({last_y}??")
     rows = []
     for s in MEMBER_SEGS:
         ser = member_series(mdf, met, s, last_y)
-        row = {"세그먼트": s}
+        row = {"?멸렇癒쇳듃": s}
         for lb in x_all:
             if lb in ser.index and not (isinstance(ser[lb], float) and np.isnan(ser[lb])):
                 row[lb] = fmt_member(met, ser[lb])
         rows.append(row)
-    st.dataframe(pd.DataFrame(rows).set_index("세그먼트"), use_container_width=True)
+    st.dataframe(pd.DataFrame(rows).set_index("?멸렇癒쇳듃"), use_container_width=True)
 
-# ══════════════════════════════════════════════════════
-# 페이지 PDF 저장 (브라우저 인쇄 → PDF, 차트 포함)
-# ══════════════════════════════════════════════════════
-def print_button(label="이 페이지 PDF 저장 / 인쇄"):
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# ?섏씠吏 PDF ???(釉뚮씪?곗? ?몄뇙 ??PDF, 李⑦듃 ?ы븿)
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+def print_button(label="???섏씠吏 PDF ???/ ?몄뇙"):
     components.html(
         f"""<button onclick="window.parent.print()"
         style="float:right;background:#2E68B0;color:#fff;border:0;border-radius:6px;
         padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;
         font-family:'Pretendard',-apple-system,sans-serif">{label}</button>
         <div style="clear:both"></div>""", height=44)
-    st.caption("버튼이 동작하지 않으면 Ctrl+P(Mac ⌘+P) → 대상을 'PDF로 저장'으로 인쇄하세요.")
+    st.caption("踰꾪듉???숈옉?섏? ?딆쑝硫?Ctrl+P(Mac ??P) ????곸쓣 'PDF濡?????쇰줈 ?몄뇙?섏꽭??")
 
-# ══════════════════════════════════════════════════════
-# 메인 앱
-# ══════════════════════════════════════════════════════
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+# 硫붿씤 ??
+# ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
 def main():
     if "wr_texts" not in st.session_state:
         st.session_state.wr_texts = load_insights()
 
     with st.sidebar:
-        st.markdown("## 📋 주간보고 통합")
+        st.markdown("## ?뱥 二쇨컙蹂닿퀬 ?듯빀")
         files = st.file_uploader(
-            "원천 엑셀/CSV/ZIP 업로드 (복수 선택)",
+            "?먯쿇 ?묒?/CSV/ZIP ?낅줈??(蹂듭닔 ?좏깮)",
             type=["xlsx", "xls", "csv", "zip"], accept_multiple_files=True, key="wr_up",
-            help="주간 폴더를 zip으로 묶어 통째로 올려도 됩니다. "
-                 "전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동 인식합니다.")
+            help="二쇨컙 ?대뜑瑜?zip?쇰줈 臾띠뼱 ?듭㎏濡??щ젮???⑸땲?? "
+                 "?꾩껜愿??留덉뒪????二??? + 吏?쒕퀎 ?뚯씪(媛?낆쑉쨌媛?낆옄?샕룸떦?쇨???泥リ뎄留ㅼ쑉쨌鍮꾪쉶???몃옒?????먮룞 ?몄떇?⑸땲??")
         st.markdown("---")
-        PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
-                 "04. 채널별 실적", "05. 회원 실적", "06. 통합 데이터·다운로드", "07. 앱푸시 동의 현황"]
-        page = st.radio("페이지", PAGES, key="wr_page")
+        PAGES = ["01. 二쇨컙蹂닿퀬 ?붿빟", "02. ?붾퀎 異붿씠", "03. 二쇱감蹂?異붿씠",
+                 "04. 梨꾨꼸蹂??ㅼ쟻", "05. ?뚯썝 ?ㅼ쟻", "06. ?듯빀 ?곗씠?걔룸떎?대줈??, "07. ?깊뫖???숈쓽 ?꾪솴"]
+        page = st.radio("?섏씠吏", PAGES, key="wr_page")
 
     stored = load_store()
     member_stored = load_member_store()
@@ -1294,20 +1366,20 @@ def main():
     has_any = (not stored.empty or not member_stored.empty
                or not df_new.empty or not member_new.empty)
     if files and df_new.empty and member_new.empty and stored.empty and member_stored.empty:
-        st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
+        st.error("?낅줈?쒗븳 ?뚯씪?먯꽌 ?곗씠?곕? ?쎌? 紐삵뻽?듬땲?? ?뚯씪紐??뺤떇???뺤씤?댁＜?몄슂.")
         st.stop()
     if not has_any:
-        st.info("👈 사이드바에서 주간 폴더의 엑셀/CSV/ZIP 파일들을 업로드해주세요.")
+        st.info("?몚 ?ъ씠?쒕컮?먯꽌 二쇨컙 ?대뜑???묒?/CSV/ZIP ?뚯씪?ㅼ쓣 ?낅줈?쒗빐二쇱꽭??")
         st.markdown("""
-- **마스터**: `전체관점 - 일자별/주별/월별 실적 (기본)`
-- **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
-- **회원 실적**: 신규/기존 회원별 9개 지표 월별 파일 (유효회원수·UV·구매고객수·CR 등)
-- 주간 폴더를 **zip으로 묶어 통째로** 올려도 됩니다. 파일 내용으로 단위·지표를 자동 감지합니다.
-- 업로드 후 **저장**을 누르면 누적됩니다. 다음에 기간이 다른 파일을 올리면 **겹치는 기간은 최신값으로 갱신**되고 나머지는 이어붙습니다.
+- **留덉뒪??*: `?꾩껜愿??- ?쇱옄蹂?二쇰퀎/?붾퀎 ?ㅼ쟻 (湲곕낯)`
+- **吏?쒕퀎**: `??媛?낆쑉(?쇳룊洹?`, `二?媛?낆옄???쇳룊洹?`, `??鍮꾪쉶???몃옒???쇳룊洹?`, `???뱀씪媛??泥リ뎄留ㅼ쑉 (?쇳룊洹?` ??
+- **?뚯썝 ?ㅼ쟻**: ?좉퇋/湲곗〈 ?뚯썝蹂?9媛?吏???붾퀎 ?뚯씪 (?좏슚?뚯썝?샕톃V쨌援щℓ怨좉컼?샕텰R ??
+- 二쇨컙 ?대뜑瑜?**zip?쇰줈 臾띠뼱 ?듭㎏濡?* ?щ젮???⑸땲?? ?뚯씪 ?댁슜?쇰줈 ?⑥쐞쨌吏?쒕? ?먮룞 媛먯??⑸땲??
+- ?낅줈????**???*???꾨Ⅴ硫??꾩쟻?⑸땲?? ?ㅼ쓬??湲곌컙???ㅻⅨ ?뚯씪???щ━硫?**寃뱀튂??湲곌컙? 理쒖떊媛믪쑝濡?媛깆떊**?섍퀬 ?섎㉧吏???댁뼱遺숈뒿?덈떎.
 """)
         st.stop()
 
-    # 누적 저장소와 병합 — 미리보기(저장 전까지 영구 반영 안 함)
+    # ?꾩쟻 ??μ냼? 蹂묓빀 ??誘몃━蹂닿린(????꾧퉴吏 ?곴뎄 諛섏쁺 ????
     df = merge_store(stored, df_new)
     mdf = merge_member(member_stored, member_new)
 
@@ -1318,392 +1390,428 @@ def main():
             added, updated = upload_diff(stored, df_new, member_stored, member_new)
             saved = st.session_state.get("wr_saved_sig") == sig
             if saved:
-                st.success("저장됨 ✓ (누적 반영 완료)")
+                st.success("??λ맖 ??(?꾩쟻 諛섏쁺 ?꾨즺)")
             else:
-                st.warning(f"새 데이터 감지 — 추가 {added}기간 · 갱신(겹침) {updated}기간\n\n"
-                           "**저장** 눌러야 누적에 반영됩니다.")
-                if st.button("💾 저장 (누적 반영)", key="wr_commit",
+                st.warning(f"???곗씠??媛먯? ??異붽? {added}湲곌컙 쨌 媛깆떊(寃뱀묠) {updated}湲곌컙\n\n"
+                           "**???* ?뚮윭???꾩쟻??諛섏쁺?⑸땲??")
+                if st.button("?뮶 ???(?꾩쟻 諛섏쁺)", key="wr_commit",
                              type="primary", use_container_width=True):
                     if not df_new.empty: save_store(df)
                     if not member_new.empty: save_member_store(mdf)
                     st.session_state["wr_saved_sig"] = sig
                     st.rerun()
 
-    # 코어 데이터가 비어 회원 데이터만 있을 때: 회원 페이지로 안내
+    # 肄붿뼱 ?곗씠?곌? 鍮꾩뼱 ?뚯썝 ?곗씠?곕쭔 ?덉쓣 ?? ?뚯썝 ?섏씠吏濡??덈궡
     if df.empty:
-        st.warning("첫구매(전체관점/지표별) 데이터가 없습니다. **05. 회원 실적** 페이지를 이용하세요.")
+        st.warning("泥リ뎄留??꾩껜愿??吏?쒕퀎) ?곗씠?곌? ?놁뒿?덈떎. **05. ?뚯썝 ?ㅼ쟻** ?섏씠吏瑜??댁슜?섏꽭??")
         if not mdf.empty:
             print_button()
             render_member_page(mdf)
         st.stop()
 
-    # ── 인식 결과 + 필터
+    # ?? ?몄떇 寃곌낵 + ?꾪꽣
     years_all = sorted(df["year"].dropna().unique().astype(int))
-    ly, llabel = latest_period(df, "월")
+    ly, llabel = latest_period(df, "??)
     ref_year_default = ly or years_all[-1]
     with st.sidebar:
         st.markdown("---")
-        src = f"인식된 파일 {len(expanded)}개" if expanded else "누적 데이터 사용 중"
-        st.caption(f"{src} · 지표 {df['metric'].nunique()}종 · "
-                   f"{years_all[0]}–{years_all[-1]}년")
-        st.markdown("**기준 기간**")
-        ref_year = st.selectbox("기준 연도", years_all[::-1],
+        src = f"?몄떇???뚯씪 {len(expanded)}媛? if expanded else "?꾩쟻 ?곗씠???ъ슜 以?
+        st.caption(f"{src} 쨌 吏??{df['metric'].nunique()}醫?쨌 "
+                   f"{years_all[0]}??years_all[-1]}??)
+        st.markdown("**湲곗? 湲곌컙**")
+        ref_year = st.selectbox("湲곗? ?곕룄", years_all[::-1],
                                 index=years_all[::-1].index(ref_year_default), key="wr_refy")
-        months_avail = sorted({int(re.match(r"(\d+)월", l).group(1))
-                               for l in df[(df["gran"] == "월") & (df["year"] == ref_year)]["label"]})
-        ref_month = st.selectbox("기준 월", months_avail[::-1], key="wr_refm")
-        weeks_avail = (df[(df["gran"] == "주") & (df["year"] == ref_year) & df["value"].notna()]
+        months_avail = sorted({int(re.match(r"(\d+)??, l).group(1))
+                               for l in df[(df["gran"] == "??) & (df["year"] == ref_year)]["label"]})
+        ref_month = st.selectbox("湲곗? ??, months_avail[::-1], key="wr_refm")
+        weeks_avail = (df[(df["gran"] == "二?) & (df["year"] == ref_year) & df["value"].notna()]
                        [["label", "sortkey"]].drop_duplicates()
                        .sort_values("sortkey")["label"].tolist())
         if weeks_avail:
-            # 최신 주차가 진행 중(일마감 데이터이거나 오늘이 속한 주차)이면 직전 주를 기본값으로
+            # 理쒖떊 二쇱감媛 吏꾪뻾 以??쇰쭏媛??곗씠?곗씠嫄곕굹 ?ㅻ뒛???랁븳 二쇱감)?대㈃ 吏곸쟾 二쇰? 湲곕낯媛믪쑝濡?
             latest_w = weeks_avail[-1]
             today = datetime.date.today()
-            cur_week_lbl = f"{today.month:02d}월 {(today.day - 1) // 7 + 1}주차"
-            is_partial = not df[(df["gran"] == "주") & (df["year"] == ref_year) &
+            cur_week_lbl = f"{today.month:02d}??{(today.day - 1) // 7 + 1}二쇱감"
+            is_partial = not df[(df["gran"] == "二?) & (df["year"] == ref_year) &
                                 (df["label"] == latest_w) & (df["close"] == "mtd")].empty
             in_progress = is_partial or (ref_year == today.year and latest_w == cur_week_lbl)
             default_week = (weeks_avail[-2] if in_progress and len(weeks_avail) >= 2
                             else latest_w)
-            ref_week = st.selectbox("기준 주차", weeks_avail[::-1],
+            ref_week = st.selectbox("湲곗? 二쇱감", weeks_avail[::-1],
                                     index=weeks_avail[::-1].index(default_week),
                                     key="wr_refw",
-                                    help="주간보고 대상 주차. 최신 주차가 진행 중이면 직전 완료 주차가 기본값입니다.")
+                                    help="二쇨컙蹂닿퀬 ???二쇱감. 理쒖떊 二쇱감媛 吏꾪뻾 以묒씠硫?吏곸쟾 ?꾨즺 二쇱감媛 湲곕낯媛믪엯?덈떎.")
         else:
             ref_week = None
-        st.markdown("**차트 연도**")
+        st.markdown("**李⑦듃 ?곕룄**")
         default_yrs = years_all[-2:] if len(years_all) >= 2 else years_all
-        chart_years = st.multiselect("비교 연도", years_all, default=default_yrs, key="wr_cyrs")
-        st.markdown("**채널**")
-        ch_sel = st.multiselect("채널 선택", CHANNELS, default=CHANNELS, key="wr_ch")
+        chart_years = st.multiselect("鍮꾧탳 ?곕룄", years_all, default=default_yrs, key="wr_cyrs")
+        st.markdown("**梨꾨꼸**")
+        ch_sel = st.multiselect("梨꾨꼸 ?좏깮", CHANNELS, default=CHANNELS, key="wr_ch")
         if not chart_years: chart_years = default_yrs
 
         st.markdown("---")
-        st.markdown("**AI 인사이트 모델**")
-        ai_label = st.selectbox("모델 선택", list(AI_MODELS.keys()), key="wr_ai_model_label")
+        st.markdown("**AI ?몄궗?댄듃 紐⑤뜽**")
+        ai_label = st.selectbox("紐⑤뜽 ?좏깮", list(AI_MODELS.keys()), key="wr_ai_model_label")
         st.session_state["wr_ai_model"] = AI_MODELS[ai_label]
-        st.caption("✅ API 키 설정됨" if _anthropic_key()
-                   else "⚠ ANTHROPIC_API_KEY 미설정 — Secrets에 추가하세요")
+        st.caption("??API ???ㅼ젙?? if _anthropic_key()
+                   else "??ANTHROPIC_API_KEY 誘몄꽕????Secrets??異붽??섏꽭??)
 
         st.markdown("---")
-        st.markdown("**누적 데이터**")
+        st.markdown("**?꾩쟻 ?곗씠??*")
         saved_rows = len(load_store())
-        pend = " · 저장 시 반영" if (has_new and not st.session_state.get("wr_saved_sig") == sig) else ""
-        st.caption(f"저장됨 {saved_rows:,}행 / 현재 보기 {len(df):,}행{pend}")
-        st.download_button("⬇ 누적 데이터 백업 (CSV)",
+        pend = " 쨌 ?????諛섏쁺" if (has_new and not st.session_state.get("wr_saved_sig") == sig) else ""
+        st.caption(f"??λ맖 {saved_rows:,}??/ ?꾩옱 蹂닿린 {len(df):,}??pend}")
+        st.download_button("燧??꾩쟻 ?곗씠??諛깆뾽 (CSV)",
                            df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
                            "wr_data_store.csv", "text/csv", use_container_width=True,
-                           help="앱 재배포 시 누적 데이터가 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 업로드하면 복원됩니다.")
+                           help="???щ같?????꾩쟻 ?곗씠?곌? 珥덇린?붾맆 ???덉쑝??二쇨린?곸쑝濡?諛깆뾽?섏꽭?? ??CSV瑜??ㅼ떆 ?낅줈?쒗븯硫?蹂듭썝?⑸땲??")
         if not mdf.empty:
-            st.caption(f"회원 실적 {len(mdf):,}행")
-            st.download_button("💾 회원 실적 백업 (CSV)",
+            st.caption(f"?뚯썝 ?ㅼ쟻 {len(mdf):,}??)
+            st.download_button("?뮶 ?뚯썝 ?ㅼ쟻 諛깆뾽 (CSV)",
                                mdf[MEMBER_COLS].to_csv(index=False).encode("utf-8-sig"),
                                "wr_member_store.csv", "text/csv", use_container_width=True)
-        if st.button("🗑 누적 데이터 초기화", key="wr_clear_store", use_container_width=True):
+        if st.button("?뿊 ?꾩쟻 ?곗씠??珥덇린??, key="wr_clear_store", use_container_width=True):
             if os.path.exists(MEMBER_STORE): os.remove(MEMBER_STORE)
             if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
             st.cache_data.clear()
             st.rerun()
 
         st.markdown("---")
-        st.markdown("**보고란·메모**")
+        st.markdown("**蹂닿퀬?쨌硫붾え**")
         st.download_button(
-            "⬇ 보고란·메모 백업 (JSON)",
+            "燧?蹂닿퀬?쨌硫붾え 諛깆뾽 (JSON)",
             json.dumps(st.session_state.wr_texts, ensure_ascii=False, indent=2).encode("utf-8"),
             "wr_insights.json", "application/json", use_container_width=True,
-            help="모든 보고란·인사이트 메모를 백업합니다. 재배포로 초기화돼도 이 파일을 복원하면 되살아납니다.")
-        restore = st.file_uploader("메모 복원 (JSON 업로드)", type=["json"], key="wr_restore_memo")
+            help="紐⑤뱺 蹂닿퀬?쨌?몄궗?댄듃 硫붾え瑜?諛깆뾽?⑸땲?? ?щ같?щ줈 珥덇린?붾뤌?????뚯씪??蹂듭썝?섎㈃ ?섏궡?꾨궔?덈떎.")
+        restore = st.file_uploader("硫붾え 蹂듭썝 (JSON ?낅줈??", type=["json"], key="wr_restore_memo")
         if restore is not None:
             try:
                 data = json.loads(restore.getvalue().decode("utf-8"))
                 if isinstance(data, dict) and st.session_state.get("wr_restored") != restore.name:
-                    merged = {**st.session_state.wr_texts, **data}  # 업로드 값 우선
+                    merged = {**st.session_state.wr_texts, **data}  # ?낅줈??媛??곗꽑
                     st.session_state.wr_texts = merged
                     all_d = load_insights(); all_d.update(merged); save_insights(all_d)
                     st.session_state["wr_restored"] = restore.name
-                    st.success(f"{len(data)}개 메모 복원됨 ✓"); st.rerun()
+                    st.success(f"{len(data)}媛?硫붾え 蹂듭썝????); st.rerun()
             except Exception as e:
-                st.error(f"복원 실패: {e}")
+                st.error(f"蹂듭썝 ?ㅽ뙣: {e}")
 
     texts = st.session_state.wr_texts
     print_button()
 
-    # ════════════ 01. 주간보고 요약 ════════════
-    if page == "01. 주간보고 요약":
-        st.markdown(f"## 첫구매 주간보고 — {ref_year}년 {ref_month}월")
-        wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
+    # ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧 01. 二쇨컙蹂닿퀬 ?붿빟 ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+    if page == "01. 二쇨컙蹂닿퀬 ?붿빟":
+        st.markdown(f"## 泥リ뎄留?二쇨컙蹂닿퀬 ??{ref_year}??{ref_month}??)
+        wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "二?)
         if wlabel:
-            st.caption(f"기준 주차: {week_disp(wy, wlabel)}")
+            st.caption(f"湲곗? 二쇱감: {week_disp(wy, wlabel)}")
 
-        # KPI 카드 (기준 주차 — 전주비·전월비·전년비 모두 주차 기준)
+        # KPI 移대뱶 (湲곗? 二쇱감 ???꾩＜鍮꽷룹쟾?붾퉬쨌?꾨뀈鍮?紐⑤몢 二쇱감 湲곗?)
         if wlabel:
             cols = st.columns(4)
-            kpi_metrics = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가", "가입자수"]
-            py, plb = prev_label(df, "주", wy, wlabel)
-            # 전월 동일 주차 (예: 06월 1주차 → 05월 1주차)
+            kpi_metrics = ["泥リ뎄留?嫄곕옒??, "泥リ뎄留?怨좉컼??, "泥リ뎄留?媛앸떒媛", "媛?낆옄??]
+            py, plb = prev_label(df, "二?, wy, wlabel)
+            # ?꾩썡 ?숈씪 二쇱감 (?? 06??1二쇱감 ??05??1二쇱감)
             mom_y = mom_lbl = None
-            wm = re.match(r"(\d{1,2})월 (\d)주차", wlabel)
+            wm = re.match(r"(\d{1,2})??(\d)二쇱감", wlabel)
             if wm:
                 mo, wk = int(wm.group(1)), int(wm.group(2))
                 mom_y, mom_m = (wy, mo - 1) if mo > 1 else (wy - 1, 12)
-                mom_lbl = f"{mom_m:02d}월 {wk}주차"
+                mom_lbl = f"{mom_m:02d}??{wk}二쇱감"
             for col, met in zip(cols, kpi_metrics):
-                cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
+                cur = pick(df, "二?, met, "*TOTAL", wy, wlabel, "mtd")
                 deltas = []
-                prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-                deltas.append((fmt_delta(met, cur, prv), "전주비"))
+                prv = pick(df, "二?, met, "*TOTAL", py, plb, "final") if plb else np.nan
+                deltas.append((fmt_delta(met, cur, prv), "?꾩＜鍮?))
                 if mom_lbl:
-                    mom = pick(df, "주", met, "*TOTAL", mom_y, mom_lbl, "final")
-                    deltas.append((fmt_delta(met, cur, mom), "전월비"))
-                yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
-                deltas.append((fmt_delta(met, cur, yoy), "전년비"))
+                    mom = pick(df, "二?, met, "*TOTAL", mom_y, mom_lbl, "final")
+                    deltas.append((fmt_delta(met, cur, mom), "?꾩썡鍮?))
+                yoy = pick(df, "二?, met, "*TOTAL", wy - 1, wlabel, "final")
+                deltas.append((fmt_delta(met, cur, yoy), "?꾨뀈鍮?))
                 pills = ""
                 for d, lab in deltas:
                     if d:
-                        neg = d.startswith("△")
+                        neg = d.startswith("??)
                         cls = "down" if neg else "up"
-                        prefix = "" if neg else "↑ "
+                        prefix = "" if neg else "??"
                         pills += f'<div class="kpi-delta {cls}">{prefix}{d} ({lab})</div>'
                     else:
-                        pills += f'<div class="kpi-delta na">– ({lab})</div>'
+                        pills += f'<div class="kpi-delta na">??({lab})</div>'
                 col.markdown(
                     f'<div class="kpi-card"><div class="kpi-label">{met} ({week_disp(wy, wlabel)})</div>'
                     f'<div class="kpi-value">{fmt_value(met, cur)}</div>{pills}</div>',
                     unsafe_allow_html=True)
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
-        # 실적 요약 — 전주비 (주차 기준)
+        # ?ㅼ쟻 ?붿빟 ???꾩＜鍮?(二쇱감 湲곗?)
         if wlabel:
-            st.subheader("실적 요약 (일평균 · 전주비)")
-            st.caption(f"기준 주차: {week_disp(wy, wlabel)} — 전주·전년 동주 대비")
+            st.subheader("?ㅼ쟻 ?붿빟 (?쇳룊洹?쨌 ?꾩＜鍮?")
+            st.caption(f"湲곗? 二쇱감: {week_disp(wy, wlabel)} ???꾩＜쨌?꾨뀈 ?숈＜ ?鍮?)
             st.dataframe(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
                          use_container_width=True)
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
-        # 실적 요약 YoY 표
-        st.subheader("실적 요약 (일평균 · 전년비)")
+        # ?ㅼ쟻 ?붿빟 YoY ??
+        st.subheader("?ㅼ쟻 ?붿빟 (?쇳룊洹?쨌 ?꾨뀈鍮?")
         tbl, (pm_y, pm_m) = yoy_summary_table(df, ref_year, ref_month, METRICS7)
-        st.caption(f"전월({pm_m}월)은 월마감, 당월({ref_month}월)은 일마감(MTD) 기준 동일기간 비교")
+        st.caption(f"?꾩썡({pm_m}??? ?붾쭏媛? ?뱀썡({ref_month}??? ?쇰쭏媛?MTD) 湲곗? ?숈씪湲곌컙 鍮꾧탳")
         st.dataframe(style_delta_cols(tbl), use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
-        # 보고란
+        # 蹂닿퀬?
         draft = auto_draft(df, ref_year, ref_month, ref_week=wlabel)
         ai_model = st.session_state.get("wr_ai_model", "claude-sonnet-4-6")
         cL, cR = st.columns(2)
         with cL:
-            report_text_block("wr_metrics_summary", "전주 주요 지표 현황",
+            report_text_block("wr_metrics_summary", "?꾩＜ 二쇱슂 吏???꾪솴",
                               default=draft, regen=draft,
                               ai_fn=lambda memo: ai_generate_insight(df, ref_year, ref_month,
                                                                 wlabel, ai_model, memo=memo))
         with cR:
-            report_text_block("wr_exec_summary", "금주 집행 내용 요약")
+            report_text_block("wr_exec_summary", "湲덉＜ 吏묓뻾 ?댁슜 ?붿빟")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
-        # 핵심 차트 (주차별 YoY 3종)
-        st.subheader("주차별 추이 — 전년 비교")
+        # ?듭떖 李⑦듃 (二쇱감蹂?YoY 3醫?
+        st.subheader("二쇱감蹂?異붿씠 ???꾨뀈 鍮꾧탳")
         c1, c2, c3 = st.columns(3)
-        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
+        for col, met in zip((c1, c2, c3), ["泥リ뎄留?嫄곕옒??, "泥リ뎄留?怨좉컼??, "泥リ뎄留?媛앸떒媛"]):
             with col:
-                st.plotly_chart(yoy_chart(df, "주", met, chart_years, h=280),
+                st.plotly_chart(yoy_chart(df, "二?, met, chart_years, h=280),
                                 use_container_width=True)
 
-    # ════════════ 02. 월별 추이 ════════════
-    elif page == "02. 월별 추이":
-        st.markdown("## 월별 추이")
-        st.subheader("월별 추이 차트 — 전년 비교")
+    # ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧 02. ?붾퀎 異붿씠 ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+    elif page == "02. ?붾퀎 異붿씠":
+        st.markdown("## ?붾퀎 異붿씠")
+        st.subheader("?붾퀎 異붿씠 李⑦듃 ???꾨뀈 鍮꾧탳")
         c1, c2, c3 = st.columns(3)
-        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
+        for col, met in zip((c1, c2, c3), ["泥リ뎄留?嫄곕옒??, "泥リ뎄留?怨좉컼??, "泥リ뎄留?媛앸떒媛"]):
             with col:
-                st.plotly_chart(yoy_chart(df, "월", met, chart_years, h=280),
+                st.plotly_chart(yoy_chart(df, "??, met, chart_years, h=280),
                                 use_container_width=True)
         c4, c5, c6 = st.columns(3)
-        for col, met in zip((c4, c5, c6), ["비회원트래픽", "가입자수", "가입율"]):
+        for col, met in zip((c4, c5, c6), ["鍮꾪쉶?먰듃?섑뵿", "媛?낆옄??, "媛?낆쑉"]):
             with col:
-                st.plotly_chart(yoy_chart(df, "월", met, chart_years, h=280),
+                st.plotly_chart(yoy_chart(df, "??, met, chart_years, h=280),
                                 use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader("월별 추이표 (일평균)")
-        tbl = trend_table(df, "월", METRICS7, chart_years)
+        st.subheader("?붾퀎 異붿씠??(?쇳룊洹?")
+        tbl = trend_table(df, "??, METRICS7, chart_years)
         st.dataframe(style_trend(tbl, METRICS7), use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         ai_model = st.session_state.get("wr_ai_model", "claude-sonnet-4-6")
         report_text_block(
             f"wr_month_memo_{ref_year}_{ref_month}",
-            f"{ref_year}년 {ref_month}월 액션·이슈사항",
+            f"{ref_year}??{ref_month}???≪뀡쨌?댁뒋?ы빆",
             ai_fn=lambda memo: ai_generate_insight(df, ref_year, ref_month, None, ai_model,
-                                              focus=f"{ref_year}년 {ref_month}월 액션·이슈 및 인사이트",
+                                              focus=f"{ref_year}??{ref_month}???≪뀡쨌?댁뒋 諛??몄궗?댄듃",
                                               memo=memo))
 
-    # ════════════ 03. 주차별 추이 ════════════
-    elif page == "03. 주차별 추이":
-        st.markdown("## 주차별 추이")
-        st.subheader("주차별 추이 차트 — 전년 비교")
+    # ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧 03. 二쇱감蹂?異붿씠 ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+    elif page == "03. 二쇱감蹂?異붿씠":
+        st.markdown("## 二쇱감蹂?異붿씠")
+        st.subheader("二쇱감蹂?異붿씠 李⑦듃 ???꾨뀈 鍮꾧탳")
         c1, c2, c3 = st.columns(3)
-        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
+        for col, met in zip((c1, c2, c3), ["泥リ뎄留?嫄곕옒??, "泥リ뎄留?怨좉컼??, "泥リ뎄留?媛앸떒媛"]):
             with col:
-                st.plotly_chart(yoy_chart(df, "주", met, chart_years, h=280),
+                st.plotly_chart(yoy_chart(df, "二?, met, chart_years, h=280),
                                 use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader(f"주차별 추이표 — {ref_year}년")
-        tbl = trend_table(df, "주", METRICS7, [ref_year])
+        st.subheader(f"二쇱감蹂?異붿씠????{ref_year}??)
+        tbl = trend_table(df, "二?, METRICS7, [ref_year])
         if not tbl.empty:
             recent = tbl.columns[-16:]
             st.dataframe(style_trend(tbl[recent], METRICS7), use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader("전주비(WoW)·전년비(YoY) 증감")
-        wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
+        st.subheader("?꾩＜鍮?WoW)쨌?꾨뀈鍮?YoY) 利앷컧")
+        wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "二?)
         if wlabel:
-            st.caption(f"기준 주차: {week_disp(wy, wlabel)}")
+            st.caption(f"湲곗? 二쇱감: {week_disp(wy, wlabel)}")
             st.dataframe(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
                          use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        wy2, wlabel2 = (ref_year, ref_week) if ref_week else latest_period(df, "주")
+        wy2, wlabel2 = (ref_year, ref_week) if ref_week else latest_period(df, "二?)
         ai_model = st.session_state.get("wr_ai_model", "claude-sonnet-4-6")
         report_text_block(
             f"wr_week_memo_{wy2}_{wlabel2}",
-            f"{wy2}년 {wlabel2} 액션·이슈사항" if wlabel2 else "주차별 액션·이슈사항",
+            f"{wy2}??{wlabel2} ?≪뀡쨌?댁뒋?ы빆" if wlabel2 else "二쇱감蹂??≪뀡쨌?댁뒋?ы빆",
             ai_fn=lambda memo: ai_generate_insight(df, ref_year, ref_month, wlabel2, ai_model,
-                                              focus=f"{wlabel2} 주차 액션·이슈 및 인사이트",
+                                              focus=f"{wlabel2} 二쇱감 ?≪뀡쨌?댁뒋 諛??몄궗?댄듃",
                                               memo=memo))
 
-    # ════════════ 04. 채널별 실적 ════════════
-    elif page == "04. 채널별 실적":
-        st.markdown("## 채널(BPU)별 실적")
+    # ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧 04. 梨꾨꼸蹂??ㅼ쟻 ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+    elif page == "04. 梨꾨꼸蹂??ㅼ쟻":
+        st.markdown("## 梨꾨꼸(BPU)蹂??ㅼ쟻")
         avail = [m for m in METRICS7 if (df["metric"] == m).any()]
-        met = st.selectbox("지표 선택", avail, key="wr_chmet")
+        met = st.selectbox("吏???좏깮", avail, key="wr_chmet")
 
-        st.subheader(f"{met} — {ref_year}년 {ref_month}월 채널별 전년비")
+        st.subheader(f"{met} ??{ref_year}??{ref_month}??梨꾨꼸蹂??꾨뀈鍮?)
         rows = []
         for seg in ["*TOTAL"] + [c for c in CHANNELS if c in ch_sel]:
-            pv = pick(df, "월", met, seg, ref_year - 1, month_label(ref_month), "mtd")
-            cv = pick(df, "월", met, seg, ref_year, month_label(ref_month), "mtd")
-            rows.append({"채널": seg,
-                         f"{ref_year-1}년 {ref_month}월": fmt_value(met, pv),
-                         f"{ref_year}년 {ref_month}월": fmt_value(met, cv),
-                         "전년비": fmt_delta(met, cv, pv) or "–"})
-        st.dataframe(style_delta_cols(pd.DataFrame(rows).set_index("채널")),
+            pv = pick(df, "??, met, seg, ref_year - 1, month_label(ref_month), "mtd")
+            cv = pick(df, "??, met, seg, ref_year, month_label(ref_month), "mtd")
+            rows.append({"梨꾨꼸": seg,
+                         f"{ref_year-1}??{ref_month}??: fmt_value(met, pv),
+                         f"{ref_year}??{ref_month}??: fmt_value(met, cv),
+                         "?꾨뀈鍮?: fmt_delta(met, cv, pv) or "??})
+        st.dataframe(style_delta_cols(pd.DataFrame(rows).set_index("梨꾨꼸")),
                      use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader(f"{met} — 채널별 월 추이 ({ref_year}년)")
+        st.subheader(f"{met} ??梨꾨꼸蹂???異붿씠 ({ref_year}??")
         unit, div = METRIC_UNIT.get(met, ("", 1))
         if met in PCT_METRICS: div, unit = 0.01, "%"
         fig = go.Figure()
         x = [month_label(i) for i in range(1, 13)]
         for seg in [c for c in CHANNELS if c in ch_sel]:
-            s = series_by_label(df, "월", met, seg, ref_year).reindex(x).dropna()
+            s = series_by_label(df, "??, met, seg, ref_year).reindex(x).dropna()
             if s.empty: continue
             fig.add_trace(go.Scatter(
                 x=s.index.tolist(), y=(s / div).tolist(), mode="lines+markers", name=seg,
                 line=dict(color=clr(CHANNEL_PAL.get(seg, "blue")), width=1.8),
                 marker=dict(size=4)))
         ly = base_layout(340, ysuffix=unit if unit == "%" else "",
-                         title=f"{met} 채널별 ({unit})")
+                         title=f"{met} 梨꾨꼸蹂?({unit})")
         fig.update_layout(**ly)
-        st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.subheader("월별 추이표 (합계 및 평균 동의율)")
+            
+            # 일별 데이터를 월별 합계로 집계하여 전년비 표 생성
+            push_metrics = ["가입자수", "앱푸시수신동의", "동의율"]
+            sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"]))].copy()
+            
+            if not sub.empty:
+                # 4/24 이상치 제거 반영 (집계 시에도 제외되도록)
+                glitch_dates = ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]
+                sub = sub[~sub["label"].astype(str).str.strip().isin(glitch_dates)]
+                
+                sub["month"] = sub["label"].apply(lambda x: int(str(x).split('/')[0]) if '/' in str(x) else 0)
+                grp = sub.groupby(["year", "month", "metric"])["value"].sum().unstack("metric").reset_index()
+                
+                if "가입자수" in grp.columns and "앱푸시수신동의" in grp.columns:
+                    grp["동의율"] = grp["앱푸시수신동의"] / grp["가입자수"]
+                    grp.loc[grp["동의율"] > 1.0, "동의율"] = np.nan
+                else:
+                    grp["동의율"] = np.nan
+                    
+                cols = []
+                out_tbl = {}
+                for y in chart_years:
+                    for m in range(1, 13):
+                        row = grp[(grp["year"] == y) & (grp["month"] == m)]
+                        if not row.empty:
+                            cols.append((y, f"{m}월"))
+                            for met in push_metrics:
+                                if met not in out_tbl: out_tbl[met] = []
+                                out_tbl[met].append(row[met].values[0] if met in row.columns else np.nan)
+                                
+                if cols:
+                    tbl_df = pd.DataFrame(out_tbl, index=pd.MultiIndex.from_tuples(cols, names=["연도", "기간"])).T
+                    st.dataframe(style_trend(tbl_df, push_metrics), use_container_width=True)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader(f"{met} — 채널 × 월 표 ({ref_year}년)")
+        st.subheader(f"{met} ??梨꾨꼸 횞 ????({ref_year}??")
         rows = []
         for seg in ["*TOTAL"] + [c for c in CHANNELS if c in ch_sel]:
-            s = series_by_label(df, "월", met, seg, ref_year)
-            row = {"채널": seg}
+            s = series_by_label(df, "??, met, seg, ref_year)
+            row = {"梨꾨꼸": seg}
             for lb in [month_label(i) for i in range(1, 13)]:
                 if lb in s.index and not np.isnan(s[lb]):
                     row[lb] = fmt_value(met, s[lb])
             rows.append(row)
-        st.dataframe(pd.DataFrame(rows).set_index("채널"), use_container_width=True)
+        st.dataframe(pd.DataFrame(rows).set_index("梨꾨꼸"), use_container_width=True)
 
-    # ════════════ 05. 회원 실적 ════════════
-    elif page == "05. 회원 실적":
+    # ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧 05. ?뚯썝 ?ㅼ쟻 ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+    elif page == "05. ?뚯썝 ?ㅼ쟻":
         render_member_page(mdf, chart_years)
 
-    # ════════════ 06. 통합 데이터·다운로드 ════════════
-    elif page == "06. 통합 데이터·다운로드":
-        st.markdown("## 통합 데이터 · 다운로드")
-        st.caption("업로드한 모든 파일을 합친 통합 long 데이터입니다.")
+    # ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧 06. ?듯빀 ?곗씠?걔룸떎?대줈???먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+    elif page == "06. ?듯빀 ?곗씠?걔룸떎?대줈??:
+        st.markdown("## ?듯빀 ?곗씠??쨌 ?ㅼ슫濡쒕뱶")
+        st.caption("?낅줈?쒗븳 紐⑤뱺 ?뚯씪???⑹튇 ?듯빀 long ?곗씠?곗엯?덈떎.")
         st.dataframe(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
                      use_container_width=True, height=420)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader("통합 워크북 다운로드")
-        st.caption("`첫구매_요약`(요약표·보고란·YoY 차트·채널표) + `월`·`주`(통합 데이터) 3개 시트")
-        if st.button("📥 엑셀 워크북 생성", key="wr_build"):
-            with st.spinner("워크북 생성 중…"):
+        st.subheader("?듯빀 ?뚰겕遺??ㅼ슫濡쒕뱶")
+        st.caption("`泥リ뎄留??붿빟`(?붿빟?쑣룸낫怨좊?쨌YoY 李⑦듃쨌梨꾨꼸?? + `??쨌`二?(?듯빀 ?곗씠?? 3媛??쒗듃")
+        if st.button("?뱿 ?묒? ?뚰겕遺??앹꽦", key="wr_build"):
+            with st.spinner("?뚰겕遺??앹꽦 以묅?):
                 xls = build_workbook(df, st.session_state.wr_texts,
                                      ref_year, ref_month, chart_years)
             st.download_button(
-                "다운로드 — 첫구매_주간보고.xlsx", xls,
-                file_name=f"첫구매_주간보고_{ref_year}{ref_month:02d}.xlsx",
+                "?ㅼ슫濡쒕뱶 ??泥リ뎄留?二쇨컙蹂닿퀬.xlsx", xls,
+                file_name=f"泥リ뎄留?二쇨컙蹂닿퀬_{ref_year}{ref_month:02d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         csv = df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("통합 long 데이터 CSV", csv, "통합데이터.csv", "text/csv")
+        st.download_button("?듯빀 long ?곗씠??CSV", csv, "?듯빀?곗씠??csv", "text/csv")
         if not mdf.empty:
-            st.download_button("회원 실적 데이터 CSV",
+            st.download_button("?뚯썝 ?ㅼ쟻 ?곗씠??CSV",
                                mdf.to_csv(index=False).encode("utf-8-sig"),
-                               "회원실적데이터.csv", "text/csv")
+                               "?뚯썝?ㅼ쟻?곗씠??csv", "text/csv")
 
-    # ════════════ 07. 앱푸시 동의 현황 ════════════
-    elif page == "07. 앱푸시 동의 현황":
-        st.markdown("## 앱푸시 동의 현황 (일자별)")
-        df_daily = df[df["gran"] == "일"]
+    # ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧 07. ?깊뫖???숈쓽 ?꾪솴 ?먥븧?먥븧?먥븧?먥븧?먥븧?먥븧
+    elif page == "07. ?깊뫖???숈쓽 ?꾪솴":
+        st.markdown("## ?깊뫖???숈쓽 ?꾪솴 (?쇱옄蹂?")
+        df_daily = df[df["gran"] == "??]
         
         if df_daily.empty:
-            st.info("일자별 데이터가 없습니다. PUSH(7) 및 일_가입자수 파일을 업로드해주세요.")
+            st.info("?쇱옄蹂??곗씠?곌? ?놁뒿?덈떎. PUSH(7) 諛???媛?낆옄???뚯씪???낅줈?쒗빐二쇱꽭??")
         else:
-            st.subheader(f"{ref_year}년 신규가입 대비 앱푸시 수신동의율 추이")
-            dates = labels_sorted(df, "일", [ref_year])
+            st.subheader(f"{ref_year}???좉퇋媛???鍮??깊뫖???섏떊?숈쓽??異붿씠")
+            dates = labels_sorted(df, "??, [ref_year])
             
             if not dates:
-                st.info(f"{ref_year}년 일자별 데이터가 없습니다.")
+                st.info(f"{ref_year}???쇱옄蹂??곗씠?곌? ?놁뒿?덈떎.")
             else:
                 rows = []
                 for d in dates:
-                    push_val = pick(df, "일", "앱푸시수신동의", "*TOTAL", ref_year, d, "final")
-                    join_val = pick(df, "일", "가입자수", "*TOTAL", ref_year, d, "final")
+                    push_val = pick(df, "??, "?깊뫖?쒖닔?좊룞??, "*TOTAL", ref_year, d, "final")
+                    join_val = pick(df, "??, "媛?낆옄??, "*TOTAL", ref_year, d, "final")
                     
-                    # 4/24 이상치 하드코딩 제거 (비정상 스파이크)
+                    # 4/24 ?댁긽移??섎뱶肄붾뵫 ?쒓굅 (鍮꾩젙???ㅽ뙆?댄겕)
                     if str(d).strip() in ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]:
                         push_val = np.nan
                         
                     rate = np.nan
                     if not np.isnan(push_val) and not np.isnan(join_val) and join_val > 0:
                         rate = push_val / join_val
-                        # 이상치 제거: 100% 초과 시 데이터 글리치로 간주
+                        # ?댁긽移??쒓굅: 100% 珥덇낵 ???곗씠??湲由ъ튂濡?媛꾩＜
                         if rate > 1.0:
                             rate = np.nan
                         
                     rows.append({
-                        "날짜": d,
-                        "앱푸시수신동의": push_val,
-                        "가입자수": join_val,
-                        "동의율": rate
+                        "?좎쭨": d,
+                        "?깊뫖?쒖닔?좊룞??: push_val,
+                        "媛?낆옄??: join_val,
+                        "?숈쓽??: rate
                     })
                 
                 res_df = pd.DataFrame(rows)
                 
                 fig = go.Figure()
-                fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["가입자수"], name="가입자수", marker_color=clr("slate"), opacity=0.6, yaxis="y1"))
-                fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["앱푸시수신동의"], name="앱푸시수신동의", marker_color=clr("blue"), opacity=0.8, yaxis="y1"))
-                fig.add_trace(go.Scatter(x=res_df["날짜"], y=res_df["동의율"]*100, name="동의율(%)", mode="lines+markers", line=dict(color=clr("red"), width=2), yaxis="y2"))
+                fig.add_trace(go.Bar(x=res_df["?좎쭨"], y=res_df["媛?낆옄??], name="媛?낆옄??, marker_color=clr("slate"), opacity=0.6, yaxis="y1"))
+                fig.add_trace(go.Bar(x=res_df["?좎쭨"], y=res_df["?깊뫖?쒖닔?좊룞??], name="?깊뫖?쒖닔?좊룞??, marker_color=clr("blue"), opacity=0.8, yaxis="y1"))
+                fig.add_trace(go.Scatter(x=res_df["?좎쭨"], y=res_df["?숈쓽??]*100, name="?숈쓽??%)", mode="lines+markers", line=dict(color=clr("red"), width=2), yaxis="y2"))
                 
-                max_rate = max(res_df["동의율"].dropna()*100, default=10)
+                max_rate = max(res_df["?숈쓽??].dropna()*100, default=10)
                 if pd.isna(max_rate) or max_rate == 0:
                     max_rate = 10
                 
                 fig.update_layout(
-                    title="일자별 신규가입 및 앱푸시 수신동의 현황",
+                    title="?쇱옄蹂??좉퇋媛??諛??깊뫖???섏떊?숈쓽 ?꾪솴",
                     xaxis=dict(type="category", tickangle=-45),
-                    yaxis=dict(title="명", gridcolor="#f1f5f9"),
+                    yaxis=dict(title="紐?, gridcolor="#f1f5f9"),
                     yaxis2=dict(title="%", overlaying="y", side="right", range=[0, max_rate * 1.2], gridcolor="rgba(0,0,0,0)"),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(255,255,255,0.8)"),
                     barmode="group",
@@ -1712,15 +1820,52 @@ def main():
                     paper_bgcolor="rgba(248,249,252,0)", plot_bgcolor="rgba(248,249,252,0)"
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                                    st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.subheader("월별 추이표 (합계 및 평균 동의율)")
+            
+            # 일별 데이터를 월별 합계로 집계하여 전년비 표 생성
+            push_metrics = ["가입자수", "앱푸시수신동의", "동의율"]
+            sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"]))].copy()
+            
+            if not sub.empty:
+                # 4/24 이상치 제거 반영 (집계 시에도 제외되도록)
+                glitch_dates = ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]
+                sub = sub[~sub["label"].astype(str).str.strip().isin(glitch_dates)]
                 
-                st.markdown("### 상세 데이터")
+                sub["month"] = sub["label"].apply(lambda x: int(str(x).split('/')[0]) if '/' in str(x) else 0)
+                grp = sub.groupby(["year", "month", "metric"])["value"].sum().unstack("metric").reset_index()
+                
+                if "가입자수" in grp.columns and "앱푸시수신동의" in grp.columns:
+                    grp["동의율"] = grp["앱푸시수신동의"] / grp["가입자수"]
+                    grp.loc[grp["동의율"] > 1.0, "동의율"] = np.nan
+                else:
+                    grp["동의율"] = np.nan
+                    
+                cols = []
+                out_tbl = {}
+                for y in chart_years:
+                    for m in range(1, 13):
+                        row = grp[(grp["year"] == y) & (grp["month"] == m)]
+                        if not row.empty:
+                            cols.append((y, f"{m}월"))
+                            for met in push_metrics:
+                                if met not in out_tbl: out_tbl[met] = []
+                                out_tbl[met].append(row[met].values[0] if met in row.columns else np.nan)
+                                
+                if cols:
+                    tbl_df = pd.DataFrame(out_tbl, index=pd.MultiIndex.from_tuples(cols, names=["연도", "기간"])).T
+                    st.dataframe(style_trend(tbl_df, push_metrics), use_container_width=True)
+                
+                st.markdown("### ?곸꽭 ?곗씠??)
                 disp_df = res_df.copy()
-                disp_df["앱푸시수신동의"] = disp_df["앱푸시수신동의"].apply(lambda x: f"{int(x):,}" if not pd.isna(x) else "–")
-                disp_df["가입자수"] = disp_df["가입자수"].apply(lambda x: f"{int(x):,}" if not pd.isna(x) else "–")
-                disp_df["동의율"] = disp_df["동의율"].apply(lambda x: f"{x*100:.1f}%" if not pd.isna(x) else "–")
-                st.dataframe(disp_df.set_index("날짜"), use_container_width=True)
+                disp_df["?깊뫖?쒖닔?좊룞??] = disp_df["?깊뫖?쒖닔?좊룞??].apply(lambda x: f"{int(x):,}" if not pd.isna(x) else "??)
+                disp_df["媛?낆옄??] = disp_df["媛?낆옄??].apply(lambda x: f"{int(x):,}" if not pd.isna(x) else "??)
+                disp_df["?숈쓽??] = disp_df["?숈쓽??].apply(lambda x: f"{x*100:.1f}%" if not pd.isna(x) else "??)
+                st.dataframe(disp_df.set_index("?좎쭨"), use_container_width=True)
 
 
 if st.runtime.exists():
     main()
+
