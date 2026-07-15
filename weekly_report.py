@@ -1715,14 +1715,12 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-                st.subheader("월별 추이표 (합계 및 평균 동의율)")
+                st.subheader("월별 전년비 증감 추이표 (YoY)")
                 
-                # 일별 데이터를 월별 합계로 집계하여 전년비 표 생성
                 push_metrics = ["가입자수", "앱푸시수신동의", "동의율"]
                 sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"])) & (df["segment"] == "*TOTAL") & (df["value_type"] == "final")].copy()
                 
                 if not sub.empty:
-                    # 4/24 이상치 제거 반영 (집계 시에도 제외되도록)
                     glitch_dates = ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]
                     sub = sub[~sub["label"].astype(str).str.strip().isin(glitch_dates)]
                     
@@ -1735,20 +1733,41 @@ def main():
                     else:
                         grp["동의율"] = float('nan')
                         
-                    cols = []
                     out_tbl = {}
-                    for y in chart_years:
-                        for m in range(1, 13):
-                            row = grp[(grp["year"] == y) & (grp["month"] == m)]
-                            if not row.empty:
-                                cols.append((y, f"{m}월"))
-                                for met in push_metrics:
-                                    if met not in out_tbl: out_tbl[met] = []
-                                    out_tbl[met].append(row[met].values[0] if met in row.columns else float('nan'))
-                                    
-                    if cols:
-                        tbl_df = pd.DataFrame(out_tbl, index=pd.MultiIndex.from_tuples(cols, names=["연도", "기간"])).T
-                        st.dataframe(style_trend(tbl_df, push_metrics), use_container_width=True)
+                    cols = [f"{m}월" for m in range(1, 13)]
+                    
+                    # We assume chart_years is sorted, e.g. [2025, 2026]
+                    for met in push_metrics:
+                        for y in chart_years:
+                            row_name = f"{met} ({y})"
+                            out_tbl[row_name] = []
+                            for m in range(1, 13):
+                                r = grp[(grp["year"] == y) & (grp["month"] == m)]
+                                out_tbl[row_name].append(r[met].values[0] if (not r.empty and met in r.columns) else float('nan'))
+                        
+                        # Calculate YoY for the metric
+                        if len(chart_years) >= 2:
+                            yoy_name = f"{met} (YoY)"
+                            out_tbl[yoy_name] = []
+                            prev_y, cur_y = chart_years[-2], chart_years[-1]
+                            for i, m in enumerate(range(1, 13)):
+                                prev_val = out_tbl[f"{met} ({prev_y})"][i]
+                                cur_val = out_tbl[f"{met} ({cur_y})"][i]
+                                out_tbl[yoy_name].append(fmt_delta(met, cur_val, prev_val))
+                                
+                    tbl_df = pd.DataFrame(out_tbl, index=cols).T
+                    
+                    # Apply formatting using style_trend logic but customized for this table
+                    disp = tbl_df.astype(object).copy()
+                    for row_name in disp.index:
+                        if "(YoY)" in row_name:
+                            continue # Already formatted by fmt_delta
+                        else:
+                            met = row_name.split(" ")[0]
+                            disp.loc[row_name] = [fmt_value(met, v) for v in tbl_df.loc[row_name]]
+                            
+                    st.dataframe(style_delta_cols(disp), use_container_width=True)
+
                 
                 st.markdown("### 상세 데이터")
                 disp_df = res_df.copy()
