@@ -1686,7 +1686,7 @@ def main():
                             df_push_daily["일"] = df_push_daily["label"]
                             
                             # 집계
-                            push_agg = df_push_daily.groupby(["year", sel_gran])["value"].sum().reset_index()
+                            push_agg = df_push_daily.groupby(["year", sel_gran])["value"].mean().reset_index()
                         else:
                             push_agg = pd.DataFrame()
                             
@@ -1880,95 +1880,59 @@ def main():
     # ════════════ 08. 첫구매 고객 세그먼트 성과 ════════════
     elif page == "08. 첫구매 고객 세그먼트 성과":
         st.markdown("## 첫구매 고객 세그먼트 성과")
-        gran_opt = st.radio("차트 보기 기준", ["일자별", "주차별", "월별"], horizontal=True, key="seg_gran_opt")
-        gran_map = {"일자별": "일", "주차별": "주", "월별": "월"}
-        sel_gran = gran_map[gran_opt]
         
-        df_gran = df[df["gran"] == sel_gran]
-        if df_gran.empty:
-            st.info(f"{sel_gran} 단위 데이터가 없습니다. (전체관점-세그먼트 성과 파일이 필요합니다)")
-        else:
-            metric_opt = st.selectbox("지표 선택", ["거래액", "고객수", "객단가", "CR"])
+        # 일자별/주차별 차트 제거하고 바로 지표 선택
+        metric_opt = st.selectbox("지표 선택", ["거래액", "고객수", "객단가", "CR"])
+        
+        def get_metric_name(base_name, df_search):
+            metrics = df_search["metric"].dropna().unique()
+            for m in metrics:
+                if base_name in str(m):
+                    return m
+            return base_name
             
-            # 유연한 지표명 매칭 (총거래액, 합계 등 파일마다 다를 수 있음)
-            def get_metric_name(base_name):
-                # 정확히 일치하는게 있는지 먼저 확인
-                metrics = df_gran["metric"].dropna().unique()
-                for m in metrics:
-                    if base_name in str(m):
-                        return m
-                return base_name
+        segs = ["1_신규", "2_기가입신규", "3_기존"]
+        
+        for gran_title, sel_gran in [("주별 성과 요약", "주"), ("월별 성과 요약", "월")]:
+            st.markdown(f'<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.subheader(gran_title)
+            
+            df_gran = df[df["gran"] == sel_gran]
+            if df_gran.empty:
+                st.info(f"{sel_gran} 단위 데이터가 없습니다.")
+                continue
                 
             m_name = ""
-            if metric_opt == "거래액":
-                m_name = "거래액" if "거래액" in df_gran["metric"].values else get_metric_name("거래액")
-            elif metric_opt == "고객수":
-                m_name = "구매고객수" if "구매고객수" in df_gran["metric"].values else get_metric_name("고객수")
-            elif metric_opt == "객단가":
-                m_name = "객단가" if "객단가" in df_gran["metric"].values else get_metric_name("객단가")
-            elif metric_opt == "CR":
-                m_name = "CR"
+            if metric_opt == "거래액": m_name = "거래액" if "거래액" in df_gran["metric"].values else get_metric_name("거래액", df_gran)
+            elif metric_opt == "고객수": m_name = "구매고객수" if "구매고객수" in df_gran["metric"].values else get_metric_name("고객수", df_gran)
+            elif metric_opt == "객단가": m_name = "객단가" if "객단가" in df_gran["metric"].values else get_metric_name("객단가", df_gran)
+            elif metric_opt == "CR": m_name = "CR"
             
-            segs = ["1_신규", "2_기가입신규", "3_기존"]
-            
-            st.subheader(f"{ref_year}년 {gran_opt} 세그먼트별 {metric_opt} 추이")
             dates = labels_sorted(df, sel_gran, [ref_year])
-            
             if not dates:
-                st.info(f"{ref_year}년 {gran_opt} 데이터가 없습니다.")
-            else:
-                fig = go.Figure()
-                colors = {"1_신규": "#2563eb", "2_기가입신규": "#16a34a", "3_기존": "#d97706"}
+                st.info(f"{ref_year}년 {sel_gran} 데이터가 없습니다.")
+                continue
                 
-                rows = []
-                for d in dates:
-                    row_data = {"날짜": d}
-                    for seg in segs:
-                        val = pick(df, sel_gran, m_name, seg, ref_year, d, "final")
-                        
-                        # 객단가나 CR이 없을 경우 자동 계산 시도
-                        if pd.isna(val):
-                            if metric_opt == "객단가":
-                                rev_name = get_metric_name("거래액")
-                                cust_name = get_metric_name("고객수")
-                                rev = pick(df, sel_gran, rev_name, seg, ref_year, d, "final")
-                                cust = pick(df, sel_gran, cust_name, seg, ref_year, d, "final")
-                                if pd.notna(rev) and pd.notna(cust) and cust > 0:
-                                    val = rev / cust
-                        
-                        row_data[seg] = val
-                    rows.append(row_data)
-                
-                res_df = pd.DataFrame(rows)
-                
+            rows = []
+            for d in dates:
+                row_data = {"날짜": d}
                 for seg in segs:
-                    y_vals = res_df[seg].tolist()
-                    fig.add_trace(go.Scatter(
-                        x=dates, y=y_vals,
-                        mode="lines+markers+text",
-                        name=seg,
-                        line=dict(width=2, color=colors.get(seg, "#000000")),
-                        marker=dict(size=8),
-                        text=[fmt_value(metric_opt, v) if pd.notna(v) else "" for v in y_vals],
-                        textposition="top center"
-                    ))
+                    val = pick(df, sel_gran, m_name, seg, ref_year, d, "final")
+                    if pd.isna(val):
+                        if metric_opt == "객단가":
+                            rev = pick(df, sel_gran, get_metric_name("거래액", df_gran), seg, ref_year, d, "final")
+                            cust = pick(df, sel_gran, get_metric_name("고객수", df_gran), seg, ref_year, d, "final")
+                            if pd.notna(rev) and pd.notna(cust) and cust > 0:
+                                val = rev / cust
+                    row_data[seg] = val
+                rows.append(row_data)
                 
-                fig.update_layout(
-                    height=500, margin=dict(l=0, r=0, t=30, b=0),
-                    hovermode="x unified",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                if metric_opt in PCT_METRICS or metric_opt == "CR":
-                    fig.update_layout(yaxis=dict(tickformat=".1%"))
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # 표
-                st.markdown("### 상세 데이터")
-                disp_df = res_df.copy()
-                for seg in segs:
-                    disp_df[seg] = disp_df[seg].apply(lambda x: fmt_value(metric_opt, x) if pd.notna(x) else "-")
-                st.dataframe(disp_df.set_index("날짜"), use_container_width=True)
+            res_df = pd.DataFrame(rows)
+            disp_df = res_df.copy()
+            for seg in segs:
+                disp_df[seg] = disp_df[seg].apply(lambda x: fmt_value(metric_opt, x) if pd.notna(x) else "-")
+            
+            st.dataframe(disp_df.set_index("날짜").T, use_container_width=True)
 
 if st.runtime.exists():
     main()
