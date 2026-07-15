@@ -1724,11 +1724,11 @@ def main():
                                     
                         rows.append({
                             "날짜": d,
-                                "가입자수": join_val if pd.notna(join_val) else 0,
-                                "앱푸시수신동의": push_val if pd.notna(push_val) else 0,
-                                "동의율": rate,
-                                "전년동의율": prev_rate
-                            })
+                            "가입자수": join_val,
+                            "앱푸시수신동의": push_val,
+                            "동의율": rate,
+                            "전년동의율": prev_rate
+                        })
                             
                         res_df = pd.DataFrame(rows)
                         
