@@ -1576,7 +1576,7 @@ def main():
 
     # ════════════ 04. 채널별 실적 ════════════
     elif page == "04. 채널별 실적":
-        st.markdown("## 채널(BPU)별 실적")
+        st.markdown("## 채널별 실적")
         avail = [m for m in METRICS7 if (df["metric"] == m).any()]
         met = st.selectbox("지표 선택", avail, key="wr_chmet")
 
