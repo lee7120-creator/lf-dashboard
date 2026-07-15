@@ -1718,7 +1718,7 @@ def main():
                 st.subheader("월별 전년비 증감 추이표 (YoY)")
                 
                 push_metrics = ["가입자수", "앱푸시수신동의", "동의율"]
-                sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"])) & (df["segment"] == "*TOTAL") & (df["value_type"] == "final")].copy()
+                sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"])) & (df["segment"] == "*TOTAL") & (df["close"] == "final")].copy()
                 
                 if not sub.empty:
                     glitch_dates = ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]
