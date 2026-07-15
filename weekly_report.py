@@ -1721,11 +1721,11 @@ def main():
                 sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"])) & (df["segment"] == "*TOTAL") & (df["close"] == "final")].copy()
                 
                 if not sub.empty:
-                    glitch_dates = ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]
-                    sub = sub[~sub["label"].astype(str).str.strip().isin(glitch_dates)]
-                    
                     sub["month"] = sub["label"].apply(lambda x: int(str(x).split('/')[0]) if '/' in str(x) else 0)
                     sub["day"] = sub["label"].apply(lambda x: int(str(x).split('/')[1]) if '/' in str(x) else 0)
+                    
+                    # 4/24 푸시동의 스파이크 이상치 제거 (가입자수는 유지)
+                    sub.loc[(sub["month"] == 4) & (sub["day"] == 24) & (sub["metric"] == "앱푸시수신동의"), "value"] = float('nan')
                     
                     # 업로드한 최신 월 및 일(MTD) 계산
                     max_month = 12
@@ -1807,6 +1807,7 @@ def main():
                         return tbl.style.apply(_highlight, axis=None)
                         
                     st.dataframe(style_yoy_rows(disp), use_container_width=True)
+
 
 
 
