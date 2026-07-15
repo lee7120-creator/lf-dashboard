@@ -123,7 +123,8 @@ METRIC_UNIT = {
     "첫구매 거래액": ("백만원", 1e6), "첫구매 고객수": ("명", 1),
     "첫구매 객단가": ("원", 1), "비회원트래픽": ("명", 1),
     "가입자수": ("명", 1), "가입율": ("%", 1), "당일가입CR": ("%", 1),
-    "앱푸시수신동의": ("명", 1),
+    "앱푸시수신동의": ("명", 1), "앱푸시_동의자수": ("명", 1),
+    "앱푸시_신규추가": ("명", 1), "앱푸시_이탈": ("명", 1),
 }
 
 def fmt_value(metric, v):
@@ -365,44 +366,36 @@ def expand_uploads(uploads):
             out.append((f.name, data))
     return out
 
-PUSH_SPIKE_RATIO = 10  # 연도별 일 중앙값 대비 이 배수 초과 시 일회성 스파이크로 간주
+PUSH_SPIKE_RATIO = 10  # (지표·세그먼트·연도)별 일 |중앙값| 대비 이 배수 초과 시 일회성 스파이크로 간주
+# 흐름(flow) 지표만 마스킹 대상 — 잔고(앱푸시_동의자수)는 수준값이라 스파이크 개념이 없음
+PUSH_FLOW_METRICS = {"앱푸시수신동의", "앱푸시_신규추가", "앱푸시_이탈"}
 
 def mask_push_spikes(d: pd.DataFrame) -> pd.DataFrame:
-    """앱푸시수신동의 일자 값의 대량 이관/재동의 스파이크 마스킹 (NaN 처리).
-    연도별 일 중앙값의 PUSH_SPIKE_RATIO배 초과 값을 이상치로 본다.
-    (실데이터: 2025-04-19 16,496건=중앙값 76배, 2026-04-24 15,441건=84배.
-     연도마다 스파이크 날짜가 달라 날짜 하드코딩 대신 통계 규칙 사용 — 4월 YoY 왜곡 방지)"""
-    m = d["metric"] == "앱푸시수신동의"
+    """앱푸시 흐름 지표의 대량 이관/재동의/재분류 스파이크 마스킹 (NaN 처리).
+    (지표,세그먼트,연도)별 일 |중앙값|의 PUSH_SPIKE_RATIO배 초과 값을 이상치로 본다.
+    (실데이터: 2025-04-19 재동의 16,496건=중앙값 76배, 2026-04-24 15,441건=84배,
+     2025-01-01 세그먼트 재분류 6만건대. 연도마다 날짜가 달라 하드코딩 대신 통계 규칙 사용)"""
+    m = d["metric"].isin(PUSH_FLOW_METRICS)
     if not m.any():
         return d
-    med = d.loc[m].groupby("year")["value"].transform("median")
-    spike = d.loc[m, "value"] > med * PUSH_SPIKE_RATIO
+    med = (d.loc[m].groupby(["metric", "segment", "year"])["value"]
+           .transform(lambda s: s.abs().median()))
+    spike = d.loc[m, "value"].abs() > med * PUSH_SPIKE_RATIO
     d.loc[spike[spike].index, "value"] = np.nan
     return d
 
 def parse_push_file(name, data: bytes) -> pd.DataFrame:
+    """PUSH 원천: 기존/신규/Total 3섹션 × (수신동의 누적·신규추가·이탈) 전부 파싱.
+    순증감은 저장하지 않고 화면에서 신규추가-이탈로 파생 (마스킹 일관성 유지)."""
     try:
         rows = read_grid(name, data)
     except Exception:
         return pd.DataFrame()
     if not rows or len(rows) < 8: return pd.DataFrame()
     if not any("Date" in str(c) for c in rows[0]): return pd.DataFrame()
-    
-    target_row = None
-    in_new_section = False
-    for ri, row in enumerate(rows):
-        c0 = _cell(row[0] if len(row) > 0 else "")
-        c1 = _cell(row[1] if len(row) > 1 else "")
-        if c0 == "신규":
-            in_new_section = True
-        if in_new_section and c1 == "신규추가(+)":
-            target_row = row
-            break
-            
-    if not target_row: return pd.DataFrame()
-    
+
     date_row = rows[1]
-    
+
     # 1) 유효한 날짜 컬럼을 모두 추출하고 월(month)을 파싱
     date_cols = []
     for ci in range(2, len(date_row)):
@@ -410,34 +403,53 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
         m = re.match(r"^(\d{1,2})/\d{1,2}$", d)
         if m:
             date_cols.append((ci, d, int(m.group(1))))
-            
+
     if not date_cols:
         return pd.DataFrame()
-        
+
     # 2) 뒤에서부터 역순으로 읽으면서 해(year)가 바뀌는 지점 계산
     # 맨 마지막 데이터를 0으로 두고, (1월 <- 12월)로 넘어갈 때마다 연도를 -1
     rel_years = {}
     current_rel_year = 0
     last_month = date_cols[-1][2]
-    
+
     for ci, d, month in reversed(date_cols):
         # 역순으로 읽을 때 월이 1에서 12로 커지면 (실제로는 12월 -> 1월) 해가 바뀐 것
         if last_month < 6 and month > 6:
             current_rel_year -= 1
         elif last_month > 6 and month < 6:
             current_rel_year += 1
-            
+
         rel_years[ci] = current_rel_year
         last_month = month
 
+    # 3) 섹션(A열) × 행유형(B열) → (지표, 세그먼트) 매핑으로 대상 행 수집
+    SECTION_SEG = {"기존": "기존", "신규": "신규", "Total": "*TOTAL"}
+    ROW_METRIC = {"수신동의": "앱푸시_동의자수", "신규추가(+)": "앱푸시_신규추가",
+                  "기존이탈(-)": "앱푸시_이탈"}
+    targets = []  # (metric, segment, row)
+    cur_seg = None
+    for row in rows:
+        c0 = _cell(row[0] if len(row) > 0 else "")
+        c1 = _cell(row[1] if len(row) > 1 else "")
+        if c0 in SECTION_SEG: cur_seg = SECTION_SEG[c0]
+        if cur_seg and c1 in ROW_METRIC:
+            targets.append((ROW_METRIC[c1], cur_seg, row))
+            # 신규 섹션 신규추가는 기존 지표명으로도 저장 (구버전 누적 데이터·동의율 로직과 연속성)
+            if cur_seg == "신규" and c1 == "신규추가(+)":
+                targets.append(("앱푸시수신동의", "*TOTAL", row))
+
+    if not targets: return pd.DataFrame()
+
     records = []
-    for ci, d, month in date_cols:
-        val = _num(target_row[ci] if ci < len(target_row) else None)
-        if pd.isna(val): continue
-        records.append({
-            "gran": "일", "metric": "앱푸시수신동의", "segment": "*TOTAL",
-            "year": rel_years[ci], "label": d, "sortkey": 0, "close": "final", "value": val
-        })
+    for metric, seg, trow in targets:
+        for ci, d, month in date_cols:
+            val = _num(trow[ci] if ci < len(trow) else None)
+            if pd.isna(val): continue
+            records.append({
+                "gran": "일", "metric": metric, "segment": seg,
+                "year": rel_years[ci], "label": d, "sortkey": 0, "close": "final", "value": val
+            })
     return pd.DataFrame(records)
 
 @st.cache_data(show_spinner=False)
@@ -520,125 +532,15 @@ def merge_store(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     return (pd.concat([old[STORE_COLS], new[STORE_COLS]], ignore_index=True)
             .drop_duplicates(subset=KEY_COLS, keep="last"))
 
-# ══════════════════════════════════════════════════════
-# 회원 실적 데이터셋 (신규/기존 세그먼트 × 9지표, 월 단위)
-# ══════════════════════════════════════════════════════
-MEMBER_STORE = "wr_member_store.csv"
-MEMBER_KEY = ["metric", "segment", "year", "label"]
-MEMBER_COLS = MEMBER_KEY + ["sortkey", "value"]
-MEMBER_SEGS = ["Total", "당월신규", "기가입신규", "기존"]
-MEMBER_METRICS = ["유효회원수", "UV", "월방문율(%)", "구매고객수", "CR(%)",
-                  "객단가", "거래액 (VAT제외)", "유효회원당 거래액", "활동고객수"]
-MEMBER_PCT = {"월방문율(%)", "CR(%)"}
-
-def is_member_grid(rows):
-    """헤더에 회원구분/회원구분상세 + 유효회원수 지표가 있으면 회원 실적 파일"""
-    head = " ".join(_cell(c) for ri in range(min(3, len(rows))) for c in rows[ri])
-    col0 = " ".join(_cell(rows[ri][0]) for ri in range(len(rows)) if rows[ri])
-    return ("회원구분" in head and "회원구분상세" in head
-            and "유효회원수" in col0)
-
-def fmt_member(metric, v):
-    if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
-    if metric in MEMBER_PCT: return f"{v*100:.2f}%"
-    if metric == "거래액 (VAT제외)": return f"{v/1e8:,.1f}억"
-    if metric in ("객단가", "유효회원당 거래액"): return f"{v:,.0f}원"
-    return f"{int(v):,}"
-
-def parse_member_file(name, data: bytes) -> pd.DataFrame:
-    # 회원 백업 CSV 복원
-    if name.lower().endswith(".csv"):
-        first = data[:300].decode("utf-8", "ignore").splitlines()[0] if data else ""
-        if "metric" in first and "segment" in first and "sortkey" in first and "gran" not in first:
-            try:
-                d = pd.read_csv(io.BytesIO(data), encoding="utf-8-sig")
-                if set(MEMBER_COLS) <= set(d.columns) and set(d["segment"]) <= set(MEMBER_SEGS) | {"Total"}:
-                    return d[MEMBER_COLS]
-            except Exception:
-                pass
-    try:
-        rows = read_grid(name, data)
-    except Exception:
-        return pd.DataFrame()
-    if not rows or not is_member_grid(rows): return pd.DataFrame()
-
-    # 헤더: 0행 연도(ffill), 1행 차원명+월라벨. 데이터는 2행부터
-    year_row, label_row = rows[0], rows[1]
-    # 월 라벨이 시작되는 컬럼 = '가입연차' 다음 (보통 7열)
-    data_c0 = 7
-    col_year, cur = {}, None
-    for ci in range(len(year_row)):
-        m = re.search(r"(20\d{2})", _cell(year_row[ci]))
-        if m: cur = int(m.group(1))
-        col_year[ci] = cur
-    data_cols = [ci for ci in range(data_c0, len(label_row))
-                 if re.match(r"^\d{1,2}월$", _cell(label_row[ci])) and col_year.get(ci)]
-
-    records, cur_metric = [], None
-    for ri in range(2, len(rows)):
-        row = rows[ri]
-        m0 = _cell(row[0]) if len(row) > 0 else ""
-        if m0: cur_metric = m0
-        if cur_metric not in MEMBER_METRICS: continue
-        seg = _cell(row[2]) if len(row) > 2 else ""   # 회원구분상세
-        # 등급/성별/연령대/가입연차(3~6열)는 Total인 행만 (현재 분해 없음)
-        dims = [_cell(row[ci]) if len(row) > ci else "" for ci in range(3, 7)]
-        if any(d and d != "Total" for d in dims): continue
-        if seg not in MEMBER_SEGS: continue
-        for ci in data_cols:
-            mo = int(re.match(r"(\d{1,2})월", _cell(label_row[ci])).group(1))
-            yr = col_year[ci]
-            records.append({"metric": cur_metric, "segment": seg, "year": yr,
-                            "label": f"{mo}월", "sortkey": yr * 100 + mo,
-                            "value": _num(row[ci] if ci < len(row) else None)})
-    return pd.DataFrame(records)
-
-def combine_member(file_tuples) -> pd.DataFrame:
-    frames = [parse_member_file(n, b) for n, b in file_tuples]
-    frames = [f for f in frames if not f.empty]
-    if not frames: return pd.DataFrame()
-    return (pd.concat(frames, ignore_index=True)
-            .drop_duplicates(subset=MEMBER_KEY, keep="last"))
-
-def load_member_store() -> pd.DataFrame:
-    if os.path.exists(MEMBER_STORE):
-        try:
-            d = pd.read_csv(MEMBER_STORE, encoding="utf-8-sig")
-            if set(MEMBER_COLS) <= set(d.columns): return d[MEMBER_COLS]
-        except Exception:
-            pass
-    return pd.DataFrame()
-
-def save_member_store(df): df[MEMBER_COLS].to_csv(MEMBER_STORE, index=False, encoding="utf-8-sig")
-
-def merge_member(old, new):
-    if old is None or old.empty: return new
-    if new is None or new.empty: return old
-    return (pd.concat([old[MEMBER_COLS], new[MEMBER_COLS]], ignore_index=True)
-            .drop_duplicates(subset=MEMBER_KEY, keep="last"))
-
 def _period_set(d, cols):
     if d is None or d.empty: return set()
     return set(map(tuple, d[cols].drop_duplicates().values.tolist()))
 
-def upload_diff(stored, df_new, member_stored, member_new):
+def upload_diff(stored, df_new):
     """업로드 데이터가 기존 누적 대비 추가/갱신하는 기간 수 (저장 전 미리보기용)"""
-    cols_c, cols_m = ["gran", "year", "label"], ["year", "label"]
-    nc, oc = _period_set(df_new, cols_c), _period_set(stored, cols_c)
-    nm, om = _period_set(member_new, cols_m), _period_set(member_stored, cols_m)
-    added = len(nc - oc) + len(nm - om)
-    updated = len(nc & oc) + len(nm & om)
-    return added, updated
-
-
-def member_pick(mdf, metric, seg, year, mo):
-    s = mdf[(mdf["metric"] == metric) & (mdf["segment"] == seg) &
-            (mdf["year"] == year) & (mdf["label"] == f"{mo}월")]["value"].dropna()
-    return s.iloc[-1] if len(s) else np.nan
-
-def member_series(mdf, metric, seg, year):
-    s = mdf[(mdf["metric"] == metric) & (mdf["segment"] == seg) & (mdf["year"] == year)]
-    return s.sort_values("sortkey").set_index("label")["value"]
+    cols = ["gran", "year", "label"]
+    nc, oc = _period_set(df_new, cols), _period_set(stored, cols)
+    return len(nc - oc), len(nc & oc)
 
 
 # ══════════════════════════════════════════════════════
@@ -1179,128 +1081,7 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
         return None, f"생성 중 오류: {e}"
 
 # ══════════════════════════════════════════════════════
-# 회원 실적 페이지
-# ══════════════════════════════════════════════════════
-def member_delta(metric, cur, prev):
-    if cur is None or prev is None: return None
-    if isinstance(cur, float) and np.isnan(cur): return None
-    if isinstance(prev, float) and np.isnan(prev): return None
-    if metric in MEMBER_PCT:
-        d = (cur - prev) * 100
-        return f"△{abs(d):.2f}%p" if d < 0 else f"+{d:.2f}%p"
-    if prev == 0: return None
-    d = (cur - prev) / prev * 100
-    return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
-
-def render_member_page(mdf, chart_years=None):
-    st.markdown("## 회원 실적 — 신규/기존 세그먼트")
-    if mdf.empty:
-        st.info("회원 실적 데이터가 없습니다. 회원 실적 엑셀을 업로드해주세요.")
-        return
-    years = sorted(mdf["year"].dropna().unique().astype(int))
-    last_y = years[-1]
-    last_mo = int(mdf[mdf["year"] == last_y]["sortkey"].max() % 100)
-    st.caption(f"최신: {last_y}년 {last_mo}월 · {years[0]}–{years[-1]}년")
-
-    # KPI 카드 — 유효회원수/구매고객수/거래액/CR (Total, 전월·전년비)
-    pm_y, pm_m = (last_y, last_mo - 1) if last_mo > 1 else (last_y - 1, 12)
-    kpis = ["유효회원수", "구매고객수", "거래액 (VAT제외)", "CR(%)"]
-    cols = st.columns(4)
-    for col, met in zip(cols, kpis):
-        cur = member_pick(mdf, met, "Total", last_y, last_mo)
-        mom = member_pick(mdf, met, "Total", pm_y, pm_m)
-        yoy = member_pick(mdf, met, "Total", last_y - 1, last_mo)
-        pills = ""
-        for d, lab in [(member_delta(met, cur, mom), "전월비"),
-                       (member_delta(met, cur, yoy), "전년비")]:
-            if d:
-                neg = d.startswith("△")
-                pills += (f'<div class="kpi-delta {"down" if neg else "up"}">'
-                          f'{"" if neg else "↑ "}{d} ({lab})</div>')
-            else:
-                pills += f'<div class="kpi-delta na">– ({lab})</div>'
-        col.markdown(f'<div class="kpi-card"><div class="kpi-label">{met} ({last_mo}월)</div>'
-                     f'<div class="kpi-value">{fmt_member(met, cur)}</div>{pills}</div>',
-                     unsafe_allow_html=True)
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-
-    # 신규/기존 구성비 (유효회원수 최신월)
-    st.subheader(f"회원 구성 — {last_y}년 {last_mo}월 (유효회원수)")
-    comp = {s: member_pick(mdf, "유효회원수", s, last_y, last_mo)
-            for s in ["당월신규", "기가입신규", "기존"]}
-    total = member_pick(mdf, "유효회원수", "Total", last_y, last_mo)
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        fig = go.Figure(go.Pie(
-            labels=list(comp.keys()), values=[v for v in comp.values()],
-            hole=0.55, marker=dict(colors=[clr("blue"), clr("teal"), clr("slate")]),
-            textinfo="label+percent"))
-        fig.update_layout(**{**base_layout(280, title="유효회원 구성비"), "showlegend": False})
-        st.plotly_chart(fig, width="stretch")
-    with c2:
-        rows = []
-        for s in ["Total", "당월신규", "기가입신규", "기존"]:
-            v = member_pick(mdf, "유효회원수", s, last_y, last_mo)
-            share = (v / total * 100) if (total and not np.isnan(v)) else np.nan
-            rows.append({"세그먼트": s, "유효회원수": fmt_member("유효회원수", v),
-                         "비중": "–" if np.isnan(share) else f"{share:.1f}%"})
-        st.dataframe(pd.DataFrame(rows).set_index("세그먼트"), width="stretch")
-
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-
-    # 지표 선택 → 세그먼트별 YoY 추이
-    met = st.selectbox("지표 선택", MEMBER_METRICS, key="wr_mem_metric")
-    cyears = chart_years or years[-2:]
-    cyears = [y for y in cyears if y in years] or years[-2:]
-    div = 1e8 if met == "거래액 (VAT제외)" else 1
-    unit = "억" if met == "거래액 (VAT제외)" else ("%" if met in MEMBER_PCT else "")
-    if met in MEMBER_PCT: div = 0.01
-
-    st.subheader(f"{met} — 세그먼트별 월 추이 ({last_y}년)")
-    x_all = [f"{i}월" for i in range(1, 13)]
-    fig = go.Figure()
-    seg_color = {"Total": "slate", "당월신규": "blue", "기가입신규": "teal", "기존": "amber"}
-    for s in MEMBER_SEGS:
-        ser = member_series(mdf, met, s, last_y).reindex(x_all).dropna()
-        if ser.empty: continue
-        fig.add_trace(go.Scatter(x=ser.index.tolist(), y=(ser / div).tolist(),
-                                 mode="lines+markers", name=s,
-                                 line=dict(color=clr(seg_color[s]), width=2), marker=dict(size=5)))
-    ly = base_layout(320, ysuffix=unit if unit == "%" else "", title=f"{met} ({unit})")
-    ly["xaxis"]["categoryorder"] = "array"; ly["xaxis"]["categoryarray"] = x_all
-    fig.update_layout(**ly)
-    st.plotly_chart(fig, width="stretch")
-
-    # Total 전년 비교
-    st.subheader(f"{met} — Total 전년 비교")
-    fig2 = go.Figure()
-    for i, y in enumerate(sorted(cyears)):
-        ser = member_series(mdf, met, "Total", y).reindex(x_all).dropna()
-        if ser.empty: continue
-        fig2.add_trace(go.Scatter(x=ser.index.tolist(), y=(ser / div).tolist(),
-                                  mode="lines+markers", name=str(y),
-                                  line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
-                                  marker=dict(size=5)))
-    ly2 = base_layout(320, ysuffix=unit if unit == "%" else "", title=f"{met} Total ({unit})")
-    ly2["xaxis"]["categoryorder"] = "array"; ly2["xaxis"]["categoryarray"] = x_all
-    fig2.update_layout(**ly2)
-    st.plotly_chart(fig2, width="stretch")
-
-    # 세그먼트 × 월 표 (최신 연도)
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader(f"{met} — 세그먼트 × 월 ({last_y}년)")
-    rows = []
-    for s in MEMBER_SEGS:
-        ser = member_series(mdf, met, s, last_y)
-        row = {"세그먼트": s}
-        for lb in x_all:
-            if lb in ser.index and not (isinstance(ser[lb], float) and np.isnan(ser[lb])):
-                row[lb] = fmt_member(met, ser[lb])
-        rows.append(row)
-    st.dataframe(pd.DataFrame(rows).set_index("세그먼트"), width="stretch")
-
-# ══════════════════════════════════════════════════════
-# 07. 앱푸시 동의 현황 페이지
+# 06. 앱푸시 동의 현황 페이지
 # ══════════════════════════════════════════════════════
 def render_push_page(df, ref_year, chart_years):
     st.markdown("## 앱푸시 동의 현황")
@@ -1420,6 +1201,97 @@ def render_push_page(df, ref_year, chart_years):
                     xaxis=dict(type="category")
                 )
                 st.plotly_chart(fig, width="stretch")
+
+    # ── 확장 뷰: 동의자 잔고·이탈·순증·요일 패턴 (앱푸시_* 지표)
+    ext = df[(df["gran"] == "일") & df["metric"].isin(
+        ["앱푸시_동의자수", "앱푸시_신규추가", "앱푸시_이탈"]) & (df["close"] == "final")].copy()
+    if ext.empty:
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.info("동의자 잔고·이탈·순증 뷰는 PUSH 원천 엑셀을 다시 업로드하면 표시됩니다. "
+                "(기존/신규/Total 섹션 전체를 새로 인식해 누적에 저장합니다)")
+    else:
+        ext[["_m", "_d"]] = ext["label"].str.extract(r"^(\d{1,2})/(\d{1,2})$")
+        ext = ext.dropna(subset=["_m"]).copy()
+        ext["dt"] = pd.to_datetime(dict(year=ext["year"].astype(int),
+                                        month=ext["_m"].astype(int),
+                                        day=ext["_d"].astype(int)), errors="coerce")
+        ext = ext.dropna(subset=["dt"])
+        ext = mask_push_spikes(ext)
+
+        bal = ext[ext["metric"] == "앱푸시_동의자수"]
+        add = ext[ext["metric"] == "앱푸시_신규추가"]
+        out = ext[ext["metric"] == "앱푸시_이탈"]
+
+        # KPI — 최신 잔고(Total) + 당월 흐름
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        bt = bal[bal["segment"] == "*TOTAL"].sort_values("dt")
+        if not bt.empty:
+            last_dt = bt["dt"].iloc[-1]
+            cur_bal = bt["value"].iloc[-1]
+            pm_end = bt[bt["dt"] < last_dt.replace(day=1)]  # 전월말 잔고
+            mom = (f"{cur_bal - pm_end['value'].iloc[-1]:+,.0f}명 (전월말比)"
+                   if not pm_end.empty else None)
+            in_mo = lambda s: s[(s["segment"] == "*TOTAL") &
+                                (s["dt"].dt.year == last_dt.year) &
+                                (s["dt"].dt.month == last_dt.month)]["value"].sum()
+            mo_add, mo_out = in_mo(add), in_mo(out)
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric(f"총 동의자 ({last_dt:%m/%d} 기준)", f"{cur_bal:,.0f}명", mom)
+            k2.metric(f"{last_dt.month}월 신규추가", f"{mo_add:,.0f}명")
+            k3.metric(f"{last_dt.month}월 이탈", f"{mo_out:,.0f}명")
+            k4.metric(f"{last_dt.month}월 순증", f"{mo_add - mo_out:+,.0f}명")
+
+        # 동의자 잔고 추이 — 기존/신규/Total (선택 단위 기말값)
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader("동의자 잔고 추이 — 기존/신규/Total")
+        rule = {"일": "D", "주": "W-SUN", "월": "MS"}[sel_gran]
+        fig_b = go.Figure()
+        seg_pal = {"*TOTAL": "slate", "기존": "blue", "신규": "teal"}
+        for seg in ["*TOTAL", "기존", "신규"]:
+            s = (bal[bal["segment"] == seg].set_index("dt").sort_index()["value"]
+                 .resample(rule).last().dropna())
+            if s.empty: continue
+            fig_b.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines",
+                                       name="Total" if seg == "*TOTAL" else seg,
+                                       line=dict(color=clr(seg_pal[seg]), width=2)))
+        fig_b.update_layout(**base_layout(300, title="수신동의 누적 잔고 (명)"))
+        st.plotly_chart(fig_b, width="stretch")
+
+        # 순증감 분해 — 신규추가(+) vs 이탈(−) + 순증 라인 (Total)
+        st.subheader("동의 순증감 분해 — 신규추가 vs 이탈 (Total)")
+        a = (add[add["segment"] == "*TOTAL"].set_index("dt").sort_index()["value"]
+             .resample(rule).sum(min_count=1))
+        o = (out[out["segment"] == "*TOTAL"].set_index("dt").sort_index()["value"]
+             .resample(rule).sum(min_count=1))
+        flow = pd.DataFrame({"신규추가": a, "이탈": o}).dropna(how="all")
+        if not flow.empty:
+            fig_f = go.Figure()
+            fig_f.add_trace(go.Bar(x=flow.index, y=flow["신규추가"], name="신규추가(+)",
+                                   marker_color=clr("green")))
+            fig_f.add_trace(go.Bar(x=flow.index, y=-flow["이탈"], name="이탈(−)",
+                                   marker_color=clr("red")))
+            net = flow["신규추가"].fillna(0) - flow["이탈"].fillna(0)
+            fig_f.add_trace(go.Scatter(x=flow.index, y=net, name="순증",
+                                       mode="lines+markers",
+                                       line=dict(color=clr("slate"), width=2),
+                                       marker=dict(size=4)))
+            lyf = base_layout(320, title=f"{gran_opt} 신규추가·이탈·순증 (명)")
+            lyf["barmode"] = "relative"
+            fig_f.update_layout(**lyf)
+            st.plotly_chart(fig_f, width="stretch")
+            st.caption("※ 대량 이관·재동의 스파이크(연도별 중앙값 10배 초과)는 왜곡 방지를 위해 제외")
+
+        # 요일 패턴 — 신규추가/이탈 요일별 일평균 (기준 연도)
+        st.subheader(f"요일별 평균 — 신규추가·이탈 ({ref_year}년)")
+        dows = ["월", "화", "수", "목", "금", "토", "일"]
+        fig_d = go.Figure()
+        for nm, src, cname in [("신규추가", add, "green"), ("이탈", out, "red")]:
+            s = src[(src["segment"] == "*TOTAL") & (src["dt"].dt.year == ref_year)]
+            if s.empty: continue
+            m = s.groupby(s["dt"].dt.dayofweek)["value"].mean().reindex(range(7))
+            fig_d.add_trace(go.Bar(x=dows, y=m.values, name=nm, marker_color=clr(cname)))
+        fig_d.update_layout(**base_layout(280, title="요일별 일평균 (명)"))
+        st.plotly_chart(fig_d, width="stretch")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("월별 전년비 증감 추이표 (YoY)")
@@ -1553,18 +1425,15 @@ def main():
                  "전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동 인식합니다.")
         st.markdown("---")
         PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
-                 "04. 채널별 실적", "05. 회원 실적", "06. 통합 데이터·다운로드", "07. 앱푸시 동의 현황", "08. 첫구매 고객 세그먼트 성과"]
+                 "04. 채널별 실적", "05. 통합 데이터·다운로드", "06. 앱푸시 동의 현황", "07. 첫구매 고객 세그먼트 성과"]
         page = st.radio("페이지", PAGES, key="wr_page")
 
     stored = load_store()
-    member_stored = load_member_store()
     expanded = expand_uploads(files) if files else []
     df_new = combine_files(tuple(expanded)) if expanded else pd.DataFrame()
-    member_new = combine_member(tuple(expanded)) if expanded else pd.DataFrame()
 
-    has_any = (not stored.empty or not member_stored.empty
-               or not df_new.empty or not member_new.empty)
-    if files and df_new.empty and member_new.empty and stored.empty and member_stored.empty:
+    has_any = not stored.empty or not df_new.empty
+    if files and df_new.empty and stored.empty:
         st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
         st.stop()
     if not has_any:
@@ -1572,7 +1441,6 @@ def main():
         st.markdown("""
 - **마스터**: `전체관점 - 일자별/주별/월별 실적 (기본)`
 - **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
-- **회원 실적**: 신규/기존 회원별 9개 지표 월별 파일 (유효회원수·UV·구매고객수·CR 등)
 - 주간 폴더를 **zip으로 묶어 통째로** 올려도 됩니다. 파일 내용으로 단위·지표를 자동 감지합니다.
 - 업로드 후 **저장**을 누르면 누적됩니다. 다음에 기간이 다른 파일을 올리면 **겹치는 기간은 최신값으로 갱신**되고 나머지는 이어붙습니다.
 """)
@@ -1580,13 +1448,12 @@ def main():
 
     # 누적 저장소와 병합 — 미리보기(저장 전까지 영구 반영 안 함)
     df = merge_store(stored, df_new)
-    mdf = merge_member(member_stored, member_new)
 
-    has_new = (not df_new.empty) or (not member_new.empty)
+    has_new = not df_new.empty
     sig = tuple(sorted((n, len(b)) for n, b in expanded))
     with st.sidebar:
         if has_new:
-            added, updated = upload_diff(stored, df_new, member_stored, member_new)
+            added, updated = upload_diff(stored, df_new)
             saved = st.session_state.get("wr_saved_sig") == sig
             if saved:
                 st.success("저장됨 ✓ (누적 반영 완료)")
@@ -1596,16 +1463,11 @@ def main():
                 if st.button("💾 저장 (누적 반영)", key="wr_commit",
                              type="primary", width="stretch"):
                     if not df_new.empty: save_store(df)
-                    if not member_new.empty: save_member_store(mdf)
                     st.session_state["wr_saved_sig"] = sig
                     st.rerun()
 
-    # 코어 데이터가 비어 회원 데이터만 있을 때: 회원 페이지로 안내
     if df.empty:
-        st.warning("첫구매(전체관점/지표별) 데이터가 없습니다. **05. 회원 실적** 페이지를 이용하세요.")
-        if not mdf.empty:
-            print_button()
-            render_member_page(mdf)
+        st.warning("첫구매(전체관점/지표별) 데이터가 없습니다. 원천 파일을 업로드해주세요.")
         st.stop()
 
     # ── 인식 결과 + 필터
@@ -1663,15 +1525,9 @@ def main():
         st.caption(f"저장됨 {saved_rows:,}행 / 현재 보기 {len(df):,}행{pend}")
         st.download_button("⬇ 누적 데이터 백업 (CSV)",
                            df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
-                           "wr_data_store.csv", "text/csv", width="stretch",
+                           f"wr_data_store_{today_kst():%Y%m%d}.csv", "text/csv", width="stretch",
                            help="앱 재배포 시 누적 데이터가 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 업로드하면 복원됩니다.")
-        if not mdf.empty:
-            st.caption(f"회원 실적 {len(mdf):,}행")
-            st.download_button("💾 회원 실적 백업 (CSV)",
-                               mdf[MEMBER_COLS].to_csv(index=False).encode("utf-8-sig"),
-                               "wr_member_store.csv", "text/csv", width="stretch")
         if st.button("🗑 누적 데이터 초기화", key="wr_clear_store", width="stretch"):
-            if os.path.exists(MEMBER_STORE): os.remove(MEMBER_STORE)
             if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
             st.cache_data.clear()
             st.rerun()
@@ -1681,7 +1537,7 @@ def main():
         st.download_button(
             "⬇ 보고란·메모 백업 (JSON)",
             json.dumps(st.session_state.wr_texts, ensure_ascii=False, indent=2).encode("utf-8"),
-            "wr_insights.json", "application/json", width="stretch",
+            f"wr_insights_{today_kst():%Y%m%d}.json", "application/json", width="stretch",
             help="모든 보고란·인사이트 메모를 백업합니다. 재배포로 초기화돼도 이 파일을 복원하면 되살아납니다.")
         restore = st.file_uploader("메모 복원 (JSON 업로드)", type=["json"], key="wr_restore_memo")
         if restore is not None:
@@ -1758,6 +1614,66 @@ def main():
         st.dataframe(style_delta_cols(tbl), width="stretch")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+
+        # 다각도 뷰 — 전환 퍼널 + 채널 기여 (기준 주차)
+        if wlabel:
+            cF, cW = st.columns(2)
+            with cF:
+                st.subheader("전환 퍼널 — 트래픽→가입→첫구매")
+                st.caption(f"{week_disp(wy, wlabel)} vs 전년 동주 (일평균) · "
+                           "첫구매 고객에는 과거 가입자도 포함되어 단계 비율은 참고용")
+                stages = ["비회원트래픽", "가입자수", "첫구매 고객수"]
+                cur_v = [pick(df, "주", m, "*TOTAL", wy, wlabel, "mtd") for m in stages]
+                pry_v = [pick(df, "주", m, "*TOTAL", wy - 1, wlabel, "final") for m in stages]
+                if any(np.isnan(v) for v in cur_v):
+                    st.info("해당 주차 퍼널 데이터가 부족합니다.")
+                else:
+                    fig_fu = go.Figure()
+                    fig_fu.add_trace(go.Funnel(name=f"{wy}년", y=stages, x=cur_v,
+                                               textinfo="value+percent previous",
+                                               marker=dict(color=clr("blue"))))
+                    if not any(np.isnan(v) for v in pry_v):
+                        fig_fu.add_trace(go.Funnel(name=f"{wy-1}년", y=stages, x=pry_v,
+                                                   textinfo="value+percent previous",
+                                                   marker=dict(color=clr("slate")),
+                                                   opacity=0.55))
+                    fig_fu.update_layout(**base_layout(330, title="단계 비율 = 직전 단계 대비"))
+                    st.plotly_chart(fig_fu, width="stretch")
+            with cW:
+                st.subheader("첫구매 거래액 YoY — 채널 기여")
+                st.caption(f"{week_disp(wy, wlabel)} 전년 동주 대비 증감 분해 (일평균·백만원)")
+                base_t = pick(df, "주", "첫구매 거래액", "*TOTAL", wy - 1, wlabel, "final")
+                cur_t = pick(df, "주", "첫구매 거래액", "*TOTAL", wy, wlabel, "mtd")
+                if np.isnan(base_t) or np.isnan(cur_t):
+                    st.info("해당 주차 채널 데이터가 없습니다.")
+                else:
+                    labels, deltas = [], []
+                    for chn in CHANNELS:
+                        pv = pick(df, "주", "첫구매 거래액", chn, wy - 1, wlabel, "final")
+                        cv = pick(df, "주", "첫구매 거래액", chn, wy, wlabel, "mtd")
+                        if np.isnan(pv) and np.isnan(cv): continue
+                        d = (0 if np.isnan(cv) else cv) - (0 if np.isnan(pv) else pv)
+                        labels.append(chn); deltas.append(d / 1e6)
+                    resid = (cur_t - base_t) / 1e6 - sum(deltas)
+                    if abs(resid) > 0.05:
+                        labels.append("기타"); deltas.append(resid)
+                    fig_w = go.Figure(go.Waterfall(
+                        x=[f"{wy-1}년"] + labels + [f"{wy}년"],
+                        measure=["absolute"] + ["relative"] * len(labels) + ["total"],
+                        y=[base_t / 1e6] + deltas + [0],
+                        text=[f"{base_t/1e6:,.1f}"] + [f"{d:+,.1f}" for d in deltas]
+                             + [f"{cur_t/1e6:,.1f}"],
+                        textposition="outside",
+                        increasing=dict(marker=dict(color=clr("green"))),
+                        decreasing=dict(marker=dict(color=clr("red"))),
+                        totals=dict(marker=dict(color=clr("slate"))),
+                        connector=dict(line=dict(color="#e2e8f0")),
+                    ))
+                    lyw = base_layout(330, title="주간 일평균 거래액 (백만원)")
+                    lyw["showlegend"] = False
+                    fig_w.update_layout(**lyw)
+                    st.plotly_chart(fig_w, width="stretch")
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 보고란
         draft = auto_draft(df, ref_year, ref_month, ref_week=wlabel)
@@ -1892,12 +1808,8 @@ def main():
             rows.append(row)
         st.dataframe(pd.DataFrame(rows).set_index("채널"), width="stretch")
 
-    # ════════════ 05. 회원 실적 ════════════
-    elif page == "05. 회원 실적":
-        render_member_page(mdf, chart_years)
-
-    # ════════════ 06. 통합 데이터·다운로드 ════════════
-    elif page == "06. 통합 데이터·다운로드":
+    # ════════════ 05. 통합 데이터·다운로드 ════════════
+    elif page == "05. 통합 데이터·다운로드":
         st.markdown("## 통합 데이터 · 다운로드")
         st.caption("업로드한 모든 파일을 합친 통합 long 데이터입니다.")
         st.dataframe(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
@@ -1916,18 +1828,15 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         csv = df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("통합 long 데이터 CSV", csv, "통합데이터.csv", "text/csv")
-        if not mdf.empty:
-            st.download_button("회원 실적 데이터 CSV",
-                               mdf.to_csv(index=False).encode("utf-8-sig"),
-                               "회원실적데이터.csv", "text/csv")
+        st.download_button("통합 long 데이터 CSV", csv,
+                           f"통합데이터_{today_kst():%Y%m%d}.csv", "text/csv")
 
-    # ════════════ 07. 앱푸시 동의 현황 ════════════
-    elif page == "07. 앱푸시 동의 현황":
+    # ════════════ 06. 앱푸시 동의 현황 ════════════
+    elif page == "06. 앱푸시 동의 현황":
         render_push_page(df, ref_year, chart_years)
 
-    # ════════════ 08. 첫구매 고객 세그먼트 성과 ════════════
-    elif page == "08. 첫구매 고객 세그먼트 성과":
+    # ════════════ 07. 첫구매 고객 세그먼트 성과 ════════════
+    elif page == "07. 첫구매 고객 세그먼트 성과":
         st.markdown("## 첫구매 고객 세그먼트 성과")
         
         # 세그먼트 선택 필터 추가
