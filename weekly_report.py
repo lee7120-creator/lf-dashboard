@@ -1734,14 +1734,25 @@ def main():
                         grp["동의율"] = float('nan')
                         
                     out_tbl = {}
-                    cols = [f"{m}월" for m in range(1, 13)]
+                    
+                    # 업로드한 최신 월까지만 표시하도록 최대 월 계산
+                    max_month = 12
+                    if len(chart_years) > 0:
+                        last_year = chart_years[-1]
+                        for m in range(12, 0, -1):
+                            r = grp[(grp["year"] == last_year) & (grp["month"] == m)]
+                            if not r.empty and pd.notna(r["가입자수"].values[0]):
+                                max_month = m
+                                break
+                                
+                    cols = [f"{m}월" for m in range(1, max_month + 1)]
                     
                     # We assume chart_years is sorted, e.g. [2025, 2026]
                     for met in push_metrics:
                         for y in chart_years:
                             row_name = f"{met} ({y})"
                             out_tbl[row_name] = []
-                            for m in range(1, 13):
+                            for m in range(1, max_month + 1):
                                 r = grp[(grp["year"] == y) & (grp["month"] == m)]
                                 out_tbl[row_name].append(r[met].values[0] if (not r.empty and met in r.columns) else float('nan'))
                         
@@ -1750,23 +1761,42 @@ def main():
                             yoy_name = f"{met} (YoY)"
                             out_tbl[yoy_name] = []
                             prev_y, cur_y = chart_years[-2], chart_years[-1]
-                            for i, m in enumerate(range(1, 13)):
+                            for i, m in enumerate(range(1, max_month + 1)):
                                 prev_val = out_tbl[f"{met} ({prev_y})"][i]
                                 cur_val = out_tbl[f"{met} ({cur_y})"][i]
-                                out_tbl[yoy_name].append(fmt_delta(met, cur_val, prev_val))
+                                # Handle cases where one of the values is missing by returning empty
+                                if pd.isna(cur_val) and pd.isna(prev_val):
+                                    out_tbl[yoy_name].append("-")
+                                else:
+                                    out_tbl[yoy_name].append(fmt_delta(met, cur_val, prev_val) or "-")
                                 
                     tbl_df = pd.DataFrame(out_tbl, index=cols).T
                     
-                    # Apply formatting using style_trend logic but customized for this table
                     disp = tbl_df.astype(object).copy()
                     for row_name in disp.index:
                         if "(YoY)" in row_name:
-                            continue # Already formatted by fmt_delta
+                            continue
                         else:
                             met = row_name.split(" ")[0]
-                            disp.loc[row_name] = [fmt_value(met, v) for v in tbl_df.loc[row_name]]
+                            disp.loc[row_name] = [fmt_value(met, v) if pd.notna(v) else "-" for v in tbl_df.loc[row_name]]
                             
-                    st.dataframe(style_delta_cols(disp), use_container_width=True)
+                    def style_yoy_rows(tbl):
+                        def _color(v):
+                            s = str(v)
+                            if s.startswith("△"): return "color:#dc2626;font-weight:600"
+                            if s.startswith("+"): return "color:#16a34a;font-weight:600"
+                            return ""
+                        def _highlight(df):
+                            styles = pd.DataFrame('', index=df.index, columns=df.columns)
+                            for idx in df.index:
+                                if "(YoY)" in str(idx):
+                                    for col in df.columns:
+                                        styles.loc[idx, col] = _color(df.loc[idx, col])
+                            return styles
+                        return tbl.style.apply(_highlight, axis=None)
+                        
+                    st.dataframe(style_yoy_rows(disp), use_container_width=True)
+
 
                 
                 st.markdown("### 상세 데이터")
