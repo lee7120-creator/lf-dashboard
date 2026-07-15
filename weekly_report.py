@@ -1725,6 +1725,24 @@ def main():
                     sub = sub[~sub["label"].astype(str).str.strip().isin(glitch_dates)]
                     
                     sub["month"] = sub["label"].apply(lambda x: int(str(x).split('/')[0]) if '/' in str(x) else 0)
+                    sub["day"] = sub["label"].apply(lambda x: int(str(x).split('/')[1]) if '/' in str(x) else 0)
+                    
+                    # 업로드한 최신 월 및 일(MTD) 계산
+                    max_month = 12
+                    max_day = 31
+                    if len(chart_years) > 0:
+                        last_year = chart_years[-1]
+                        for m in range(12, 0, -1):
+                            r = sub[(sub["year"] == last_year) & (sub["month"] == m) & sub["value"].notna()]
+                            if not r.empty:
+                                max_month = m
+                                max_day = r["day"].max()
+                                break
+                                
+                    # 당월(max_month)에 대해서는 전년도 데이터도 MTD(max_day)까지만 필터링하여 누적 비교
+                    if max_month > 0:
+                        sub = sub[~((sub["month"] == max_month) & (sub["day"] > max_day))]
+                        
                     grp = sub.groupby(["year", "month", "metric"])["value"].sum().unstack("metric").reset_index()
                     
                     if "가입자수" in grp.columns and "앱푸시수신동의" in grp.columns:
@@ -1734,18 +1752,12 @@ def main():
                         grp["동의율"] = float('nan')
                         
                     out_tbl = {}
-                    
-                    # 업로드한 최신 월까지만 표시하도록 최대 월 계산
-                    max_month = 12
-                    if len(chart_years) > 0:
-                        last_year = chart_years[-1]
-                        for m in range(12, 0, -1):
-                            r = grp[(grp["year"] == last_year) & (grp["month"] == m)]
-                            if not r.empty and pd.notna(r["가입자수"].values[0]):
-                                max_month = m
-                                break
-                                
-                    cols = [f"{m}월" for m in range(1, max_month + 1)]
+                    cols = []
+                    for m in range(1, max_month + 1):
+                        if m == max_month:
+                            cols.append(f"{m}월 (MTD)")
+                        else:
+                            cols.append(f"{m}월")
                     
                     # We assume chart_years is sorted, e.g. [2025, 2026]
                     for met in push_metrics:
@@ -1764,7 +1776,6 @@ def main():
                             for i, m in enumerate(range(1, max_month + 1)):
                                 prev_val = out_tbl[f"{met} ({prev_y})"][i]
                                 cur_val = out_tbl[f"{met} ({cur_y})"][i]
-                                # Handle cases where one of the values is missing by returning empty
                                 if pd.isna(cur_val) and pd.isna(prev_val):
                                     out_tbl[yoy_name].append("-")
                                 else:
@@ -1796,6 +1807,7 @@ def main():
                         return tbl.style.apply(_highlight, axis=None)
                         
                     st.dataframe(style_yoy_rows(disp), use_container_width=True)
+
 
 
                 
