@@ -1654,65 +1654,90 @@ def main():
 
     # ════════════ 07. 앱푸시 동의 현황 ════════════
     elif page == "07. 앱푸시 동의 현황":
-        st.markdown("## 앱푸시 동의 현황 (일자별)")
-        df_daily = df[df["gran"] == "일"]
-        
-        if df_daily.empty:
-            st.info("일자별 데이터가 없습니다. PUSH(7) 및 일_가입자수 파일을 업로드해주세요.")
-        else:
-            st.subheader(f"{ref_year}년 신규가입 대비 앱푸시 수신동의율 추이")
-            dates = labels_sorted(df, "일", [ref_year])
-            
-            if not dates:
-                st.info(f"{ref_year}년 일자별 데이터가 없습니다.")
-            else:
-                rows = []
-                for d in dates:
-                    push_val = pick(df, "일", "앱푸시수신동의", "*TOTAL", ref_year, d, "final")
-                    join_val = pick(df, "일", "가입자수", "*TOTAL", ref_year, d, "final")
+                st.markdown("## 앱푸시 동의 현황")
+                gran_opt = st.radio("차트 보기 기준", ["일자별", "주차별", "월별"], horizontal=True, key="push_gran_opt")
+                gran_map = {"일자별": "일", "주차별": "주", "월별": "월"}
+                sel_gran = gran_map[gran_opt]
+                
+                df_gran = df[df["gran"] == sel_gran]
+                
+                if df_gran.empty:
+                    st.info(f"{sel_gran} 단위 데이터가 없습니다.")
+                else:
+                    st.subheader(f"{ref_year}년 {gran_opt} 신규가입 및 앱푸시 수신동의율 추이")
+                    dates = labels_sorted(df, sel_gran, [ref_year])
                     
-                    # 4/24 이상치 하드코딩 제거 (비정상 스파이크)
-                    if str(d).strip() in ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]:
-                        push_val = np.nan
+                    if not dates:
+                        st.info(f"{ref_year}년 {gran_opt} 데이터가 없습니다.")
+                    else:
+                        rows = []
+                        prev_year = chart_years[-2] if len(chart_years) >= 2 else None
                         
-                    rate = np.nan
-                    if not np.isnan(push_val) and not np.isnan(join_val) and join_val > 0:
-                        rate = push_val / join_val
-                        # 이상치 제거: 100% 초과 시 데이터 글리치로 간주
-                        if rate > 1.0:
-                            rate = np.nan
+                        for d in dates:
+                            push_val = pick(df, sel_gran, "앱푸시수신동의", "*TOTAL", ref_year, d, "final")
+                            join_val = pick(df, sel_gran, "가입자수", "*TOTAL", ref_year, d, "final")
+                            
+                            # 4/24 이상치 하드코딩 제거 (비정상 스파이크)
+                            if sel_gran == "일" and str(d).strip() in ["4/24", "04/24", "2026/04/24", "2026-04-24", "4-24", "04-24"]:
+                                push_val = float('nan')
+                                
+                            rate = float('nan')
+                            if pd.notna(push_val) and pd.notna(join_val) and join_val > 0:
+                                rate = push_val / join_val
+                                if rate > 1.0:
+                                    rate = float('nan')
+                                    
+                            prev_rate = float('nan')
+                            if prev_year:
+                                prev_push_val = pick(df, sel_gran, "앱푸시수신동의", "*TOTAL", prev_year, d, "final")
+                                prev_join_val = pick(df, sel_gran, "가입자수", "*TOTAL", prev_year, d, "final")
+                                
+                                if sel_gran == "일" and str(d).strip() in ["4/24", "04/24", "2025/04/24", "2025-04-24", "4-24", "04-24"]:
+                                    prev_push_val = float('nan')
+                                    
+                                if pd.notna(prev_push_val) and pd.notna(prev_join_val) and prev_join_val > 0:
+                                    prev_rate = prev_push_val / prev_join_val
+                                    if prev_rate > 1.0:
+                                        prev_rate = float('nan')
+                                        
+                            rows.append({
+                                "날짜": d,
+                                "가입자수": join_val if pd.notna(join_val) else 0,
+                                "앱푸시수신동의": push_val if pd.notna(push_val) else 0,
+                                "동의율": rate,
+                                "전년동의율": prev_rate
+                            })
+                            
+                        res_df = pd.DataFrame(rows)
                         
-                    rows.append({
-                        "날짜": d,
-                        "앱푸시수신동의": push_val,
-                        "가입자수": join_val,
-                        "동의율": rate
-                    })
-                
-                res_df = pd.DataFrame(rows)
-                
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["가입자수"], name="가입자수", marker_color=clr("slate"), opacity=0.6, yaxis="y1"))
-                fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["앱푸시수신동의"], name="앱푸시수신동의", marker_color=clr("blue"), opacity=0.8, yaxis="y1"))
-                fig.add_trace(go.Scatter(x=res_df["날짜"], y=res_df["동의율"]*100, name="동의율(%)", mode="lines+markers", line=dict(color=clr("red"), width=2), connectgaps=True, yaxis="y2"))
-                
-                max_rate = max(res_df["동의율"].dropna()*100, default=10)
-                if pd.isna(max_rate) or max_rate == 0:
-                    max_rate = 10
-                
-                fig.update_layout(
-                    title="일자별 신규가입 및 앱푸시 수신동의 현황",
-                    xaxis=dict(type="category", tickangle=-45),
-                    yaxis=dict(title="명", gridcolor="#f1f5f9"),
-                    yaxis2=dict(title="%", overlaying="y", side="right", range=[0, max_rate * 1.2], gridcolor="rgba(0,0,0,0)"),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(255,255,255,0.8)"),
-                    barmode="group",
-                    height=450,
-                    margin=dict(l=10, r=10, t=40, b=10),
-                    paper_bgcolor="rgba(248,249,252,0)", plot_bgcolor="rgba(248,249,252,0)"
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
+                        if not res_df.empty:
+                            fig = go.Figure()
+                            fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["가입자수"], name="가입자수", marker_color=clr("slate"), yaxis="y1"))
+                            fig.add_trace(go.Bar(x=res_df["날짜"], y=res_df["앱푸시수신동의"], name="앱푸시수신동의", marker_color=clr("blue"), yaxis="y1"))
+                            
+                            fig.add_trace(go.Scatter(x=res_df["날짜"], y=res_df["동의율"]*100, name=f"{ref_year} 동의율(%)", mode="lines+markers", line=dict(color=clr("red"), width=2), connectgaps=True, yaxis="y2"))
+                            
+                            if prev_year:
+                                fig.add_trace(go.Scatter(x=res_df["날짜"], y=res_df["전년동의율"]*100, name=f"{prev_year} 동의율(%)", mode="lines", line=dict(color=clr("slate"), width=2, dash="dot"), connectgaps=True, yaxis="y2"))
+                                
+                            max_rate = max(res_df["동의율"].dropna()*100, default=10)
+                            if prev_year:
+                                max_prev = max(res_df["전년동의율"].dropna()*100, default=10)
+                                max_rate = max(max_rate, max_prev)
+                                
+                            if pd.isna(max_rate) or max_rate == 0:
+                                max_rate = 10
+                                
+                            fig.update_layout(
+                                barmode="group",
+                                yaxis=dict(title="명", side="left", showgrid=False),
+                                yaxis2=dict(title="%", side="right", overlaying="y", range=[0, max_rate * 1.2], showgrid=False),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                margin=dict(l=0, r=0, t=30, b=0),
+                                xaxis=dict(type="category")
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
 
                 st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
                 st.subheader("월별 전년비 증감 추이표 (YoY)")
