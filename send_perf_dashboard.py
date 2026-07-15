@@ -3351,8 +3351,13 @@ def main():
         cur_w = _aggw(ref_ws)
         prev_ws = ref_ws - pd.Timedelta(days=7)
         prev_w = _aggw(prev_ws)
-        # 전월 동주 — 기준주 시작일의 '한 달 전' 날짜가 속한 주(월~일)
-        pm_ws = pd.Timestamp((ref_ws - pd.DateOffset(months=1)).to_period("W").start_time)
+        # 전월 동주 — 기준주 '한가운데(목요일)'의 한 달 전 날짜가 속한 주(월~일).
+        # 시작일(월요일) 앵커를 쓰면 한 달 전 날짜가 그 주의 꼬리(토·일)에 걸릴 때 한 주
+        # 이른 주가 선택된다 (예: 기준주 7/6~7/12 → 6/6(토) → 6/1~6/7, 35일 전).
+        # 목요일 앵커는 '4주 전'·'월내 같은 주차 순번' 두 관례와 일치 (→ 6/8~6/14).
+        # ISO 주차가 목요일로 주의 소속을 정하는 것과 같은 원리.
+        pm_ws = pd.Timestamp(((ref_ws + pd.Timedelta(days=3)) - pd.DateOffset(months=1))
+                             .to_period("W").start_time)
         pm_w = _aggw(pm_ws)
         try:                                             # 전년 동주 — ISO 주차 번호 기준
             _iy, _iw, _ = ref_ws.isocalendar()
@@ -3418,7 +3423,7 @@ def main():
                      hide_index=True, width="stretch", height=38 + 35 * len(wr_tbl))
         st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
-                   "전월비는 기준주 시작일의 한 달 전 날짜가 속한 주(전월 동주)와 비교해요. "
+                   "전월비는 전월 동주(기준주의 정확히 4주 전 주)와 비교해요. "
                    "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
                    "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
 
