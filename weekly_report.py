@@ -1881,99 +1881,115 @@ def main():
     elif page == "08. 첫구매 고객 세그먼트 성과":
         st.markdown("## 첫구매 고객 세그먼트 성과")
         
-        metric_opt = st.selectbox("지표 선택", ["거래액", "고객수", "객단가", "CR"])
-        segs = ["1_신규", "2_기가입신규", "3_기존"]
+        # 지표 선택 제거하고 모든 지표 표시
+        segs = ["1_신규", "1_당월신규", "2_기가입신규", "3_기존"]  # 1_당월신규 추가 (스크린샷 참고)
         
-        def get_m(b, df_search):
-            ms = df_search["metric"].dropna().unique()
-            for m in ms:
-                if b in str(m): return m
-            return b
-
         def wow_segment_table(wy, wlabel):
             df_gran = df[df["gran"] == "주"]
-            m_name = ""
-            if metric_opt == "거래액": m_name = "거래액" if "거래액" in df_gran["metric"].values else get_m("거래액", df_gran)
-            elif metric_opt == "고객수": m_name = "구매고객수" if "구매고객수" in df_gran["metric"].values else get_m("고객수", df_gran)
-            elif metric_opt == "객단가": m_name = "객단가" if "객단가" in df_gran["metric"].values else get_m("객단가", df_gran)
-            elif metric_opt == "CR": m_name = "CR"
-            
+            # 해당 세그먼트들에 존재하는 모든 지표 추출 (순서 유지)
+            metrics = df_gran[df_gran["segment"].isin(segs)]["metric"].dropna().unique().tolist()
+            if not metrics:
+                metrics = ["거래액", "고객수", "객단가", "CR"]
+                
             py, plb = prev_label(df, "주", wy, wlabel)
             cols = [week_disp(py, plb), week_disp(wy, wlabel), "전주비",
                     week_disp(wy - 1, wlabel), "전년비"]
             rows = []
             
-            def _get_val(yr, lb, c, seg):
-                v = pick(df, "주", m_name, seg, yr, lb, c)
-                if pd.isna(v) and metric_opt == "객단가":
-                    rev = pick(df, "주", get_m("거래액", df_gran), seg, yr, lb, c)
-                    cus = pick(df, "주", get_m("고객수", df_gran), seg, yr, lb, c)
-                    if pd.notna(rev) and pd.notna(cus) and cus > 0:
-                        v = rev / cus
+            def _get_val(yr, lb, c, seg, met):
+                v = pick(df, "주", met, seg, yr, lb, c)
+                if pd.isna(v) and "객단가" in met:
+                    # Fallback
+                    rev_m = next((m for m in metrics if "거래액" in m and "비중" not in m), None)
+                    cus_m = next((m for m in metrics if "고객수" in m and "비중" not in m), None)
+                    if rev_m and cus_m:
+                        rev = pick(df, "주", rev_m, seg, yr, lb, c)
+                        cus = pick(df, "주", cus_m, seg, yr, lb, c)
+                        if pd.notna(rev) and pd.notna(cus) and cus > 0:
+                            v = rev / cus
                 return v
 
             for seg in segs:
-                cur = _get_val(wy, wlabel, "mtd", seg)
-                prv = _get_val(py, plb, "final", seg) if plb else np.nan
-                yoy = _get_val(wy - 1, wlabel, "final", seg)
-                rows.append({
-                    "구분": seg,
-                    cols[0]: fmt_value(metric_opt, prv), cols[1]: fmt_value(metric_opt, cur),
-                    cols[2]: fmt_delta(metric_opt, cur, prv) or "-",
-                    cols[3]: fmt_value(metric_opt, yoy), cols[4]: fmt_delta(metric_opt, cur, yoy) or "-",
-                })
-            return pd.DataFrame(rows).set_index("구분")
+                # 데이터가 하나라도 있는 세그먼트만 표시
+                if not df_gran[df_gran["segment"] == seg].empty:
+                    for met in metrics:
+                        cur = _get_val(wy, wlabel, "mtd", seg, met)
+                        prv = _get_val(py, plb, "final", seg, met) if plb else np.nan
+                        yoy = _get_val(wy - 1, wlabel, "final", seg, met)
+                        rows.append({
+                            "구분": seg,
+                            "지표": met,
+                            cols[0]: fmt_value(met, prv), cols[1]: fmt_value(met, cur),
+                            cols[2]: fmt_delta(met, cur, prv) or "-",
+                            cols[3]: fmt_value(met, yoy), cols[4]: fmt_delta(met, cur, yoy) or "-",
+                        })
+            if rows:
+                return pd.DataFrame(rows).set_index(["구분", "지표"])
+            return pd.DataFrame(columns=["구분", "지표"] + cols).set_index(["구분", "지표"])
             
         def yoy_segment_table(ry, rm):
             df_gran = df[df["gran"] == "월"]
-            m_name = ""
-            if metric_opt == "거래액": m_name = "거래액" if "거래액" in df_gran["metric"].values else get_m("거래액", df_gran)
-            elif metric_opt == "고객수": m_name = "구매고객수" if "구매고객수" in df_gran["metric"].values else get_m("고객수", df_gran)
-            elif metric_opt == "객단가": m_name = "객단가" if "객단가" in df_gran["metric"].values else get_m("객단가", df_gran)
-            elif metric_opt == "CR": m_name = "CR"
-            
+            metrics = df_gran[df_gran["segment"].isin(segs)]["metric"].dropna().unique().tolist()
+            if not metrics:
+                metrics = ["거래액", "고객수", "객단가", "CR"]
+                
             pm_y, pm_m = (ry, rm - 1) if rm > 1 else (ry - 1, 12)
             cols = [f"{pm_y-1}년 {pm_m}월", f"{pm_y}년 {pm_m}월", "전년비 (전월)",
                     f"{ry-1}년 {rm}월", f"{ry}년 {rm}월", "전년비 (당월)"]
             rows = []
             
-            def _get_val(yr, m, c, seg):
+            def _get_val(yr, m, c, seg, met):
                 lb = month_label(m)
-                v = pick(df, "월", m_name, seg, yr, lb, c)
-                if pd.isna(v) and metric_opt == "객단가":
-                    rev = pick(df, "월", get_m("거래액", df_gran), seg, yr, lb, c)
-                    cus = pick(df, "월", get_m("고객수", df_gran), seg, yr, lb, c)
-                    if pd.notna(rev) and pd.notna(cus) and cus > 0:
-                        v = rev / cus
+                v = pick(df, "월", met, seg, yr, lb, c)
+                if pd.isna(v) and "객단가" in met:
+                    rev_m = next((m2 for m2 in metrics if "거래액" in m2 and "비중" not in m2), None)
+                    cus_m = next((m2 for m2 in metrics if "고객수" in m2 and "비중" not in m2), None)
+                    if rev_m and cus_m:
+                        rev = pick(df, "월", rev_m, seg, yr, lb, c)
+                        cus = pick(df, "월", cus_m, seg, yr, lb, c)
+                        if pd.notna(rev) and pd.notna(cus) and cus > 0:
+                            v = rev / cus
                 return v
                 
             for seg in segs:
-                pm_prev = _get_val(pm_y - 1, pm_m, "final", seg)
-                pm_cur  = _get_val(pm_y, pm_m, "final", seg)
-                cm_prev = _get_val(ry - 1, rm, "mtd", seg)
-                cm_cur  = _get_val(ry, rm, "mtd", seg)
-                rows.append({
-                    "구분": seg,
-                    cols[0]: fmt_value(metric_opt, pm_prev), cols[1]: fmt_value(metric_opt, pm_cur),
-                    cols[2]: fmt_delta(metric_opt, pm_cur, pm_prev) or "-",
-                    cols[3]: fmt_value(metric_opt, cm_prev), cols[4]: fmt_value(metric_opt, cm_cur),
-                    cols[5]: fmt_delta(metric_opt, cm_cur, cm_prev) or "-",
-                })
-            return pd.DataFrame(rows).set_index("구분"), (pm_y, pm_m)
+                if not df_gran[df_gran["segment"] == seg].empty:
+                    for met in metrics:
+                        pm_prev = _get_val(pm_y - 1, pm_m, "final", seg, met)
+                        pm_cur  = _get_val(pm_y, pm_m, "final", seg, met)
+                        cm_prev = _get_val(ry - 1, rm, "mtd", seg, met)
+                        cm_cur  = _get_val(ry, rm, "mtd", seg, met)
+                        rows.append({
+                            "구분": seg,
+                            "지표": met,
+                            cols[0]: fmt_value(met, pm_prev), cols[1]: fmt_value(met, pm_cur),
+                            cols[2]: fmt_delta(met, pm_cur, pm_prev) or "-",
+                            cols[3]: fmt_value(met, cm_prev), cols[4]: fmt_value(met, cm_cur),
+                            cols[5]: fmt_delta(met, cm_cur, cm_prev) or "-",
+                        })
+            if rows:
+                return pd.DataFrame(rows).set_index(["구분", "지표"]), (pm_y, pm_m)
+            return pd.DataFrame(columns=["구분", "지표"] + cols).set_index(["구분", "지표"]), (pm_y, pm_m)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         wy, wlabel = (ref_year, ref_week) if ref_week else latest_period(df, "주")
         
         if wlabel:
-            st.subheader(f"실적 요약 (전주비) - {metric_opt}")
+            st.subheader(f"실적 요약 (전주비)")
             st.caption(f"기준 주차: {week_disp(wy, wlabel)} — 전주·전년 동주 대비")
-            st.dataframe(style_delta_cols(wow_segment_table(wy, wlabel)), use_container_width=True)
+            tbl1 = wow_segment_table(wy, wlabel)
+            if not tbl1.empty:
+                st.dataframe(style_delta_cols(tbl1), use_container_width=True)
+            else:
+                st.info("해당 주차 데이터가 없습니다.")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
             
-        st.subheader(f"실적 요약 (전년비) - {metric_opt}")
-        tbl, (pm_y, pm_m) = yoy_segment_table(ref_year, ref_month)
+        st.subheader(f"실적 요약 (전년비)")
+        tbl2, (pm_y, pm_m) = yoy_segment_table(ref_year, ref_month)
         st.caption(f"전월({pm_m}월) 마감 및 당월({ref_month}월·MTD) 기준 동일기간 비교")
-        st.dataframe(style_delta_cols(tbl), use_container_width=True)
+        if not tbl2.empty:
+            st.dataframe(style_delta_cols(tbl2), use_container_width=True)
+        else:
+            st.info("해당 월 데이터가 없습니다.")
 
 if st.runtime.exists():
     main()
