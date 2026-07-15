@@ -1422,7 +1422,7 @@ def main():
         st.caption(f"저장됨 {saved_rows:,}행 / 현재 보기 {len(df):,}행{pend}")
         st.download_button("⬇ 누적 데이터 백업 (CSV)",
                            df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
-                           "wr_data_store.csv", "text/csv", width="stretch",
+                           f"wr_data_store_{today_kst():%Y%m%d}.csv", "text/csv", width="stretch",
                            help="앱 재배포 시 누적 데이터가 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 업로드하면 복원됩니다.")
         if st.button("🗑 누적 데이터 초기화", key="wr_clear_store", width="stretch"):
             if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
@@ -1434,7 +1434,7 @@ def main():
         st.download_button(
             "⬇ 보고란·메모 백업 (JSON)",
             json.dumps(st.session_state.wr_texts, ensure_ascii=False, indent=2).encode("utf-8"),
-            "wr_insights.json", "application/json", width="stretch",
+            f"wr_insights_{today_kst():%Y%m%d}.json", "application/json", width="stretch",
             help="모든 보고란·인사이트 메모를 백업합니다. 재배포로 초기화돼도 이 파일을 복원하면 되살아납니다.")
         restore = st.file_uploader("메모 복원 (JSON 업로드)", type=["json"], key="wr_restore_memo")
         if restore is not None:
@@ -1665,7 +1665,8 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         csv = df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("통합 long 데이터 CSV", csv, "통합데이터.csv", "text/csv")
+        st.download_button("통합 long 데이터 CSV", csv,
+                           f"통합데이터_{today_kst():%Y%m%d}.csv", "text/csv")
 
     # ════════════ 06. 앱푸시 동의 현황 ════════════
     elif page == "06. 앱푸시 동의 현황":
