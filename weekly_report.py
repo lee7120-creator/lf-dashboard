@@ -1719,7 +1719,7 @@ def main():
                 
                 # 일별 데이터를 월별 합계로 집계하여 전년비 표 생성
                 push_metrics = ["가입자수", "앱푸시수신동의", "동의율"]
-                sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"]))].copy()
+                sub = df[(df["gran"] == "일") & (df["year"].isin(chart_years)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"])) & (df["segment"] == "*TOTAL") & (df["value_type"] == "final")].copy()
                 
                 if not sub.empty:
                     # 4/24 이상치 제거 반영 (집계 시에도 제외되도록)
