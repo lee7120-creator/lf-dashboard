@@ -1689,6 +1689,16 @@ def main():
                             push_agg = df_push_daily.groupby(["year", sel_gran])["value"].sum().reset_index()
                         else:
                             push_agg = pd.DataFrame()
+                            
+                        # 월 필터링 로직 (업로드한 해당 월까지만)
+                        if not df_push_daily.empty:
+                            last_month = int(df_push_daily["month"].max())
+                            if sel_gran == "일":
+                                dates = [d for d in dates if (int(d.split('/')[0]) if '/' in d else 0) <= last_month]
+                            elif sel_gran == "주":
+                                dates = [d for d in dates if (int(d.split('월')[0]) if '월' in d else 0) <= last_month]
+                            elif sel_gran == "월":
+                                dates = [d for d in dates if (int(d.replace('월', '')) if '월' in d else 0) <= last_month]
                         
                         for d in dates:
                             join_val = pick(df, sel_gran, "가입자수", "*TOTAL", ref_year, d, "final")
@@ -1722,13 +1732,13 @@ def main():
                                     if prev_rate > 1.0:
                                         prev_rate = float('nan')
                                     
-                        rows.append({
-                            "날짜": d,
-                            "가입자수": join_val,
-                            "앱푸시수신동의": push_val,
-                            "동의율": rate,
-                            "전년동의율": prev_rate
-                        })
+                            rows.append({
+                                "날짜": d,
+                                "가입자수": join_val,
+                                "앱푸시수신동의": push_val,
+                                "동의율": rate,
+                                "전년동의율": prev_rate
+                            })
                             
                         res_df = pd.DataFrame(rows)
                         
