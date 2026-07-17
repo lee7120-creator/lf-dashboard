@@ -366,8 +366,12 @@ def expand_uploads(uploads):
             out.append((f.name, data))
     return out
 
-PUSH_SPIKE_RATIO = 10  # (지표·세그먼트·연도)별 일 |중앙값| 대비 이 배수 초과 시 일회성 스파이크로 간주
-# 흐름(flow) 지표만 마스킹 대상 — 잔고(앱푸시_동의자수)는 수준값이라 스파이크 개념이 없음
+# (지표·세그먼트·연도)별 일 |중앙값| 대비 이 배수 초과 시 일회성 스파이크로 간주.
+# 실측: 정상 피크 최대 2.9배(빼빼로데이 등 실제 이벤트 2.4~2.9배) vs
+#       인공 스파이크 최소 5.4배(7/28~30 이관성 이탈 5.4~8.7배, 재동의·재분류 40~711배)
+#       → 4로 설정하면 실제 이벤트는 보존되고 인공 스파이크만 제거된다
+PUSH_SPIKE_RATIO = 4
+# 흐름(flow) 지표만 마스킹 대상 — 잔고(앱푸시_동의자수)는 수준값이라 별도 글리치 규칙 사용
 PUSH_FLOW_METRICS = {"앱푸시수신동의", "앱푸시_신규추가", "앱푸시_이탈"}
 
 def mask_push_spikes(d: pd.DataFrame) -> pd.DataFrame:
@@ -382,6 +386,29 @@ def mask_push_spikes(d: pd.DataFrame) -> pd.DataFrame:
            .transform(lambda s: s.abs().median()))
     spike = d.loc[m, "value"].abs() > med * PUSH_SPIKE_RATIO
     d.loc[spike[spike].index, "value"] = np.nan
+    return d
+
+def mask_level_glitches(d: pd.DataFrame, rel=0.3) -> pd.DataFrame:
+    """잔고(수준) 지표의 하루짜리 급변 글리치 마스킹.
+    양옆 이웃과 rel(30%) 이상 괴리하면서 이웃끼리는 서로 비슷(rel/2 이내)하면 그 날만 NaN.
+    지속되는 계단(연초 신규→기존 재분류, 4/19 재이관 등)은 한쪽 이웃과 일치하므로 보존.
+    (실데이터: 2025-04-18 이관일에 잔고가 0으로 기록된 글리치 — 3개 세그먼트 공통)
+    d에는 'dt'(datetime) 컬럼이 있어야 한다."""
+    m = d["metric"] == "앱푸시_동의자수"
+    if not m.any():
+        return d
+    for _seg, g in d[m].groupby("segment"):
+        g = g.sort_values("dt")
+        v = g["value"].to_numpy(float)
+        if len(v) < 3:
+            continue
+        prev, nxt = np.roll(v, 1), np.roll(v, -1)
+        dev_p = np.abs(v - prev) / np.maximum(np.abs(prev), 1)
+        dev_n = np.abs(v - nxt) / np.maximum(np.abs(nxt), 1)
+        agree = np.abs(nxt - prev) / np.maximum(np.abs(prev), 1) < rel / 2
+        bad = (dev_p > rel) & (dev_n > rel) & agree
+        bad[0] = bad[-1] = False
+        d.loc[g.index[bad], "value"] = np.nan
     return d
 
 def parse_push_file(name, data: bytes) -> pd.DataFrame:
@@ -1216,7 +1243,8 @@ def render_push_page(df, ref_year, chart_years):
                                         month=ext["_m"].astype(int),
                                         day=ext["_d"].astype(int)), errors="coerce")
         ext = ext.dropna(subset=["dt"])
-        ext = mask_push_spikes(ext)
+        ext = mask_push_spikes(ext)       # 흐름 지표 스파이크 (이관·재동의)
+        ext = mask_level_glitches(ext)    # 잔고 하루짜리 글리치 (0 기록 등)
 
         bal = ext[ext["metric"] == "앱푸시_동의자수"]
         add = ext[ext["metric"] == "앱푸시_신규추가"]
@@ -1615,64 +1643,121 @@ def main():
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
-        # 다각도 뷰 — 전환 퍼널 + 채널 기여 (기준 주차)
-        if wlabel:
-            cF, cW = st.columns(2)
-            with cF:
-                st.subheader("전환 퍼널 — 트래픽→가입→첫구매")
-                st.caption(f"{week_disp(wy, wlabel)} vs 전년 동주 (일평균) · "
-                           "첫구매 고객에는 과거 가입자도 포함되어 단계 비율은 참고용")
-                stages = ["비회원트래픽", "가입자수", "첫구매 고객수"]
-                cur_v = [pick(df, "주", m, "*TOTAL", wy, wlabel, "mtd") for m in stages]
-                pry_v = [pick(df, "주", m, "*TOTAL", wy - 1, wlabel, "final") for m in stages]
-                if any(np.isnan(v) for v in cur_v):
-                    st.info("해당 주차 퍼널 데이터가 부족합니다.")
-                else:
-                    fig_fu = go.Figure()
-                    fig_fu.add_trace(go.Funnel(name=f"{wy}년", y=stages, x=cur_v,
-                                               textinfo="value+percent previous",
-                                               marker=dict(color=clr("blue"))))
-                    if not any(np.isnan(v) for v in pry_v):
-                        fig_fu.add_trace(go.Funnel(name=f"{wy-1}년", y=stages, x=pry_v,
-                                                   textinfo="value+percent previous",
-                                                   marker=dict(color=clr("slate")),
-                                                   opacity=0.55))
-                    fig_fu.update_layout(**base_layout(330, title="단계 비율 = 직전 단계 대비"))
-                    st.plotly_chart(fig_fu, width="stretch")
-            with cW:
-                st.subheader("첫구매 거래액 YoY — 채널 기여")
-                st.caption(f"{week_disp(wy, wlabel)} 전년 동주 대비 증감 분해 (일평균·백만원)")
-                base_t = pick(df, "주", "첫구매 거래액", "*TOTAL", wy - 1, wlabel, "final")
-                cur_t = pick(df, "주", "첫구매 거래액", "*TOTAL", wy, wlabel, "mtd")
-                if np.isnan(base_t) or np.isnan(cur_t):
-                    st.info("해당 주차 채널 데이터가 없습니다.")
-                else:
-                    labels, deltas = [], []
-                    for chn in CHANNELS:
-                        pv = pick(df, "주", "첫구매 거래액", chn, wy - 1, wlabel, "final")
-                        cv = pick(df, "주", "첫구매 거래액", chn, wy, wlabel, "mtd")
-                        if np.isnan(pv) and np.isnan(cv): continue
-                        d = (0 if np.isnan(cv) else cv) - (0 if np.isnan(pv) else pv)
-                        labels.append(chn); deltas.append(d / 1e6)
-                    resid = (cur_t - base_t) / 1e6 - sum(deltas)
-                    if abs(resid) > 0.05:
-                        labels.append("기타"); deltas.append(resid)
-                    fig_w = go.Figure(go.Waterfall(
-                        x=[f"{wy-1}년"] + labels + [f"{wy}년"],
-                        measure=["absolute"] + ["relative"] * len(labels) + ["total"],
-                        y=[base_t / 1e6] + deltas + [0],
-                        text=[f"{base_t/1e6:,.1f}"] + [f"{d:+,.1f}" for d in deltas]
-                             + [f"{cur_t/1e6:,.1f}"],
-                        textposition="outside",
-                        increasing=dict(marker=dict(color=clr("green"))),
-                        decreasing=dict(marker=dict(color=clr("red"))),
-                        totals=dict(marker=dict(color=clr("slate"))),
-                        connector=dict(line=dict(color="#e2e8f0")),
-                    ))
-                    lyw = base_layout(330, title="주간 일평균 거래액 (백만원)")
-                    lyw["showlegend"] = False
-                    fig_w.update_layout(**lyw)
-                    st.plotly_chart(fig_w, width="stretch")
+        # 다각도 뷰 — 전환 퍼널(단계 카드) + 채널 기여. 비교 기준 전환 가능
+        cmp_mode = st.radio("비교 기준", ["주간 — 전년 동주", "월누적(MTD) — 전년 동월"],
+                            horizontal=True, key="wr_multi_cmp")
+        weekly_mode = cmp_mode.startswith("주간")
+        if weekly_mode and not wlabel:
+            st.info("주차 데이터가 없습니다. 월누적(MTD) 비교를 선택하세요.")
+        else:
+            if weekly_mode:
+                period_lbl, base_lbl = week_disp(wy, wlabel), "전년 동주"
+                x_prv, x_cur = f"{wy-1}년", f"{wy}년"
+                def get_cur(met, seg="*TOTAL"):
+                    return pick(df, "주", met, seg, wy, wlabel, "mtd")
+                def get_prv(met, seg="*TOTAL"):
+                    return pick(df, "주", met, seg, wy - 1, wlabel, "final")
+            else:
+                period_lbl = f"{ref_year}년 {ref_month}월 누적(MTD)"
+                base_lbl = "전년 동월 MTD"
+                x_prv, x_cur = f"{ref_year-1}년 {ref_month}월", f"{ref_year}년 {ref_month}월"
+                def get_cur(met, seg="*TOTAL"):
+                    return pick(df, "월", met, seg, ref_year, month_label(ref_month), "mtd")
+                def get_prv(met, seg="*TOTAL"):
+                    # 전년 동월도 동일기간(MTD) 잘린 값 우선 — 실적 요약 표와 동일 기준
+                    return pick(df, "월", met, seg, ref_year - 1, month_label(ref_month), "mtd")
+
+            st.subheader("전환 퍼널 — 트래픽→가입→첫구매")
+            st.caption(f"{period_lbl} vs {base_lbl} (일평균) · "
+                       "첫구매 고객에는 과거 가입자도 포함되어 단계 비율은 참고용")
+            stages = ["비회원트래픽", "가입자수", "첫구매 고객수"]
+            cur_v = [get_cur(m) for m in stages]
+            pry_v = [get_prv(m) for m in stages]
+            if any(np.isnan(v) for v in cur_v):
+                st.info("해당 주차 퍼널 데이터가 부족합니다.")
+            else:
+                # 트래픽이 가입·첫구매의 수십~수백 배라 면적형 퍼널은 왜곡됨 →
+                # 단계 카드 + 전환율 pill 로 표현 (전환율을 1급 정보로)
+                def _stage_rate(a, b):
+                    return a / b if (not np.isnan(a) and not np.isnan(b) and b > 0) else np.nan
+                cells = []
+                for i, (mname, cv, pv) in enumerate(zip(stages, cur_v, pry_v)):
+                    d = fmt_delta(mname, cv, pv)
+                    pill = (f'<div class="kpi-delta {"down" if d.startswith("△") else "up"}">'
+                            f'{d} (전년동주)</div>' if d else
+                            '<div class="kpi-delta na">– (전년동주)</div>')
+                    cells.append(
+                        f'<div class="kpi-card" style="flex:1.2;min-width:0">'
+                        f'<div class="kpi-label">{mname}</div>'
+                        f'<div class="kpi-value">{cv:,.0f}명</div>{pill}</div>')
+                    if i < 2:
+                        cr = _stage_rate(cur_v[i + 1], cv)
+                        pr = _stage_rate(pry_v[i + 1], pv)
+                        rate_lbl = "가입율" if i == 0 else "가입 대비 첫구매"
+                        cur_s = "–" if np.isnan(cr) else f"{cr*100:.2f}%"
+                        sub = ""
+                        if not (np.isnan(cr) or np.isnan(pr)):
+                            pp = (cr - pr) * 100
+                            colr = "#dc2626" if pp < 0 else "#16a34a"
+                            sign = "△" if pp < 0 else "+"
+                            sub = (f'<div style="font-size:11px;color:#64748b">전년 {pr*100:.2f}% '
+                                   f'<span style="color:{colr};font-weight:700">'
+                                   f'{sign}{abs(pp):.2f}%p</span></div>')
+                        cells.append(
+                            f'<div style="flex:0.9;display:flex;flex-direction:column;'
+                            f'justify-content:center;text-align:center;min-width:0">'
+                            f'<div style="color:#94a3b8;font-size:16px;line-height:1">→</div>'
+                            f'<div style="font-size:12px;color:#64748b;margin-top:2px">{rate_lbl}</div>'
+                            f'<div style="font-size:17px;font-weight:700;color:#1e293b">{cur_s}</div>'
+                            f'{sub}</div>')
+                st.markdown('<div style="display:flex;gap:10px;align-items:stretch">'
+                            + "".join(cells) + '</div>', unsafe_allow_html=True)
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.subheader("첫구매 거래액 YoY — 채널 기여")
+            st.caption(f"{period_lbl} {base_lbl} 대비 증감 분해 (일평균·만원) · "
+                       "세로축은 변동 구간만 확대 표시")
+            base_t = get_prv("첫구매 거래액")
+            cur_t = get_cur("첫구매 거래액")
+            if np.isnan(base_t) or np.isnan(cur_t):
+                st.info("해당 주차 채널 데이터가 없습니다.")
+            else:
+                MW = 1e4  # 만원
+                labels, deltas = [], []
+                for chn in CHANNELS:
+                    pv = get_prv("첫구매 거래액", chn)
+                    cv = get_cur("첫구매 거래액", chn)
+                    if np.isnan(pv) and np.isnan(cv): continue
+                    d = (0 if np.isnan(cv) else cv) - (0 if np.isnan(pv) else pv)
+                    labels.append(chn); deltas.append(d / MW)
+                resid = (cur_t - base_t) / MW - sum(deltas)
+                if abs(resid) > 5:  # 5만원 이상 잔차만 '기타'로 표시
+                    labels.append("기타"); deltas.append(resid)
+                fig_w = go.Figure(go.Waterfall(
+                    x=[x_prv] + labels + [x_cur],
+                    measure=["absolute"] + ["relative"] * len(labels) + ["total"],
+                    y=[base_t / MW] + deltas + [0],
+                    text=[f"{base_t/MW:,.0f}"] + [f"{d:+,.0f}" for d in deltas]
+                         + [f"{cur_t/MW:,.0f}"],
+                    textposition="outside", cliponaxis=False,
+                    increasing=dict(marker=dict(color=clr("green"))),
+                    decreasing=dict(marker=dict(color=clr("red"))),
+                    totals=dict(marker=dict(color=clr("slate"))),
+                    connector=dict(line=dict(color="#e2e8f0")),
+                    hovertemplate="%{x}<br>변동 %{delta:+,.0f}만원 · 누계 %{final:,.0f}만원<extra></extra>",
+                ))
+                # 총액 막대가 델타를 압도하지 않도록 세로축을 변동 구간 주변으로 제한
+                run, acc = [base_t / MW], base_t / MW
+                for d in deltas:
+                    acc += d; run.append(acc)
+                run.append(cur_t / MW)
+                lo, hi = min(run), max(run)
+                span = max(hi - lo, hi * 0.01, 1.0)
+                lyw = base_layout(360, title="주간 일평균 거래액 (만원) — 변동 구간 확대")
+                lyw["showlegend"] = False
+                lyw["yaxis"]["range"] = [lo - span * 0.45, hi + span * 0.55]
+                fig_w.update_layout(**lyw)
+                st.plotly_chart(fig_w, width="stretch")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 보고란
