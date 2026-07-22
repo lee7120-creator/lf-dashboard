@@ -186,6 +186,15 @@ def _finalize(df):
     df["aov"] = np.where(df["oc"].fillna(0) > 0, df["amt"] / df["oc"], np.nan)      # 객단가
     df["dt"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
     df["dow"] = df["dt"].dt.dayofweek
+    # dow_k(요일 한글)는 실적 엑셀의 '요일' 컬럼에서 오지만, 그 컬럼이 없는 파일이면
+    # 맥락·타이밍 페이지가 KeyError로 죽는다 → 날짜에서 파생해 폴백 채운다(결측만).
+    _DOWK = ["월", "화", "수", "목", "금", "토", "일"]
+    _derived = df["dow"].map(lambda x: _DOWK[int(x)] if pd.notna(x) and 0 <= int(x) <= 6 else None)
+    if "dow_k" not in df.columns:
+        df["dow_k"] = _derived
+    else:
+        _blank = df["dow_k"].isna() | df["dow_k"].astype(str).str.strip().isin(["", "nan", "None", "NaN"])
+        df["dow_k"] = np.where(_blank, _derived, df["dow_k"].astype(str).str.strip())
     return df
 
 
@@ -3025,8 +3034,12 @@ def main():
         scope_label = "최근 7일"
         _bp = base.dropna(subset=["dt"]) if "dt" in base else base.iloc[0:0]
         if len(_bp):
-            _wks = sorted(_bp["dt"].dt.to_period("W").apply(lambda p: p.start_time).unique(),
-                          reverse=True)
+            # 발송 실적은 과거만 가능 — 오늘이 속한 주보다 이후(미래) 주는 선택지에서 제외
+            # (업로드 파일의 연도 오타 등으로 미래 주차가 뜨는 것 방지). 주간보고와 동일 관행.
+            _p1_today = today_kst()
+            _p1_mon = pd.Timestamp(_p1_today) - pd.Timedelta(days=_p1_today.weekday())
+            _wks = sorted([w for w in _bp["dt"].dt.to_period("W").apply(lambda p: p.start_time).unique()
+                           if pd.Timestamp(w) <= _p1_mon], reverse=True)
 
             def _wlab(ws):
                 we = ws + pd.Timedelta(days=6)
@@ -3232,7 +3245,16 @@ def main():
             st.info("데이터가 부족해요. 실적 파일을 더 올려 주세요."); st.stop()
         g0["주"] = g0["dt"].dt.to_period("W").apply(lambda p: p.start_time)
 
-        _wks_all = sorted(g0["주"].unique(), reverse=True)
+        # 기준 주차 목록 — 발송 실적은 과거만 가능하므로 '오늘이 속한 주'보다 이후(미래) 주는
+        # 제외한다. 업로드 파일에 오타난 미래 날짜(예: 2025→2027)가 섞여도 미래 주차가
+        # 드롭다운에 뜨지 않게 한다. 진행 중인 이번 주는 포함(부분 주 로직이 처리).
+        _today = today_kst()
+        _this_mon = pd.Timestamp(_today) - pd.Timedelta(days=_today.weekday())
+        _wks_raw = sorted(g0["주"].unique(), reverse=True)
+        _wks_all = [w for w in _wks_raw if pd.Timestamp(w) <= _this_mon]
+        _n_future = len(_wks_raw) - len(_wks_all)
+        if not _wks_all:                              # 전부 미래면(비정상) 최소한 표시는 되게 원본 유지
+            _wks_all, _n_future = _wks_raw, 0
 
         def _wklab(ws):
             ws = pd.Timestamp(ws)
@@ -3243,6 +3265,9 @@ def main():
         guard_select("wr_week", _wlabs)
         ref_sel = st.selectbox("기준 주차", _wlabs, index=0, key="wr_week",
                                help="보고 기준이 되는 주(월~일)예요. 최신 주가 위에 있어요.")
+        if _n_future:
+            st.caption(f"⚠️ 미래 날짜로 기록된 {_n_future}개 주는 기준 주차 목록에서 제외했어요 — "
+                       "발송 실적은 과거만 가능하니 업로드 파일의 날짜(연도 오타 등)를 확인해 보세요.")
         ref_ws = pd.Timestamp(_wks_all[_wlabs.index(ref_sel)])
         ref_we = ref_ws + pd.Timedelta(days=6)
 
