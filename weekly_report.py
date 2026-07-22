@@ -1904,50 +1904,71 @@ def main():
                             + "".join(cells) + '</div>', unsafe_allow_html=True)
 
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.subheader("첫구매 거래액 YoY — 채널 기여")
-            st.caption(f"{period_lbl} {base_lbl} 대비 증감 분해 (일평균·만원) · "
-                       "세로축은 변동 구간만 확대 표시")
-            base_t = get_prv("첫구매 거래액")
-            cur_t = get_cur("첫구매 거래액")
-            if np.isnan(base_t) or np.isnan(cur_t):
-                st.info("해당 주차 채널 데이터가 없습니다.")
+            st.subheader("채널 기여 분해 — 어디서 늘고 줄었나")
+            # 채널 합 ≈ TOTAL 이 성립하는 가산 지표만 (객단가·가입율·CR은 비율이라 분해 무의미)
+            ADDITIVE = ["첫구매 거래액", "첫구매 고객수", "가입자수", "비회원트래픽"]
+            avail_dec = [m for m in ADDITIVE
+                         if not df[(df["metric"] == m)
+                                   & df["segment"].isin(CHANNELS)].empty]
+            if not avail_dec:
+                st.info("채널별 분해 가능한 지표 데이터가 없습니다.")
             else:
-                MW = 1e4  # 만원
-                labels, deltas = [], []
-                for chn in CHANNELS:
-                    pv = get_prv("첫구매 거래액", chn)
-                    cv = get_cur("첫구매 거래액", chn)
-                    if np.isnan(pv) and np.isnan(cv): continue
-                    d = (0 if np.isnan(cv) else cv) - (0 if np.isnan(pv) else pv)
-                    labels.append(chn); deltas.append(d / MW)
-                resid = (cur_t - base_t) / MW - sum(deltas)
-                if abs(resid) > 5:  # 5만원 이상 잔차만 '기타'로 표시
-                    labels.append("기타"); deltas.append(resid)
-                fig_w = go.Figure(go.Waterfall(
-                    x=[x_prv] + labels + [x_cur],
-                    measure=["absolute"] + ["relative"] * len(labels) + ["total"],
-                    y=[base_t / MW] + deltas + [0],
-                    text=[f"{base_t/MW:,.0f}"] + [f"{d:+,.0f}" for d in deltas]
-                         + [f"{cur_t/MW:,.0f}"],
-                    textposition="outside", cliponaxis=False,
-                    increasing=dict(marker=dict(color=clr("green"))),
-                    decreasing=dict(marker=dict(color=clr("red"))),
-                    totals=dict(marker=dict(color=clr("slate"))),
-                    connector=dict(line=dict(color="#e2e8f0")),
-                    hovertemplate="%{x}<br>변동 %{delta:+,.0f}만원 · 누계 %{final:,.0f}만원<extra></extra>",
-                ))
-                # 총액 막대가 델타를 압도하지 않도록 세로축을 변동 구간 주변으로 제한
-                run, acc = [base_t / MW], base_t / MW
-                for d in deltas:
-                    acc += d; run.append(acc)
-                run.append(cur_t / MW)
-                lo, hi = min(run), max(run)
-                span = max(hi - lo, hi * 0.01, 1.0)
-                lyw = base_layout(360, title="주간 일평균 거래액 (만원) — 변동 구간 확대")
-                lyw["showlegend"] = False
-                lyw["yaxis"]["range"] = [lo - span * 0.45, hi + span * 0.55]
-                fig_w.update_layout(**lyw)
-                st.plotly_chart(fig_w, width="stretch")
+                dec_met = st.selectbox("분해 지표", avail_dec, key="wr_decomp_met",
+                                       help="선택 지표의 YoY 증감을 채널별로 분해합니다 "
+                                            "(채널 합이 전체와 일치하는 가산 지표만 제공)")
+                # 거래액만 만원(더 잘게), 나머지 카운트는 명 그대로
+                div, unit = (1e4, "만원") if dec_met == "첫구매 거래액" else (1, "명")
+                st.caption(f"{period_lbl} {base_lbl} 대비 «{dec_met}» 증감 분해 "
+                           f"(일평균·{unit}) · 세로축은 변동 구간만 확대 표시")
+                base_t = get_prv(dec_met)
+                cur_t = get_cur(dec_met)
+                if np.isnan(base_t) or np.isnan(cur_t):
+                    st.info("해당 기간 채널 데이터가 없습니다.")
+                else:
+                    labels, deltas = [], []
+                    for chn in CHANNELS:
+                        pv = get_prv(dec_met, chn)
+                        cv = get_cur(dec_met, chn)
+                        # 한쪽만 있으면 결측(채널분해 부재) — 0 취급하면 가짜 급락이 되므로 제외.
+                        # 실제 0은 pick이 0.0으로 돌려주므로 유지된다.
+                        if np.isnan(pv) or np.isnan(cv): continue
+                        labels.append(chn); deltas.append((cv - pv) / div)
+                    if not labels:
+                        st.info(f"이 기간은 «{dec_met}» 채널별 분해 데이터가 없습니다 (전체만 존재). "
+                                "사이드바에서 다른 기준 주차를 고르거나, 위 비교 기준을 "
+                                "**월누적(MTD)** 로 바꿔보세요.")
+                    else:
+                        # 잔차(채널합↔TOTAL 차이·미분류)를 '기타'로 표시해 총계 막대가 항상
+                        # 라벨(=당년 TOTAL)과 정확히 맞게 한다. 0.5단위 미만(반올림 0)만 생략.
+                        resid = (cur_t - base_t) / div - sum(deltas)
+                        if abs(resid) >= 0.5:
+                            labels.append("기타"); deltas.append(resid)
+                        fig_w = go.Figure(go.Waterfall(
+                            x=[x_prv] + labels + [x_cur],
+                            measure=["absolute"] + ["relative"] * len(labels) + ["total"],
+                            y=[base_t / div] + deltas + [0],
+                            text=[f"{base_t/div:,.0f}"] + [f"{d:+,.0f}" for d in deltas]
+                                 + [f"{cur_t/div:,.0f}"],
+                            textposition="outside", cliponaxis=False,
+                            increasing=dict(marker=dict(color=clr("green"))),
+                            decreasing=dict(marker=dict(color=clr("red"))),
+                            totals=dict(marker=dict(color=clr("slate"))),
+                            connector=dict(line=dict(color="#e2e8f0")),
+                            hovertemplate=("%{x}<br>변동 %{delta:+,.0f}" + unit
+                                           + " · 누계 %{final:,.0f}" + unit + "<extra></extra>"),
+                        ))
+                        # 총액 막대가 델타를 압도하지 않도록 세로축을 변동 구간 주변으로 제한
+                        run, acc = [base_t / div], base_t / div
+                        for d in deltas:
+                            acc += d; run.append(acc)
+                        run.append(cur_t / div)
+                        lo, hi = min(run), max(run)
+                        span = max(hi - lo, abs(hi) * 0.01, 1.0)
+                        lyw = base_layout(360, title=f"일평균 {dec_met} ({unit}) — 변동 구간 확대")
+                        lyw["showlegend"] = False
+                        lyw["yaxis"]["range"] = [lo - span * 0.45, hi + span * 0.55]
+                        fig_w.update_layout(**lyw)
+                        st.plotly_chart(fig_w, width="stretch")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 보고란
