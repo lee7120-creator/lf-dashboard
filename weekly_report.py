@@ -479,19 +479,36 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
             })
     return pd.DataFrame(records)
 
+def looks_like_push_name(name: str) -> bool:
+    """파일명이 앱푸시 원천으로 보이는가 (한글명 포함)"""
+    up = name.upper()
+    return "PUSH" in up or any(h in name for h in ("앱푸시", "푸시", "수신동의"))
+
+def route_push(n, b):
+    """엑셀 1건 → (push_df 또는 None, 일반_df 또는 None).
+    이름 힌트가 있으면 PUSH 우선 시도, 없으면 일반 파싱 후 빈 결과면 내용 기반으로 PUSH 재시도.
+    → 파일명이 'PUSH'가 아니어도(예: 앱푸시수신동의현황.xlsx) 인식된다."""
+    is_xlsx = n.lower().endswith((".xlsx", ".xls"))
+    if is_xlsx and looks_like_push_name(n):
+        pf = parse_push_file(n, b)
+        if not pf.empty: return pf, None
+    d = parse_file(n, b)
+    if not d.empty: return None, d
+    if is_xlsx:  # 이름 힌트 없이도 헤더가 PUSH 형식이면 인식 (내용 기반 폴백)
+        pf = parse_push_file(n, b)
+        if not pf.empty: return pf, None
+    return None, None
+
 @st.cache_data(show_spinner=False)
 def combine_files(file_tuples) -> pd.DataFrame:
     """업로드 파일들 → 통합 long DF. 동일 키는 마지막 파일 우선"""
     frames = []
     push_frames = []
     for n, b in file_tuples:
-        if "PUSH" in n.upper() and n.lower().endswith((".xlsx", ".xls")):
-            pf = parse_push_file(n, b)
-            if not pf.empty: push_frames.append(pf)
-        else:
-            df = parse_file(n, b)
-            if not df.empty: frames.append(df)
-            
+        pf, df = route_push(n, b)
+        if pf is not None: push_frames.append(pf)
+        elif df is not None: frames.append(df)
+
     inferred_years = set()
     for f in frames:
         if "year" in f.columns:
@@ -576,22 +593,19 @@ def classify_uploads(file_tuples):
     미인식 파일을 눈에 보이게 해 조용한 누락을 방지한다."""
     out = []
     for n, b in file_tuples:
-        if "PUSH" in n.upper() and n.lower().endswith((".xlsx", ".xls")):
-            pf = parse_push_file(n, b)
-            if not pf.empty:
-                nseries = pf.groupby(["metric", "segment"]).ngroups
-                out.append((n, f"✅ 앱푸시 원천 · {nseries}시리즈", len(pf)))
-            else:
-                out.append((n, "❌ PUSH 인식 실패 (헤더 확인)", 0))
-            continue
         is_backup = False
         if n.lower().endswith(".csv"):
             head = b[:400].decode("utf-8", "ignore").splitlines()
             if head and all(k in head[0] for k in ("gran", "metric", "sortkey")):
                 is_backup = True
-        d = parse_file(n, b)
-        if d.empty:
-            out.append((n, "❌ 미인식 (파일명·형식 확인)", 0))
+        pf, d = route_push(n, b)  # combine_files와 동일한 라우팅 (한글명 PUSH 포함)
+        if pf is not None:
+            nseries = pf.groupby(["metric", "segment"]).ngroups
+            out.append((n, f"✅ 앱푸시 원천 · {nseries}시리즈", len(pf)))
+        elif d is None:
+            hint = ("❌ PUSH 인식 실패 (헤더 확인)" if looks_like_push_name(n)
+                    else "❌ 미인식 (파일명·형식 확인)")
+            out.append((n, hint, 0))
         elif is_backup:
             out.append((n, "♻ 누적 백업 복원", len(d)))
         else:
@@ -672,6 +686,36 @@ def restore_from_upload(upload):
     if not msgs:
         raise ValueError("복원할 내용을 찾지 못했습니다 (ZIP 안에 백업 파일 없음)")
     return " · ".join(msgs), data_restored
+
+def restore_widget(key, label="백업 복원 (ZIP / CSV / JSON)"):
+    """백업 복원 업로더 + 처리. 빈 상태(메인)·사이드바 공용. 성공 시 rerun."""
+    up = st.file_uploader(label, type=["zip", "csv", "json"], key=key)
+    if up is not None and st.session_state.get("wr_restored") != up.name:
+        try:
+            summary, data_changed = restore_from_upload(up)
+            st.session_state["wr_restored"] = up.name
+            if data_changed:
+                st.session_state.pop("wr_saved_sig", None)
+                st.cache_data.clear()
+            st.success(f"복원 완료 ✓ — {summary}"); st.rerun()
+        except Exception as e:
+            st.error(f"복원 실패: {e}")
+
+def source_upload_widget(key):
+    """빈 상태 메인용 원천 업로더 — 인식되면 즉시 저장 후 rerun (첫 업로드는 누적할 게 없음)."""
+    mfiles = st.file_uploader("엑셀 / CSV / ZIP (복수 선택)",
+                              type=["xlsx", "xls", "csv", "zip"],
+                              accept_multiple_files=True, key=key)
+    if mfiles:
+        exp = expand_uploads(mfiles)
+        dnew = combine_files(tuple(exp)) if exp else pd.DataFrame()
+        if not dnew.empty:
+            save_store(dnew)
+            st.session_state.pop("wr_saved_sig", None)
+            st.cache_data.clear()
+            st.success(f"{len(dnew):,}행 인식 — 저장됨 ✓"); st.rerun()
+        else:
+            st.error("인식된 데이터가 없습니다. 파일명·형식을 확인하세요.")
 
 
 # ══════════════════════════════════════════════════════
@@ -1569,12 +1613,23 @@ def main():
         st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
         st.stop()
     if not has_any:
-        st.info("👈 사이드바에서 주간 폴더의 엑셀/CSV/ZIP 파일들을 업로드해주세요.")
+        st.markdown("## 📋 주간보고 통합 — 시작하기")
+        st.caption("누적 데이터가 없습니다. 원천 파일을 올리거나, 예전 백업(ZIP)을 복원하세요.")
+        cU, cR = st.columns(2)
+        with cU:
+            st.markdown("#### ① 원천 파일 업로드")
+            source_upload_widget("wr_up_main")
+        with cR:
+            st.markdown("#### ② 또는 백업 복원")
+            restore_widget("wr_restore_empty", label="백업 ZIP / CSV / JSON 올리기")
+            st.caption("이전에 받은 `주간보고백업_*.zip`을 그대로 올리면 데이터·메모가 통째로 복원됩니다.")
         st.markdown("""
+---
+**인식되는 원천 파일**
 - **마스터**: `전체관점 - 일자별/주별/월별 실적 (기본)`
 - **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
-- 주간 폴더를 **zip으로 묶어 통째로** 올려도 됩니다. 파일 내용으로 단위·지표를 자동 감지합니다.
-- 업로드 후 **저장**을 누르면 누적됩니다. 다음에 기간이 다른 파일을 올리면 **겹치는 기간은 최신값으로 갱신**되고 나머지는 이어붙습니다.
+- **앱푸시**: 파일명에 `PUSH`/`앱푸시`/`수신동의` 포함 또는 헤더가 앱푸시 형식이면 자동 인식
+- 주간 폴더를 **zip으로 묶어 통째로** 올려도 됩니다.
 """)
         st.stop()
 
@@ -1681,18 +1736,7 @@ def main():
                  "재배포로 초기화돼도 이 ZIP을 '백업 복원'에 올리면 통째로 되살아납니다.")
 
         # 통합 복원 — zip/csv/json 자동 인식
-        restore = st.file_uploader("백업 복원 (ZIP/CSV/JSON)",
-                                   type=["zip", "csv", "json"], key="wr_restore")
-        if restore is not None and st.session_state.get("wr_restored") != restore.name:
-            try:
-                summary, data_changed = restore_from_upload(restore)
-                st.session_state["wr_restored"] = restore.name
-                if data_changed:
-                    st.session_state.pop("wr_saved_sig", None)
-                    st.cache_data.clear()
-                st.success(f"복원 완료 ✓ — {summary}"); st.rerun()
-            except Exception as e:
-                st.error(f"복원 실패: {e}")
+        restore_widget("wr_restore")
 
         with st.expander("개별 백업 (데이터만 / 메모만)"):
             st.download_button("⬇ 누적 데이터 (CSV)",
