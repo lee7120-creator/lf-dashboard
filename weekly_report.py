@@ -569,6 +569,110 @@ def upload_diff(stored, df_new):
     nc, oc = _period_set(df_new, cols), _period_set(stored, cols)
     return len(nc - oc), len(nc & oc)
 
+# ── 백업/업로드 고도화 헬퍼 ────────────────────────────────
+@st.cache_data(show_spinner=False)
+def classify_uploads(file_tuples):
+    """업로드된 각 파일이 무엇으로 인식됐는지 (파일명, 인식결과, 행수) 목록.
+    미인식 파일을 눈에 보이게 해 조용한 누락을 방지한다."""
+    out = []
+    for n, b in file_tuples:
+        if "PUSH" in n.upper() and n.lower().endswith((".xlsx", ".xls")):
+            pf = parse_push_file(n, b)
+            if not pf.empty:
+                nseries = pf.groupby(["metric", "segment"]).ngroups
+                out.append((n, f"✅ 앱푸시 원천 · {nseries}시리즈", len(pf)))
+            else:
+                out.append((n, "❌ PUSH 인식 실패 (헤더 확인)", 0))
+            continue
+        is_backup = False
+        if n.lower().endswith(".csv"):
+            head = b[:400].decode("utf-8", "ignore").splitlines()
+            if head and all(k in head[0] for k in ("gran", "metric", "sortkey")):
+                is_backup = True
+        d = parse_file(n, b)
+        if d.empty:
+            out.append((n, "❌ 미인식 (파일명·형식 확인)", 0))
+        elif is_backup:
+            out.append((n, "♻ 누적 백업 복원", len(d)))
+        else:
+            grans = "".join(g for g in ("일", "주", "월") if g in set(d["gran"]))
+            nm = d["metric"].nunique()
+            kind = (f"{grans} · {nm}지표" if nm > 1
+                    else f"{grans} · {d['metric'].iloc[0]}")
+            out.append((n, f"✅ {kind}", len(d)))
+    return out
+
+def make_backup_zip(df, texts) -> bytes:
+    """누적 데이터 CSV + 보고란·메모 JSON + manifest를 한 ZIP으로 묶는다 (통합 백업)."""
+    import zipfile
+    buf = io.BytesIO()
+    ts = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
+    yrs = (f"{int(df['year'].min())}–{int(df['year'].max())}년"
+           if not df.empty else "-")
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("wr_data_store.csv",
+                    df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"))
+        zf.writestr("wr_insights.json",
+                    json.dumps(texts, ensure_ascii=False, indent=2).encode("utf-8"))
+        zf.writestr("manifest.txt",
+                    (f"LF Mall 주간보고 통합 백업\n생성: {ts}\n"
+                     f"누적 데이터: {len(df):,}행 · {df['metric'].nunique() if not df.empty else 0}지표 · {yrs}\n"
+                     f"보고란·메모: {len(texts)}개 항목\n"
+                     "복원: 사이드바 '백업 복원'에 이 ZIP을 그대로 올리세요.\n").encode("utf-8"))
+    return buf.getvalue()
+
+def _apply_memos(memos: dict):
+    """메모 dict를 세션·파일에 병합 (업로드 값 우선)"""
+    merged = {**st.session_state.wr_texts, **memos}
+    st.session_state.wr_texts = merged
+    all_d = load_insights(); all_d.update(merged); save_insights(all_d)
+
+def restore_from_upload(upload):
+    """백업 파일(zip/csv/json) 자동 인식 복원 → (요약 메시지, 데이터스토어_갱신여부).
+    형식 불일치는 ValueError로 던진다 (호출측에서 표시)."""
+    name = upload.name.lower()
+    raw = upload.getvalue()
+    data_restored, msgs = False, []
+
+    def _try_csv(b):
+        nonlocal data_restored
+        d = pd.read_csv(io.BytesIO(b), encoding="utf-8-sig")
+        if set(STORE_COLS) <= set(d.columns):
+            save_store(d[STORE_COLS]); data_restored = True
+            msgs.append(f"누적 데이터 {len(d):,}행")
+            return True
+        return False
+
+    def _try_json(b):
+        memos = json.loads(b.decode("utf-8"))
+        if isinstance(memos, dict):
+            _apply_memos(memos); msgs.append(f"메모 {len(memos)}개")
+            return True
+        return False
+
+    if name.endswith(".zip"):
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            for info in zf.infolist():
+                if info.is_dir(): continue
+                base = os.path.basename(info.filename).lower()
+                if "__macosx" in info.filename.lower(): continue
+                b = zf.read(info)
+                if base.endswith(".csv"): _try_csv(b)
+                elif base.endswith(".json"): _try_json(b)
+    elif name.endswith(".csv"):
+        if not _try_csv(raw):
+            raise ValueError("누적 데이터 CSV 형식이 아닙니다 (gran·metric·sortkey 등 필수 컬럼 누락)")
+    elif name.endswith(".json"):
+        if not _try_json(raw):
+            raise ValueError("메모 JSON 형식이 아닙니다 (최상위가 객체여야 함)")
+    else:
+        raise ValueError("지원 형식: .zip / .csv / .json")
+
+    if not msgs:
+        raise ValueError("복원할 내용을 찾지 못했습니다 (ZIP 안에 백업 파일 없음)")
+    return " · ".join(msgs), data_restored
+
 
 # ══════════════════════════════════════════════════════
 # 조회 헬퍼 — mtd(당월/당주 일마감) vs final 선택
@@ -1480,6 +1584,20 @@ def main():
     has_new = not df_new.empty
     sig = tuple(sorted((n, len(b)) for n, b in expanded))
     with st.sidebar:
+        # 업로드한 파일이 각각 무엇으로 인식됐는지 (미인식 파일 가시화)
+        if expanded:
+            cls = classify_uploads(tuple(expanded))
+            n_ok = sum(1 for _, k, _ in cls if k.startswith(("✅", "♻")))
+            n_bad = len(cls) - n_ok
+            head = f"📄 업로드 인식 {n_ok}/{len(cls)}" + (f" · ⚠ 미인식 {n_bad}" if n_bad else "")
+            with st.expander(head, expanded=bool(n_bad)):
+                for nm, kind, nrows in cls:
+                    base = os.path.basename(nm)
+                    st.markdown(f"- `{base}` → {kind}"
+                                + (f" ({nrows:,}행)" if nrows else ""))
+                if n_bad:
+                    st.caption("미인식 파일은 파일명(전체관점/월_가입율 등)·형식을 확인하세요. "
+                               "인식된 파일만 저장에 반영됩니다.")
         if has_new:
             added, updated = upload_diff(stored, df_new)
             saved = st.session_state.get("wr_saved_sig") == sig
@@ -1547,38 +1665,62 @@ def main():
                    else "⚠ ANTHROPIC_API_KEY 미설정 — Secrets에 추가하세요")
 
         st.markdown("---")
-        st.markdown("**누적 데이터**")
+        st.markdown("**백업 · 복원**")
         saved_rows = len(load_store())
         pend = " · 저장 시 반영" if (has_new and not st.session_state.get("wr_saved_sig") == sig) else ""
-        st.caption(f"저장됨 {saved_rows:,}행 / 현재 보기 {len(df):,}행{pend}")
-        st.download_button("⬇ 누적 데이터 백업 (CSV)",
-                           df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
-                           f"wr_data_store_{today_kst():%Y%m%d}.csv", "text/csv", width="stretch",
-                           help="앱 재배포 시 누적 데이터가 초기화될 수 있으니 주기적으로 백업하세요. 이 CSV를 다시 업로드하면 복원됩니다.")
-        if st.button("🗑 누적 데이터 초기화", key="wr_clear_store", width="stretch"):
-            if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
-            st.cache_data.clear()
-            st.rerun()
+        st.caption(f"누적 {saved_rows:,}행 저장됨 / 현재 보기 {len(df):,}행{pend} · "
+                   f"메모 {len(st.session_state.wr_texts)}개")
 
-        st.markdown("---")
-        st.markdown("**보고란·메모**")
+        # 통합 백업 — 누적 데이터 + 메모를 한 ZIP으로 (하나만 받아도 전부 보존)
         st.download_button(
-            "⬇ 보고란·메모 백업 (JSON)",
-            json.dumps(st.session_state.wr_texts, ensure_ascii=False, indent=2).encode("utf-8"),
-            f"wr_insights_{today_kst():%Y%m%d}.json", "application/json", width="stretch",
-            help="모든 보고란·인사이트 메모를 백업합니다. 재배포로 초기화돼도 이 파일을 복원하면 되살아납니다.")
-        restore = st.file_uploader("메모 복원 (JSON 업로드)", type=["json"], key="wr_restore_memo")
-        if restore is not None:
+            "⬇ 통합 백업 (ZIP · 데이터+메모)",
+            make_backup_zip(df, st.session_state.wr_texts),
+            f"주간보고백업_{today_kst():%Y%m%d}.zip", "application/zip",
+            width="stretch", type="primary",
+            help="누적 데이터 CSV와 보고란·메모 JSON을 한 파일로 백업합니다. "
+                 "재배포로 초기화돼도 이 ZIP을 '백업 복원'에 올리면 통째로 되살아납니다.")
+
+        # 통합 복원 — zip/csv/json 자동 인식
+        restore = st.file_uploader("백업 복원 (ZIP/CSV/JSON)",
+                                   type=["zip", "csv", "json"], key="wr_restore")
+        if restore is not None and st.session_state.get("wr_restored") != restore.name:
             try:
-                data = json.loads(restore.getvalue().decode("utf-8"))
-                if isinstance(data, dict) and st.session_state.get("wr_restored") != restore.name:
-                    merged = {**st.session_state.wr_texts, **data}  # 업로드 값 우선
-                    st.session_state.wr_texts = merged
-                    all_d = load_insights(); all_d.update(merged); save_insights(all_d)
-                    st.session_state["wr_restored"] = restore.name
-                    st.success(f"{len(data)}개 메모 복원됨 ✓"); st.rerun()
+                summary, data_changed = restore_from_upload(restore)
+                st.session_state["wr_restored"] = restore.name
+                if data_changed:
+                    st.session_state.pop("wr_saved_sig", None)
+                    st.cache_data.clear()
+                st.success(f"복원 완료 ✓ — {summary}"); st.rerun()
             except Exception as e:
                 st.error(f"복원 실패: {e}")
+
+        with st.expander("개별 백업 (데이터만 / 메모만)"):
+            st.download_button("⬇ 누적 데이터 (CSV)",
+                               df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
+                               f"wr_data_store_{today_kst():%Y%m%d}.csv", "text/csv",
+                               width="stretch")
+            st.download_button("⬇ 보고란·메모 (JSON)",
+                               json.dumps(st.session_state.wr_texts, ensure_ascii=False,
+                                          indent=2).encode("utf-8"),
+                               f"wr_insights_{today_kst():%Y%m%d}.json", "application/json",
+                               width="stretch")
+
+        # 초기화 — 2단계 확인 (실수 방지)
+        if st.session_state.get("wr_confirm_clear"):
+            st.warning("정말 초기화할까요? 누적 데이터가 모두 삭제되며 되돌릴 수 없습니다. "
+                       "(메모는 유지 · 초기화 전 통합 백업 권장)")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("삭제 확인", key="wr_clear_yes", type="primary", width="stretch"):
+                if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
+                st.cache_data.clear()
+                st.session_state["wr_confirm_clear"] = False
+                st.session_state.pop("wr_saved_sig", None)
+                st.rerun()
+            if cc2.button("취소", key="wr_clear_no", width="stretch"):
+                st.session_state["wr_confirm_clear"] = False; st.rerun()
+        else:
+            if st.button("🗑 누적 데이터 초기화", key="wr_clear_store", width="stretch"):
+                st.session_state["wr_confirm_clear"] = True; st.rerun()
 
     texts = st.session_state.wr_texts
     print_button()
