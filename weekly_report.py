@@ -949,13 +949,17 @@ def style_trend(tbl, metrics):
 # YoY 라인차트 (Plotly)
 # ══════════════════════════════════════════════════════
 def base_layout(h=300, ysuffix="", title=""):
+    # 제목은 최상단(container 기준), 범례는 그 아래 별도 줄(plot 상단 바로 위)로 분리해
+    # 제목·범례가 같은 높이에서 겹치지 않게 한다. 상단 여백(t)을 넉넉히 확보.
     return dict(
         paper_bgcolor="rgba(248,249,252,0)", plot_bgcolor="rgba(248,249,252,0)",
-        font=dict(color="#475569", size=11), margin=dict(l=10, r=10, t=40, b=10),
+        font=dict(color="#475569", size=11), margin=dict(l=10, r=10, t=64, b=10),
         height=h, showlegend=True,
-        legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yref="paper", yanchor="bottom", y=1.0,
+                    xanchor="left", x=0, bgcolor="rgba(0,0,0,0)",
                     font=dict(color="#64748b", size=10)),
-        title=dict(text=title, font=dict(color="#94a3b8", size=13)),
+        title=dict(text=title, font=dict(color="#94a3b8", size=13),
+                   x=0, xanchor="left", yref="container", y=0.98, yanchor="top"),
         xaxis=dict(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
                    tickfont=dict(color="#64748b", size=10)),
         yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
