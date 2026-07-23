@@ -4045,6 +4045,30 @@ def main():
                                 '쪽에 섞일 수 있어요.</div>',
                                 unsafe_allow_html=True)
 
+            # ── 산출식 (접이식) — 위 3개 분해 차트가 어떻게 계산되는지 ──
+            with st.expander("📐 산출식 보기 — 증감 분해가 어떻게 계산되나"):
+                st.markdown("**① 카테고리 기여 분해** (막대차트)")
+                st.markdown("각 카테고리의 거래액 증감을 그대로 더한 값 — 합은 전체 거래액 증감과 일치.")
+                st.latex(r"\Delta \text{거래액} = \sum_{c}\left(\text{거래액}_{c,\text{기준주}} "
+                         r"- \text{거래액}_{c,\text{전주}}\right)")
+                st.markdown("---")
+                st.markdown("**② 지표 체인 분해 (LMDI)** — 워터폴")
+                st.markdown("거래액을 4개 지표의 곱으로 보고, 각 지표가 증감에 얼마나 기여했는지 분해해요. "
+                            "로그평균 디비지아 지수(LMDI-I) 방식이라 **네 기여의 합이 정확히 총 증감과 같아요.**")
+                st.latex(r"\text{거래액} = \text{발송량}\times \text{CTR}\times \text{주문CR}\times \text{객단가}")
+                st.latex(r"\text{기여}_{k} = L(V_1,V_0)\cdot \ln\!\frac{f_{k,1}}{f_{k,0}}"
+                         r"\qquad L(a,b)=\frac{a-b}{\ln a-\ln b}")
+                st.caption("V₁·V₀ = 기준주·전주 거래액, fₖ = 각 지표값, L = 로그평균. "
+                           "Σ 기여ₖ = V₁ − V₀ (오차 없이 정확 분해).")
+                st.markdown("---")
+                st.markdown("**③ 가중 CTR 믹스 분해** — 실질 효율 vs 카테고리 비중 변화")
+                st.markdown("가중 CTR 변화를 '카테고리별 효율이 실제로 바뀐 몫(실질)'과 "
+                            "'발송 비중이 바뀐 몫(믹스)'으로 나눠요.")
+                st.latex(r"\Delta \text{CTR} = \underbrace{\sum_{c} w_{c,0}\,(\text{ctr}_{c,1}-\text{ctr}_{c,0})}_{\text{실질 효율}}"
+                         r" + \underbrace{\sum_{c} (w_{c,1}-w_{c,0})\,\text{ctr}_{c,1}}_{\text{카테고리 믹스}}")
+                st.caption("wc = 카테고리 c의 발송 비중(발송c ÷ 전체 발송), ctrc = 카테고리 c의 CTR. "
+                           "0=전주·1=기준주. 두 성분의 합은 전체 가중 CTR 증감과 일치해요.")
+
         # ② 금주 하이라이트 · 로우라이트
         with tabH:
             st.markdown("##### 금주 주요 성과 지표 (Top 10 / Bottom 10)")
