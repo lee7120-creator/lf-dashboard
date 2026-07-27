@@ -2451,6 +2451,18 @@ def main():
     # 작업 데이터 확정: 파생 재계산 + 타입 정리 + 문구 태깅 (캐시 — 성능 핵심)
     raw = prepare_raw(work, TAGSET_VER)
 
+    # 미래 날짜 행 제외 — 발송 실적은 과거만 가능하다. 업로드 파일의 연도 오타(예: 2027)로
+    # 미래 날짜가 섞이면 13주 추이·KPI·리더보드가 오염되고 차트 x축이 미래까지 늘어난다.
+    # prepare_raw는 @st.cache_data라 '오늘'에 의존하는 이 필터는 캐시 밖(여기)에서 처리.
+    # +7일 버퍼: 타임존·근미래 예약분 오차는 남기고 명백한 오타(연 단위 미래)만 제거.
+    _n_future_rows = 0
+    if "dt" in raw.columns and len(raw):
+        _cutoff = pd.Timestamp(today_kst()) + pd.Timedelta(days=7)
+        _future_mask = raw["dt"].notna() & (raw["dt"] > _cutoff)
+        _n_future_rows = int(_future_mask.sum())
+        if _n_future_rows:
+            raw = raw[~_future_mask].reset_index(drop=True)
+
     # ── 전사 MTD (발송피로도) 누적 처리 ──
     if "mtd_store_df" not in st.session_state:
         st.session_state.mtd_store_df = storage_load(BK, "mtd")
@@ -2689,6 +2701,10 @@ def main():
         _ds = sorted(_ds)
         drange = f"{_ds[0]} ~ {_ds[-1]}"
     st.sidebar.caption(f"전체 {len(raw)}건 · 매칭 {raw['matched'].mean()*100:.0f}% · 분석 {len(fdf)}건\n\n{drange}")
+    if _n_future_rows:
+        st.sidebar.warning(f"⚠️ 미래 날짜로 기록된 {_n_future_rows}건을 분석에서 제외했어요 "
+                           "(발송 실적은 과거만 가능 — 업로드 파일의 연도 오타일 수 있어요). "
+                           "상세는 「9. 데이터·다운로드」에서 확인하세요.")
     # 최신 주 매칭률 경보 — 전체 %는 과거 누적에 묻혀서 최근 붕괴를 못 보여준다
     _rw = raw.dropna(subset=["dt"]) if "dt" in raw else raw.iloc[0:0]
     if len(_rw):
