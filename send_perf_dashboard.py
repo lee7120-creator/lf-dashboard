@@ -3066,9 +3066,11 @@ def main():
             _wsel = st.selectbox("📅 주차 선택", _wopts, index=0, key="p01_week",
                                  help="특정 주차만 보려면 선택해 주세요. 최신 주차가 위에 있어요.")
         base_prev = None                              # 주차 선택 시 '직전 주차' — 전주 대비 증감 표시용
+        _p01_anchor_ws = None                         # 주차 선택 시 13주 추이의 끝점(선택 주까지)
         if len(_bp):
             if _wsel != "전체 기간":
                 _ws = _wks[_wopts.index(_wsel) - 1]
+                _p01_anchor_ws = pd.Timestamp(_ws)
                 _b0 = base
                 base = _b0[(_b0["dt"] >= _ws) & (_b0["dt"] < _ws + pd.Timedelta(days=7))]
                 base_prev = _b0[(_b0["dt"] >= _ws - pd.Timedelta(days=7)) & (_b0["dt"] < _ws)]
@@ -3115,20 +3117,29 @@ def main():
                        "단순평균은 '캠페인 한 건의 전형적 성과', 가중평균은 '발송 전체의 실제 효율'이에요.")
 
         # ── 최근 13주 미니 추이 — 첫 화면에서 '지금이 좋은 흐름인지' 맥락 제공 ──
+        # 추이는 여러 주를 봐야 하므로 '선택 주 한 주'가 아닌 전체 기간 데이터(fdf/df)에서 그리되,
+        # 주차를 선택하면 그 주를 끝점으로 13주(선택 주까지)를 보여준다 — KPI 카드와 창이 맞도록.
+        # (미선택이면 최신 주까지 최근 13주)
         _tr = (fdf if len(fdf) else df).dropna(subset=["dt"])
         if len(_tr):
             _trw = _tr.copy()
             _trw["주"] = _trw["dt"].dt.to_period("W").dt.start_time
             _tw = (_trw.groupby("주")
                    .agg(발송=("send", "sum"), 거래액=("amt", "sum"), UV=("uv", "sum"))
-                   .reset_index().sort_values("주").tail(13))
+                   .reset_index().sort_values("주"))
+            if _p01_anchor_ws is not None:
+                _tw = _tw[_tw["주"] <= _p01_anchor_ws]
+            _tw = _tw.tail(13)
             if len(_tw) >= 3:
                 _tw["CTR"] = np.where(_tw["발송"] > 0, _tw["UV"] / _tw["발송"] * 100, np.nan)
+                _ttl = ("최근 13주 흐름 — 거래액(위) · 가중 CTR(아래)" if _p01_anchor_ws is None
+                        else "선택 주차까지 13주 흐름 — 거래액(위) · 가중 CTR(아래)")
                 figt = stacked_panels(_tw["주"], _tw["거래액"], "거래액(주간 합)",
                                       _tw["CTR"], "가중 CTR", PALETTE["slate"], PALETTE["blue"],
-                                      h=340, line_suffix="%",
-                                      title="최근 13주 흐름 — 거래액(위) · 가중 CTR(아래)")
+                                      h=340, line_suffix="%", title=_ttl)
                 st.plotly_chart(figt, width="stretch")
+            elif _p01_anchor_ws is not None:
+                st.caption("※ 선택 주차까지 완결된 주가 3주 미만이라 13주 흐름은 생략했어요.")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         _rk_lab = st.selectbox("TOP/BOTTOM 순위 기준", list(METRIC_OPTS.keys()), key="p01_rank",
