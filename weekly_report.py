@@ -125,6 +125,7 @@ METRIC_UNIT = {
     "가입자수": ("명", 1), "가입율": ("%", 1), "당일가입CR": ("%", 1),
     "앱푸시수신동의": ("명", 1), "앱푸시_동의자수": ("명", 1),
     "앱푸시_신규추가": ("명", 1), "앱푸시_이탈": ("명", 1),
+    "앱푸시_유효회원": ("명", 1), "앱푸시_수신동의전체": ("명", 1),
 }
 
 def fmt_value(metric, v):
@@ -373,6 +374,8 @@ def expand_uploads(uploads):
 PUSH_SPIKE_RATIO = 4
 # 흐름(flow) 지표만 마스킹 대상 — 잔고(앱푸시_동의자수)는 수준값이라 별도 글리치 규칙 사용
 PUSH_FLOW_METRICS = {"앱푸시수신동의", "앱푸시_신규추가", "앱푸시_이탈"}
+# 잔고(수준) 지표 — 하루짜리 급변 글리치 규칙 대상
+PUSH_LEVEL_METRICS = {"앱푸시_동의자수", "앱푸시_유효회원", "앱푸시_수신동의전체"}
 
 def mask_push_spikes(d: pd.DataFrame) -> pd.DataFrame:
     """앱푸시 흐름 지표의 대량 이관/재동의/재분류 스파이크 마스킹 (NaN 처리).
@@ -394,7 +397,7 @@ def mask_level_glitches(d: pd.DataFrame, rel=0.3) -> pd.DataFrame:
     지속되는 계단(연초 신규→기존 재분류, 4/19 재이관 등)은 한쪽 이웃과 일치하므로 보존.
     (실데이터: 2025-04-18 이관일에 잔고가 0으로 기록된 글리치 — 3개 세그먼트 공통)
     d에는 'dt'(datetime) 컬럼이 있어야 한다."""
-    m = d["metric"] == "앱푸시_동의자수"
+    m = d["metric"].isin(PUSH_LEVEL_METRICS)
     if not m.any():
         return d
     for _seg, g in d[m].groupby("segment"):
@@ -418,20 +421,22 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
         rows = read_grid(name, data)
     except Exception:
         return pd.DataFrame()
-    if not rows or len(rows) < 8: return pd.DataFrame()
-    if not any("Date" in str(c) for c in rows[0]): return pd.DataFrame()
+    if not rows or len(rows) < 6: return pd.DataFrame()
 
-    date_row = rows[1]
-
-    # 1) 유효한 날짜 컬럼을 모두 추출하고 월(month)을 파싱
-    date_cols = []
-    for ci in range(2, len(date_row)):
-        d = _cell(date_row[ci])
-        m = re.match(r"^(\d{1,2})/\d{1,2}$", d)
-        if m:
-            date_cols.append((ci, d, int(m.group(1))))
-
-    if not date_cols:
+    # 1) 날짜 헤더 행 탐색 — 파일마다 'Date' 라벨 유무·행 위치가 달라(0행 또는 1행)
+    #    M/D 형태 셀이 가장 많은 행을 날짜 행으로 본다 (앞 6행 중)
+    def _date_cols_of(row):
+        out = []
+        for ci in range(2, len(row)):
+            m = re.match(r"^(\d{1,2})/\d{1,2}$", _cell(row[ci]))
+            if m: out.append((ci, _cell(row[ci]), int(m.group(1))))
+        return out
+    date_cols, date_ri = [], None
+    for ri in range(min(6, len(rows))):
+        cand = _date_cols_of(rows[ri])
+        if len(cand) > len(date_cols):
+            date_cols, date_ri = cand, ri
+    if len(date_cols) < 3:
         return pd.DataFrame()
 
     # 2) 뒤에서부터 역순으로 읽으면서 해(year)가 바뀌는 지점 계산
@@ -452,13 +457,22 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
 
     # 3) 섹션(A열) × 행유형(B열) → (지표, 세그먼트) 매핑으로 대상 행 수집
     SECTION_SEG = {"기존": "기존", "신규": "신규", "Total": "*TOTAL"}
-    ROW_METRIC = {"수신동의": "앱푸시_동의자수", "신규추가(+)": "앱푸시_신규추가",
-                  "기존이탈(-)": "앱푸시_이탈"}
+    # 행 라벨은 공백 유무가 파일마다 달라(수신동의/수신 동의) 공백 제거 후 매칭
+    _rk = lambda s: _cell(s).replace(" ", "")
+    labels = {_rk(r[1]) for r in rows if len(r) > 1}
+    # 3단 표(전체 유효 회원/수신 동의/타겟팅 가능)인지 판별.
+    # 이 표에서 '수신 동의'는 앱 수신동의 전체(수백만)이고, 실제 발송 가능 모수는
+    # '타겟팅 가능'이다. 구 2단 표의 '수신동의'는 이 '타겟팅 가능'과 동일한 수치이므로
+    # (실측 대조 확인) 두 레이아웃 모두 앱푸시_동의자수로 이어붙여 시계열 연속성을 유지한다.
+    three_tier = "타겟팅가능" in labels
+    ROW_METRIC = {"신규추가(+)": "앱푸시_신규추가", "기존이탈(-)": "앱푸시_이탈",
+                  "전체유효회원": "앱푸시_유효회원", "타겟팅가능": "앱푸시_동의자수"}
+    ROW_METRIC["수신동의"] = "앱푸시_수신동의전체" if three_tier else "앱푸시_동의자수"
     targets = []  # (metric, segment, row)
     cur_seg = None
     for row in rows:
         c0 = _cell(row[0] if len(row) > 0 else "")
-        c1 = _cell(row[1] if len(row) > 1 else "")
+        c1 = _rk(row[1] if len(row) > 1 else "")
         if c0 in SECTION_SEG: cur_seg = SECTION_SEG[c0]
         if cur_seg and c1 in ROW_METRIC:
             targets.append((ROW_METRIC[c1], cur_seg, row))
@@ -1436,6 +1450,35 @@ def render_push_page(df, ref_year, chart_years):
                                        line=dict(color=clr(seg_pal[seg]), width=2)))
         fig_b.update_layout(**base_layout(300, title="수신동의 누적 잔고 (명)"))
         st.plotly_chart(fig_b, width="stretch")
+
+        # 타겟팅 가능 모수 — 연중 추이 (전년 비교). 세그먼트별로 각각.
+        # 잔고(앱푸시_동의자수)는 실측 대조 결과 원천의 '타겟팅 가능' 행과 동일한 모수다.
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader("타겟팅 가능 모수 — 연중 추이 (전년 비교)")
+        st.caption("실제 발송 가능한 수신동의 모수. 연도별 라인을 같은 연중 위치(월·일)에 "
+                   "겹쳐 작년 대비 수준을 비교합니다.")
+        byr = bal.copy()
+        # 각 연도를 같은 X축(연중 위치)에 겹치려면 공통 연도로 정규화 (2000=윤년이라 2/29 안전)
+        byr["mdt"] = byr["dt"].apply(lambda d: d.replace(year=2000))
+        yrs_b = sorted(byr["year"].dropna().unique().astype(int))
+        SEG_LABEL = {"*TOTAL": "Total", "기존": "기존", "신규": "신규"}
+        for seg in ["*TOTAL", "기존", "신규"]:
+            sb = byr[byr["segment"] == seg]
+            if sb.empty: continue
+            figy = go.Figure()
+            for i, yr in enumerate(yrs_b):
+                s = (sb[sb["year"] == yr].sort_values("mdt")
+                     .set_index("mdt")["value"].dropna())
+                if s.empty: continue
+                figy.add_trace(go.Scatter(
+                    x=s.index, y=s.values, mode="lines", name=str(yr),
+                    line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
+                    hovertemplate="%{x|%m/%d}<br>" + str(yr) + " %{y:,.0f}명<extra></extra>"))
+            lyy = base_layout(260, title=f"{SEG_LABEL[seg]} — 타겟팅 가능 (명)")
+            lyy["xaxis"]["tickformat"] = "%m월"
+            lyy["xaxis"]["dtick"] = "M1"
+            figy.update_layout(**lyy)
+            st.plotly_chart(figy, width="stretch")
 
         # 순증감 분해 — 신규추가(+) vs 이탈(−) + 순증 라인 (Total)
         st.subheader("동의 순증감 분해 — 신규추가 vs 이탈 (Total)")
