@@ -1338,8 +1338,21 @@ def safe_ai_html(s):
     s = _s(s)
     s = re.sub(r'(?is)<\s*(script|iframe|style|object|embed|link|meta)\b.*?(</\s*\1\s*>|$)', '', s)
     s = re.sub(r'(?is)<\s*/?\s*(script|iframe|style|object|embed|link|meta)\b[^>]*>', '', s)
-    s = re.sub(r'(?i)\son\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', '', s)   # onclick·onerror 등
-    s = re.sub(r'(?i)(href|src)\s*=\s*(["\']?)\s*javascript:', r'\1=\2#', s)
+    # 이벤트 핸들러 제거 — 경계는 공백뿐 아니라 / " ' 도 될 수 있다(경계 문자는 보존).
+    #   공백만 보던 기존 패턴은 <img src=x/onerror=..>·<img src="x"onerror=..> 를 놓쳤다.
+    s = re.sub(r'(?i)([\s/"\'])on\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)', r'\1', s)
+
+    # 위험 스킴(javascript:·vbscript:) 제거. 따옴표 값 내부의 탭/개행은 브라우저가 URL을
+    #   파싱할 때 없애므로 href="java\nscript:.." 로 우회됐다 → 공백·제어문자를 걷어낸 뒤 판정.
+    def _san_url(mo):
+        attr, q, val = mo.group(1), mo.group(2), mo.group(3)
+        if re.sub(r'[\x00-\x20]+', '', val).lower().startswith(('javascript:', 'vbscript:')):
+            return f'{attr}={q}#{q}'
+        return mo.group(0)
+    s = re.sub(r'(?i)(href|src)\s*=\s*(")([^"]*)"', _san_url, s)
+    s = re.sub(r'(?i)(href|src)\s*=\s*(\')([^\']*)\'', _san_url, s)
+    # 따옴표 없는 값(내부 공백 불가) — 연속 스킴만 제거
+    s = re.sub(r'(?i)(href|src)\s*=\s*(javascript|vbscript):[^\s>]*', r'\1=#', s)
     return s
 
 
@@ -3894,8 +3907,16 @@ def main():
                     _blank = _c.isna() | _c.astype(str).str.strip().isin(["", "nan", "None", "NaN"])
                     dd["cat"] = np.where(_blank, "(미분류)", _c.astype(str))
                 return dd
-            cwd = _catfill(_slice(ref_ws, ref_we))
-            pwd = _catfill(_slice(ref_ws - pd.Timedelta(days=7), ref_we - pd.Timedelta(days=7)))
+            # 기준주가 부분 주면 KPI 카드와 같은 '동요일 누계'(_elapsed)로 잘라서 비교한다.
+            # 전체 주(월~일)로 비교하면 기준주 2일치가 전주 7일치와 맞붙어 분해 차트만
+            # △70%대 가짜 급락을 그려 바로 위 KPI 카드(동요일 누계)와 모순됐다.
+            # 완결 주(_elapsed=6)면 ref_ws+6 == ref_we 라 기존 동작과 완전히 같다.
+            _dec_end = ref_ws + pd.Timedelta(days=_elapsed)
+            cwd = _catfill(_slice(ref_ws, _dec_end))
+            pwd = _catfill(_slice(ref_ws - pd.Timedelta(days=7), _dec_end - pd.Timedelta(days=7)))
+            if _elapsed < 6:
+                st.caption(f"⏳ 기준주가 부분 주라 **월~{['월','화','수','목','금','토','일'][_elapsed]} "
+                           "동요일 누계**로 전주와 비교해요 (위 KPI 카드와 같은 기준).")
             if "cat" not in cwd.columns or len(pwd) == 0:
                 st.info("전주 데이터가 없어 분해할 수 없어요.")
             else:
