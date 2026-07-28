@@ -1721,6 +1721,60 @@ def get_push_stats(df, start_d, end_d, grp):
         "tot_diff": sub["diff"].sum() if "diff" in sub else 0
     }
 
+def growth_pace_note(s_cur, s_prev=None):
+    """잔고 시계열의 증감 속도 분석 문구(HTML). s_cur/s_prev: date 인덱스 Series(당해/전년).
+    연초 대비 증감·일평균 속도, 전년 동기 속도 대비, 최근 4주 추세, 연말 단순추정.
+    (weekly_report.py의 동일 함수와 로직 일치 — 두 앱이 같은 기준으로 읽히도록)"""
+    s_cur = s_cur.dropna().sort_index()
+    if len(s_cur) < 8:
+        return None
+    as_of = s_cur.index[-1]
+    span = max((as_of - s_cur.index[0]).days, 1)
+    ytd = float(s_cur.iloc[-1] - s_cur.iloc[0])
+    pace = ytd / span
+
+    def _c(v, txt):
+        return f'<span style="color:{"#dc2626" if v < 0 else "#16a34a"};font-weight:700">{txt}</span>'
+    bits = [f"연초 대비 {_c(ytd, f'{ytd:+,.0f}명')} · 일평균 {_c(pace, f'{pace:+,.1f}명/일')}"]
+
+    # 전년 동기(같은 연중 위치)까지의 속도와 비교
+    if s_prev is not None:
+        sp = s_prev.dropna().sort_index()
+        if len(sp) >= 8:
+            py = int(sp.index[0].year)
+            try:
+                cutoff = as_of.replace(year=py)
+            except ValueError:          # 2/29 → 평년
+                cutoff = as_of.replace(year=py, day=28)
+            spc = sp[sp.index <= cutoff]
+            if len(spc) >= 8:
+                p_pace = (float(spc.iloc[-1] - spc.iloc[0])
+                          / max((spc.index[-1] - spc.index[0]).days, 1))
+                diff = pace - p_pace
+                bits.append(f"전년 동기 {p_pace:+,.1f}명/일 대비 "
+                            f"{_c(diff, f'{diff:+,.1f}명/일')} {'빠름' if diff > 0 else '느림'}")
+
+    # 최근 4주 속도 → 추세 판정 (감소 추세에서 '가속/감속'이 뒤집혀 읽히지 않도록 방향 인식)
+    recent = s_cur[s_cur.index >= as_of - pd.Timedelta(days=28)]
+    if len(recent) >= 5:
+        r_pace = (float(recent.iloc[-1] - recent.iloc[0])
+                  / max((recent.index[-1] - recent.index[0]).days, 1))
+        tol = max(abs(pace) * 0.05, 0.5)      # 이 폭 안이면 속도 변화 없음으로 본다
+        if abs(r_pace - pace) <= tol:
+            tag = "속도 유지"
+        elif pace >= 0:
+            tag = "감소 전환" if r_pace < 0 else ("증가 가속" if r_pace > pace else "증가 둔화")
+        else:
+            tag = "증가 전환" if r_pace > 0 else ("감소 둔화" if r_pace > pace else "감소 심화")
+        bits.append(f"최근 4주 {_c(r_pace, f'{r_pace:+,.1f}명/일')} → <b>{tag}</b>")
+
+    # 연말 단순 선형 추정 (현 속도 유지 가정)
+    rest = (datetime.date(as_of.year, 12, 31) - as_of.date()).days
+    if rest > 0:
+        bits.append(f"현 속도 유지 시 연말 ≈ {float(s_cur.iloc[-1]) + pace * rest:,.0f}명")
+    return " · ".join(bits)
+
+
 def main():
     import streamlit as st
     import plotly.graph_objects as go
@@ -6534,6 +6588,58 @@ def main():
         lay_consent["yaxis"]["title"] = "수신동의 수"
         fig_consent.update_layout(**lay_consent)
         st.plotly_chart(fig_consent, width="stretch")
+
+        # ── 차트 1-b: 연중 추이 (전년 비교) + 증감 속도 코멘트 ──
+        # 연중 비교이므로 위 '기간' 필터는 적용하지 않는다(잘라내면 연중 곡선이 무의미).
+        # 그룹 필터는 따르고, 코멘트는 3개 그룹을 한눈에 볼 수 있게 모두 표시한다.
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📆 연중 추이 (전년 비교) · 증감 속도")
+        st.caption("연도별 라인을 같은 연중 위치(월·일)에 겹쳐 작년 대비 수준을 비교해요. "
+                   "연중 비교라 위 **기간 필터와 무관하게 전체 기간**을 쓰고, 이상치 일자는 제외합니다.")
+        _yb = push_consent_df[~push_consent_df["is_outlier"]].copy()
+        _yb["date"] = pd.to_datetime(_yb["date"], errors="coerce")
+        _yb = _yb.dropna(subset=["date"])
+        _yb["consent"] = pd.to_numeric(_yb["consent"], errors="coerce")
+        _yb["_yr"] = _yb["date"].dt.year
+
+        _g = _yb[_yb["group"] == sel_group].dropna(subset=["consent"])
+        if _g.empty:
+            st.info("연중 비교를 표시할 데이터가 부족해요.")
+        else:
+            _YP = ["slate", "blue", "red", "green", "amber", "purple", "teal"]
+            fig_yoy = go.Figure()
+            for _i, _y in enumerate(sorted(_g["_yr"].unique())):
+                _s = _g[_g["_yr"] == _y].sort_values("date")
+                if _s.empty:
+                    continue
+                # 각 연도를 같은 X축에 겹치려면 공통 연도로 정규화 (2000=윤년이라 2/29 안전)
+                _x = _s["date"].apply(lambda d: d.replace(year=2000))
+                fig_yoy.add_trace(go.Scatter(
+                    x=_x, y=_s["consent"],
+                    mode="lines" if len(_s) >= 2 else "markers", name=str(int(_y)),
+                    line=dict(color=PALETTE[_YP[_i % len(_YP)]], width=2),
+                    marker=dict(color=PALETTE[_YP[_i % len(_YP)]], size=6),
+                    hovertemplate="%{x|%m/%d}<br>" + str(int(_y)) + " %{y:,.0f}명<extra></extra>"))
+            _lay_yoy = base_layout(h=340, title=f"{sel_group} — 수신동의 연중 추이 (명)")
+            _lay_yoy["showlegend"] = True
+            _lay_yoy["xaxis"]["tickformat"] = "%m월"
+            _lay_yoy["xaxis"]["dtick"] = "M1"
+            _lay_yoy["yaxis"]["title"] = "수신동의 수"
+            fig_yoy.update_layout(**_lay_yoy)
+            st.plotly_chart(fig_yoy, width="stretch")
+
+        # 증감 속도 코멘트 — 세 그룹 모두 (기존은 빠지는데 신규가 메우는지 한눈에)
+        for _grp in ("Total", "기존", "신규"):
+            _gg = _yb[_yb["group"] == _grp].dropna(subset=["consent"])
+            if _gg.empty:
+                continue
+            _ys = sorted(_gg["_yr"].unique())
+            _ser = lambda y: _gg[_gg["_yr"] == y].sort_values("date").set_index("date")["consent"]
+            _note = growth_pace_note(_ser(_ys[-1]), _ser(_ys[-2]) if len(_ys) >= 2 else None)
+            if _note:
+                st.markdown(
+                    "<div style='font-size:12px;color:#64748b;margin:2px 0 6px 2px'>"
+                    f"📈 <b>{_grp} 증감 속도</b> — {_note}</div>", unsafe_allow_html=True)
 
         # ── 차트 2: 신규추가 / 기존이탈 추이 (일별) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
