@@ -1101,11 +1101,26 @@ def push_weekly(df, group="Total"):
     """일별 동의 DataFrame → 주간 집계 (주 시작=월요일).
 
     이상치 제외 후 주간 평균 동의수, 주간 순증감, 주간 신규추가합, 주간 탈퇴합 반환.
+
+    집계일수가 7일이 안 되는 주는 원인이 두 가지로 갈린다 — (a) 이상치로 제외됐거나
+    (b) 원천 데이터에 그 날 자체가 없거나. 화면에서 "이상치 때문인가?" 하고 헷갈리지
+    않도록 `이상치일수`·`결측일수`·`기대일수`를 같이 돌려준다.
+    (기대일수는 데이터가 있는 구간과 겹치는 날만 세므로, 진행 중인 마지막 주나
+     데이터 시작 주가 부분 집계인 건 결측으로 잡히지 않는다.)
     """
-    sub = df[(df["group"] == group) & (~df["is_outlier"])].copy()
+    g = df[df["group"] == group].copy()
+    if g.empty:
+        return pd.DataFrame()
+    g["date"] = pd.to_datetime(g["date"], errors="coerce")
+    g = g.dropna(subset=["date"]).sort_values("date")
+    if g.empty:
+        return pd.DataFrame()
+    g["is_outlier"] = g["is_outlier"].astype(bool) if "is_outlier" in g else False
+    g["week"] = g["date"].dt.to_period("W-SUN").apply(lambda p: p.start_time)
+
+    sub = g[~g["is_outlier"]]
     if sub.empty:
         return pd.DataFrame()
-    sub["week"] = sub["date"].dt.to_period("W-SUN").apply(lambda p: p.start_time)
     agg = sub.groupby("week").agg(
         일수=("date", "count"),
         평균동의수=("consent", "mean"),
@@ -1114,11 +1129,32 @@ def push_weekly(df, group="Total"):
         신규추가합=("added", "sum"),
         탈퇴합=("removed", "sum"),
     ).reset_index()
+
+    # 주별 이상치 제외 일수 / 원천 결측 일수
+    lo, hi = g["date"].min(), g["date"].max()
+    out_cnt = g[g["is_outlier"]].groupby("week")["date"].nunique()
+    have_cnt = g.groupby("week")["date"].nunique()
+    agg["이상치일수"] = agg["week"].map(out_cnt).fillna(0).astype(int)
+    agg["기대일수"] = agg["week"].apply(
+        lambda w: max(0, (min(w + pd.Timedelta(days=6), hi) - max(w, lo)).days + 1))
+    agg["결측일수"] = (agg["기대일수"] - agg["week"].map(have_cnt).fillna(0)
+                   ).clip(lower=0).astype(int)
+
     agg.rename(columns={"week": "주시작"}, inplace=True)
     agg["주차"] = agg["주시작"].apply(
         lambda d: f"{d.year}년 {d.isocalendar()[1]}주차 ({d.strftime('%m/%d')}~{(d + pd.Timedelta(days=6)).strftime('%m/%d')})"
     )
     return agg
+
+
+def push_week_note(row):
+    """주간 행 → 집계일수가 모자란 이유 한 줄 (완전한 주는 빈 문자열)."""
+    parts = []
+    if int(row.get("이상치일수", 0) or 0) > 0:
+        parts.append(f"이상치 제외 {int(row['이상치일수'])}일")
+    if int(row.get("결측일수", 0) or 0) > 0:
+        parts.append(f"데이터 없음 {int(row['결측일수'])}일")
+    return " · ".join(parts)
 
 
 # ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
@@ -6524,19 +6560,36 @@ def main():
         wk_df = push_weekly(push_consent_df[(push_consent_df["date"] >= _d0) & (push_consent_df["date"] <= _d1)],
                             group=sel_group)
         if not wk_df.empty:
-            wk_show = wk_df[["주시작", "주차", "일수", "기말동의수", "순증감합", "신규추가합", "탈퇴합"]].copy()
+            wk_show = wk_df[["주시작", "주차", "일수", "기말동의수", "순증감합", "신규추가합",
+                             "탈퇴합", "이상치일수", "결측일수"]].copy()
+            wk_show["비고"] = wk_show.apply(push_week_note, axis=1)
             wk_show = wk_show.sort_values("주시작", ascending=False).reset_index(drop=True)
-            wk_show = wk_show.drop(columns=["주시작"])
+            wk_show = wk_show.drop(columns=["주시작", "이상치일수", "결측일수"])
             wk_show["기말동의수"] = wk_show["기말동의수"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
             wk_show["순증감합"]  = wk_show["순증감합"].apply(lambda v: f"{v:+,.0f}" if pd.notna(v) else "—")
             wk_show["신규추가합"] = wk_show["신규추가합"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
             wk_show["탈퇴합"]   = wk_show["탈퇴합"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
             wk_show.rename(columns={
                 "주차": "주차", "일수": "집계일수", "기말동의수": "기말 동의수",
-                "순증감합": "순증감(합)", "신규추가합": "신규추가(합)", "탈퇴합": "기존이탈(합)"}, inplace=True)
+                "순증감합": "순증감(합)", "신규추가합": "신규추가(합)", "탈퇴합": "기존이탈(합)",
+                "비고": "집계일수 부족 사유"}, inplace=True)
             st.dataframe(wk_show, hide_index=True, width="stretch", height=360)
             st.caption("**기말 동의수**는 그 주 마지막 날 기준 누적 동의자 수(스냅샷)이고, "
-                       "**순증감·신규추가·기존이탈**은 그 주 전체를 더한 값(합계)이에요.")
+                       "**순증감·신규추가·기존이탈**은 그 주 전체를 더한 값(합계)이에요. "
+                       "집계일수가 7일보다 적으면 **집계일수 부족 사유** 칸에 원인이 표시돼요 "
+                       "(기간 필터 양 끝의 부분 주는 사유 없이 비어 있어요).")
+
+            # 원천에 날짜 자체가 빠진 주는 합계가 과소집계되므로 별도 경고
+            _gap_wk = wk_df[wk_df["결측일수"] > 0].sort_values("주시작", ascending=False)
+            if not _gap_wk.empty:
+                _gap_top = _gap_wk.head(5)
+                _gap_txt = ", ".join(f"{r['주차']} — {int(r['결측일수'])}일"
+                                     for _, r in _gap_top.iterrows())
+                _more = f" 외 {len(_gap_wk) - len(_gap_top)}개 주" if len(_gap_wk) > len(_gap_top) else ""
+                st.warning(
+                    f"📭 원천 데이터에 **날짜 자체가 없는 주**가 {len(_gap_wk)}개 있어요 — {_gap_txt}{_more}. "
+                    "이상치 제외가 아니라 업로드된 파일에 그 날짜가 안 들어온 경우예요. "
+                    "해당 기간이 포함된 원본 xlsx를 다시 올리고 저장하면 합계가 채워집니다.")
 
             # 이탈률 급등 조기 경보 — 최근 주 이탈률이 과거 추세 대비 z>2면 배너
             if len(wk_df) >= 9:
