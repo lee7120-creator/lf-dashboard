@@ -777,6 +777,59 @@ def prev_label(df, gran, year, label):
     except ValueError: return None, None
     return keys[i - 1] if i > 0 else (None, None)
 
+def growth_pace_note(s_cur, s_prev=None):
+    """잔고 시계열의 증가속도 분석 문구(HTML). s_cur/s_prev: dt 인덱스 Series(당해/전년).
+    연초 대비 증감·일평균 속도, 전년 동기 속도 대비, 최근 4주 가속/감속, 연말 단순추정."""
+    s_cur = s_cur.dropna().sort_index()
+    if len(s_cur) < 8:
+        return None
+    as_of = s_cur.index[-1]
+    span = max((as_of - s_cur.index[0]).days, 1)
+    ytd = float(s_cur.iloc[-1] - s_cur.iloc[0])
+    pace = ytd / span
+
+    def _c(v, txt):
+        return f'<span style="color:{"#dc2626" if v < 0 else "#16a34a"};font-weight:700">{txt}</span>'
+    bits = [f"연초 대비 {_c(ytd, f'{ytd:+,.0f}명')} · 일평균 {_c(pace, f'{pace:+,.1f}명/일')}"]
+
+    # 전년 동기(같은 연중 위치)까지의 속도와 비교
+    if s_prev is not None:
+        sp = s_prev.dropna().sort_index()
+        if len(sp) >= 8:
+            py = int(sp.index[0].year)
+            try:
+                cutoff = as_of.replace(year=py)
+            except ValueError:          # 2/29 → 평년
+                cutoff = as_of.replace(year=py, day=28)
+            spc = sp[sp.index <= cutoff]
+            if len(spc) >= 8:
+                p_pace = (float(spc.iloc[-1] - spc.iloc[0])
+                          / max((spc.index[-1] - spc.index[0]).days, 1))
+                diff = pace - p_pace
+                bits.append(f"전년 동기 {p_pace:+,.1f}명/일 대비 "
+                            f"{_c(diff, f'{diff:+,.1f}명/일')} {'빠름' if diff > 0 else '느림'}")
+
+    # 최근 4주 속도 → 추세 판정. 감소 추세에서는 '가속/감속'이 뒤집혀 읽히므로
+    # 진행 방향(pace 부호)에 맞춰 문구를 고른다.
+    recent = s_cur[s_cur.index >= as_of - pd.Timedelta(days=28)]
+    if len(recent) >= 5:
+        r_pace = (float(recent.iloc[-1] - recent.iloc[0])
+                  / max((recent.index[-1] - recent.index[0]).days, 1))
+        tol = max(abs(pace) * 0.05, 0.5)      # 이 폭 안이면 속도 변화 없음으로 본다
+        if abs(r_pace - pace) <= tol:
+            tag = "속도 유지"
+        elif pace >= 0:
+            tag = "감소 전환" if r_pace < 0 else ("증가 가속" if r_pace > pace else "증가 둔화")
+        else:
+            tag = "증가 전환" if r_pace > 0 else ("감소 둔화" if r_pace > pace else "감소 심화")
+        bits.append(f"최근 4주 {_c(r_pace, f'{r_pace:+,.1f}명/일')} → <b>{tag}</b>")
+
+    # 연말 단순 선형 추정 (현 속도 유지 가정)
+    rest = (datetime.date(as_of.year, 12, 31) - as_of.date()).days
+    if rest > 0:
+        bits.append(f"현 속도 유지 시 연말 ≈ {float(s_cur.iloc[-1]) + pace * rest:,.0f}명")
+    return " · ".join(bits)
+
 def week_ref(df, ref_year, ref_week):
     """기준 주차 (year, label): 사이드바 선택 우선, 없으면 데이터상 최신 주차"""
     return (ref_year, ref_week) if ref_week else latest_period(df, "주")
@@ -1479,6 +1532,17 @@ def render_push_page(df, ref_year, chart_years):
             lyy["xaxis"]["dtick"] = "M1"
             figy.update_layout(**lyy)
             st.plotly_chart(figy, width="stretch")
+
+            # 증가속도 분석 코멘트 (실제 날짜 인덱스로 계산 — 정규화된 mdt 아님)
+            _ser = lambda y: (sb[sb["year"] == y].sort_values("dt")
+                              .set_index("dt")["value"]) if y in yrs_b else None
+            note = growth_pace_note(_ser(yrs_b[-1]),
+                                    _ser(yrs_b[-2]) if len(yrs_b) >= 2 else None)
+            if note:
+                st.markdown(
+                    "<div style='font-size:12px;color:#64748b;margin:-6px 0 16px 2px'>"
+                    f"📈 <b>{SEG_LABEL[seg]} 증감 속도</b> — {note}</div>",
+                    unsafe_allow_html=True)
 
         # 순증감 분해 — 신규추가(+) vs 이탈(−) + 순증 라인 (Total)
         st.subheader("동의 순증감 분해 — 신규추가 vs 이탈 (Total)")
