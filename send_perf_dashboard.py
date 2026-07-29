@@ -4357,7 +4357,9 @@ def main():
         if len(tdf) < 2:
             st.info("추이를 그리려면 완결된 주가 2주 이상 필요해요. 실적을 더 쌓아 주세요.")
             st.stop()
-        WRT_BAR = {"발송량": "발송", "거래액": "거래액", "캠페인수": "캠페인수"}
+        # 라벨은 '6. 효율·피로도'의 같은 막대/선 지표 셀렉트(WKM)와 맞춘다.
+        # 값은 _agg()가 돌려주는 tdf 컬럼명. 새 항목은 뒤에 붙여 기본값(index=1, 거래액) 유지.
+        WRT_BAR = {"발송량": "발송", "거래액": "거래액", "캠페인수": "캠페인수", "유입UV": "UV"}
         WRT_LINE = {"CTR": ("CTR", "%"), "주문CR": ("주문CR", "%"), "RPS": ("RPS", "")}
         tsel1, tsel2 = st.columns(2)
         _bl = tsel1.selectbox("막대 지표 (위)", list(WRT_BAR), index=1, key="wr_t_bar")
