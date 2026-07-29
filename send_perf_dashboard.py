@@ -6662,14 +6662,17 @@ def main():
             _YP = ["slate", "blue", "red", "green", "amber", "purple", "teal"]
             fig_yoy = go.Figure()
             for _i, _y in enumerate(sorted(_g["_yr"].unique())):
-                _s = _g[_g["_yr"] == _y].sort_values("date")
-                if _s.empty:
+                # 변수명 주의: `_s`는 모듈 전역 헬퍼(NaN→빈문자열)라 여기서 지역변수로 쓰면
+                # main() 전체에서 `_s`가 지역으로 승격돼, 이 줄이 실행되기 전에 _s()를 호출하는
+                # 모든 곳(render_messages 등)이 NameError로 죽는다. 반드시 다른 이름을 쓸 것.
+                _sy = _g[_g["_yr"] == _y].sort_values("date")
+                if _sy.empty:
                     continue
                 # 각 연도를 같은 X축에 겹치려면 공통 연도로 정규화 (2000=윤년이라 2/29 안전)
-                _x = _s["date"].apply(lambda d: d.replace(year=2000))
+                _x = _sy["date"].apply(lambda d: d.replace(year=2000))
                 fig_yoy.add_trace(go.Scatter(
-                    x=_x, y=_s["consent"],
-                    mode="lines" if len(_s) >= 2 else "markers", name=str(int(_y)),
+                    x=_x, y=_sy["consent"],
+                    mode="lines" if len(_sy) >= 2 else "markers", name=str(int(_y)),
                     line=dict(color=PALETTE[_YP[_i % len(_YP)]], width=2),
                     marker=dict(color=PALETTE[_YP[_i % len(_YP)]], size=6),
                     hovertemplate="%{x|%m/%d}<br>" + str(int(_y)) + " %{y:,.0f}명<extra></extra>"))
