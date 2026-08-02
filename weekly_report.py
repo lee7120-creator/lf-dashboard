@@ -777,6 +777,24 @@ def prev_label(df, gran, year, label):
     except ValueError: return None, None
     return keys[i - 1] if i > 0 else (None, None)
 
+def week_like(df, year, month, wk):
+    """(year, 'MM월 N주차') 라벨 찾기 — 같은 주차 번호가 없으면 그 달의 '마지막 주차'로 대체.
+
+    주차는 달마다 4~5개로 들쭉날쭉해서(전체 342주 중 31주가 5주차) 07월 5주차의
+    전월인 06월엔 5주차가 아예 없다. 그대로 두면 전월비가 '–'로 비어버리므로
+    가장 가까운 대응 주차(= 그 달 마지막 주)로 떨어뜨린다.
+    반환: (label, exact) — exact=False면 대체된 것이라 화면에 기준을 같이 표기해야 한다.
+          label이 None이면 그 달 데이터 자체가 없음.
+    """
+    labs = set(df[(df["gran"] == "주") & (df["year"] == year)]["label"].dropna().unique())
+    exact = f"{month:02d}월 {wk}주차"
+    if exact in labs:
+        return exact, True
+    cand = [l for l in labs if l.startswith(f"{month:02d}월")]
+    if not cand:
+        return None, False
+    return max(cand, key=lambda s: int(re.search(r"(\d)주차", s).group(1))), False
+
 def growth_pace_note(s_cur, s_prev=None):
     """잔고 시계열의 증가속도 분석 문구(HTML). s_cur/s_prev: dt 인덱스 Series(당해/전년).
     연초 대비 증감·일평균 속도, 전년 동기 속도 대비, 최근 4주 가속/감속, 연말 단순추정."""
@@ -1256,13 +1274,18 @@ def _ai_metric_facts(df, ref_year, ref_month, ref_week=None):
             if isinstance(cur, float) and np.isnan(cur): continue
             py, plb = prev_label(df, "주", ref_year, ref_week)
             prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-            yoy = pick(df, "주", met, "*TOTAL", ref_year - 1, ref_week, "final")
             wm = re.match(r"(\d{1,2})월 (\d)주차", ref_week)
             mom = np.nan
+            ylb = ref_week
             if wm:
+                # 5주차처럼 대응 주차가 없으면 그 달 마지막 주차로 대체 (KPI 카드와 동일 규칙)
                 mo, wk = int(wm.group(1)), int(wm.group(2))
                 my, mm = (ref_year, mo - 1) if mo > 1 else (ref_year - 1, 12)
-                mom = pick(df, "주", met, "*TOTAL", my, f"{mm:02d}월 {wk}주차", "final")
+                mlb, _ = week_like(df, my, mm, wk)
+                if mlb:
+                    mom = pick(df, "주", met, "*TOTAL", my, mlb, "final")
+                ylb, _ = week_like(df, ref_year - 1, mo, wk)
+            yoy = pick(df, "주", met, "*TOTAL", ref_year - 1, ylb, "final") if ylb else np.nan
             rows.append(f"- {met}: {fmt_value(met, cur)} "
                         f"(전주비 {fmt_delta(met, cur, prv) or '–'}, "
                         f"전월비 {fmt_delta(met, cur, mom) or '–'}, "
@@ -1892,23 +1915,31 @@ def main():
             cols = st.columns(4)
             kpi_metrics = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가", "가입자수"]
             py, plb = prev_label(df, "주", wy, wlabel)
-            # 전월 동일 주차 (예: 06월 1주차 → 05월 1주차)
+            # 전월 동일 주차 (예: 06월 1주차 → 05월 1주차).
+            # 5주차처럼 전월(또는 전년 동월)에 같은 주차가 없으면 그 달 마지막 주차로
+            # 대체하고, 어떤 주와 비교했는지 뱃지에 같이 적는다.
             mom_y = mom_lbl = None
+            yoy_lbl, mom_exact, yoy_exact = wlabel, True, True
             wm = re.match(r"(\d{1,2})월 (\d)주차", wlabel)
             if wm:
                 mo, wk = int(wm.group(1)), int(wm.group(2))
                 mom_y, mom_m = (wy, mo - 1) if mo > 1 else (wy - 1, 12)
-                mom_lbl = f"{mom_m:02d}월 {wk}주차"
+                mom_lbl, mom_exact = week_like(df, mom_y, mom_m, wk)
+                yoy_lbl, yoy_exact = week_like(df, wy - 1, mo, wk)
+            mom_tag = "전월비" if (mom_exact or not mom_lbl) else f"전월비 · {mom_lbl}"
+            yoy_tag = "전년비" if (yoy_exact or not yoy_lbl) else f"전년비 · {yoy_lbl}"
             for col, met in zip(cols, kpi_metrics):
                 cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
                 deltas = []
                 prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
                 deltas.append((fmt_delta(met, cur, prv), "전주비"))
-                if mom_lbl:
-                    mom = pick(df, "주", met, "*TOTAL", mom_y, mom_lbl, "final")
-                    deltas.append((fmt_delta(met, cur, mom), "전월비"))
-                yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
-                deltas.append((fmt_delta(met, cur, yoy), "전년비"))
+                if wm:
+                    mom = (pick(df, "주", met, "*TOTAL", mom_y, mom_lbl, "final")
+                           if mom_lbl else np.nan)
+                    deltas.append((fmt_delta(met, cur, mom), mom_tag))
+                yoy = (pick(df, "주", met, "*TOTAL", wy - 1, yoy_lbl, "final")
+                       if yoy_lbl else np.nan)
+                deltas.append((fmt_delta(met, cur, yoy), yoy_tag))
                 pills = ""
                 for d, lab in deltas:
                     if d:
@@ -1922,6 +1953,13 @@ def main():
                     f'<div class="kpi-card"><div class="kpi-label">{met} ({week_disp(wy, wlabel)})</div>'
                     f'<div class="kpi-value">{fmt_value(met, cur)}</div>{pills}</div>',
                     unsafe_allow_html=True)
+            _sub = []
+            if wm and not mom_exact and mom_lbl:
+                _sub.append(f"전월에 {wm.group(2)}주차가 없어 **{mom_y}년 {mom_lbl}**(전월 마지막 주)와 비교")
+            if wm and not yoy_exact and yoy_lbl:
+                _sub.append(f"전년 동월에 {wm.group(2)}주차가 없어 **{wy-1}년 {yoy_lbl}**와 비교")
+            if _sub:
+                st.caption("ℹ️ " + " · ".join(_sub) + " — 주차 수가 달마다 4~5개로 달라서예요.")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 실적 요약 — 전주비 (주차 기준)
