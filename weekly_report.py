@@ -1684,7 +1684,11 @@ def render_push_page(df, ref_year, chart_years):
         if max_month > 0:
             sub = sub[~((sub["month"] == max_month) & (sub["day"] > max_day))]
 
-        grp = sub.groupby(["year", "month", "metric"])["value"].sum().unstack("metric").reset_index()
+        # min_count=1 — 값이 하나도 없는 달을 0으로 만들지 않는다.
+        # (기본 sum()은 전부 NaN이면 0을 돌려줘서, 아직 안 올라온 당월 가입자수가
+        #  '0명 · YoY △100%'로 찍히고 동의율은 288/0=inf → 마스킹돼 '-'로 빠졌다.)
+        grp = (sub.groupby(["year", "month", "metric"])["value"].sum(min_count=1)
+               .unstack("metric").reset_index())
 
         if "가입자수" in grp.columns and "앱푸시수신동의" in grp.columns:
             grp["동의율"] = grp["앱푸시수신동의"] / grp["가입자수"]
