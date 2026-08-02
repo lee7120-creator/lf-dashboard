@@ -1,0 +1,52 @@
+name: "대시보드 검사"
+
+# 머지 전에 '열자마자 죽는' 회귀를 막는다.
+# 2026-07 전역 헬퍼 섀도잉(`_s`) 사고로 11개 페이지가 전부 다운된 적이 있어서,
+# 정적 검사(빠름) + 전 페이지 실제 렌더(느리지만 확실) 두 겹으로 본다.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "send_perf_dashboard.py"
+      - "weekly_report.py"
+      - "requirements.txt"
+      - "tests/**"
+      - ".github/workflows/dashboard-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "send_perf_dashboard.py"
+      - "weekly_report.py"
+      - "requirements.txt"
+      - "tests/**"
+  workflow_dispatch:
+
+concurrency:                      # 같은 PR에 연달아 푸시하면 이전 실행은 취소
+  group: dashboard-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 문법 검사
+        run: |
+          python -m compileall -q send_perf_dashboard.py weekly_report.py
+
+      - name: 전역 헬퍼 섀도잉 검사
+        run: python tests/check_shadowing.py
+
+      - name: 전 페이지 렌더 스모크
+        run: python tests/smoke_pages.py
