@@ -966,16 +966,24 @@ def week_disp(year, label):
     """주차 표시: 2026년 06월 2주차"""
     return f"{year}년 {label}" if label else "-"
 
+def week_back(df, wy, wlabel, years):
+    """wlabel의 `years`년 전 대응 주차 (label, exact). 5주차 등은 그 달 마지막 주로 대체."""
+    wm = re.match(r"(\d{1,2})월 (\d)주차", wlabel or "")
+    if not wm:
+        return wlabel, True
+    return week_like(df, wy - years, int(wm.group(1)), int(wm.group(2)))
+
 def wow_summary_table(df, wy, wlabel, metrics):
     """전주비 요약표 (실적 요약과 동일 구조): 전주·기준주·전주비 + 전년동주·전년비"""
     py, plb = prev_label(df, "주", wy, wlabel)
+    ylb, _ = week_back(df, wy, wlabel, 1)
     cols = [week_disp(py, plb), week_disp(wy, wlabel), "전주비",
-            week_disp(wy - 1, wlabel), "전년비"]
+            week_disp(wy - 1, ylb), "전년비"]
     rows = []
     for met in metrics:
         cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
         prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-        yoy = pick(df, "주", met, "*TOTAL", wy - 1, wlabel, "final")
+        yoy = pick(df, "주", met, "*TOTAL", wy - 1, ylb, "final") if ylb else np.nan
         rows.append({
             "구분": met,
             cols[0]: fmt_value(met, prv), cols[1]: fmt_value(met, cur),
@@ -983,6 +991,48 @@ def wow_summary_table(df, wy, wlabel, metrics):
             cols[3]: fmt_value(met, yoy), cols[4]: fmt_delta(met, cur, yoy) or "–",
         })
     return pd.DataFrame(rows).set_index("구분")
+
+def yoy2_summary_table(df, wy, wlabel, metrics):
+    """전년비 · 전전년비 비교표 — 올해 흐름이 전전년에도 있었는지 확인용.
+
+    같은 주차의 3개 연도 값과 세 가지 증감을 나란히 둔다.
+      · 전년비        = 금년 vs 전년   (올해 무슨 일이 있었나)
+      · 전전년비      = 금년 vs 전전년 (2년 새 얼마나 움직였나)
+      · 전년의 전년비 = 전년 vs 전전년 (작년에도 같은 방향이었나)
+    '추세' 칸은 전년의 전년비 → 전년비 순서로 방향을 읽어 '2년 연속'인지 판정한다.
+    반환: (표, 전년라벨, 전전년라벨, 전년정확여부, 전전년정확여부)
+    """
+    l1, e1 = week_back(df, wy, wlabel, 1)
+    l2, e2 = week_back(df, wy, wlabel, 2)
+
+    def _neg(d):
+        return None if not d or d == "–" else d.startswith("△")
+
+    def _trend(d_now, d_prev):
+        a, b = _neg(d_now), _neg(d_prev)
+        if a is None or b is None: return "–"
+        if a and b:       return "2년 연속 감소"
+        if not a and not b: return "2년 연속 증가"
+        return "증가 → 감소" if a else "감소 → 증가"
+
+    cols = [week_disp(wy, wlabel), week_disp(wy - 1, l1), week_disp(wy - 2, l2),
+            "전년비", "전전년비", "전년의 전년비", "추세"]
+    rows = []
+    for met in metrics:
+        cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
+        p1 = pick(df, "주", met, "*TOTAL", wy - 1, l1, "final") if l1 else np.nan
+        p2 = pick(df, "주", met, "*TOTAL", wy - 2, l2, "final") if l2 else np.nan
+        d1 = fmt_delta(met, cur, p1)   # 금년 vs 전년
+        d2 = fmt_delta(met, cur, p2)   # 금년 vs 전전년
+        dp = fmt_delta(met, p1, p2)    # 전년 vs 전전년
+        rows.append({
+            "구분": met,
+            cols[0]: fmt_value(met, cur), cols[1]: fmt_value(met, p1),
+            cols[2]: fmt_value(met, p2),
+            cols[3]: d1 or "–", cols[4]: d2 or "–", cols[5]: dp or "–",
+            cols[6]: _trend(d1, dp),
+        })
+    return pd.DataFrame(rows).set_index("구분"), l1, l2, e1, e2
 
 def yoy_summary_table(df, ref_year, ref_month, metrics):
     """참고본 '실적 요약' 표: 전월·당월 × (전년, 당년, 전년비)"""
@@ -1960,6 +2010,20 @@ def main():
                 _sub.append(f"전년 동월에 {wm.group(2)}주차가 없어 **{wy-1}년 {yoy_lbl}**와 비교")
             if _sub:
                 st.caption("ℹ️ " + " · ".join(_sub) + " — 주차 수가 달마다 4~5개로 달라서예요.")
+
+            # 전전년까지 펼쳐보기 — 올해 흐름이 작년에도 있었는지(= 구조적인지) 확인용
+            with st.expander(f"🔍 전년비 · 전전년비 비교 — {wy-2}년에도 같은 추세였는지",
+                             expanded=False):
+                t2, _l1, _l2, _e1, _e2 = yoy2_summary_table(df, wy, wlabel, METRICS7)
+                _basis = []
+                if not _e1 and _l1: _basis.append(f"전년 {wy-1}년 {_l1}")
+                if not _e2 and _l2: _basis.append(f"전전년 {wy-2}년 {_l2}")
+                st.caption(
+                    f"기준: {week_disp(wy, wlabel)}"
+                    + (f" · 대응 주차가 없어 {' · '.join(_basis)} 기준으로 비교" if _basis else "")
+                    + " — **전년의 전년비**는 전년 동주가 그 전해 대비 어땠는지예요. "
+                      "**추세**가 '2년 연속'이면 올해만의 현상이 아니라 이어져 온 흐름이에요.")
+                st.dataframe(style_delta_cols(t2), width="stretch")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 실적 요약 — 전주비 (주차 기준)
