@@ -4370,11 +4370,13 @@ def main():
                              PALETTE["slate"], PALETTE["purple"], h=430, line_suffix=_ls,
                              title=f"주차별 {_bl}(위) · {_ll}(아래) — 기준주까지 13주")
         st.plotly_chart(fig, width="stretch")
-        # 13주 표 — 발송량·CTR·주문CR·거래액 한눈에 (기준주는 ★ 표시)
+        # 13주 표 — 발송량·유입UV·CTR·주문CR·거래액 한눈에 (기준주는 ★ 표시)
+        # 유입UV는 발송량과 CTR 사이에 둔다(CTR = UV ÷ 발송이라 퍼널 순서대로 읽힘).
         tv = pd.DataFrame({
             "주차": tdf["주"].map(lambda w: ("★ " if pd.Timestamp(w) == ref_ws else "") + _wklab(w)),
             "캠페인수": tdf["캠페인수"].map(lambda v: f"{v:,.0f}"),
             "발송량": tdf["발송"].map(lambda v: f"{v:,.0f}"),
+            "유입UV": tdf["UV"].map(lambda v: "–" if pd.isna(v) else f"{v:,.0f}"),
             "CTR": tdf["CTR"].map(lambda v: "–" if pd.isna(v) else f"{v*100:.2f}%"),
             "주문CR": tdf["주문CR"].map(lambda v: "–" if pd.isna(v) else f"{v*100:.2f}%"),
             "RPS": tdf["RPS"].map(won),
