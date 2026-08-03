@@ -690,15 +690,15 @@ def restore_from_upload(upload):
                 elif base.endswith(".json"): _try_json(b)
     elif name.endswith(".csv"):
         if not _try_csv(raw):
-            raise ValueError("누적 데이터 CSV 형식이 아닙니다 (gran·metric·sortkey 등 필수 컬럼 누락)")
+            raise ValueError("누적 데이터 CSV 형식이 아니에요. gran·metric·sortkey 같은 필수 컬럼이 없어요.")
     elif name.endswith(".json"):
         if not _try_json(raw):
-            raise ValueError("메모 JSON 형식이 아닙니다 (최상위가 객체여야 함)")
+            raise ValueError("메모 JSON 형식이 아니에요. 최상위가 객체여야 해요.")
     else:
         raise ValueError("지원 형식: .zip / .csv / .json")
 
     if not msgs:
-        raise ValueError("복원할 내용을 찾지 못했습니다 (ZIP 안에 백업 파일 없음)")
+        raise ValueError("복원할 내용을 찾지 못했어요. ZIP 안에 백업 파일이 없어요.")
     return " · ".join(msgs), data_restored
 
 def restore_widget(key, label="백업 복원 (ZIP / CSV / JSON)"):
@@ -729,7 +729,7 @@ def source_upload_widget(key):
             st.cache_data.clear()
             st.success(f"{len(dnew):,}행 인식 — 저장됨 ✓"); st.rerun()
         else:
-            st.error("인식된 데이터가 없습니다. 파일명·형식을 확인하세요.")
+            st.error("인식된 데이터가 없어요. 파일명과 형식을 확인해 주세요.")
 
 
 # ══════════════════════════════════════════════════════
@@ -906,7 +906,7 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
             all_d = load_insights(); all_d[key] = store[key]; save_insights(all_d)
             st.session_state[ekey] = False; st.rerun()
     else:
-        st.markdown(f"<div class='report-box'>{store[key] or '내용을 입력하세요.'}</div>",
+        st.markdown(f"<div class='report-box'>{store[key] or '내용을 입력해 주세요.'}</div>",
                     unsafe_allow_html=True)
                     
     # AI 참고 메모: 데이터에 안 나오는 배경(프로모션·이벤트·이슈)을 적으면
@@ -918,8 +918,8 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
         with st.expander("🧠 AI 참고 메모 (프로모션·이벤트·운영 이슈 등 배경)",
                          expanded=bool(store[mkey])):
             memo_val = st.text_area(
-                "데이터에 안 나오는 배경을 적으면 AI가 원인·맥락 해석에 활용합니다. "
-                "(수치는 데이터에서만 인용)",
+                "데이터에 안 나오는 배경을 적으면 AI가 원인과 맥락을 풀 때 참고해요. "
+                "수치는 데이터에서만 가져와요.",
                 store[mkey], key=f"wr_memo_{key}", height=120)
             if st.button("메모 저장", key=f"wr_memosave_{key}",
                          width="stretch"):
@@ -937,14 +937,14 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
     bi += 1
     if regen is not None:
         if bcols[bi].button("자동 생성", key=f"wr_regen_{key}", width="stretch",
-                            help="기준 주차 실적으로 템플릿 문구를 채웁니다 (기존 내용 대체)"):
+                            help="기준 주차 실적으로 템플릿 문구를 채워요. 기존 내용은 지워져요."):
             store[key] = regen
             all_d = load_insights(); all_d[key] = regen; save_insights(all_d)
             st.session_state[ekey] = False; st.rerun()
         bi += 1
     if ai_fn is not None:
         if bcols[bi].button("AI 생성", key=f"wr_ai_{key}", width="stretch",
-                            help="Claude가 데이터(+참고 메모)를 보고 인사이트 문구를 작성합니다 (기존 내용 대체)"):
+                            help="Claude가 데이터와 참고 메모를 보고 인사이트 문구를 써요. 기존 내용은 지워져요."):
             store[mkey] = memo_val
             all_d = load_insights(); all_d[mkey] = memo_val; save_insights(all_d)
             with st.spinner("AI가 인사이트를 작성 중…"):
@@ -1353,12 +1353,12 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
     memo: 사용자가 적은 정성 배경(프로모션·이벤트 등). 수치와 분리해 [배경 메모]로 주입."""
     key = _anthropic_key()
     if not key:
-        return None, ("ANTHROPIC_API_KEY가 설정되지 않았습니다. "
-                      "Streamlit Cloud → Settings → Secrets에 ANTHROPIC_API_KEY를 추가하세요.")
+        return None, ("ANTHROPIC_API_KEY가 없어요. "
+                      "Streamlit Cloud → Settings → Secrets에 추가해 주세요.")
     try:
         import anthropic
     except ImportError:
-        return None, "anthropic 패키지가 설치되지 않았습니다. requirements.txt 반영 후 재배포하세요."
+        return None, "anthropic 패키지가 없어요. requirements.txt에 넣고 다시 배포해 주세요."
 
     period = f"{ref_year}년 {ref_week}" if ref_week else f"{ref_year}년 {ref_month}월"
     facts = _ai_metric_facts(df, ref_year, ref_month, ref_week)
@@ -1391,11 +1391,11 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
             messages=[{"role": "user", "content": user}],
         )
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
-        return (text or None), (None if text else "빈 응답이 반환됐습니다.")
+        return (text or None), (None if text else "응답이 비어 있어요.")
     except anthropic.AuthenticationError:
-        return None, "API 키 인증에 실패했습니다. 키를 확인하세요."
+        return None, "API 키 인증에 실패했어요. 키를 확인해 주세요."
     except anthropic.RateLimitError:
-        return None, "요청이 많아 일시적으로 제한됐습니다. 잠시 후 다시 시도하세요."
+        return None, "요청이 많아 잠시 제한됐어요. 조금 뒤에 다시 시도해 주세요."
     except Exception as e:
         return None, f"생성 중 오류: {e}"
 
@@ -1415,13 +1415,13 @@ def render_push_page(df, ref_year, chart_years):
     df_gran = df[df["gran"] == sel_gran]
 
     if df_gran.empty:
-        st.info(f"{sel_gran} 단위 데이터가 없습니다.")
+        st.info(f"{sel_gran} 단위 데이터가 없어요.")
     else:
         st.subheader(f"{ref_year}년 {gran_opt} 신규가입 및 앱푸시 수신동의율 추이")
         dates = labels_sorted(df, sel_gran, [ref_year])
 
         if not dates:
-            st.info(f"{ref_year}년 {gran_opt} 데이터가 없습니다.")
+            st.info(f"{ref_year}년 {gran_opt} 데이터가 없어요.")
         else:
             rows = []
             # PUSH 데이터 집계용 (일자별 데이터를 주/월로 변환)
@@ -1526,8 +1526,8 @@ def render_push_page(df, ref_year, chart_years):
         ["앱푸시_동의자수", "앱푸시_신규추가", "앱푸시_이탈"]) & (df["close"] == "final")].copy()
     if ext.empty:
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.info("동의자 잔고·이탈·순증 뷰는 PUSH 원천 엑셀을 다시 업로드하면 표시됩니다. "
-                "(기존/신규/Total 섹션 전체를 새로 인식해 누적에 저장합니다)")
+        st.info("동의자 잔고·이탈·순증 뷰는 PUSH 원천 엑셀을 다시 올리면 보여요. "
+                "기존·신규·Total 섹션을 새로 인식해 누적에 저장해요.")
     else:
         ext[["_m", "_d"]] = ext["label"].str.extract(r"^(\d{1,2})/(\d{1,2})$")
         ext = ext.dropna(subset=["_m"]).copy()
@@ -1581,8 +1581,8 @@ def render_push_page(df, ref_year, chart_years):
         # 잔고(앱푸시_동의자수)는 실측 대조 결과 원천의 '타겟팅 가능' 행과 동일한 모수다.
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("타겟팅 가능 모수 — 연중 추이 (전년 비교)")
-        st.caption("실제 발송 가능한 수신동의 모수. 연도별 라인을 같은 연중 위치(월·일)에 "
-                   "겹쳐 작년 대비 수준을 비교합니다.")
+        st.caption("실제로 발송할 수 있는 수신동의 모수예요. 연도별 라인을 같은 연중 위치(월·일)에 "
+                   "겹쳐 작년과 비교해요.")
         byr = bal.copy()
         # 각 연도를 같은 X축(연중 위치)에 겹치려면 공통 연도로 정규화 (2000=윤년이라 2/29 안전)
         byr["mdt"] = byr["dt"].apply(lambda d: d.replace(year=2000))
@@ -1660,7 +1660,7 @@ def render_push_page(df, ref_year, chart_years):
     sub = df[(df["gran"] == "일") & (df["year"].isin(cyrs)) & (df["metric"].isin(["가입자수", "앱푸시수신동의"])) & (df["segment"] == "*TOTAL") & (df["close"] == "final")].copy()
 
     if sub.empty:
-        st.info("일자별 가입자수·앱푸시수신동의 데이터가 없어 월별 YoY 표를 표시할 수 없습니다.")
+        st.info("일자별 가입자수·앱푸시 수신동의 데이터가 없어서 월별 YoY 표를 보여줄 수 없어요.")
     else:
         sub["month"] = sub["label"].apply(lambda x: int(str(x).split('/')[0]) if '/' in str(x) else 0)
         sub["day"] = sub["label"].apply(lambda x: int(str(x).split('/')[1]) if '/' in str(x) else 0)
@@ -1771,7 +1771,7 @@ def print_button(label="이 페이지 PDF 저장 / 인쇄"):
         padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;
         font-family:'Pretendard',-apple-system,sans-serif">{label}</button>
         <div style="clear:both"></div>""", height=44)
-    st.caption("버튼이 동작하지 않으면 Ctrl+P(Mac ⌘+P) → 대상을 'PDF로 저장'으로 인쇄하세요.")
+    st.caption("버튼이 안 눌리면 Ctrl+P(Mac ⌘+P)를 누르고 대상을 'PDF로 저장'으로 바꿔 주세요.")
 
 # ══════════════════════════════════════════════════════
 # 메인 앱
@@ -1785,8 +1785,8 @@ def main():
         files = st.file_uploader(
             "원천 엑셀/CSV/ZIP 업로드 (복수 선택)",
             type=["xlsx", "xls", "csv", "zip"], accept_multiple_files=True, key="wr_up",
-            help="주간 폴더를 zip으로 묶어 통째로 올려도 됩니다. "
-                 "전체관점 마스터(일/주/월) + 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동 인식합니다.")
+            help="주간 폴더를 zip으로 묶어 통째로 올려도 돼요. "
+                 "전체관점 마스터(일·주·월)와 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동으로 인식해요.")
         st.markdown("---")
         PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
                  "04. 채널별 실적", "05. 통합 데이터·다운로드", "06. 앱푸시 동의 현황", "07. 첫구매 고객 세그먼트 성과"]
@@ -1798,11 +1798,11 @@ def main():
 
     has_any = not stored.empty or not df_new.empty
     if files and df_new.empty and stored.empty:
-        st.error("업로드한 파일에서 데이터를 읽지 못했습니다. 파일명 형식을 확인해주세요.")
+        st.error("올린 파일에서 데이터를 읽지 못했어요. 파일명 형식을 확인해 주세요.")
         st.stop()
     if not has_any:
         st.markdown("## 📋 주간보고 통합 — 시작하기")
-        st.caption("누적 데이터가 없습니다. 원천 파일을 올리거나, 예전 백업(ZIP)을 복원하세요.")
+        st.caption("누적 데이터가 없어요. 원천 파일을 올리거나 예전 백업(ZIP)을 복원해 주세요.")
         cU, cR = st.columns(2)
         with cU:
             st.markdown("#### ① 원천 파일 업로드")
@@ -1810,14 +1810,14 @@ def main():
         with cR:
             st.markdown("#### ② 또는 백업 복원")
             restore_widget("wr_restore_empty", label="백업 ZIP / CSV / JSON 올리기")
-            st.caption("이전에 받은 `주간보고백업_*.zip`을 그대로 올리면 데이터·메모가 통째로 복원됩니다.")
+            st.caption("예전에 받은 `주간보고백업_*.zip`을 그대로 올리면 데이터와 메모가 통째로 복원돼요.")
         st.markdown("""
 ---
 **인식되는 원천 파일**
 - **마스터**: `전체관점 - 일자별/주별/월별 실적 (기본)`
 - **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
 - **앱푸시**: 파일명에 `PUSH`/`앱푸시`/`수신동의` 포함 또는 헤더가 앱푸시 형식이면 자동 인식
-- 주간 폴더를 **zip으로 묶어 통째로** 올려도 됩니다.
+- 주간 폴더를 **zip으로 묶어 통째로** 올려도 돼요.
 """)
         st.stop()
 
@@ -1839,8 +1839,8 @@ def main():
                     st.markdown(f"- `{base}` → {kind}"
                                 + (f" ({nrows:,}행)" if nrows else ""))
                 if n_bad:
-                    st.caption("미인식 파일은 파일명(전체관점/월_가입율 등)·형식을 확인하세요. "
-                               "인식된 파일만 저장에 반영됩니다.")
+                    st.caption("인식 못 한 파일은 파일명(전체관점·월_가입율 등)과 형식을 확인해 주세요. "
+                               "인식된 파일만 저장에 반영돼요.")
         if has_new:
             added, updated = upload_diff(stored, df_new)
             saved = st.session_state.get("wr_saved_sig") == sig
@@ -1848,7 +1848,7 @@ def main():
                 st.success("저장됨 ✓ (누적 반영 완료)")
             else:
                 st.warning(f"새 데이터 감지 — 추가 {added}기간 · 갱신(겹침) {updated}기간\n\n"
-                           "**저장** 눌러야 누적에 반영됩니다.")
+                           "**저장**을 눌러야 누적에 반영돼요.")
                 if st.button("💾 저장 (누적 반영)", key="wr_commit",
                              type="primary", width="stretch"):
                     if not df_new.empty: save_store(df)
@@ -1856,7 +1856,7 @@ def main():
                     st.rerun()
 
     if df.empty:
-        st.warning("첫구매(전체관점/지표별) 데이터가 없습니다. 원천 파일을 업로드해주세요.")
+        st.warning("첫구매(전체관점·지표별) 데이터가 없어요. 원천 파일을 올려 주세요.")
         st.stop()
 
     # ── 인식 결과 + 필터
@@ -1890,7 +1890,7 @@ def main():
             ref_week = st.selectbox("기준 주차", weeks_avail[::-1],
                                     index=weeks_avail[::-1].index(default_week),
                                     key="wr_refw",
-                                    help="주간보고 대상 주차. 최신 주차가 진행 중이면 직전 완료 주차가 기본값입니다.")
+                                    help="주간보고 대상 주차예요. 최신 주차가 진행 중이면 직전 완료 주차가 기본으로 잡혀요.")
         else:
             ref_week = None
         st.markdown("**차트 연도**")
@@ -1905,7 +1905,7 @@ def main():
         ai_label = st.selectbox("모델 선택", list(AI_MODELS.keys()), key="wr_ai_model_label")
         st.session_state["wr_ai_model"] = AI_MODELS[ai_label]
         st.caption("✅ API 키 설정됨" if _anthropic_key()
-                   else "⚠ ANTHROPIC_API_KEY 미설정 — Secrets에 추가하세요")
+                   else "⚠ ANTHROPIC_API_KEY가 없어요. Secrets에 추가해 주세요")
 
         st.markdown("---")
         st.markdown("**백업 · 복원**")
@@ -1920,8 +1920,8 @@ def main():
             make_backup_zip(df, st.session_state.wr_texts),
             f"주간보고백업_{today_kst():%Y%m%d}.zip", "application/zip",
             width="stretch", type="primary",
-            help="누적 데이터 CSV와 보고란·메모 JSON을 한 파일로 백업합니다. "
-                 "재배포로 초기화돼도 이 ZIP을 '백업 복원'에 올리면 통째로 되살아납니다.")
+            help="누적 데이터 CSV와 보고란·메모 JSON을 한 파일로 백업해요. "
+                 "재배포로 초기화돼도 이 ZIP을 '백업 복원'에 올리면 그대로 되살아나요.")
 
         # 통합 복원 — zip/csv/json 자동 인식
         restore_widget("wr_restore")
@@ -1939,8 +1939,8 @@ def main():
 
         # 초기화 — 2단계 확인 (실수 방지)
         if st.session_state.get("wr_confirm_clear"):
-            st.warning("정말 초기화할까요? 누적 데이터가 모두 삭제되며 되돌릴 수 없습니다. "
-                       "(메모는 유지 · 초기화 전 통합 백업 권장)")
+            st.warning("정말 초기화할까요? 누적 데이터가 모두 지워지고 되돌릴 수 없어요. "
+                       "메모는 남아요. 초기화 전에 통합 백업을 받아두세요.")
             cc1, cc2 = st.columns(2)
             if cc1.button("삭제 확인", key="wr_clear_yes", type="primary", width="stretch"):
                 if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
@@ -2051,7 +2051,7 @@ def main():
                             horizontal=True, key="wr_multi_cmp")
         weekly_mode = cmp_mode.startswith("주간")
         if weekly_mode and not wlabel:
-            st.info("주차 데이터가 없습니다. 월누적(MTD) 비교를 선택하세요.")
+            st.info("주차 데이터가 없어요. 월누적(MTD) 비교를 골라 주세요.")
         else:
             if weekly_mode:
                 period_lbl, base_lbl = week_disp(wy, wlabel), "전년 동주"
@@ -2077,7 +2077,7 @@ def main():
             cur_v = [get_cur(m) for m in stages]
             pry_v = [get_prv(m) for m in stages]
             if any(np.isnan(v) for v in cur_v):
-                st.info("해당 주차 퍼널 데이터가 부족합니다.")
+                st.info("이 주차는 퍼널 데이터가 부족해요.")
             else:
                 # 트래픽이 가입·첫구매의 수십~수백 배라 면적형 퍼널은 왜곡됨 →
                 # 단계 카드 + 전환율 pill 로 표현 (전환율을 1급 정보로)
@@ -2124,11 +2124,11 @@ def main():
                          if not df[(df["metric"] == m)
                                    & df["segment"].isin(CHANNELS)].empty]
             if not avail_dec:
-                st.info("채널별 분해 가능한 지표 데이터가 없습니다.")
+                st.info("채널별로 나눠 볼 지표 데이터가 없어요.")
             else:
                 dec_met = st.selectbox("분해 지표", avail_dec, key="wr_decomp_met",
-                                       help="선택 지표의 YoY 증감을 채널별로 분해합니다 "
-                                            "(채널 합이 전체와 일치하는 가산 지표만 제공)")
+                                       help="선택한 지표의 YoY 증감을 채널별로 나눠 봐요. "
+                                            "채널 합이 전체와 맞는 가산 지표만 골라요.")
                 # 거래액만 만원(더 잘게), 나머지 카운트는 명 그대로
                 div, unit = (1e4, "만원") if dec_met == "첫구매 거래액" else (1, "명")
                 st.caption(f"{period_lbl} {base_lbl} 대비 «{dec_met}» 증감 분해 "
@@ -2136,7 +2136,7 @@ def main():
                 base_t = get_prv(dec_met)
                 cur_t = get_cur(dec_met)
                 if np.isnan(base_t) or np.isnan(cur_t):
-                    st.info("해당 기간 채널 데이터가 없습니다.")
+                    st.info("이 기간엔 채널 데이터가 없어요.")
                 else:
                     labels, deltas = [], []
                     for chn in CHANNELS:
@@ -2147,9 +2147,9 @@ def main():
                         if np.isnan(pv) or np.isnan(cv): continue
                         labels.append(chn); deltas.append((cv - pv) / div)
                     if not labels:
-                        st.info(f"이 기간은 «{dec_met}» 채널별 분해 데이터가 없습니다 (전체만 존재). "
+                        st.info(f"이 기간은 «{dec_met}» 채널별 분해 데이터가 없어요. 전체 값만 있어요. "
                                 "사이드바에서 다른 기준 주차를 고르거나, 위 비교 기준을 "
-                                "**월누적(MTD)** 로 바꿔보세요.")
+                                "**월누적(MTD)** 으로 바꿔 보세요.")
                     else:
                         # 잔차(채널합↔TOTAL 차이·미분류)를 '기타'로 표시해 총계 막대가 항상
                         # 라벨(=당년 TOTAL)과 정확히 맞게 한다. 0.5단위 미만(반올림 0)만 생략.
@@ -2201,7 +2201,7 @@ def main():
 
 **대상 지표**: 채널 합이 전체와 일치하는 **가산 지표만** 제공
 (거래액·고객수·가입자수·비회원트래픽). 객단가·가입율·당일가입CR 등 **비율 지표는
-채널 합 ≠ 전체** 라 분해가 성립하지 않아 제외했습니다.
+채널 합 ≠ 전체** 라 분해가 성립하지 않아 뺐어요.
 """)
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
@@ -2341,7 +2341,7 @@ def main():
     # ════════════ 05. 통합 데이터·다운로드 ════════════
     elif page == "05. 통합 데이터·다운로드":
         st.markdown("## 통합 데이터 · 다운로드")
-        st.caption("업로드한 모든 파일을 합친 통합 long 데이터입니다.")
+        st.caption("올린 파일을 모두 합친 통합 long 데이터예요.")
         st.dataframe(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
                      width="stretch", height=420)
 
@@ -2477,7 +2477,7 @@ def main():
             if not tbl1.empty:
                 st.dataframe(style_delta_cols(tbl1), width="stretch")
             else:
-                st.info("해당 주차 데이터가 없습니다.")
+                st.info("이 주차 데이터가 없어요.")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
             
         st.subheader(f"실적 요약 (전년비)")
@@ -2486,7 +2486,7 @@ def main():
         if not tbl2.empty:
             st.dataframe(style_delta_cols(tbl2), width="stretch")
         else:
-            st.info("해당 월 데이터가 없습니다.")
+            st.info("이 달 데이터가 없어요.")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         with st.expander("📊 지표 산출식 및 용어 설명 (클릭하여 펼치기)", expanded=False):
@@ -2499,8 +2499,8 @@ def main():
             * **CR (전환율)**: 첫구매 고객수 ÷ DAU
             
             **용어 설명**
-            * **유효회원수**: 서비스에 정상적으로 가입되어 활동 가능한 전체 회원 수입니다.
-            * **DAU (Daily Active Users)**: 하루 동안 서비스에 1회 이상 방문하여 활동한 사용자 수입니다.
+            * **유효회원수**: 서비스에 정상적으로 가입해서 활동할 수 있는 전체 회원 수예요.
+            * **DAU (Daily Active Users)**: 하루 동안 서비스에 한 번 이상 방문해서 활동한 사용자 수예요.
             """)
 
 if st.runtime.exists():
