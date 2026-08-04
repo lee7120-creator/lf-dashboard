@@ -119,7 +119,7 @@ def parse_perf_bytes(file_bytes):
                 break
     if target_sheet is None:
         wb.close()
-        raise ValueError("실적 시트(소재별 실적/AF코드 헤더)를 찾지 못했습니다.")
+        raise ValueError("실적 시트(소재별 실적/AF코드 헤더)를 찾지 못했어요.")
 
     ws = wb[target_sheet]
     rows = list(ws.iter_rows(values_only=True))
@@ -723,7 +723,7 @@ def parse_promo_bytes(file_bytes):
             hr = i
             break
     if hr is None:
-        raise ValueError("기획전 성과시트 헤더('기획전 번호')를 찾지 못했습니다.")
+        raise ValueError("기획전 성과시트 헤더('기획전 번호')를 찾지 못했어요.")
 
     grp = rows[hr - 1] if hr > 0 else ()
     names = [str(x).strip() if x is not None else "" for x in rows[hr]]
@@ -1814,7 +1814,6 @@ def growth_pace_note(s_cur, s_prev=None):
 def main():
     import streamlit as st
     import plotly.graph_objects as go
-    import streamlit.components.v1 as components
     from scipy import stats
 
     # ── 페이지 리포트 캡처: st.plotly_chart / st.dataframe 호출을 가로채 기록 ──
@@ -2205,7 +2204,7 @@ def main():
         try:
             import google.genai                     # noqa: F401 — 설치 여부만 확인
         except ImportError:
-            return None, "google-genai 패키지가 없습니다. requirements.txt 반영 후 재배포하세요."
+            return None, "google-genai 패키지가 없어요. requirements.txt에 넣고 다시 배포해 주세요."
         try:
             return _ai_gen_cached(system, user, model, _key=key), None
         except Exception as e:
@@ -2897,7 +2896,7 @@ def main():
                 try:
                     summary = _apply_backup(_rest_all)
                     st.session_state["_restored_sig"] = _sig
-                    st.success(f"복원 완료 ✓ {summary} — 바로 표시합니다.")
+                    st.success(f"복원 완료 ✓ {summary} — 바로 보여드릴게요.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"복원하지 못했어요: {e}")
@@ -2910,7 +2909,7 @@ def main():
                 st.download_button(
                     f"📥 캠페인 백업 (CSV · {len(work):,}건)",
                     work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
-                    file_name=f"send_perf_store_backup_{datetime.date.today():%Y%m%d}.csv", mime="text/csv", width="stretch")
+                    file_name=f"send_perf_store_backup_{today_kst():%Y%m%d}.csv", mime="text/csv", width="stretch")
             if st.button("🧹 캠페인 저장소 초기화", width="stretch", key="clear_store"):
                 storage_clear(BK, "campaign")
                 st.session_state.camp_store = pd.DataFrame(columns=STORE_COLS)
@@ -3124,7 +3123,9 @@ def main():
                         f'<b>내용</b><br>{body}</div>', unsafe_allow_html=True)
 
     # ── 전 페이지 공통: PDF 저장 버튼 (브라우저 인쇄 → PDF, 인쇄 시 사이드바·툴바 자동 숨김) ──
-    components.html("""
+    # st.components.v1.html은 제거 예정(2026-06-01 이후) — 후속 API인 st.iframe 사용
+    # (weekly_report.print_button과 동일 방식). 넘기는 HTML은 아래 리터럴 상수뿐이다.
+    st.iframe("""
     <script>
     (function(){
       var doc = window.parent.document;
@@ -3142,7 +3143,7 @@ def main():
       }
     })();
     </script>
-    """, height=0)
+    """, height=1)   # st.iframe은 height=0을 거부한다 — 스크립트 주입용이라 1px로 충분
 
     _REPORT.clear()   # 이 지점부터(페이지 본문) 생성되는 차트/표만 리포트에 담는다
 
@@ -4120,8 +4121,8 @@ def main():
                 if wrows:
                     st.dataframe(pd.DataFrame(wrows).style.map(_clr, subset=["거래액 증감", "거래액 전주비", "발송 증감", "발송 전주비"]),
                                  hide_index=True, width="stretch", height=min(38 + 35 * len(wrows), 640))
-                st.markdown('<div class="appendix">카테고리별 전주 대비 거래액 증감 기여도입니다. '
-                            '녹색은 매출 상승 기여, 적색(△)은 매출 감소 기여를 의미하며, 기여도가 큰 8개만 표시하고 나머지는 기타로 합산했습니다.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="appendix">카테고리별로 전주 대비 거래액을 얼마나 끌어올리고 깎아먹었는지예요. '
+                            '녹색은 상승, 적색(△)은 감소 기여예요. 기여가 큰 8개만 보여주고 나머지는 기타로 합쳤어요.</div>', unsafe_allow_html=True)
 
                 # ── 지표 체인 분해(LMDI) — '어느 카테고리'가 아니라 '어느 지표'가 만들었나 ──
                 st.markdown("##### 거래액 전주 대비 — 어느 지표(발송·CTR·CR·객단가)가 만들었나")
@@ -5494,7 +5495,7 @@ def main():
             "발송": "{:,.0f}", "거래액": "{:,.0f}", "캠페인수": "{:,.0f}",
             "유입전환율": "{:.2%}", "주문전환율": "{:.2%}", "RPS": "{:,.0f}"}),
             hide_index=True, width="stretch", height=360)
-        st.markdown("<div class=\"appendix\">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산되지 않습니다 "
+        st.markdown("<div class=\"appendix\">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산할 수 없어요 "
                     "— 전사 MTD 발송상세가 필요해요. 여기서는 캠페인 합산 기준 전체 효율을 봐요.</div>",
                     unsafe_allow_html=True)
 
@@ -5694,7 +5695,7 @@ def main():
             # 포지션 효과 간단 진단 (차트에 반영된 표본만 사용)
             if len(pr_chart) >= 3 and pr_chart[mcol].notna().sum() >= 3:
                 r = float(np.corrcoef(pr_chart["_key"], pr_chart[mcol].fillna(pr_chart[mcol].mean()))[0, 1])
-                msg = ("앞 순번일수록 효율이 높습니다 (노출 우위)." if r < -0.3 else
+                msg = ("앞 순번일수록 효율이 높아요. 먼저 노출되니까요." if r < -0.3 else
                        "뒤 순번일수록 효율이 높아요." if r > 0.3 else
                        "순번과 효율 사이에 뚜렷한 관계는 약해요.")
                 st.markdown(f'<div class="appendix">순번↔{mlabel} 상관 r={r:.2f} → {msg}</div>',
@@ -5846,7 +5847,7 @@ def main():
                 eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
             eshow = eshow.drop(columns=["_p_adj"], errors="ignore")
             st.dataframe(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
-        st.markdown('<div class="appendix">단어 및 이모지 성과 분석은 캠페인 단위 평균 데이터입니다. 표본 건수(n)가 적은 항목은 편차가 존재할 수 있으니 유의하시기 바랍니다. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨) 차트의 <b>회색 막대</b>는 보유 vs 미보유 차이가 통계적으로 유의하지 않은(FDR 보정 p≥0.1) 항목 — 우연일 수 있으니 참고만 하세요.</div>',
+        st.markdown('<div class="appendix">단어·이모지 성과는 캠페인 단위 평균이에요. 건수(n)가 적은 항목은 들쭉날쭉할 수 있어요. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨) 차트의 <b>회색 막대</b>는 보유 vs 미보유 차이가 통계적으로 유의하지 않은(FDR 보정 p≥0.1) 항목 — 우연일 수 있으니 참고만 하세요.</div>',
                     unsafe_allow_html=True)
         glossary()
 
@@ -5984,7 +5985,7 @@ def main():
         layf["legend"] = legend_h()
         figf.update_layout(**layf)
         st.plotly_chart(figf, width="stretch")
-        st.markdown('<div class="appendix">상관계수(r)가 통계적으로 유의한 음수(-)이면, 반복 소구 노출로 인한 성과 저하(마모) 가능성이 높음을 시사합니다. 집행 빈도 대비 효율 감소세가 지속될 경우 해당 메시지의 소구 휴지기 수립 및 대체 오퍼 도입을 권장합니다. (단, 카테고리 구성 비율이나 시즌 이벤트 영향성이 혼재할 수 있으므로 보조 지표로 참고하십시오)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="appendix">상관계수(r)가 유의한 음수(-)면 같은 소구를 반복해서 성과가 닳고 있다는 신호예요. 효율 감소가 이어지면 그 소구를 한동안 쉬게 하고 다른 오퍼로 바꿔 보세요. 카테고리 구성이나 시즌 영향이 섞일 수 있으니 보조 지표로만 참고하세요.</div>', unsafe_allow_html=True)
 
         glossary()
 
@@ -6044,16 +6045,16 @@ def main():
                 rows.append(dict(지표=MTD_LABELS[k], **{"일변화": f"{sl:+.4g}{unit}"},
                                  R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-            st.markdown('<div class="appendix">인당 발송량은 증가하는 반면 CTR·주문CR·RPS가 동반 하락할 경우 피로도 임계점에 도달했다는 위험 신호일 수 있습니다. '
-                        '<br>· <b>R²(결정계수, 0~1)</b>: 추세선의 설명력을 의미하며, 1에 가까울수록 경향성이 뚜렷하고 0에 가까울수록 불규칙한 변동을 보입니다. '
-                        '· <b>유의성</b>: 산출된 추세의 통계적 유효성(p-value)을 나타내며, ‘유의함’일 경우 우연이 아닌 일관된 흐름으로 판단할 수 있습니다.</div>',
+            st.markdown('<div class="appendix">인당 발송량은 느는데 CTR·주문CR·RPS가 같이 떨어지면 피로도가 한계에 왔다는 신호일 수 있어요. '
+                        '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 얼마나 잘 들어맞는지예요. 1에 가까우면 경향이 뚜렷하고, 0에 가까우면 들쭉날쭉해요. '
+                        '· <b>유의성</b>: 그 추세가 우연인지 아닌지예요. ‘유의함’이면 우연이 아닌 일관된 흐름으로 봐도 돼요.</div>',
                         unsafe_allow_html=True)
 
         # ── 발송 빈도·한계수익 (구 F2+F3 통합) ──
         elif page == "발송 빈도·한계수익":
             st.title("발송 빈도 효율·한계수익")
-            st.markdown("고객 인당 발송 빈도에 따른 효율 변화와, 발송을 한 구간 더 늘렸을 때의 "
-                        "한계 효율을 함께 분석합니다.")
+            st.markdown("고객 한 명에게 몇 번 보냈을 때 효율이 어떻게 변하는지, 한 구간 더 늘리면 "
+                        "얼마나 남는지 함께 봐요.")
             lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "객단가"])
             mc = MTDOPT[lab]
             b = mtd_data["buckets"]
@@ -6079,8 +6080,8 @@ def main():
                                        text=[f"{v:+.2f}" for v in diff], textposition="outside"))
                 fig.update_layout(**base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
                 st.plotly_chart(fig, width="stretch")
-                st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 추가 발송 시 고객 반응 및 '
-                            '효율이 감소하는 감쇠 국면임을 뜻합니다.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 더 보낼수록 반응과 '
+                            '효율이 오히려 줄어드는 구간이에요.</div>', unsafe_allow_html=True)
             else:
                 st.info("구간별 데이터가 부족해요.")
 
@@ -6128,7 +6129,7 @@ def main():
                     "고발송일 RPS": dc["highRps"].map("{:,.0f}".format),
                 })
                 st.dataframe(show, hide_index=True, width="stretch")
-                st.markdown('<div class="appendix">동일 요일 내 발송 모수가 적을 때 효율(CTR, RPS)이 유의미하게 높다면, 무리한 모수 확장보다 타겟팅 세분화를 통해 반응률을 개선하는 것이 유효함을 의미합니다.</div>',
+                st.markdown('<div class="appendix">같은 요일에 적게 보냈을 때 효율(CTR·RPS)이 뚜렷이 높다면, 모수를 무리하게 늘리기보다 타겟을 잘게 쪼개는 쪽이 나아요.</div>',
                             unsafe_allow_html=True)
         glossary()
 
@@ -6182,7 +6183,7 @@ def main():
             qsum.columns = ["사분면", "캠페인수"]
             st.dataframe(qsum.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch")
             st.caption(f"기준선: CTR 중앙값 {mx*100:.2f}% · 주문CR 중앙값 {my*100:.2f}%. "
-                       "🟡 유입O 주문CRX 영역은 오퍼 구조 및 랜딩 페이지 정비를 권장하며, 🔵 유입X 주문CRO 영역은 발송 타겟 확장 및 제목 메시지 보완을 권장합니다.")
+                       "🟡 유입O 주문CRX는 오퍼 구조와 랜딩 페이지를 손봐 보세요. 🔵 유입X 주문CRO는 발송 타겟을 넓히고 제목을 다듬어 보세요.")
             guard_select("p14_quad", list(qsum["사분면"]))
             qpick = st.selectbox("사분면 선택 → 캠페인 보기", list(qsum["사분면"]), key="p14_quad")
             render_messages(d[d["사분면"] == qpick], "ord_cr", f"p14_{qpick}")
@@ -6386,7 +6387,7 @@ def main():
             st.caption("타겟 구분 데이터가 없어서 조합 추천은 건너뛰었어요.")
         if top_tags:
             _rec = " · ".join(top_tags)
-            st.markdown(f'<div class="appendix">추천 소구: {_rec} → 「AI 처방·카피」 페이지에서 해당 소구를 기반으로 신규 카피 초안 생성이 가능합니다.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="appendix">추천 소구: {_rec} → 「AI 처방·카피」 페이지에서 이 소구로 새 카피 초안을 만들 수 있어요.</div>', unsafe_allow_html=True)
         glossary()
 
     # ══════════════════════════════════════════════════════════════
@@ -6501,10 +6502,10 @@ def main():
             st.dataframe(promo_perf_table(b.head(50)),
                          hide_index=True, width="stretch", height=520)
             st.markdown('<div class="appendix">'
-                        '본 분석의 테이블 열은 <b>발송 실적</b>(발송 로그 추적 데이터)과 <b>기획전 성과</b>(기획전 성과 마스터 시트) 데이터로 구분됩니다. '
-                        '유입 고객수(UV) 역시 데이터 소스에 따라 <b>발송 실적 UV</b>(발송 링크 유입 고객수)와 <b>기획전 성과 UV</b>(해당 기획전의 전체 유입 고객수)로 구분되므로 주의하시기 바랍니다.<br>'
+                        '표의 열은 <b>발송 실적</b>(발송 로그 추적)과 <b>기획전 성과</b>(기획전 성과 마스터 시트)로 나뉘어요. '
+                        '유입 고객수(UV)도 출처가 달라요. <b>발송 실적 UV</b>는 발송 링크로 들어온 수, <b>기획전 성과 UV</b>는 그 기획전에 들어온 전체 수예요.<br>'
                         '· CTR = 발송 유입 UV ÷ 발송 수량  · 주문CR = 주문건수 ÷ 발송 유입 UV  · RPS = 발송 추적 거래액 ÷ 발송 수량  · 기여율 = 발송 추적 거래액 ÷ 유입 거래액<br>'
-                        '· 단일 기획전 번호 내 다수의 캠페인이 중복 집행된 경우, 거래액/발송/UV/주문 등의 정량 지표는 합산 처리하며 비율 지표(CTR, CR, RPS)는 합계 기준의 가중 평균으로 계산합니다. 발송 일시는 가장 조기에 집행된 일자 기준입니다.</div>',
+                        '· 한 기획전 번호로 여러 캠페인을 보냈으면 거래액·발송·UV·주문은 더하고, 비율 지표(CTR·CR·RPS)는 합계 기준 가중평균으로 계산해요. 발송 일시는 가장 먼저 나간 날 기준이에요.</div>',
                         unsafe_allow_html=True)
 
         # ── ③ 발송 유무별 매출 ──
@@ -6535,7 +6536,7 @@ def main():
             st.plotly_chart(fig, width="stretch")
             p = welch(sset.dropna().values, uset.dropna().values)
             st.caption(f"평균 차이 통계 유의성: {sig_label(p)} · 발송 {len(sset):,}건 vs 미발송 {len(uset):,}건")
-            st.markdown('<div class="appendix">평균값은 일부 초대형 기획전(아웃라이어)에 왜곡되기 쉬우므로 중앙값을 병행하여 검토하십시오. 집행 집단의 매출 규모가 월등히 높은 경우, 발송 액션의 실질 성과인지 혹은 대형 기획전 대상의 선택 편향인지에 대해서는 통계적 추가 검증이 필요합니다.</div>',
+            st.markdown('<div class="appendix">평균은 초대형 기획전 하나에 크게 휘둘려요. 중앙값도 같이 보세요. 발송한 쪽 매출이 월등히 높다면 발송 효과인지, 원래 큰 기획전만 골라 보낸 건지는 따로 검증해야 알 수 있어요.</div>',
                         unsafe_allow_html=True)
 
         # ── ④ 매출 추세 ──
@@ -6599,7 +6600,7 @@ def main():
         d1.download_button(
             f"📥 CSV 다운로드 ({len(dl_df):,}건)",
             dl_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"발송성과_머지전체_{datetime.date.today():%Y%m%d}.csv", mime="text/csv", width="stretch")
+            file_name=f"발송성과_머지전체_{today_kst():%Y%m%d}.csv", mime="text/csv", width="stretch")
         if d2.button(f"📊 엑셀 생성 ({len(dl_df):,}건)", key="gen_full_xlsx", width="stretch"):
             try:
                 with st.spinner("엑셀 생성 중…"):
@@ -6611,7 +6612,7 @@ def main():
         if st.session_state.get("full_xlsx"):
             st.download_button(
                 f"📥 머지 전체 데이터 엑셀(xlsx) 다운로드 ({st.session_state.get('full_xlsx_n', 0):,}건)",
-                st.session_state["full_xlsx"], file_name=f"발송성과_머지전체_{datetime.date.today():%Y%m%d}.xlsx",
+                st.session_state["full_xlsx"], file_name=f"발송성과_머지전체_{today_kst():%Y%m%d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         # ── 종합 리포트(엑셀) 내보내기 ──
@@ -6628,7 +6629,7 @@ def main():
         if st.session_state.get("report_xlsx"):
             st.download_button(
                 "📥 종합 리포트(xlsx) 다운로드", st.session_state["report_xlsx"],
-                file_name=f"발송성과_리포트_{datetime.date.today():%Y%m%d}.xlsx",
+                file_name=f"발송성과_리포트_{today_kst():%Y%m%d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         # ── 매칭 품질 상시 감시 — 특정 주차부터 매칭이 무너지면(시트 형식 변경 등) 즉시 보이게 ──

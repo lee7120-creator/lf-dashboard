@@ -110,6 +110,33 @@ def run_pages(store, tag):
             except Exception as e:                       # noqa: BLE001
                 print(f"  FAIL [{tag}] {p}: {str(e)[:200]}")
                 fails.append(f"{tag}:{p}")
+                continue
+
+            # 페이지 안의 다른 라디오(비교 기준·차트 보기 기준 등)도 전부 눌러 본다.
+            # '주간 ↔ 월누적(MTD)'처럼 코드 경로를 크게 가르는 것이 있어서,
+            # 기본값만 보면 나머지 경로가 통째로 미검증으로 남는다.
+            for r in [x for x in a.radio if x.label != "페이지"]:
+                opts = list(r.options)
+                for v in opts[1:]:
+                    sub = f"{p} › {r.label}={v}"
+                    try:
+                        c = AppTest.from_file(app, default_timeout=TIMEOUT)
+                        c.run()
+                        _cr = [x for x in c.radio if x.label == "페이지"] or \
+                              [x for x in c.sidebar.radio if x.label == "페이지"]
+                        _cr[0].set_value(p)
+                        c.run()
+                        _tgt = [x for x in c.radio if x.label == r.label]
+                        if not _tgt:
+                            continue
+                        _tgt[0].set_value(v)
+                        c.run()
+                        if c.exception:
+                            raise RuntimeError(c.exception[0].value)
+                        print(f"  OK   [{tag}] {sub}")
+                    except Exception as e:               # noqa: BLE001
+                        print(f"  FAIL [{tag}] {sub}: {str(e)[:200]}")
+                        fails.append(f"{tag}:{sub}")
     finally:
         os.chdir(cwd)
         shutil.rmtree(tmp, ignore_errors=True)
