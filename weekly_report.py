@@ -790,10 +790,21 @@ def week_like(df, year, month, wk):
     exact = f"{month:02d}월 {wk}주차"
     if exact in labs:
         return exact, True
-    cand = [l for l in labs if l.startswith(f"{month:02d}월")]
+
+    def _wknum(s):
+        """라벨에서 주차 번호. 'N주차'가 없으면 -1 (후보에서 제외).
+
+        파서는 주간 라벨을 'MM월 N주차'로 강제하지만, 백업 CSV 복원은 컬럼만 보고
+        내용은 검증하지 않는다. 형식이 어긋난 행이 하나 섞이면 여기서 None.group()으로
+        터져 앱 전체가 초기 렌더부터 죽으므로 방어한다.
+        """
+        m = re.search(r"(\d)주차", s)
+        return int(m.group(1)) if m else -1
+
+    cand = [l for l in labs if l.startswith(f"{month:02d}월") and _wknum(l) > 0]
     if not cand:
         return None, False
-    return max(cand, key=lambda s: int(re.search(r"(\d)주차", s).group(1))), False
+    return max(cand, key=_wknum), False
 
 def growth_pace_note(s_cur, s_prev=None):
     """잔고 시계열의 증가속도 분석 문구(HTML). s_cur/s_prev: dt 인덱스 Series(당해/전년).
