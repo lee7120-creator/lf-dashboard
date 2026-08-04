@@ -2,12 +2,65 @@
 
 ## 프로젝트 개요
 
-Streamlit으로 감싼 순수 HTML/CSS/JS 싱글페이지 대시보드.
-`crm_journey.html` 하나에 모든 UI·로직이 있고, `crm_journey.py`가 `st.components.v1.html()`로 임베드한다.
+저장소에 여러 Streamlit 앱이 있다. **지금 활발히 개발하는 건 아래 둘**이고,
+`crm_journey.*`는 초기 산출물이라 손댈 일이 거의 없다.
 
-- **배포**: Streamlit Share (GitHub 연동 자동 배포)
-- **브랜치**: `claude/compassionate-gauss-JC2F7` → main 머지 후 배포 반영
+| 파일 | 앱 | 규모 |
+|------|-----|------|
+| `send_perf_dashboard.py` | 발송성과 대시보드 (11페이지 + 하위탭) | ~7,300줄 |
+| `weekly_report.py` | 주간보고 (7페이지) | ~2,500줄 |
+| `crm_journey.html` / `.py` | 고객 여정 (초기 산출물) | — |
+
+- **배포**: Streamlit Share (main 머지 시 자동 배포)
 - **저장소**: `lee7120-creator/lf-dashboard`
+- **브랜치**: 세션마다 지정된 `claude/*` 브랜치 → main squash 머지 후 배포 반영
+
+---
+
+## ⚠️ 테스트 · CI — 머지 전 반드시 통과
+
+**이걸 안 돌리고 머지해서 앱 전체가 다운된 적이 두 번 있다.** 문법 오류도 린트 경고도
+아니고, 해당 페이지를 열어야만 재현되는 종류라 코드 리뷰로는 안 잡힌다.
+
+```bash
+python tests/check_shadowing.py      # 몇 초 — 전역 헬퍼 섀도잉 정적 검사
+python tests/smoke_pages.py          # 몇 분 — 발송성과 전 페이지·하위탭 렌더
+python tests/smoke_weekly_report.py  # 몇 분 — 주간보고 전 페이지·라디오 렌더
+```
+
+`.github/workflows/dashboard-ci.yml`이 PR·푸시에서 **문법 → 섀도잉 → 스모크** 순으로
+자동 실행한다. 두 대시보드나 `tests/`를 건드렸으면 CI가 초록인 걸 보고 머지할 것.
+
+**스모크는 합성 데이터로 실제 렌더**한다. 페이지 목록은 앱에서 직접 읽으므로 페이지를
+추가·개명해도 자동으로 따라간다. 새 하위탭·라디오를 추가하면 커버리지에 자동 포함된다.
+
+### 실제로 났던 사고 (같은 실수 반복 금지)
+
+| 사고 | 원인 | 막는 방법 |
+|------|------|-----------|
+| 11개 페이지 전부 NameError | `main()` 안에서 지역변수 이름으로 전역 헬퍼 `_s` 사용 | `check_shadowing.py` |
+| 주간보고 7페이지 전부 AttributeError | `re.search(...).group()` None 미가드 | `smoke_weekly_report.py` |
+
+---
+
+## 전역 헬퍼 섀도잉 금지 (중요)
+
+`main()`은 수천 줄짜리 단일 함수다. **그 안 어디서든 모듈 전역 함수와 같은 이름으로
+대입하면, `main()` 전체에서 그 이름이 지역변수로 승격**된다. 중첩 함수
+(`render_messages` 등)에서 부르던 전역 헬퍼는 클로저 자유변수로 묶여, 대입 줄이
+실행되기 전에는 미바인딩이라 `NameError`로 죽는다.
+
+```python
+# ❌ 절대 금지 — _s 는 모듈 전역 헬퍼(NaN→빈문자열)
+for _i, _y in enumerate(years):
+    _s = g[g["_yr"] == _y]      # 이 한 줄이 main() 안의 _s() 호출 전부를 죽인다
+
+# ✅ 다른 이름을 쓴다
+    _sy = g[g["_yr"] == _y]
+```
+
+지역변수는 `_sy`, `_gg`, `_ser`처럼 **전역 헬퍼와 겹치지 않는 이름**으로. 헷갈리면
+`python tests/check_shadowing.py`를 돌려 보면 된다.
 
 ---
 
@@ -315,13 +368,16 @@ body.sidebar-collapsed .content { margin-left: 0; }
 ## Git 워크플로
 
 ```bash
-# 개발 브랜치 확인
-git branch
+# 개발 브랜치 확인 (세션마다 지정된 claude/* 브랜치)
+git branch --show-current
+
+# 머지 전 검사 — CI와 같은 순서
+python tests/check_shadowing.py && python tests/smoke_pages.py && python tests/smoke_weekly_report.py
 
 # 변경 커밋
-git add crm_journey.html
+git add send_perf_dashboard.py
 git commit -m "기능 설명"
-git push -u origin claude/compassionate-gauss-JC2F7
+git push -u origin "$(git branch --show-current)"
 
 # PR 생성 (GitHub MCP)
 # mcp__github__create_pull_request 또는 mcp__github__list_pull_requests로 기존 PR 확인 후
@@ -330,7 +386,16 @@ git push -u origin claude/compassionate-gauss-JC2F7
 # 머지 전 draft → ready 전환 필수
 # mcp__github__update_pull_request { draft: false }
 # mcp__github__merge_pull_request { merge_method: "squash" }
+
+# 머지 후 — squash는 새 커밋을 만들므로 브랜치가 머지 전 커밋을 계속 가리킨다.
+# main에 맞춰 두지 않으면 다음 작업에서 non-fast-forward로 푸시가 막힌다.
+git fetch origin main && git checkout -B "$(git branch --show-current)" origin/main
+git push --force-with-lease origin "$(git branch --show-current)"
 ```
+
+> 다른 세션이 동시에 main에 머지하는 일이 잦다. 푸시가 거절되면 원격 브랜치 tip이
+> **이미 머지된 내 커밋**인지 먼저 확인할 것(내용 diff가 비면 그렇다). 그 경우엔
+> 최신 main 위로 rebase 후 `--force-with-lease`가 맞다.
 
 ---
 
@@ -417,10 +482,12 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
 - 시간대(HHMM) 표시는 반드시 `fmt_hhmm()`(차트/표) 또는 `_hm_label()`(셀렉트박스 format_func).
   `int(hour)`를 그대로 문자열에 붙이면 1050 → "1050시" 버그가 된다.
 - `use_container_width` 금지(Streamlit 제거 예정) — **`width="stretch"`** 사용.
+- `st.components.v1.html` 금지(2026-06-01 제거 예정, 이미 지남) — **`st.iframe(html, height=)`** 사용.
 
 ### 페이지 작성 규칙
 - 모든 페이지 하단에 **`glossary()`** 호출 (용어 주석 접이식). 새 용어를 쓰면 glossary()에 항목 추가.
 - 문구 표+원문 보기는 `render_messages(df, mcol, key)` 재사용 — 행클릭(on_select) 연동 포함.
+  시간대가 중요한 화면이면 `show_hour=True`로 발송시간 칼럼을 켠다(기본은 꺼짐).
 - 행클릭·셀렉트박스를 직접 만들 땐 **`guard_select(key, opts)`** 를 selectbox 직전에 호출
   (지표/필터 변경으로 세션 선택값이 옵션 밖이 되는 문제의 공용 가드).
 - 캠페인/슬롯 **순위·추천은 raw 평균 정렬 금지** — `rank_adjusted(df, col, ascending)` 사용
@@ -437,6 +504,35 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
 - push 데이터는 로드 직후 **`finalize_push()`** 통과 필수 (gsheets 라운드트립이 전값을
   문자열로 되돌림 — campaign의 `_finalize`와 대칭).
 - '오늘' 계산은 `date.today()` 금지 — **`today_kst()`** 사용 (서버 UTC라 KST 새벽에 주 경계가 밀림).
+  **다운로드 파일명의 날짜도 포함** — UTC면 KST 새벽 0~9시에 하루 전 날짜로 찍힌다.
+
+### 기간 비교 규칙 (전주 · 전월 동주 · 전년 동주 · 전년 동요일)
+주차·요일을 맞추는 방식이 화면마다 다르면 숫자가 어긋나 보인다. 아래로 통일한다.
+
+| 비교 | 기준 | 왜 |
+|------|------|-----|
+| 전월 동주 | 기준주 **목요일**의 한 달 전이 속한 주 | 월요일 앵커를 쓰면 한 달 전 날짜가 주 꼬리에 걸려 한 주 이른 주가 잡힌다 |
+| 전년 동주 | 같은 **ISO 주차** | `datetime.date.fromisocalendar(y-1, w, 1)` |
+| 전년 동요일 | 같은 **ISO 주차 + 같은 요일** | 날짜를 그대로 1년 빼면 요일이 어긋나 발송 패턴 자체가 달라진다 |
+| 대응 주차 없음 | 그 달 **마지막 주**로 대체하고 화면에 명시 | 주차가 달마다 4~5개라 5주차는 전월에 없는 경우가 많다 (`week_like`) |
+
+- 전년에 그 ISO 주가 없으면(53주차) **364일 전**(=정확히 52주)으로 폴백 — 요일이 보존된다.
+- 대체했으면 **어느 주와 비교했는지 화면에 반드시 표기**한다(뱃지·캡션).
+- 기준주가 **부분 주**(진행 중이거나 실적 미완결)면 비교 대상도 **동요일 누계로 잘라서**
+  집계한다(`_elapsed`). 안 그러면 2일치가 7일치와 맞붙어 △70%대 가짜 급락이 뜬다.
+  KPI 카드뿐 아니라 **분해 차트 등 같은 화면의 모든 비교**에 같은 창을 적용할 것.
+
+### UX 라이팅 (토스 라이팅 원칙)
+- **해요체로 통일.** 합쇼체(`분석합니다`·`권장합니다`·`검토하십시오`)와 섞으면 여러 사람이
+  이어붙인 인상을 준다. 두 대시보드 모두 해요체다.
+- 한 문장에 한 메시지. 줄표(`—`)로 절을 이어붙이지 말고 문장을 끊는다.
+- 없어도 되는 말은 뺀다: `※`, 중복 괄호 부연, "참고하세요" 같은 상투구.
+- 과공손 정리: "계산해 드려요" → "계산해요". 지시조 대신 제안형: "재점검하십시오" → "점검해 보세요".
+- **AI 프롬프트 문자열(`system`/`user`)은 건드리지 말 것** — 출력 서식(계층형 불릿 등)을
+  지시하는 내용이라 말투를 바꾸면 생성 결과가 깨진다.
+- 문구를 대량 교체할 땐 원문이 파일에 **정확히 1번** 나올 때만 치환하고 아니면 중단하게 짤 것.
+  여러 줄로 쪼개진 리터럴(`"a" "b"`)은 조각 단위로 바꾸면 들여쓰기를 안 건드린다.
+  (AST 스팬으로 자를 거면 `col_offset`이 **UTF-8 바이트** 오프셋이라 한글에서 어긋난다 — 바이트로 처리)
 
 ### 폰트
 - Pretendard 전면 적용: `.streamlit/config.toml`의 `theme.font`+`fontFaces`(표는 캔버스 렌더링이라
