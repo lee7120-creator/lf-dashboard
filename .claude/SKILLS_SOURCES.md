@@ -6,6 +6,14 @@ persist across the remote/ephemeral Claude Code sessions used for this repo.
 
 All source projects are **MIT licensed**. See each upstream repo for full text.
 
+## 이 저장소가 직접 만든 스킬 (third-party 아님)
+
+| 스킬 | 무엇 |
+|------|------|
+| `lf-dashboard-dev` | 발송성과·주간보고 대시보드 작업 절차 — 페이지·하위탭 추가, 문구 대량 수정, 버그 재현·수정, 검사·PR·머지·브랜치 동기화 순서. 규칙 자체는 `CLAUDE.md`에 있고 이 스킬은 "어떤 순서로 하는지"를 담당한다. |
+
+> 위 스킬은 업스트림이 없으므로 `install-skills.sh` 재실행으로 덮이지 않게 주의할 것.
+
 | Source repo | Version | What was installed | Excluded |
 |-------------|---------|--------------------|----------|
 | [coreyhaines31/marketingskills](https://github.com/coreyhaines31/marketingskills) | 2.5.1 | 45 skills | — |
