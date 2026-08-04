@@ -5193,75 +5193,130 @@ def main():
                     help="그날 발송으로 발생한 주문 금액이에요.")
         st.caption(f"기준일 {int(A['건수'])}건 · 전년 동요일 {int(B['건수'])}건 발송했어요.")
 
-        # ── 시간대별 비교 ──
+        # ── 시간대별 비교 (여러 날짜를 00~23시 축에 겹쳐 보는 라인) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### ⏰ 시간대별 비교")
-        Y_MET = {"CTR": ("CTR", "%"), "주문CR": ("주문CR", "%"),
-                 "RPS": ("RPS", "원"), "발송": ("발송", ""), "거래액": ("거래액", "원")}
-        _ymet = st.selectbox("비교 지표", list(Y_MET), index=0, key="p05b_met",
-                             help="시간대별로 기준일과 전년 동요일을 나란히 비교해요.")
+        Y_MET = {"발송량": ("발송", ""), "유입UV": ("UV", ""), "CTR": ("CTR", "%"),
+                 "주문CR": ("주문CR", "%"), "주문건수": ("주문", ""),
+                 "RPS": ("RPS", "원"), "거래액": ("거래액", "원")}
+        _mc1, _mc2 = st.columns([1, 2])
+        _ymet = _mc1.selectbox("비교 지표", list(Y_MET), index=2, key="p05b_met",
+                               help="선택한 지표를 시간대별로 겹쳐서 비교해요.")
         _ycol, _yunit = Y_MET[_ymet]
 
+        # 비교선 후보 — 기준일 외에 전일·전주 동요일·전년 동요일. 레퍼런스 대시보드처럼
+        # 같은 시간 축에 겹쳐야 "몇 시에 잘 나갔나"가 바로 읽힌다.
+        _CMP = {
+            "전일": (ref_d - pd.Timedelta(days=1), PALETTE["purple"]),
+            "전주 동요일": (ref_d - pd.Timedelta(days=7), PALETTE["slate"]),
+            "전년 동요일": (ly_d, PALETTE["blue"]),
+        }
+        _cmp_opts = [k for k, (d, _) in _CMP.items() if d is not None]
+        _cmp_def = [k for k in ("전주 동요일", "전년 동요일") if k in _cmp_opts]
+        _cmp_sel = _mc2.multiselect("비교선", _cmp_opts, default=_cmp_def, key="p05b_cmp",
+                                    help="기준일 위에 겹쳐 볼 날짜예요. 빼면 선이 사라져요.")
+
         def _byhour(d):
-            if not len(d) or "hour" not in d:
-                return pd.DataFrame()
-            g = d.dropna(subset=["hour"]).groupby("hour").agg(
+            """발송 시간(HHMM)을 '시(0~23)'로 묶어 집계 — 날짜가 달라도 축이 맞아야 겹친다."""
+            if d is None or not len(d) or "hour" not in d:
+                return {}
+
+            def _hod(v):
+                try:
+                    n = int(float(v))
+                except Exception:
+                    return None
+                return n if n <= 23 else n // 100        # 1030 → 10시
+
+            dd = d.dropna(subset=["hour"]).copy()
+            dd["_hod"] = dd["hour"].map(_hod)
+            dd = dd[dd["_hod"].notna()]
+            if not len(dd):
+                return {}
+            g = dd.groupby("_hod").agg(
                 건수=("af", "size"), 발송=("send", "sum"), UV=("uv", "sum"),
                 주문=("oc", "sum"), 거래액=("amt", "sum")).reset_index()
             g["CTR"] = np.where(g["발송"] > 0, g["UV"] / g["발송"] * 100, np.nan)
             g["주문CR"] = np.where(g["UV"] > 0, g["주문"] / g["UV"] * 100, np.nan)
             g["RPS"] = np.where(g["발송"] > 0, g["거래액"] / g["발송"], np.nan)
-            return g
+            return {int(r["_hod"]): r for _, r in g.iterrows()}
 
-        ha, hb = _byhour(cur_rows), _byhour(ly_rows)
-        if not len(ha) and not len(hb):
+        _day_rows = {"기준일": cur_rows}
+        for _k in _cmp_sel:
+            _d = _CMP[_k][0]
+            _day_rows[_k] = _yb[_yb["dt"].dt.normalize() == _d]
+        _agg_by = {k: _byhour(v) for k, v in _day_rows.items()}
+
+        _hrs = sorted({h for m in _agg_by.values() for h in m})
+        if not _hrs:
             st.info("시간대(hour) 정보가 있는 발송이 없어요.")
         else:
-            _hrs = sorted({*(ha["hour"] if len(ha) else []), *(hb["hour"] if len(hb) else [])},
-                          key=lambda v: int(float(v)) if str(v).replace(".", "", 1).isdigit() else 10 ** 9)
-            _xl = [fmt_hhmm(h) for h in _hrs]
+            _xl = [f"{h:02d}" for h in _hrs]
 
-            def _series(g):
-                if not len(g):
-                    return [np.nan] * len(_hrs)
-                m = dict(zip(g["hour"], g[_ycol]))
-                return [float(m.get(h, np.nan)) for h in _hrs]
+            def _pt(k, h):
+                r = _agg_by.get(k, {}).get(h)
+                if r is None or pd.isna(r[_ycol]):
+                    return np.nan
+                return float(r[_ycol])
+
+            def _lab(v):
+                if not np.isfinite(v):
+                    return ""
+                if _yunit == "%":
+                    return f"{v:.2f}"
+                if _ycol == "거래액":
+                    return won(v)
+                return f"{v:,.0f}"
 
             figh = go.Figure()
-            figh.add_trace(go.Bar(x=_xl, y=_series(hb), name=f"전년 {_dlab(ly_d)[5:]}" if ly_d is not None else "전년",
-                                  marker_color=PALETTE["slate"]))
-            figh.add_trace(go.Bar(x=_xl, y=_series(ha), name=f"기준일 {_dlab(ref_d)[5:]}",
-                                  marker_color=PALETTE["blue"]))
-            _lay = base_layout(h=380, ysuffix=("%" if _yunit == "%" else ""),
-                               title=f"시간대별 {_ymet} — 전년 동요일 vs 기준일")
-            _lay["barmode"] = "group"
+            # 비교선을 먼저 깔고 기준일을 마지막에 → 기준일이 위로 올라와 눈에 띈다
+            for _k in _cmp_sel:
+                _d, _c = _CMP[_k]
+                _y = [_pt(_k, h) for h in _hrs]
+                figh.add_trace(go.Scatter(
+                    x=_xl, y=_y, name=f"{_k} {_dlab(_d)[5:]}", mode="lines+markers+text",
+                    line=dict(color=_c, width=2), marker=dict(color=_c, size=6),
+                    text=[_lab(v) for v in _y], textposition="top center",
+                    textfont=dict(size=9, color=_c), connectgaps=True))
+            _y0 = [_pt("기준일", h) for h in _hrs]
+            figh.add_trace(go.Scatter(
+                x=_xl, y=_y0, name=f"기준일 {_dlab(ref_d)[5:]}", mode="lines+markers+text",
+                line=dict(color=PALETTE["red"], width=3), marker=dict(color=PALETTE["red"], size=7),
+                text=[_lab(v) for v in _y0], textposition="top center",
+                textfont=dict(size=9, color=PALETTE["red"]), connectgaps=True))
+            _lay = base_layout(h=420, ysuffix=("%" if _yunit == "%" else ""),
+                               title=f"시간대별 {_ymet} — 기준일 vs 비교일", hover="x")
             _lay["showlegend"] = True
             _lay["legend"] = legend_h()
+            _lay["xaxis"]["title"] = "발송 시간대(시)"
             figh.update_layout(**_lay)
             st.plotly_chart(figh, width="stretch")
+            st.markdown('<div class="appendix">발송 시간(예: 10시 30분)을 <b>시 단위</b>로 묶어 같은 축에 '
+                        '겹쳤어요. 그래야 날짜가 달라도 "몇 시에 잘 나갔나"가 비교돼요. 점이 없는 시간대는 '
+                        '그 날 발송이 없었다는 뜻이에요.</div>', unsafe_allow_html=True)
 
-            # 시간대 표 — 발송 규모까지 같이 봐야 CTR 차이가 의미 있는지 판단됨
+            # 시간대 표 — 발송 규모까지 같이 봐야 비율 차이가 의미 있는지 판단된다
             _rows = []
             for h in _hrs:
-                ra = ha[ha["hour"] == h] if len(ha) else ha
-                rb = hb[hb["hour"] == h] if len(hb) else hb
-                gv = lambda r, c: (float(r[c].iloc[0]) if len(r) and pd.notna(r[c].iloc[0]) else np.nan)
-                _rows.append({
-                    "시간": fmt_hhmm(h),
-                    "전년 발송": gv(rb, "발송"), "전년 CTR": gv(rb, "CTR"),
-                    "기준일 발송": gv(ra, "발송"), "기준일 CTR": gv(ra, "CTR"),
-                    "CTR 차이(%p)": gv(ra, "CTR") - gv(rb, "CTR"),
-                })
+                row = {"시간": f"{h:02d}시"}
+                for _k in ["기준일"] + _cmp_sel:
+                    row[f"{_k} 발송"] = (float(_agg_by[_k][h]["발송"])
+                                       if h in _agg_by.get(_k, {}) else np.nan)
+                    row[f"{_k} {_ymet}"] = _pt(_k, h)
+                if "전년 동요일" in _cmp_sel:
+                    _diff = _pt("기준일", h) - _pt("전년 동요일", h)
+                    row[f"전년비 차이"] = _diff
+                _rows.append(row)
             _num = st.column_config.NumberColumn
+            _cfg = {}
+            for _k in ["기준일"] + _cmp_sel:
+                _cfg[f"{_k} 발송"] = _num(format="localized")
+                _cfg[f"{_k} {_ymet}"] = _num(format="%.2f%%" if _yunit == "%" else "localized")
+            if "전년 동요일" in _cmp_sel:
+                _cfg["전년비 차이"] = _num(format="%+.2f" if _yunit == "%" else "%+,.0f")
             st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch",
-                         height=min(38 + 35 * len(_rows), 420),
-                         column_config={
-                             "전년 발송": _num(format="localized"),
-                             "기준일 발송": _num(format="localized"),
-                             "전년 CTR": _num(format="%.2f%%"),
-                             "기준일 CTR": _num(format="%.2f%%"),
-                             "CTR 차이(%p)": _num(format="%+.2f")})
-            st.markdown('<div class="appendix">발송량이 크게 다르면 CTR 차이는 타겟 구성 차이일 수 있어요. '
+                         height=min(38 + 35 * len(_rows), 420), column_config=_cfg)
+            st.markdown('<div class="appendix">발송량이 크게 다르면 비율 차이는 타겟 구성 차이일 수 있어요. '
                         '발송 규모를 같이 보고 판단하세요.</div>', unsafe_allow_html=True)
 
         # ── 소재(문구) 비교 — 그날 무엇을 보냈나 ──
