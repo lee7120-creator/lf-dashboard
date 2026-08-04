@@ -5199,20 +5199,42 @@ def main():
         Y_MET = {"발송량": ("발송", ""), "유입UV": ("UV", ""), "CTR": ("CTR", "%"),
                  "주문CR": ("주문CR", "%"), "주문건수": ("주문", ""),
                  "RPS": ("RPS", "원"), "거래액": ("거래액", "원")}
-        _mc1, _mc2 = st.columns([1, 2])
+        _mc1, _mcb, _mc2 = st.columns([1, 1, 2])
         _ymet = _mc1.selectbox("비교 지표", list(Y_MET), index=2, key="p05b_met",
                                help="선택한 지표를 시간대별로 겹쳐서 비교해요.")
         _ycol, _yunit = Y_MET[_ymet]
+        _IS_RATIO = _ycol in ("CTR", "주문CR", "RPS")
+        # 비율 지표는 '합산'과 '캠페인 평균'이 다른 값이다. 합산은 발송 전체의 실제 효율,
+        # 평균은 캠페인 한 건의 전형적 성과 — 큰 캠페인 하나에 가려지지 않는다.
+        _basis = "합산(가중)"
+        if _IS_RATIO:
+            _basis = _mcb.radio("비율 기준", ["합산(가중)", "캠페인 평균"], horizontal=True,
+                                key="p05b_basis",
+                                help="합산=발송 전체의 실제 효율(ΣUV÷Σ발송). "
+                                     "평균=캠페인별 값의 단순평균이라 대형 캠페인에 안 눌려요.")
+        else:
+            _mcb.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            _mcb.caption("합계 기준이에요.")
+        _AVG = (_basis == "캠페인 평균")
+        _RATIO_SRC = {"CTR": "infl_cr", "주문CR": "ord_cr", "RPS": "rps"}
 
-        # 비교선 후보 — 기준일 외에 전일·전주 동요일·전년 동요일. 레퍼런스 대시보드처럼
+        # 비교선 후보 — 기준일 외에 전일·전주/전월/전년 동요일. 레퍼런스 대시보드처럼
         # 같은 시간 축에 겹쳐야 "몇 시에 잘 나갔나"가 바로 읽힌다.
+        # 전월 동요일: 기준주 '목요일'의 한 달 전이 속한 주에서 같은 요일을 집는다.
+        # 월요일 앵커를 쓰면 한 달 전 날짜가 주 꼬리에 걸려 한 주 이른 주가 잡힌다
+        # (CLAUDE.md 기간 비교 규칙의 전월 동주와 같은 앵커).
+        _ref_ws = ref_d - pd.Timedelta(days=ref_d.weekday())
+        _pm_ws = pd.Timestamp(((_ref_ws + pd.Timedelta(days=3)) - pd.DateOffset(months=1))
+                              .to_period("W").start_time)
+        pm_d = _pm_ws + pd.Timedelta(days=ref_d.weekday())
         _CMP = {
             "전일": (ref_d - pd.Timedelta(days=1), PALETTE["purple"]),
             "전주 동요일": (ref_d - pd.Timedelta(days=7), PALETTE["slate"]),
+            "전월 동요일": (pm_d, PALETTE["teal"]),
             "전년 동요일": (ly_d, PALETTE["blue"]),
         }
         _cmp_opts = [k for k, (d, _) in _CMP.items() if d is not None]
-        _cmp_def = [k for k in ("전주 동요일", "전년 동요일") if k in _cmp_opts]
+        _cmp_def = [k for k in ("전주 동요일", "전월 동요일", "전년 동요일") if k in _cmp_opts]
         _cmp_sel = _mc2.multiselect("비교선", _cmp_opts, default=_cmp_def, key="p05b_cmp",
                                     help="기준일 위에 겹쳐 볼 날짜예요. 빼면 선이 사라져요.")
 
@@ -5239,7 +5261,30 @@ def main():
             g["CTR"] = np.where(g["발송"] > 0, g["UV"] / g["발송"] * 100, np.nan)
             g["주문CR"] = np.where(g["UV"] > 0, g["주문"] / g["UV"] * 100, np.nan)
             g["RPS"] = np.where(g["발송"] > 0, g["거래액"] / g["발송"], np.nan)
+            if _AVG and _ycol in _RATIO_SRC:            # 캠페인 단순평균으로 교체
+                _sc = _RATIO_SRC[_ycol]
+                if _sc in dd.columns:
+                    _m = dd.groupby("_hod")[_sc].mean()
+                    _k = 100 if _ycol in ("CTR", "주문CR") else 1
+                    g[_ycol] = g["_hod"].map(_m) * _k
             return {int(r["_hod"]): r for _, r in g.iterrows()}
+
+        def _daytot(d):
+            """그 날 전체 합산값(비율은 선택한 기준에 따라 가중/단순평균)."""
+            if d is None or not len(d):
+                return np.nan
+            s, u, o, a = (float(d["send"].sum()), float(d["uv"].sum()),
+                          float(d["oc"].sum()), float(d["amt"].sum()))
+            if _AVG and _ycol in _RATIO_SRC:
+                _sc = _RATIO_SRC[_ycol]
+                if _sc in d.columns:
+                    _k = 100 if _ycol in ("CTR", "주문CR") else 1
+                    _v = pd.to_numeric(d[_sc], errors="coerce").mean()
+                    return float(_v) * _k if pd.notna(_v) else np.nan
+            return {"발송": s, "UV": u, "주문": o, "거래액": a,
+                    "CTR": (u / s * 100 if s else np.nan),
+                    "주문CR": (o / u * 100 if u else np.nan),
+                    "RPS": (a / s if s else np.nan)}.get(_ycol, np.nan)
 
         _day_rows = {"기준일": cur_rows}
         for _k in _cmp_sel:
@@ -5275,25 +5320,56 @@ def main():
                 _y = [_pt(_k, h) for h in _hrs]
                 figh.add_trace(go.Scatter(
                     x=_xl, y=_y, name=f"{_k} {_dlab(_d)[5:]}", mode="lines+markers+text",
-                    line=dict(color=_c, width=2), marker=dict(color=_c, size=6),
+                    line=dict(color=_c, width=2, shape="spline", smoothing=0.6),
+                    marker=dict(color=_c, size=7),
                     text=[_lab(v) for v in _y], textposition="top center",
-                    textfont=dict(size=9, color=_c), connectgaps=True))
+                    textfont=dict(size=12, color=_c), connectgaps=True))
             _y0 = [_pt("기준일", h) for h in _hrs]
             figh.add_trace(go.Scatter(
                 x=_xl, y=_y0, name=f"기준일 {_dlab(ref_d)[5:]}", mode="lines+markers+text",
-                line=dict(color=PALETTE["red"], width=3), marker=dict(color=PALETTE["red"], size=7),
+                line=dict(color=PALETTE["red"], width=3, shape="spline", smoothing=0.6),
+                marker=dict(color=PALETTE["red"], size=9),
                 text=[_lab(v) for v in _y0], textposition="top center",
-                textfont=dict(size=9, color=PALETTE["red"]), connectgaps=True))
+                textfont=dict(size=13, color=PALETTE["red"]), connectgaps=True))
+            _bt = "합산" if not _AVG else "캠페인 평균"
             _lay = base_layout(h=420, ysuffix=("%" if _yunit == "%" else ""),
-                               title=f"시간대별 {_ymet} — 기준일 vs 비교일", hover="x")
+                               title=f"시간대별 {_ymet}({_bt}) — 기준일 vs 비교일", hover="x")
             _lay["showlegend"] = True
             _lay["legend"] = legend_h()
             _lay["xaxis"]["title"] = "발송 시간대(시)"
             figh.update_layout(**_lay)
-            st.plotly_chart(figh, width="stretch")
+
+            # 시간대 라인 옆에 '그 날 통째로' 얼마였는지 막대로 — 시간대 분포와 일자 총량을
+            # 한 화면에서 같이 봐야 "특정 시간이 좋았나 / 그날 자체가 좋았나"가 갈린다.
+            _lc, _rc = st.columns([4, 1])
+            _lc.plotly_chart(figh, width="stretch")
+
+            _ORDER = ["기준일"] + _cmp_sel
+            _SHORT = {"기준일": "기준일", "전일": "전일", "전주 동요일": "전주",
+                      "전월 동요일": "전월", "전년 동요일": "전년"}
+            _tot = {k: _daytot(_day_rows.get(k)) for k in _ORDER}
+            _tcol = [PALETTE["red"]] + [_CMP[k][1] for k in _cmp_sel]
+            _tv = [_tot[k] for k in _ORDER]
+            figt2 = go.Figure(go.Bar(
+                x=[_SHORT.get(k, k) for k in _ORDER], y=_tv, marker_color=_tcol,
+                text=[_lab(v) for v in _tv], textposition="outside",
+                textfont=dict(size=13), showlegend=False))
+            _lay2 = base_layout(h=420, ysuffix=("%" if _yunit == "%" else ""),
+                                title=f"일자 합산 {_ymet}")
+            _lay2["yaxis"]["range"] = bar_xrange([v for v in _tv if np.isfinite(v)], 1.25)
+            figt2.update_layout(**_lay2)
+            _rc.plotly_chart(figt2, width="stretch")
+
+            _basis_txt = ("비율은 <b>합산 기준</b>(ΣUV÷Σ발송)이에요. 발송 전체의 실제 효율이죠."
+                          if not _AVG else
+                          "비율은 <b>캠페인 평균</b>이에요. 캠페인 한 건의 전형적 성과라 "
+                          "대형 캠페인 하나에 눌리지 않아요.") if _IS_RATIO else \
+                         "카운트 지표라 합계로 봐요."
             st.markdown('<div class="appendix">발송 시간(예: 10시 30분)을 <b>시 단위</b>로 묶어 같은 축에 '
                         '겹쳤어요. 그래야 날짜가 달라도 "몇 시에 잘 나갔나"가 비교돼요. 점이 없는 시간대는 '
-                        '그 날 발송이 없었다는 뜻이에요.</div>', unsafe_allow_html=True)
+                        '그 날 발송이 없었다는 뜻이에요.<br>오른쪽 막대는 <b>그 날 전체</b> 값이라, '
+                        f'특정 시간대가 좋았던 건지 그날 자체가 좋았던 건지 갈라 볼 수 있어요. {_basis_txt}</div>',
+                        unsafe_allow_html=True)
 
             # 시간대 표 — 발송 규모까지 같이 봐야 비율 차이가 의미 있는지 판단된다
             _rows = []
