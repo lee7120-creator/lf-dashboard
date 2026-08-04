@@ -73,7 +73,11 @@ def main():
     pages = list(at.sidebar.radio[0].options)
     print(f"페이지 {len(pages)}개 발견\n")
 
-    fails = []
+    def _subtabs(a):
+        """본문 상단 하위탭 라디오 — 사이드바('페이지')가 아닌 것."""
+        return [r for r in a.radio if r.label != "페이지"]
+
+    fails, done = [], 0
     for p in pages:
         try:
             a = _fresh(store)
@@ -84,15 +88,41 @@ def main():
             if a.exception:
                 raise RuntimeError(a.exception[0].value)
             print(f"  OK   {p}")
+            done += 1
         except Exception as e:                       # noqa: BLE001 — 어떤 예외든 실패로 기록
             print(f"  FAIL {p}: {str(e)[:200]}")
             fails.append(p)
+            continue
+
+        # 하위탭이 있으면 첫 탭 말고 나머지도 전부 렌더 (기본 진입 탭만 보면
+        # 2번째 이후 탭의 크래시를 놓친다)
+        subs = _subtabs(a)
+        if not subs:
+            continue
+        for s in list(subs[0].options)[1:]:
+            label = f"{p} › {s}"
+            try:
+                b = _fresh(store)
+                b.sidebar.radio[0].set_value(p)
+                b.run()
+                _sb = _subtabs(b)
+                if not _sb:
+                    raise RuntimeError("하위탭 라디오를 찾지 못했어요")
+                _sb[0].set_value(s)
+                b.run()
+                if b.exception:
+                    raise RuntimeError(b.exception[0].value)
+                print(f"  OK   {label}")
+                done += 1
+            except Exception as e:                   # noqa: BLE001
+                print(f"  FAIL {label}: {str(e)[:200]}")
+                fails.append(label)
 
     print()
     if fails:
-        print(f"실패 {len(fails)}/{len(pages)}: {fails}")
+        print(f"실패 {len(fails)}건: {fails}")
         return 1
-    print(f"전 페이지 스모크 통과 ✅ ({len(pages)}/{len(pages)})")
+    print(f"전 페이지·하위탭 스모크 통과 ✅ ({done}개)")
     return 0
 
 

@@ -2769,7 +2769,7 @@ def main():
         "2. 문구 분석":          ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모"],
         "3. 캠페인 리더보드":    ["캠페인 리더보드"],
         "4. 성과 진단":          ["전환·AOV 진단", "발송유형·브랜드 랭킹", "BPU·우선순위 효율"],
-        "5. 맥락·타이밍":        ["카테고리·시간대", "타이밍·발송슬롯"],
+        "5. 맥락·타이밍":        ["카테고리·시간대", "타이밍·발송슬롯", "전년 동요일 비교"],
         "6. 효율·피로도":        ["전체 효율·추이", "피로도 시계열", "발송 빈도·한계수익", "요일 패턴"],
         "7. 기획전 비교분석":    ["기획전 비교분석"],
         "8. 액션":               ["다음주 발송 플레이북", "AI 처방·카피"],
@@ -3058,8 +3058,11 @@ def main():
             g2.markdown(stats_md)
 
     @st.fragment
-    def render_messages(d, mcol, key, n=200):
+    def render_messages(d, mcol, key, n=200, show_hour=False):
         """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기.
+
+        show_hour=True면 발송시간 칼럼을 날짜 뒤에 넣는다(시간대 비교 화면용).
+        기본값은 기존 동작 그대로라 다른 호출부는 영향 없다.
 
         fragment — 행 클릭·원문 선택 때 전체 스크립트(필터·사이드바·전 페이지)가
         다시 돌지 않고 이 블록만 다시 그린다. 자기 완결 블록(외부 컨테이너 미사용)."""
@@ -3071,9 +3074,12 @@ def main():
         if "date" in dd.columns:                      # 'YYYYMMDD' 원시 문자열 → 'MM/DD' 표기 통일
             _dts = pd.to_datetime(dd["date"], format="%Y%m%d", errors="coerce")
             dd["date"] = _dts.dt.strftime("%m/%d").where(_dts.notna(), dd["date"])
-        all_cols = ["date", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt"]
+        if show_hour and "hour" in dd.columns:
+            dd["_hh"] = dd["hour"].map(fmt_hhmm)
+        all_cols = ["date", "_hh", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt"]
         cols = [c for c in all_cols if c in dd.columns]
-        ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "_bprev": "내용",
+        ren = {"date": "날짜", "_hh": "시간", "cat": "카테고리", "brand": "브랜드", "title": "제목",
+               "_bprev": "내용",
                "send": "발송", "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
         fmts = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
         show = dd[cols].rename(columns=ren)
@@ -5098,6 +5104,210 @@ def main():
             sub5 = sub5[sub5["dow_k"] == sel_d5]
         st.caption(f"조건 일치 {len(sub5)}건 — {mlabel} 높은 순")
         render_messages(sub5, mcol, "p05_drill")
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 05-2 — 전년 동요일 비교 (시간대 × 소재)
+    # ══════════════════════════════════════════════════════════════
+    elif "전년 동요일" in page:
+        st.title("전년 동요일 비교")
+        st.caption("기준일과 전년 같은 요일을 시간대·소재 단위로 맞대어 봐요. "
+                   "ISO 주차와 요일을 맞춰서 비교해요 — 예: 2026년 32주 월요일 ↔ 2025년 32주 월요일. "
+                   "요일이 어긋나면 발송 패턴 자체가 달라서 날짜를 그대로 1년 빼지 않아요. "
+                   "모든 값은 합산(가중) 기준이에요.")
+        base_y = fdf if len(fdf) else df
+        _yb = base_y.dropna(subset=["dt"]).copy() if "dt" in base_y else base_y.iloc[0:0]
+        if not len(_yb):
+            st.info("발송일 데이터가 없어요. 실적 파일을 올려 주세요.")
+            st.stop()
+
+        _DOWK = ["월", "화", "수", "목", "금", "토", "일"]
+
+        def _dlab(ts):
+            ts = pd.Timestamp(ts)
+            return f"{ts:%Y-%m-%d}({_DOWK[ts.weekday()]})"
+
+        # ── 기준일 선택 (기본: 데이터 최신 발송일) ──
+        _days = sorted(_yb["dt"].dt.normalize().unique(), reverse=True)
+        _dopts = [pd.Timestamp(d) for d in _days]
+        guard_select("p05b_day", [_dlab(d) for d in _dopts])
+        _sel_lab = st.selectbox("기준일", [_dlab(d) for d in _dopts], index=0, key="p05b_day",
+                                help="이 날과 전년 같은 요일을 비교해요. 최신 발송일이 위에 있어요.")
+        ref_d = _dopts[[_dlab(d) for d in _dopts].index(_sel_lab)]
+
+        # ── 전년 동요일 = 같은 ISO 주차·같은 요일. 전년에 그 주가 없으면(53주차) 364일 전
+        #    (=정확히 52주 전이라 요일이 보존됨)으로 떨어뜨린다.
+        _iy, _iw, _idw = ref_d.isocalendar()
+        try:
+            ly_d = pd.Timestamp(datetime.date.fromisocalendar(_iy - 1, _iw, _idw))
+        except ValueError:
+            ly_d = ref_d - pd.Timedelta(days=364)
+
+        # 그 날짜에 발송이 없으면 같은 요일 중 가장 가까운 날로 대체 (±21일)
+        _have = set(_yb["dt"].dt.normalize().unique())
+        ly_exact = ly_d in _have
+        if not ly_exact:
+            _cands = [pd.Timestamp(d) for d in _have
+                      if pd.Timestamp(d).weekday() == ly_d.weekday()
+                      and abs((pd.Timestamp(d) - ly_d).days) <= 21]
+            ly_d = min(_cands, key=lambda d: abs((d - ly_d).days)) if _cands else None
+
+        cur_rows = _yb[_yb["dt"].dt.normalize() == ref_d]
+        ly_rows = _yb[_yb["dt"].dt.normalize() == ly_d] if ly_d is not None else _yb.iloc[0:0]
+
+        if ly_d is None:
+            st.warning(f"**{_dlab(ref_d)}**의 전년 동요일 부근(±3주)에 발송 데이터가 없어요. "
+                       "전년 실적 파일을 올리면 비교할 수 있어요.")
+        elif not ly_exact:
+            st.info(f"전년 동요일({_dlab(pd.Timestamp(datetime.date.fromisocalendar(_iy - 1, _iw, _idw))) if _iw <= 52 else '해당일'})에 "
+                    f"발송이 없어 가장 가까운 같은 요일 **{_dlab(ly_d)}**로 대체했어요.")
+
+        def _wagg(d):
+            s, u, o, a = (float(d["send"].sum()), float(d["uv"].sum()),
+                          float(d["oc"].sum()), float(d["amt"].sum()))
+            return {"건수": float(len(d)), "발송": s, "UV": u, "주문": o, "거래액": a,
+                    "CTR": (u / s * 100 if s else np.nan),
+                    "주문CR": (o / u * 100 if u else np.nan),
+                    "RPS": (a / s if s else np.nan)}
+
+        A, B = _wagg(cur_rows), _wagg(ly_rows)
+
+        # ── 요약 카드 (전년비) ──
+        def _delta(cur, prv, pct_point=False):
+            if not np.isfinite(cur) or not np.isfinite(prv) or (prv == 0 and not pct_point):
+                return None
+            return f"{cur - prv:+.2f}%p 전년비" if pct_point else f"{(cur / prv - 1) * 100:+.1f}% 전년비"
+
+        st.markdown(f"##### {_dlab(ref_d)} vs {_dlab(ly_d) if ly_d is not None else '–'}")
+        k = st.columns(4)
+        k[0].metric("발송", won(A["발송"]), _delta(A["발송"], B["발송"]),
+                    help="그날 보낸 메시지 총 건수예요.")
+        k[1].metric("CTR", "–" if not np.isfinite(A["CTR"]) else f"{A['CTR']:.2f}%",
+                    _delta(A["CTR"], B["CTR"], pct_point=True),
+                    help="UV ÷ 발송. 합산 기준이에요.")
+        k[2].metric("주문CR", "–" if not np.isfinite(A["주문CR"]) else f"{A['주문CR']:.2f}%",
+                    _delta(A["주문CR"], B["주문CR"], pct_point=True),
+                    help="주문 ÷ UV. 합산 기준이에요.")
+        k[3].metric("거래액", won(A["거래액"]), _delta(A["거래액"], B["거래액"]),
+                    help="그날 발송으로 발생한 주문 금액이에요.")
+        st.caption(f"기준일 {int(A['건수'])}건 · 전년 동요일 {int(B['건수'])}건 발송했어요.")
+
+        # ── 시간대별 비교 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ⏰ 시간대별 비교")
+        Y_MET = {"CTR": ("CTR", "%"), "주문CR": ("주문CR", "%"),
+                 "RPS": ("RPS", "원"), "발송": ("발송", ""), "거래액": ("거래액", "원")}
+        _ymet = st.selectbox("비교 지표", list(Y_MET), index=0, key="p05b_met",
+                             help="시간대별로 기준일과 전년 동요일을 나란히 비교해요.")
+        _ycol, _yunit = Y_MET[_ymet]
+
+        def _byhour(d):
+            if not len(d) or "hour" not in d:
+                return pd.DataFrame()
+            g = d.dropna(subset=["hour"]).groupby("hour").agg(
+                건수=("af", "size"), 발송=("send", "sum"), UV=("uv", "sum"),
+                주문=("oc", "sum"), 거래액=("amt", "sum")).reset_index()
+            g["CTR"] = np.where(g["발송"] > 0, g["UV"] / g["발송"] * 100, np.nan)
+            g["주문CR"] = np.where(g["UV"] > 0, g["주문"] / g["UV"] * 100, np.nan)
+            g["RPS"] = np.where(g["발송"] > 0, g["거래액"] / g["발송"], np.nan)
+            return g
+
+        ha, hb = _byhour(cur_rows), _byhour(ly_rows)
+        if not len(ha) and not len(hb):
+            st.info("시간대(hour) 정보가 있는 발송이 없어요.")
+        else:
+            _hrs = sorted({*(ha["hour"] if len(ha) else []), *(hb["hour"] if len(hb) else [])},
+                          key=lambda v: int(float(v)) if str(v).replace(".", "", 1).isdigit() else 10 ** 9)
+            _xl = [fmt_hhmm(h) for h in _hrs]
+
+            def _series(g):
+                if not len(g):
+                    return [np.nan] * len(_hrs)
+                m = dict(zip(g["hour"], g[_ycol]))
+                return [float(m.get(h, np.nan)) for h in _hrs]
+
+            figh = go.Figure()
+            figh.add_trace(go.Bar(x=_xl, y=_series(hb), name=f"전년 {_dlab(ly_d)[5:]}" if ly_d is not None else "전년",
+                                  marker_color=PALETTE["slate"]))
+            figh.add_trace(go.Bar(x=_xl, y=_series(ha), name=f"기준일 {_dlab(ref_d)[5:]}",
+                                  marker_color=PALETTE["blue"]))
+            _lay = base_layout(h=380, ysuffix=("%" if _yunit == "%" else ""),
+                               title=f"시간대별 {_ymet} — 전년 동요일 vs 기준일")
+            _lay["barmode"] = "group"
+            _lay["showlegend"] = True
+            _lay["legend"] = legend_h()
+            figh.update_layout(**_lay)
+            st.plotly_chart(figh, width="stretch")
+
+            # 시간대 표 — 발송 규모까지 같이 봐야 CTR 차이가 의미 있는지 판단됨
+            _rows = []
+            for h in _hrs:
+                ra = ha[ha["hour"] == h] if len(ha) else ha
+                rb = hb[hb["hour"] == h] if len(hb) else hb
+                gv = lambda r, c: (float(r[c].iloc[0]) if len(r) and pd.notna(r[c].iloc[0]) else np.nan)
+                _rows.append({
+                    "시간": fmt_hhmm(h),
+                    "전년 발송": gv(rb, "발송"), "전년 CTR": gv(rb, "CTR"),
+                    "기준일 발송": gv(ra, "발송"), "기준일 CTR": gv(ra, "CTR"),
+                    "CTR 차이(%p)": gv(ra, "CTR") - gv(rb, "CTR"),
+                })
+            _num = st.column_config.NumberColumn
+            st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch",
+                         height=min(38 + 35 * len(_rows), 420),
+                         column_config={
+                             "전년 발송": _num(format="localized"),
+                             "기준일 발송": _num(format="localized"),
+                             "전년 CTR": _num(format="%.2f%%"),
+                             "기준일 CTR": _num(format="%.2f%%"),
+                             "CTR 차이(%p)": _num(format="%+.2f")})
+            st.markdown('<div class="appendix">발송량이 크게 다르면 CTR 차이는 타겟 구성 차이일 수 있어요. '
+                        '발송 규모를 같이 보고 판단하세요.</div>', unsafe_allow_html=True)
+
+        # ── 소재(문구) 비교 — 그날 무엇을 보냈나 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ✍️ 그날 나간 소재")
+        st.caption("행을 클릭하면 아래에 문구 원문이 떠요. CTR 높은 순이에요.")
+        tl, tr = st.tabs([f"전년 {_dlab(ly_d) if ly_d is not None else '–'}",
+                          f"기준일 {_dlab(ref_d)}"])
+        with tl:
+            render_messages(ly_rows, "infl_cr", "p05b_ly", show_hour=True)
+        with tr:
+            render_messages(cur_rows, "infl_cr", "p05b_cur", show_hour=True)
+
+        # ── 소구 속성 비교 — 전년에 잘 먹힌 소구가 뭐였나 ──
+        _tags = [t for t in TAG_BOOLS if t in _yb.columns]
+        if _tags and len(ly_rows):
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 🏷️ 소구 속성별 CTR — 전년 동요일 vs 기준일")
+            _trows = []
+            for t in _tags:
+                for _lab2, _d in (("전년 동요일", ly_rows), ("기준일", cur_rows)):
+                    sub = _d[_d[t]] if t in _d else _d.iloc[0:0]
+                    s, u = float(sub["send"].sum()), float(sub["uv"].sum())
+                    if len(sub) and s > 0:
+                        _trows.append({"소구": t, "구분": _lab2, "건수": len(sub),
+                                       "발송": s, "CTR": u / s * 100})
+            if _trows:
+                _td = pd.DataFrame(_trows)
+                figt = go.Figure()
+                for _lab2, _c in (("전년 동요일", PALETTE["slate"]), ("기준일", PALETTE["blue"])):
+                    _s2 = _td[_td["구분"] == _lab2]
+                    if len(_s2):
+                        figt.add_trace(go.Bar(x=_s2["소구"], y=_s2["CTR"], name=_lab2, marker_color=_c))
+                _lay2 = base_layout(h=360, ysuffix="%", title="소구 속성별 CTR (합산 기준)")
+                _lay2["barmode"] = "group"
+                _lay2["showlegend"] = True
+                _lay2["legend"] = legend_h()
+                figt.update_layout(**_lay2)
+                st.plotly_chart(figt, width="stretch")
+                st.markdown('<div class="appendix">그날 안 쓴 소구는 막대가 없어요. 건수가 적은 소구는 '
+                            '우연히 높/낮게 나올 수 있으니 아래 표의 건수를 함께 보세요.</div>',
+                            unsafe_allow_html=True)
+                st.dataframe(_td.pivot_table(index="소구", columns="구분",
+                                             values=["건수", "발송", "CTR"], aggfunc="first"),
+                             width="stretch", height=min(38 + 35 * len(_tags), 420))
+            else:
+                st.info("두 날짜 모두 소구 속성이 붙은 발송이 없어요.")
         glossary()
 
     # ══════════════════════════════════════════════════════════════
