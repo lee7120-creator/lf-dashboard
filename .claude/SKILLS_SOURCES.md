@@ -22,7 +22,21 @@ All source projects are **MIT licensed**. See each upstream repo for full text.
 | [luongnv89/claude-howto](https://github.com/luongnv89/claude-howto) | 2.1.x | 6 skills + 9 subagents + 8 slash commands | tutorial modules, `06-hooks/`, `07-plugins/` |
 | Notion "claude 프롬프트+스킬 모음" 배치 (아래 표 참고) | — | 40 skills | 중복/대량 번들/dead repo 제외 |
 
-**Totals:** 130 skills · 27 agents · 8 commands
+**Totals:** 107 skills · 27 agents · 8 commands
+
+### 2026-08 정리 — 24개 제거
+
+이 저장소는 Streamlit + Plotly + pandas로 만든 **데이터 대시보드** 모음이다
+(CRM 발송·실적 계열 / SEO 계열). 저장소 작업과도, 팀 업무와도 겹치지 않는 아래
+2개 묶음을 뺐다. 되살리려면 `git log -- .claude/skills/<이름>` 으로 복원하면 된다.
+
+| 묶음 | 제거한 스킬 | 왜 |
+|------|-------------|-----|
+| 디자인·프론트엔드 (19) | `figma-use` `figma-integration` `figma-code-connect` `figma-generate-design` `converting-figma-to-html` `senior-frontend` `shadcn` `css-module-generator` `threejs-skills` `responsive-design` `interaction-design` `design-ops` `design-system-patterns` `product-design` `ui-ux-pro-max` `visual-design-foundations` `image` `html-to-image-automation` `scrape-do-automation` | React·Figma·Three.js 대상. 이 저장소엔 프런트엔드 코드가 없다(전부 Streamlit) |
+| Notion·워크스페이스 (5) | `knowledge-capture` `meeting-intelligence` `research-documentation` `spec-to-implementation` `gog` | Notion·Google Workspace 연동 전제인데 쓰지 않는다 |
+
+**남긴 것**: 개발·품질·문서(26) · SEO(35, `lf_seo_dashboard.py` 계열이 있어서) ·
+마케팅 실행(43, CRM 업무 자체에 쓰임) · 파일 포맷(docx/pdf/pptx) · 자체 스킬(1).
 
 ## Notion 스킬 배치 (40개 추가)
 
