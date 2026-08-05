@@ -54,5 +54,8 @@ jobs:
       - name: 발송성과 전 페이지 렌더 스모크
         run: python tests/smoke_pages.py
 
+      - name: 업로드 후 기간 필터·레이블 검사
+        run: python tests/test_filter_follows_upload.py
+
       - name: 주간보고 전 페이지 렌더 스모크
         run: python tests/smoke_weekly_report.py
