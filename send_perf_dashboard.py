@@ -2313,6 +2313,7 @@ def main():
                          help="문구를 고쳤을 때 눌러요. 실적 파일을 올리면 처음 한 번은 자동으로 가져와요."):
         # 수동 호출은 항상 새로 읽는다 — 시트에서 문구를 고친 뒤 갱신하는 용도라
         # 세션에 남은 옛 lookup을 재사용하면 안 된다.
+        st.session_state.pop("_plan_auto_tried", None)     # 실패 후 재시도 창구
         if _fetch_plan_gs():
             st.sidebar.success(f"기획 가져오기 완료 — {st.session_state.plan_lookup_meta}")
     if st.session_state.get("plan_lookup_gs") is not None:
@@ -2403,9 +2404,12 @@ def main():
                 st.error(f"기획 파일을 읽지 못했어요: {e}"); st.stop()
         if plan_lookup is None:
             plan_lookup = st.session_state.get("plan_lookup_gs")
-        if plan_lookup is None:
+        if plan_lookup is None and not st.session_state.get("_plan_auto_tried"):
             # 실적만 올리는 게 평소 흐름이라(문구는 기획 구글시트에 있음) 버튼을 안 눌러도
             # 여기서 한 번 자동으로 가져온다. 세션에 적재되므로 재실행마다 다시 읽진 않는다.
+            # 실패해도 플래그를 세워 둔다 — 안 그러면 업로더에 파일이 남아 있는 한 페이지를
+            # 옮길 때마다 12개 시트를 다시 읽어서 앱 전체가 느려진다. 재시도는 버튼으로.
+            st.session_state["_plan_auto_tried"] = True
             if _fetch_plan_gs(quiet=True):
                 plan_lookup = st.session_state.get("plan_lookup_gs")
                 st.sidebar.success(f"기획 문구를 자동으로 가져왔어요 — {st.session_state.plan_lookup_meta}")
@@ -2689,11 +2693,35 @@ def main():
         if len(dts):
             dmin, dmax = dts.min().date(), dts.max().date()
             if dmin < dmax:
-                date_sel = st.date_input("발송일 범위", value=(dmin, dmax),
-                                         min_value=dmin, max_value=dmax, key="flt_date")
+                # key가 붙은 위젯은 value= 가 최초 1회만 반영되고 그 뒤론 세션값이 이긴다.
+                # 그래서 파일을 올려 데이터 범위가 넓어져도 기간 필터는 옛 범위를 계속 써서
+                # 새로 올린 날짜가 통째로 잘려 나갔다(F5로 세션을 날려야 보이던 문제).
+                # 손대지 않은 필터는 새 범위로 따라가게 하고, 직접 좁힌 필터는 존중하되
+                # 새 경계 안으로만 맞춘다.
+                _span = (dmin, dmax)
+                _prev_span = st.session_state.get("_flt_date_span")
+                _cur_span = st.session_state.get("flt_date")
+                if _prev_span != _span:
+                    if _cur_span is None or (isinstance(_cur_span, (tuple, list))
+                                             and tuple(_cur_span) == _prev_span):
+                        st.session_state["flt_date"] = _span
+                    elif isinstance(_cur_span, (tuple, list)) and len(_cur_span) == 2:
+                        st.session_state["flt_date"] = tuple(min(max(d, dmin), dmax)
+                                                             for d in _cur_span)
+                    st.session_state["_flt_date_span"] = _span
+                # 세션값이 있으면 value= 를 같이 넘기지 않는다(Streamlit 경고)
+                _dkw = {} if "flt_date" in st.session_state else {"value": _span}
+                date_sel = st.date_input("발송일 범위", min_value=dmin, max_value=dmax,
+                                         key="flt_date", **_dkw)
                 if date_sel is not None and not (isinstance(date_sel, (tuple, list))
                                                  and len(date_sel) == 2):
                     st.caption("종료일까지 골라야 기간 필터가 적용돼요. 지금은 적용되지 않았어요.")
+                elif isinstance(date_sel, (tuple, list)) and len(date_sel) == 2:
+                    # 직접 좁혀 둔 탓에 새로 올린 날짜가 안 보이는 상황을 알려 준다
+                    _out = int(((dts.dt.date > date_sel[1]) | (dts.dt.date < date_sel[0])).sum())
+                    if _out:
+                        st.caption(f"기간 밖 {_out:,}건은 화면에서 빠져 있어요. "
+                                   f"전체를 보려면 {dmin} ~ {dmax}로 넓혀 주세요.")
             else:
                 st.caption(f"단일 일자: {dmin}")
 
@@ -5229,7 +5257,7 @@ def main():
         Y_MET = {"발송량": ("발송", ""), "유입UV": ("UV", ""), "CTR": ("CTR", "%"),
                  "주문CR": ("주문CR", "%"), "주문건수": ("주문", ""),
                  "RPS": ("RPS", "원"), "거래액": ("거래액", "원")}
-        _mc1, _mcb, _mc2 = st.columns([1, 1, 2])
+        _mc1, _mcb, _mc2, _mc3 = st.columns([1, 1, 2, 1])
         _ymet = _mc1.selectbox("비교 지표", list(Y_MET), index=2, key="p05b_met",
                                help="선택한 지표를 시간대별로 겹쳐서 비교해요.")
         _ycol, _yunit = Y_MET[_ymet]
@@ -5276,6 +5304,12 @@ def main():
             _kw = {}          # 세션값이 있으면 default를 같이 넘기지 않는다(Streamlit 경고)
         _cmp_sel = _mc2.multiselect("비교선", _cmp_opts, key="p05b_cmp",
                                     help="기준일 위에 겹쳐 볼 날짜예요. 빼면 선이 사라져요.", **_kw)
+        # 선이 4~5개면 값이 비슷한 구간에서 레이블이 서로 포개져 아무것도 안 읽힌다.
+        # 기본은 기준일만 찍고, 전부 보고 싶으면 켠다(그때도 선마다 위치를 어긋나게 준다).
+        # 어느 쪽이든 통합 툴팁과 아래 표에 모든 값이 그대로 있다.
+        _LBL_MODE = _mc3.selectbox("값 표시", ["기준일만", "전체", "끄기"], key="p05b_lblmode",
+                                   help="선이 많으면 숫자가 겹쳐요. 전체 값은 아래 표와 "
+                                        "마우스 툴팁으로도 볼 수 있어요.")
 
         def _byhour(d):
             """발송 시간(HHMM)을 '시(0~23)'로 묶어 집계 — 날짜가 달라도 축이 맞아야 겹친다."""
@@ -5352,24 +5386,35 @@ def main():
                     return won(v)
                 return f"{v:,.0f}"
 
+            # 선마다 레이블 위치를 어긋나게 준다 — 같은 'top center'로 몰면 값이 비슷한
+            # 구간에서 숫자가 통째로 포개져 읽을 수 없다.
+            _TPOS = ["bottom center", "top right", "bottom left", "top left"]
+            _show_all = (_LBL_MODE == "전체")
+            _show_ref = (_LBL_MODE != "끄기")
+
             figh = go.Figure()
             # 비교선을 먼저 깔고 기준일을 마지막에 → 기준일이 위로 올라와 눈에 띈다
-            for _k in _cmp_sel:
+            for _i, _k in enumerate(_cmp_sel):
                 _d, _c = _CMP[_k]
                 _y = [_pt(_k, h) for h in _hrs]
                 figh.add_trace(go.Scatter(
-                    x=_xl, y=_y, name=f"{_k} {_dlab(_d)[5:]}", mode="lines+markers+text",
+                    x=_xl, y=_y, name=f"{_k} {_dlab(_d)[5:]}",
+                    mode="lines+markers+text" if _show_all else "lines+markers",
                     line=dict(color=_c, width=2, shape="spline", smoothing=0.6),
                     marker=dict(color=_c, size=7),
-                    text=[_lab(v) for v in _y], textposition="top center",
-                    textfont=dict(size=12, color=_c), connectgaps=True))
+                    text=[_lab(v) for v in _y] if _show_all else None,
+                    textposition=_TPOS[_i % len(_TPOS)],
+                    textfont=dict(size=12, color=_c), cliponaxis=False, connectgaps=True))
             _y0 = [_pt("기준일", h) for h in _hrs]
             figh.add_trace(go.Scatter(
-                x=_xl, y=_y0, name=f"기준일 {_dlab(ref_d)[5:]}", mode="lines+markers+text",
+                x=_xl, y=_y0, name=f"기준일 {_dlab(ref_d)[5:]}",
+                mode="lines+markers+text" if _show_ref else "lines+markers",
                 line=dict(color=PALETTE["red"], width=3, shape="spline", smoothing=0.6),
                 marker=dict(color=PALETTE["red"], size=9),
-                text=[_lab(v) for v in _y0], textposition="top center",
-                textfont=dict(size=13, color=PALETTE["red"]), connectgaps=True))
+                text=[_lab(v) for v in _y0] if _show_ref else None,
+                textposition="top center",
+                textfont=dict(size=13, color=PALETTE["red"]), cliponaxis=False,
+                connectgaps=True))
             _bt = "합산" if not _AVG else "캠페인 평균"
             _lay = base_layout(h=420, ysuffix=("%" if _yunit == "%" else ""),
                                title=f"시간대별 {_ymet}({_bt}) — 기준일 vs 비교일", hover="x")

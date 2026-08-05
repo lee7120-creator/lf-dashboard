@@ -23,14 +23,16 @@
 아니고, 해당 페이지를 열어야만 재현되는 종류라 코드 리뷰로는 안 잡힌다.
 
 ```bash
-python tests/check_shadowing.py      # 몇 초 — 전역 헬퍼 섀도잉 정적 검사
-python tests/test_plan_merge.py      # 몇 초 — 실적↔기획 문구 조인 (날짜·AF 키)
-python tests/smoke_pages.py          # 몇 분 — 발송성과 전 페이지·하위탭 렌더
-python tests/smoke_weekly_report.py  # 몇 분 — 주간보고 전 페이지·라디오 렌더
+python tests/check_shadowing.py           # 몇 초 — 전역 헬퍼 섀도잉 정적 검사
+python tests/test_plan_merge.py           # 몇 초 — 실적↔기획 문구 조인 (날짜·AF 키)
+python tests/smoke_pages.py               # 몇 분 — 발송성과 전 페이지·하위탭 렌더
+python tests/test_filter_follows_upload.py # 몇 분 — 업로드 후 기간 필터·차트 레이블
+python tests/smoke_weekly_report.py       # 몇 분 — 주간보고 전 페이지·라디오 렌더
 ```
 
-`.github/workflows/dashboard-ci.yml`이 PR·푸시에서 **문법 → 섀도잉 → 문구조인 → 스모크**
-순으로 자동 실행한다. 두 대시보드나 `tests/`를 건드렸으면 CI가 초록인 걸 보고 머지할 것.
+`.github/workflows/dashboard-ci.yml`이 PR·푸시에서 **문법 → 섀도잉 → 문구조인 → 스모크 →
+필터 → 주간보고** 순으로 자동 실행한다. 두 대시보드나 `tests/`를 건드렸으면 CI가 초록인 걸
+보고 머지할 것.
 
 > 문구 조인이 깨지면 **화면은 멀쩡히 뜨고 문구 칸만 빈다** — 스모크로는 절대 안 잡히니
 > `parse_perf_bytes` · `_parse_plan_sheet` · `merge_perf_plan` · `parse_plan_gsheet`를
@@ -488,6 +490,11 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   `int(hour)`를 그대로 문자열에 붙이면 1050 → "1050시" 버그가 된다.
 - `use_container_width` 금지(Streamlit 제거 예정) — **`width="stretch"`** 사용.
 - `st.components.v1.html` 금지(2026-06-01 제거 예정, 이미 지남) — **`st.iframe(html, height=)`** 사용.
+- **선이 3개 넘는 라인차트에 모든 시리즈 데이터 레이블을 켜지 말 것.** 값이 비슷한 구간에서
+  숫자가 통째로 포개져 아무것도 안 읽힌다. 기본은 **주 시리즈만** 찍고, 전체 표시는 옵션으로
+  빼되 그때도 시리즈마다 `textposition`을 어긋나게 준다
+  (`top center` / `bottom center` / `top right` / `bottom left` 순환 + `cliponaxis=False`).
+  나머지 값은 통합 툴팁(`hover="x"`)과 아래 표가 이미 담당한다.
 
 ### 페이지 작성 규칙
 - 모든 페이지 하단에 **`glossary()`** 호출 (용어 주석 접이식). 새 용어를 쓰면 glossary()에 항목 추가.
@@ -495,6 +502,11 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   시간대가 중요한 화면이면 `show_hour=True`로 발송시간 칼럼을 켠다(기본은 꺼짐).
 - 행클릭·셀렉트박스를 직접 만들 땐 **`guard_select(key, opts)`** 를 selectbox 직전에 호출
   (지표/필터 변경으로 세션 선택값이 옵션 밖이 되는 문제의 공용 가드).
+- **`key`가 붙은 위젯은 `value=`/`default=`가 최초 1회만 반영된다** — 그 뒤론 세션값이 이긴다.
+  그래서 데이터 범위에서 파생되는 위젯(기간 필터 등)은 업로드로 범위가 넓어져도 **옛 범위를
+  계속 써서 새 날짜가 화면에서 통째로 사라진다**(F5로 세션을 날려야 보임). 범위가 바뀌면
+  직전 전체 범위와 세션값을 비교해서, **손 안 댄 필터는 새 범위로 갱신하고 직접 좁힌 필터는
+  새 경계 안으로 clamp**할 것. 세션값이 이미 있으면 `value=`를 같이 넘기지 말 것(경고).
 - 캠페인/슬롯 **순위·추천은 raw 평균 정렬 금지** — `rank_adjusted(df, col, ascending)` 사용
   (비율=Jeffreys 경계, 금액=수축 평균 — 소표본 요행의 순위 점령 방지. 표시 값은 원값 유지).
 - 수평 범례는 `legend_h()`, 막대 텍스트 라벨은 `bar_label(v, col, is_pct)` 재사용.
