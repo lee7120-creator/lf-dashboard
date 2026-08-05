@@ -175,6 +175,32 @@ def t_admin_brand_code_resolved():
 def t_brand_code_not_matched_inside_copy():
     """코드는 짧고 의미 없는 문자열이라 문구 안에서 부분 일치하면 안 된다."""
     assert S.brand_from_copy(title="HZ 같은 글자가 섞인 문구 DM TG")[2] != S.KIND_BRAND
+    assert S.brand_from_copy(title="DD TN AR HG 가 섞인 문구")[2] != S.KIND_BRAND
+
+
+@case
+def t_code_alias_resolved():
+    """시트 코드표에 없지만 실제로 쓰는 약어도 푼다 (확인받고 넣은 것만)."""
+    for code, want in (("DD", "닥스"), ("HG", "헤지스"),
+                       ("AR", "알레그리"), ("TN", "티엔지티")):
+        b, o, k = S.brand_from_copy(brand_raw=code)
+        assert b == want and k == S.KIND_BRAND, f"{code} → {b}"
+        assert o in ("e-영업1", "e-영업2"), f"{code} 영업 {o}"
+
+
+@case
+def t_real_upload_fully_classified():
+    """실제 업로드 형태(문구 없이 브랜드칸만)에서 전부 브랜드/전관행사로 갈린다."""
+    rows = [("통합", "위켄드세일 추가 적립"), ("럭키먼데이", "럭키먼데이"),
+            ("골프", "DD"), ("골프", "HG"), ("남성", "AR"), ("남성", "TN"),
+            ("남성", "JN"), ("남성", "HZ"), ("남성", "DM"),
+            ("여성", "L:ABLE - DAKS LADIES"), ("남은모수", "KEEN 캘린더"),
+            ("라이브", "닥스키즈(재)"), ("장바구니", "럭키먼데이 장바구니"),
+            ("통합", "L+DAY 오픈 알림"), ("라이브", "헤지스남성 아울렛")]
+    df = pd.DataFrame([{"title": "", "body": "", "cat": c, "brand": b} for c, b in rows])
+    out = S.add_tags(df)
+    kinds = set(out["brand_kind"])
+    assert kinds <= {S.KIND_BRAND, S.KIND_PROMO}, out[["brand", "brand2", "brand_kind"]].to_string()
 
 
 @case
@@ -183,7 +209,7 @@ def t_kind_buckets():
     assert S.brand_from_copy(brand_raw="헤지스남성 아울렛")[2] == S.KIND_BRAND
     assert S.brand_from_copy(brand_raw="L+DAY 아울렛")[2] == S.KIND_PROMO
     assert S.brand_from_copy(brand_raw="주문서이탈")[2] == S.KIND_TRIGGER
-    assert S.brand_from_copy(brand_raw="DD", cat="골프")[2] == S.KIND_CATEGORY
+    assert S.brand_from_copy(brand_raw="ZZ9", cat="골프")[2] == S.KIND_CATEGORY
     assert S.brand_from_copy(brand_raw="???")[2] == S.KIND_ETC
     # 시트에 등록된 이름이면 제휴처라도 브랜드로 잡는다(한국금거래소=e-영업3)
     assert S.brand_from_copy(brand_raw="한국금거래소")[2] == S.KIND_BRAND
@@ -192,7 +218,7 @@ def t_kind_buckets():
 @case
 def t_category_fallback_labels():
     """브랜드를 못 집어도 카테고리를 알면 그 단위로 묶어 준다."""
-    b, _o, k = S.brand_from_copy(brand_raw="AR", cat="남성")
+    b, _o, k = S.brand_from_copy(brand_raw="ZZ9", cat="남성")
     assert b == "남성 외" and k == S.KIND_CATEGORY, (b, k)
     # '통합'은 카테고리 정보가 사실상 없는 값이라 묶지 않는다
     assert S.brand_from_copy(brand_raw="???", cat="통합")[0] == S.BRAND_UNKNOWN
@@ -209,7 +235,7 @@ def t_partner_keeps_its_name():
 def t_no_unclassified_left_when_cat_known():
     """카테고리가 있으면 미분류로 남기지 않는다 (전부 어딘가에 묶인다)."""
     df = pd.DataFrame([
-        {"title": "", "body": "", "brand": "DD", "cat": "골프"},
+        {"title": "", "body": "", "brand": "ZZ9", "cat": "골프"},
         {"title": "", "body": "", "brand": "HZ", "cat": "남성"},
         {"title": "", "body": "", "brand": "L+DAY 아울렛", "cat": "통합"},
     ])
@@ -234,6 +260,7 @@ def t_brandset_ver_changes_with_dict():
         "brand_map": dict(nmap=len(S.BRAND_MAP) + 1),
         "brand_exact": dict(nexact=len(S.BRAND_EXACT) + 1),
         "brand_code": dict(ncode=len(S.BRAND_CODE) + 1),
+        "code_alias": dict(code_alias={**S.BRAND_CODE_ALIAS, "ZZ": "닥스"}),
     }
     for name, kw in variants.items():
         assert S.brandset_ver(**kw) != S.BRANDSET_VER, f"{name}을 바꿔도 버전이 그대로예요"

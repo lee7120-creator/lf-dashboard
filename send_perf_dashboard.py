@@ -1497,6 +1497,22 @@ def _load_brand_codes(path=BRAND_CODE_CSV):
 
 BRAND_CODE = _load_brand_codes()
 
+# 시트의 ADMIN브랜드코드에는 없지만 담당자가 실제로 쓰는 약어. 확인받고 넣은 것만 둔다.
+#   DD 골프 발송 · DG(닥스 골프)와 같은 자리   HG 골프 발송 · HU(헤지스 골프)와 같은 자리
+#   AR 남성 발송 · 0A/WX(알레그리)             TN 남성 발송 · TG(티엔지티)
+# 여기 값은 부분 일치가 아니라 **브랜드칸 정확일치**로만 쓴다 — 두 글자라 문구 안에서
+# 찾으면 아무 데나 걸린다.
+BRAND_CODE_ALIAS = {
+    "DD": "닥스",
+    "HG": "헤지스",
+    "AR": "알레그리",
+    "TN": "티엔지티",
+}
+for _c, _b in BRAND_CODE_ALIAS.items():
+    _cn = _br_norm(_b)
+    _corg = (BRAND_MAP.get(_cn) or BRAND_EXACT.get(_cn) or (None, ORG_UNKNOWN))[1]
+    BRAND_CODE[_br_norm(_c)] = (_b, _corg)
+
 # 별칭도 같은 사전에 얹는다 — 정본 브랜드명으로 되돌려 준다.
 for _al, _canon in BRAND_ALIAS.items():
     _n, _cn = _br_norm(_al), _br_norm(_canon)
@@ -1585,12 +1601,13 @@ def brand_from_copy(title="", body="", brand_raw="", cat=""):
 # 옛 분류가 그대로 남는다(KW의 TAGSET_VER와 같은 이유). 브랜드 목록 자체가 커서
 # 내용 해시 대신 '건수 + 별칭/행사 키워드'로 버전을 만든다.
 def brandset_ver(alias=None, promo=None, trigger=None, partner=None, stop=None,
-                 nmap=None, nexact=None, ncode=None):
+                 nmap=None, nexact=None, ncode=None, code_alias=None):
     """브랜드 사전 상태 → 캐시 무효화 키. 기본값은 현재 로드된 사전."""
     return hashlib.md5(json.dumps([
         len(BRAND_MAP) if nmap is None else nmap,
         len(BRAND_EXACT) if nexact is None else nexact,
         len(BRAND_CODE) if ncode is None else ncode,
+        BRAND_CODE_ALIAS if code_alias is None else code_alias,
         BRAND_ALIAS if alias is None else alias,
         PROMO_KW if promo is None else promo,
         TRIGGER_KW if trigger is None else trigger,
