@@ -123,6 +123,56 @@ def t_no_false_positive_on_plain_copy():
 
 
 @case
+def t_no_match_inside_longer_korean_word():
+    """한글 단어 한가운데 우연히 박힌 브랜드명을 잡으면 안 된다.
+
+    실백업 1.2만 건에서 실제로 났던 오탐이다 — 업'데이트'·설'프라이'즈처럼
+    앞에 한글이 붙어 있으면 브랜드가 아니다.
+    """
+    for t in ("겨울상품 5O% 긴급 업데이트☑️",
+              "[설-프라이즈] 새뱃돈 쿠폰RUN 시작! 🧧",
+              "평생 입는 '스테디템' 모음✅"):
+        assert S.brand_from_copy(title=t)[2] != S.KIND_BRAND, f"{t!r} → {BC(title=t)}"
+
+
+@case
+def t_common_words_in_dict_are_stopped():
+    """사전에 있지만 문구에선 브랜드가 아닌 일반어 — 실백업에서 잡힌 것들."""
+    for t in ("K2 FW 클리어런스 특가⛰",
+              "프리미엄 아울렛 컨템포러리 여성 핫딜!",
+              "❤️화이트데이 선물 추천❤️",
+              "올 크리스마스 준비도 함께",
+              "룩이 달라지는 ⭐포인트 잡화",
+              "⭐공간이 말하는 라이프 취향",
+              "발 편한 컴포트 슈즈 스페셜 위크❤️"):
+        assert S.brand_from_copy(title=t)[2] != S.KIND_BRAND, f"{t!r} → {BC(title=t)}"
+
+
+@case
+def t_brand_glued_to_noun_still_matches():
+    """브랜드에 명사가 바로 붙어도 잡아야 한다 — 꼬리말까지 막으면 대량 유실된다."""
+    for t, want in (("가장많이 선물한 헤지스아이템", "헤지스"),
+                    ("⏳헤지스품절임박 한정수량⏳", "헤지스"),
+                    ("닥스키즈(재)", "닥스"),
+                    ("신상 헤지스 특가", "헤지스")):
+        assert BC(title=t) == want, f"{t!r} → {BC(title=t)}"
+
+
+@case
+def t_longer_brand_beats_stopword_neighbour():
+    """일반어를 STOP으로 뺀 덕에 같은 문구의 진짜 브랜드가 살아난다."""
+    assert BC(title="바버 발렌타인 셀렉션 ❤️") == "바버"
+    assert BC(title="26SS 바버 신상 시그니처 자켓 오픈") == "바버"
+
+
+@case
+def t_same_brand_not_split_by_spacing():
+    """표기만 다른 같은 브랜드가 두 줄로 갈리면 안 된다."""
+    assert BC(title="질스튜어트 뉴욕 신상") == BC(title="질 스튜어트 뉴욕 신상")
+    assert BC(title="일꼬르소 특가") == BC(title="일 꼬르소 특가")
+
+
+@case
 def t_short_brand_needs_exact_brand_column():
     """2글자 이하 입점 브랜드는 브랜드칸 정확일치일 때만 인정한다."""
     short = [n for n, (b, o) in S.BRAND_EXACT.items()
@@ -164,10 +214,11 @@ def t_add_tags_adds_brand2_and_org():
 def t_admin_brand_code_resolved():
     """브랜드칸에 ADMIN브랜드코드만 적혀 있어도 브랜드로 푼다 (HZ·DM·JN)."""
     assert len(S.BRAND_CODE) > 1000, f"코드 표가 {len(S.BRAND_CODE)}개뿐이에요"
-    for code, want in (("HZ", "헤지스"), ("DM", "닥스"), ("JN", "질스튜어트 뉴욕"),
+    for code, want in (("HZ", "헤지스"), ("DM", "닥스"), ("JN", "질스튜어트뉴욕"),
                        ("TG", "티엔지티")):
         b, o, k = S.brand_from_copy(brand_raw=code)
-        assert b == want and k == S.KIND_BRAND, f"{code} → {b}"
+        # 대표 표기(띄어쓰기)는 사전이 정하므로 정규화해서 비교한다
+        assert S._br_norm(b) == S._br_norm(want) and k == S.KIND_BRAND, f"{code} → {b}"
         assert o in ("e-영업1", "e-영업2"), f"{code} 영업 {o}"
 
 

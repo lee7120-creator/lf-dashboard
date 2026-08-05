@@ -1386,6 +1386,8 @@ BRAND_ALIAS = {
     "TOMS": "탐스",
     "BIRKENSTOCK": "버켄스탁",
     "MINNETONKA": "미네통카",
+    "BARBOUR": "바버",
+    "GEOX": "제옥스",
 }
 
 # 전사 프로모션(전관행사) — 특정 브랜드 행사가 아니라 몰 전체 행사다.
@@ -1418,6 +1420,41 @@ def _br_norm(s):
     return _BR_NORM_RE.sub("", str(s)).upper()
 
 
+def _br_norm_map(s):
+    """정규화 문자열 + '정규화 i번째 글자 → 원문 인덱스' 표.
+
+    공백을 지운 뒤 찾으면 위치가 어긋나서 원문의 단어 경계를 볼 수 없다.
+    ('신상 헤지스'는 붙여 놓으면 '신상헤지스'라 한 단어처럼 보인다)
+    """
+    if s is None or (isinstance(s, float) and np.isnan(s)):
+        return "", []
+    raw = str(s)
+    buf, idx = [], []
+    for i, ch in enumerate(raw):
+        if _BR_NORM_RE.match(ch):
+            continue
+        buf.append(ch.upper())
+        idx.append(i)
+    return "".join(buf), idx
+
+
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+
+def _brand_boundary_ok(raw, ns, idx, mstart, mend):
+    """원문에서 이 매치가 단어 '시작'에 걸리는지.
+
+    한글 단어 한가운데 우연히 박힌 것을 걸러낸다 —
+    '업데이트'⊃데이트, '설프라이즈'⊃프라이, '스테디템'⊃테디.
+
+    뒤에 뭐가 붙는지는 보지 않는다. 실데이터에선 '헤지스아이템'·'헤지스품절임박'처럼
+    브랜드에 아무 명사나 붙여 쓰는 문구가 많아, 꼬리말을 화이트리스트로 막으면
+    멀쩡한 매칭을 대량으로 잃는다. 뒤쪽 오탐('클리어런스'⊃클리어)은 BRAND_STOP이 맡는다.
+    """
+    o_start = idx[mstart]
+    return not (o_start > 0 and _HANGUL_RE.match(raw[o_start - 1]))
+
+
 PROMO_RE = re.compile("|".join(re.escape(_br_norm(w)) for w in PROMO_KW))
 TRIGGER_RE = re.compile("|".join(re.escape(_br_norm(w)) for w in TRIGGER_KW))
 
@@ -1438,7 +1475,16 @@ _BRAND_MIN_LEN = 3
 _OWN_ORGS = ("e-영업1", "e-영업2")
 
 # 브랜드명이지만 일반 단어와 겹쳐서 문구 부분 일치로 쓰면 안 되는 것들(정확일치로 강등)
-BRAND_STOP = {"객", "갭", "고요", "저스트", "점프", "티비", "타비", "피즈", "쥴스", "킨"}
+BRAND_STOP = {
+    "객", "갭", "고요", "저스트", "점프", "티비", "타비", "피즈", "쥴스", "킨",
+    # 실데이터 1.2만 건 검증에서 잡힌 일반어 — 사전엔 있지만 문구에선 브랜드가 아니다.
+    # 예: '클리어런스'⊃클리어 · '화이트데이'⊃화이트 · '크리스마스'⊃크리스마 ·
+    #     '바버 발렌타인 셀렉션'에서 발렌타인이 바버를 이기던 문제
+    "쇼핑백", "스테디", "클리어", "데이트", "컨템포", "프라이", "베이직", "데일리",
+    "심플", "모던", "클래식", "프리미엄", "스페셜", "라운지", "홈", "위크", "데이",
+    "포인트", "시그니처", "테스트", "크리스마", "화이트", "라이프", "리스트",
+    "발렌타인", "컴포트", "홈케어", "아이코닉", "캐리어",
+}
 
 
 def _load_brand_map(path=BRAND_MAP_CSV):
@@ -1497,6 +1543,18 @@ def _load_brand_codes(path=BRAND_CODE_CSV):
 
 BRAND_CODE = _load_brand_codes()
 
+# 같은 브랜드가 표기만 다르게 사전에 두 번 들어 있으면('질스튜어트 뉴욕' / '질 스튜어트 뉴욕',
+# '일꼬르소' / '일 꼬르소') 화면에서 두 줄로 갈라진다. 정규화 키가 같으면 한 이름으로 모은다.
+_BRAND_CANON = {}
+for _m in (BRAND_MAP, BRAND_EXACT):
+    for _n, (_b, _o) in _m.items():
+        _BRAND_CANON.setdefault(_n, _b)
+for _m in (BRAND_MAP, BRAND_EXACT, BRAND_CODE):
+    for _n, (_b, _o) in list(_m.items()):
+        _canon = _BRAND_CANON.setdefault(_br_norm(_b), _b)
+        if _canon != _b:
+            _m[_n] = (_canon, _o)
+
 # 시트의 ADMIN브랜드코드에는 없지만 담당자가 실제로 쓰는 약어. 확인받고 넣은 것만 둔다.
 #   DD 골프 발송 · DG(닥스 골프)와 같은 자리   HG 골프 발송 · HU(헤지스 골프)와 같은 자리
 #   AR 남성 발송 · 0A/WX(알레그리)             TN 남성 발송 · TG(티엔지티)
@@ -1527,13 +1585,22 @@ BRAND_FIND_RE = (re.compile("|".join(re.escape(n) for n in _BRAND_ORDER))
                  if _BRAND_ORDER else None)
 
 
-def brand_lookup(text):
-    """정규화 문자열에서 가장 긴 브랜드 1건 → (브랜드, 영업). 없으면 None."""
-    if not text or BRAND_FIND_RE is None:
+def brand_lookup(raw):
+    """원문에서 가장 긴 브랜드 1건 → (브랜드, 영업). 없으면 None.
+
+    정규화한 문자열에서 찾되, 채택 전에 원문의 단어 경계를 확인한다.
+    """
+    if raw is None or BRAND_FIND_RE is None:
         return None
+    ns, idx = _br_norm_map(raw)
+    if not ns:
+        return None
+    src = str(raw)
     best = None
-    for m in BRAND_FIND_RE.finditer(text):
-        if best is None or len(m.group()) > len(best):
+    for m in BRAND_FIND_RE.finditer(ns):
+        if best is not None and len(m.group()) <= len(best):
+            continue
+        if _brand_boundary_ok(src, ns, idx, m.start(), m.end()):
             best = m.group()
     return BRAND_MAP.get(best) if best else None
 
@@ -1577,7 +1644,7 @@ def brand_from_copy(title="", body="", brand_raw="", cat=""):
     if nb and nb in BRAND_CODE:                           # ADMIN브랜드코드도 정확일치만
         b, o = BRAND_CODE[nb]
         return (b, o, KIND_BRAND)
-    for src in (nb, nt, nbody):
+    for src in (brand_raw, title, body):                  # 경계 검사를 위해 원문을 넘긴다
         hit = brand_lookup(src)
         if hit:
             return (hit[0], hit[1], KIND_BRAND)
