@@ -5235,8 +5235,17 @@ def main():
         }
         _cmp_opts = [k for k, (d, _) in _CMP.items() if d is not None]
         _cmp_def = [k for k in ("전주 동요일", "전월 동요일", "전년 동요일") if k in _cmp_opts]
-        _cmp_sel = _mc2.multiselect("비교선", _cmp_opts, default=_cmp_def, key="p05b_cmp",
-                                    help="기준일 위에 겹쳐 볼 날짜예요. 빼면 선이 사라져요.")
+        # 기준일을 바꾸면 옵션이 바뀐다(그 날의 전년/전월 데이터 유무에 따라). 세션에 남은
+        # 선택값 중 무효한 것만 걸러내지 않으면 Streamlit이 선택을 통째로 비워버려,
+        # 비교선이 하나도 없는 빈 차트가 된다. guard_select는 스칼라용이라 여기선 못 쓴다.
+        _prev_sel = st.session_state.get("p05b_cmp")
+        _kw = {"default": _cmp_def}
+        if isinstance(_prev_sel, list):
+            _keep = [v for v in _prev_sel if v in _cmp_opts]
+            st.session_state["p05b_cmp"] = _keep or [d for d in _cmp_def if d in _cmp_opts]
+            _kw = {}          # 세션값이 있으면 default를 같이 넘기지 않는다(Streamlit 경고)
+        _cmp_sel = _mc2.multiselect("비교선", _cmp_opts, key="p05b_cmp",
+                                    help="기준일 위에 겹쳐 볼 날짜예요. 빼면 선이 사라져요.", **_kw)
 
         def _byhour(d):
             """발송 시간(HHMM)을 '시(0~23)'로 묶어 집계 — 날짜가 달라도 축이 맞아야 겹친다."""
