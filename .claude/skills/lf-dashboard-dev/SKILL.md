@@ -59,11 +59,15 @@ print(at.exception[0].value if at.exception else "OK")
 
 ### A5. 검사
 ```bash
-python tests/check_shadowing.py && python tests/smoke_pages.py
+python tests/check_shadowing.py && python tests/test_plan_merge.py && python tests/smoke_pages.py
 ```
 스모크는 페이지 목록을 앱에서 직접 읽고 하위탭까지 순회하므로, 새 탭은 **자동으로**
 커버된다. 따로 테스트를 추가할 필요 없다.
-**Done when:** 섀도잉 0건, 스모크 전부 OK.
+**Done when:** 섀도잉 0건, 문구 조인 8건, 스모크 전부 OK.
+
+> 데이터 파싱·조인(`parse_perf_bytes` · `_parse_plan_sheet` · `merge_perf_plan` ·
+> `parse_plan_gsheet`)을 건드렸으면 `test_plan_merge.py`가 본검사다. 조인이 깨져도
+> **화면은 멀쩡히 뜨고 문구 칸만 비기 때문에** 스모크로는 안 잡힌다.
 
 ---
 
@@ -99,7 +103,8 @@ for n in ast.walk(t):
 ### B3. 검증
 ```bash
 python -m compileall -q send_perf_dashboard.py weekly_report.py
-python tests/check_shadowing.py && python tests/smoke_pages.py && python tests/smoke_weekly_report.py
+python tests/check_shadowing.py && python tests/test_plan_merge.py \
+  && python tests/smoke_pages.py && python tests/smoke_weekly_report.py
 ```
 바꾼 문구가 **로직에 쓰이지 않는지** 교차 검증한다(비교문·딕셔너리 키·인덱싱).
 페이지 분기 문자열·컬럼명·세션 키를 건드리면 앱이 조용히 망가진다.
@@ -132,7 +137,8 @@ python tests/check_shadowing.py && python tests/smoke_pages.py && python tests/s
 ## 머지 절차
 
 ```bash
-python tests/check_shadowing.py && python tests/smoke_pages.py && python tests/smoke_weekly_report.py
+python tests/check_shadowing.py && python tests/test_plan_merge.py \
+  && python tests/smoke_pages.py && python tests/smoke_weekly_report.py
 git add -A && git commit -m "..."
 git fetch origin main && git merge-base --is-ancestor origin/main HEAD && echo "main 포함 OK"
 git push -u origin "$(git branch --show-current)"
@@ -161,3 +167,5 @@ git push -u origin "$(git branch --show-current)"
 | `st.iframe` height 에러 | `height=0`을 거부함 | 스크립트 주입용이면 `height=1` |
 | 다운로드 파일명이 하루 전 | 서버가 UTC | `today_kst()` 사용 |
 | 부분 주에서 △70% 가짜 급락 | 기준주 2일치를 전주 7일치와 비교 | 같은 화면의 **모든** 비교에 `_elapsed` 적용 |
+| 화면은 뜨는데 문구 칸만 전부 빔 | `(date, af)` 조인이 깨짐 — 스모크는 못 잡음 | `python tests/test_plan_merge.py` |
+| 옛 실적 재업로드 시 문구 미매칭 | `parse_plan_gsheet`가 최근 N주(기본 12)만 읽음 | 사이드바 '가져올 최근 주차 수'를 늘림 |

@@ -2279,22 +2279,42 @@ def main():
     st.sidebar.markdown("---")
     recent_n = st.sidebar.number_input("가져올 최근 주차 수 (0이면 전부)", value=12, min_value=0, step=1,
                                        help="시트가 많으면 전부(0)는 느리고 API 한도에 걸릴 수 있어요. 보통 12주면 충분해요.")
-    if st.sidebar.button("📥 기획 문구 가져오기", width="stretch"):
+    def _fetch_plan_gs(quiet=False):
+        """기획 구글시트 → 문구 lookup을 세션에 적재. 성공하면 True.
+
+        버튼과 '업로드 시 자동 가져오기' 두 곳에서 같이 쓴다. quiet=True면 자동 호출이라
+        실패해도 에러를 띄우지 않고 사유만 세션에 남긴다(업로드 흐름을 막지 않기 위해).
+        """
         if not _has_sa():
-            st.sidebar.error("서비스계정이 없어요. Secrets에 gcp_service_account를 추가해 주세요.")
-        else:
-            try:
-                sh_plan = gs_open(st.secrets["gcp_service_account"], _PLAN_SHEET_URL)
-                prog = st.sidebar.progress(0.0, text="기획 시트를 읽고 있어요…")
-                def _cb(i, total, title):
-                    prog.progress(i / max(total, 1), text=f"가져오는 중 {i}/{total} — {title[:16]}")
-                lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_cb)
-                prog.empty()
-                st.session_state.plan_lookup_gs = lk
-                st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
-                st.sidebar.success(f"기획 가져오기 완료 — {st.session_state.plan_lookup_meta}")
-            except Exception as e:
+            st.session_state["plan_lookup_err"] = "서비스계정(gcp_service_account)이 없어요."
+            if not quiet:
+                st.sidebar.error("서비스계정이 없어요. Secrets에 gcp_service_account를 추가해 주세요.")
+            return False
+        _plan_prog = st.sidebar.progress(0.0, text="기획 시트에서 문구를 가져오고 있어요…")
+        try:
+            def _plan_cb(i, total, title):
+                _plan_prog.progress(i / max(total, 1), text=f"가져오는 중 {i}/{total} — {title[:16]}")
+
+            sh_plan = gs_open(st.secrets["gcp_service_account"], _PLAN_SHEET_URL)
+            lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_plan_cb)
+            st.session_state.plan_lookup_gs = lk
+            st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
+            st.session_state.pop("plan_lookup_err", None)
+            return True
+        except Exception as e:                            # noqa: BLE001
+            st.session_state["plan_lookup_err"] = str(e)[:90]
+            if not quiet:
                 st.sidebar.error(f"가져오기에 실패했어요: {str(e)[:90]}")
+            return False
+        finally:
+            _plan_prog.empty()                            # 실패해도 진행바를 남기지 않는다
+
+    if st.sidebar.button("📥 기획 문구 다시 가져오기", width="stretch",
+                         help="문구를 고쳤을 때 눌러요. 실적 파일을 올리면 처음 한 번은 자동으로 가져와요."):
+        # 수동 호출은 항상 새로 읽는다 — 시트에서 문구를 고친 뒤 갱신하는 용도라
+        # 세션에 남은 옛 lookup을 재사용하면 안 된다.
+        if _fetch_plan_gs():
+            st.sidebar.success(f"기획 가져오기 완료 — {st.session_state.plan_lookup_meta}")
     if st.session_state.get("plan_lookup_gs") is not None:
         st.sidebar.caption(f"✓ 기획 불러옴: {st.session_state.get('plan_lookup_meta','')}")
 
@@ -2384,7 +2404,17 @@ def main():
         if plan_lookup is None:
             plan_lookup = st.session_state.get("plan_lookup_gs")
         if plan_lookup is None:
-            st.sidebar.warning("기획 문구가 없어요. 「📥 기획 문구 가져오기」를 눌러 주세요.\n(없으면 기존 데이터만 보여요)")
+            # 실적만 올리는 게 평소 흐름이라(문구는 기획 구글시트에 있음) 버튼을 안 눌러도
+            # 여기서 한 번 자동으로 가져온다. 세션에 적재되므로 재실행마다 다시 읽진 않는다.
+            if _fetch_plan_gs(quiet=True):
+                plan_lookup = st.session_state.get("plan_lookup_gs")
+                st.sidebar.success(f"기획 문구를 자동으로 가져왔어요 — {st.session_state.plan_lookup_meta}")
+        if plan_lookup is None:
+            _plan_why = st.session_state.get("plan_lookup_err", "")
+            st.sidebar.warning("기획 문구를 가져오지 못했어요"
+                               + (f" ({_plan_why})" if _plan_why else "")
+                               + ". 「📥 기획 문구 다시 가져오기」를 눌러 보세요.\n"
+                                 "(문구를 못 가져오면 이번 업로드는 합치지 않고 기존 데이터만 보여요)")
         else:
             # 같은 파일·기획 조합이면 재파싱/재머지를 건너뛴다.
             # (Streamlit은 페이지 이동마다 스크립트를 재실행 → 저장 후에도 매번 합치던 문제 방지)
