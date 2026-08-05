@@ -5622,8 +5622,11 @@ def main():
         st.markdown("##### 주차별 실적")
         show = wk.copy()
         show["주"] = show["주"].dt.strftime("%Y-%m-%d")
+        # 합계 컬럼은 원본이 float면(실데이터의 uv/oc는 NaN 때문에 float) 포맷이 없을 때
+        # 627533.000000 처럼 소수점이 그대로 노출된다 — 숫자 컬럼은 빠짐없이 지정할 것.
         st.dataframe(show.style.format({
             "발송": "{:,.0f}", "거래액": "{:,.0f}", "캠페인수": "{:,.0f}",
+            "유입UV": "{:,.0f}", "주문건수": "{:,.0f}",
             "유입전환율": "{:.2%}", "주문전환율": "{:.2%}", "RPS": "{:,.0f}"}),
             hide_index=True, width="stretch", height=360)
         st.markdown("<div class=\"appendix\">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산할 수 없어요 "
