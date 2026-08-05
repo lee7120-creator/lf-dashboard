@@ -48,6 +48,9 @@ jobs:
       - name: 전역 헬퍼 섀도잉 검사
         run: python tests/check_shadowing.py
 
+      - name: 실적↔기획 문구 조인 검사
+        run: python tests/test_plan_merge.py
+
       - name: 발송성과 전 페이지 렌더 스모크
         run: python tests/smoke_pages.py
 
