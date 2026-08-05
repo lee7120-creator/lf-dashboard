@@ -161,6 +161,23 @@ def t_add_tags_adds_brand2_and_org():
 
 
 @case
+def t_admin_brand_code_resolved():
+    """브랜드칸에 ADMIN브랜드코드만 적혀 있어도 브랜드로 푼다 (HZ·DM·JN)."""
+    assert len(S.BRAND_CODE) > 1000, f"코드 표가 {len(S.BRAND_CODE)}개뿐이에요"
+    for code, want in (("HZ", "헤지스"), ("DM", "닥스"), ("JN", "질스튜어트 뉴욕"),
+                       ("TG", "티엔지티")):
+        b, o, k = S.brand_from_copy(brand_raw=code)
+        assert b == want and k == S.KIND_BRAND, f"{code} → {b}"
+        assert o in ("e-영업1", "e-영업2"), f"{code} 영업 {o}"
+
+
+@case
+def t_brand_code_not_matched_inside_copy():
+    """코드는 짧고 의미 없는 문자열이라 문구 안에서 부분 일치하면 안 된다."""
+    assert S.brand_from_copy(title="HZ 같은 글자가 섞인 문구 DM TG")[2] != S.KIND_BRAND
+
+
+@case
 def t_kind_buckets():
     """구분(brand_kind)이 성격별로 갈린다."""
     assert S.brand_from_copy(brand_raw="헤지스남성 아울렛")[2] == S.KIND_BRAND
@@ -203,21 +220,23 @@ def t_no_unclassified_left_when_cat_known():
 
 @case
 def t_brandset_ver_changes_with_dict():
-    """사전이 바뀌면 캐시 무효화 키도 바뀌어야 한다 (안 그러면 옛 분류가 화면에 남는다)."""
-    import hashlib
-    import json
+    """사전이 바뀌면 캐시 무효화 키도 바뀌어야 한다 (안 그러면 옛 분류가 화면에 남는다).
 
-    def ver(alias, promo, trig, stop, nlong, nexact):
-        return hashlib.md5(json.dumps([nlong, nexact, alias, promo, trig, sorted(stop)],
-                                      ensure_ascii=False,
-                                      sort_keys=True).encode()).hexdigest()[:12]
-
-    cur = ver(S.BRAND_ALIAS, S.PROMO_KW, S.TRIGGER_KW, S.BRAND_STOP,
-              len(S.BRAND_MAP), len(S.BRAND_EXACT))
-    assert cur == S.BRANDSET_VER, "BRANDSET_VER가 사전과 어긋나요"
-    other = ver({**S.BRAND_ALIAS, "ZZTEST": "닥스"}, S.PROMO_KW, S.TRIGGER_KW,
-                S.BRAND_STOP, len(S.BRAND_MAP), len(S.BRAND_EXACT))
-    assert other != S.BRANDSET_VER, "사전을 바꿔도 버전이 그대로예요"
+    사전 요소를 새로 추가할 때 brandset_ver()에 넣는 걸 빠뜨리면 여기서 걸린다.
+    """
+    assert S.brandset_ver() == S.BRANDSET_VER, "BRANDSET_VER가 현재 사전과 어긋나요"
+    variants = {
+        "alias": dict(alias={**S.BRAND_ALIAS, "ZZTEST": "닥스"}),
+        "promo": dict(promo=S.PROMO_KW + ["ZZTEST행사"]),
+        "trigger": dict(trigger=S.TRIGGER_KW + ["ZZTEST트리거"]),
+        "partner": dict(partner=S.PARTNER_KW + ["ZZTEST제휴"]),
+        "stop": dict(stop=set(S.BRAND_STOP) | {"ZZTEST"}),
+        "brand_map": dict(nmap=len(S.BRAND_MAP) + 1),
+        "brand_exact": dict(nexact=len(S.BRAND_EXACT) + 1),
+        "brand_code": dict(ncode=len(S.BRAND_CODE) + 1),
+    }
+    for name, kw in variants.items():
+        assert S.brandset_ver(**kw) != S.BRANDSET_VER, f"{name}을 바꿔도 버전이 그대로예요"
 
 
 def main():

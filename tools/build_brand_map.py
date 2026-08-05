@@ -56,8 +56,9 @@ def main(argv):
     src = pathlib.Path(argv[1])
     out = pathlib.Path(argv[2]) if len(argv) > 2 else OUT_DEFAULT
     df = read_src(src)
-    df = df.iloc[:, :2]
-    df.columns = ["org", "admin"]
+    ncol = 3 if df.shape[1] >= 3 and df.columns[2].strip() else 2
+    df = df.iloc[:, :ncol]
+    df.columns = ["org", "admin"] + (["code"] if ncol == 3 else [])
     df = df.apply(lambda s: s.str.strip())
     df = df[(df["org"] != "") & (df["admin"] != "")].drop_duplicates()
 
@@ -76,6 +77,22 @@ def main(argv):
     base = base.sort_values(["brand_len", "brand"], ascending=[False, True])
     out.parent.mkdir(parents=True, exist_ok=True)
     base[["brand", "org", "admin_n"]].to_csv(out, index=False, encoding="utf-8")
+
+    # ADMIN브랜드코드가 있으면 코드→base 브랜드 표도 함께 만든다. 담당자가 브랜드칸에
+    # 'HZ'·'DM'처럼 코드만 적는 경우가 있어서다(문구가 없으면 이게 유일한 단서).
+    if "code" in df.columns:
+        cd = df[df["code"] != ""].copy()
+        cd["code"] = cd["code"].str.upper()
+        cd = cd.sort_values(["code", "_pri", "base"])
+        code = (cd.groupby("code", as_index=False)
+                  .agg(brand=("base", "first"), org=("org", "first")))
+        # 한 코드가 서로 다른 base 브랜드를 가리키면 신뢰할 수 없으니 뺀다
+        amb = cd.groupby("code")["base"].nunique()
+        drop = set(amb[amb > 1].index)
+        code = code[~code["code"].isin(drop)]
+        code_out = out.parent / "brand_code_map.csv"
+        code.to_csv(code_out, index=False, encoding="utf-8")
+        print(f"코드 {len(code):,}개 → {code_out} (모호해서 제외 {len(drop)}개)")
 
     print(f"원본 {len(df):,}행 → base 브랜드 {len(base):,}개  →  {out}")
     print("\n영업별 base 브랜드 수:")
