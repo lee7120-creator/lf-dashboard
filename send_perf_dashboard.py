@@ -13,7 +13,7 @@ LF몰 CRM 발송성과 대시보드
 Streamlit 의존이 없는 순수 함수이며 모듈 import 만으로 테스트 가능하다.
 앱 UI 는 main() 안에 있고 `python -m streamlit run` 시에만 실행된다.
 """
-import io, os, re, json, hashlib, datetime, time
+import io, os, re, csv, json, hashlib, datetime, time
 import numpy as np
 import pandas as pd
 
@@ -1351,6 +1351,274 @@ def _has(s, words):
 KW_RE = {k: re.compile("|".join(re.escape(w) for w in ws)) for k, ws in KW.items()}
 
 
+# ── 브랜드 자동 분류 (문구 기반) ────────────────────────────────────────
+# 실적 엑셀의 '브랜드' 칸은 담당자가 손으로 적어서 캠페인명·행사명이 섞여 들어온다
+# ('윈터세일', 'L+DAY 쇼핑핫타임 1차', '주문서이탈'…). 그대로 차원으로 쓰면 브랜드별
+# 비교가 안 되므로, 제목·내용·브랜드칸을 같이 훑어 실제 브랜드를 뽑아낸다.
+#
+# 표기 정규화 후 매칭한다 — 공백·중점·하이픈을 지우고 대문자로 올린 문자열에서 찾으므로
+# 사전에는 '질스튜어트'만 넣어도 '질 스튜어트'·'질·스튜어트'가 같이 잡힌다.
+#
+# 브랜드 사전은 영업별 운영브랜드 시트에서 만든 data/brand_map.csv 가 정본이다
+# (brand=base 브랜드명, org=영업). 갱신은 tools/build_brand_map.py 로 다시 생성한다.
+#
+# ▼ 아래 ALIAS 는 시트에 없는 표기만 손으로 보탠다 — 영문 표기·사내 약어 등.
+#   값은 반드시 brand_map.csv 의 brand 와 정확히 같아야 한다.
+BRAND_ALIAS = {
+    "HAZZYS": "헤지스", "해지스": "헤지스",
+    "DAKS": "닥스", "DAKSLADIES": "닥스", "DAKSLONDON": "닥스런던",
+    "MAESTRO": "마에스트로",
+    "TNGT": "티엔지티",
+    "JILLSTUART": "질스튜어트", "JILLBYJILLSTUART": "질 바이 질스튜어트",
+    "ILCORSO": "일꼬르소",
+    "ALLEGRI": "알레그리",
+    "VANESSABRUNO": "바네사브루노",
+    "ISABELMARANT": "이자벨마랑",
+    "PATOU": "빠투",
+    "VASIC": "바쉬",
+    "LAFUMA": "라푸마",
+    "REEBOK": "리복",
+    "JOSEPH": "조셉",
+    "VINCE": "빈스",
+    "KEEN": "킨",
+    "CHAMPION": "챔피온",
+    "COLEHAAN": "콜 한",
+    "TOMS": "탐스",
+    "BIRKENSTOCK": "버켄스탁",
+    "MINNETONKA": "미네통카",
+}
+
+# 전사 프로모션(전관행사) — 특정 브랜드 행사가 아니라 몰 전체 행사다.
+# 문구에 브랜드가 안 잡히는데 이 키워드가 걸리면 '전관행사'로 묶는다.
+PROMO_KW = [
+    "L+DAY", "L%2BDAY", "LDAY", "엘프", "엘플",
+    "쇼핑핫타임", "핫타임", "나이트마켓", "룰렛", "럭키먼데이", "뷰티데이",
+    "블랙프라이데이", "블프", "창립제", "정기세일", "그랜드세일",
+    "윈터세일", "서머세일", "썸머세일", "위켄드세일", "주말특가", "패밀리세일",
+    "단독특가전", "브랜드데이", "슈퍼세일", "메가세일", "전관행사",
+]
+
+# 브랜드가 아니라 '발송 트리거·유형'을 적어 둔 값. 브랜드칸에서만 본다 — 문구에까지
+# 적용하면 '무료배송'·'장바구니에 담아두신'처럼 흔한 표현이 죄다 트리거로 잡힌다.
+TRIGGER_KW = [
+    "주문서이탈", "장바구니", "재입고알림", "이탈", "리마인드", "남은모수",
+    "휴면", "생일", "구매감사", "리뷰요청", "찜", "위시",
+]
+
+_BR_NORM_RE = re.compile(r"[\s·\-_/&,\.\(\)\[\]']+")
+
+
+def _br_norm(s):
+    """브랜드 매칭용 정규화 — 공백·구분자 제거 + 대문자.
+
+    (모듈 전역 헬퍼 `_s`보다 앞에서 정의되므로 NaN 처리를 여기서 직접 한다.)
+    """
+    if s is None or (isinstance(s, float) and np.isnan(s)):
+        return ""
+    return _BR_NORM_RE.sub("", str(s)).upper()
+
+
+PROMO_RE = re.compile("|".join(re.escape(_br_norm(w)) for w in PROMO_KW))
+TRIGGER_RE = re.compile("|".join(re.escape(_br_norm(w)) for w in TRIGGER_KW))
+
+BRAND_UNKNOWN = "미분류"
+BRAND_PROMO = "전관행사"
+BRAND_TRIGGER = "트리거발송"
+ORG_UNKNOWN = "(미상)"
+
+BRAND_MAP_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "data", "brand_map.csv")
+
+# 짧은 이름을 문구 안에서 부분 일치로 찾으면 오탐이 쏟아진다 — 입점 브랜드엔 '객'·'갭'·
+# '고요'처럼 일반 한국어에 그대로 박히는 이름이 많다. 그래서 길이로 나눈다.
+#   · 3글자 이상        → 전부 부분 일치 허용
+#   · 2글자 자사(영업1·2) → 부분 일치 허용 (닥스·빈스·리복·빠투 같은 주력 브랜드)
+#   · 그 외 2글자 이하   → 브랜드칸이 정확히 그 값일 때만 인정
+_BRAND_MIN_LEN = 3
+_OWN_ORGS = ("e-영업1", "e-영업2")
+
+# 브랜드명이지만 일반 단어와 겹쳐서 문구 부분 일치로 쓰면 안 되는 것들(정확일치로 강등)
+BRAND_STOP = {"객", "갭", "고요", "저스트", "점프", "티비", "타비", "피즈", "쥴스", "킨"}
+
+
+def _load_brand_map(path=BRAND_MAP_CSV):
+    """data/brand_map.csv → (정규화명→(브랜드, 영업)) 사전 2개.
+
+    반환: (long_map, exact_map)
+      long_map  — 문구 안에서 부분 일치로 찾을 이름
+      exact_map — 브랜드칸이 정확히 일치할 때만 쓸 이름
+    """
+    long_map, exact_map = {}, {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except Exception:                                     # noqa: BLE001
+        return long_map, exact_map                        # 파일이 없어도 앱은 떠야 한다
+    for r in rows:
+        b = (r.get("brand") or "").strip()
+        if not b:
+            continue
+        org = (r.get("org") or "").strip() or ORG_UNKNOWN
+        n = _br_norm(b)
+        if not n:
+            continue
+        partial = (len(n) >= _BRAND_MIN_LEN or (len(n) == 2 and org in _OWN_ORGS))
+        if b in BRAND_STOP or n in BRAND_STOP:
+            partial = False
+        (long_map if partial else exact_map).setdefault(n, (b, org))
+    return long_map, exact_map
+
+
+BRAND_MAP, BRAND_EXACT = _load_brand_map()
+
+BRAND_CODE_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "data", "brand_code_map.csv")
+
+
+def _load_brand_codes(path=BRAND_CODE_CSV):
+    """ADMIN브랜드코드 → (브랜드, 영업). 담당자가 브랜드칸에 'HZ'·'DM'처럼
+    코드만 적는 경우가 있어서 필요하다.
+
+    코드는 'AE'·'SD'처럼 짧고 의미 없는 문자열이라 문구 안에서 부분 일치로 찾으면
+    오탐이 쏟아진다 — **브랜드칸이 그 코드와 정확히 같을 때만** 쓴다.
+    """
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                c = _br_norm(r.get("code"))
+                b = (r.get("brand") or "").strip()
+                if c and b:
+                    out.setdefault(c, (b, (r.get("org") or "").strip() or ORG_UNKNOWN))
+    except Exception:                                     # noqa: BLE001
+        pass
+    return out
+
+
+BRAND_CODE = _load_brand_codes()
+
+# 시트의 ADMIN브랜드코드에는 없지만 담당자가 실제로 쓰는 약어. 확인받고 넣은 것만 둔다.
+#   DD 골프 발송 · DG(닥스 골프)와 같은 자리   HG 골프 발송 · HU(헤지스 골프)와 같은 자리
+#   AR 남성 발송 · 0A/WX(알레그리)             TN 남성 발송 · TG(티엔지티)
+# 여기 값은 부분 일치가 아니라 **브랜드칸 정확일치**로만 쓴다 — 두 글자라 문구 안에서
+# 찾으면 아무 데나 걸린다.
+BRAND_CODE_ALIAS = {
+    "DD": "닥스",
+    "HG": "헤지스",
+    "AR": "알레그리",
+    "TN": "티엔지티",
+}
+for _c, _b in BRAND_CODE_ALIAS.items():
+    _cn = _br_norm(_b)
+    _corg = (BRAND_MAP.get(_cn) or BRAND_EXACT.get(_cn) or (None, ORG_UNKNOWN))[1]
+    BRAND_CODE[_br_norm(_c)] = (_b, _corg)
+
+# 별칭도 같은 사전에 얹는다 — 정본 브랜드명으로 되돌려 준다.
+for _al, _canon in BRAND_ALIAS.items():
+    _n, _cn = _br_norm(_al), _br_norm(_canon)
+    if not _n:
+        continue
+    _org = (BRAND_MAP.get(_cn) or BRAND_EXACT.get(_cn) or (None, ORG_UNKNOWN))[1]
+    (BRAND_MAP if len(_n) >= _BRAND_MIN_LEN else BRAND_EXACT).setdefault(_n, (_canon, _org))
+
+# 긴 이름부터 찾아야 '닥스런던골프'가 '닥스'에 먼저 먹히지 않는다.
+_BRAND_ORDER = sorted(BRAND_MAP, key=len, reverse=True)
+BRAND_FIND_RE = (re.compile("|".join(re.escape(n) for n in _BRAND_ORDER))
+                 if _BRAND_ORDER else None)
+
+
+def brand_lookup(text):
+    """정규화 문자열에서 가장 긴 브랜드 1건 → (브랜드, 영업). 없으면 None."""
+    if not text or BRAND_FIND_RE is None:
+        return None
+    best = None
+    for m in BRAND_FIND_RE.finditer(text):
+        if best is None or len(m.group()) > len(best):
+            best = m.group()
+    return BRAND_MAP.get(best) if best else None
+
+
+KIND_BRAND = "브랜드"
+KIND_PROMO = BRAND_PROMO
+KIND_TRIGGER = BRAND_TRIGGER
+KIND_PARTNER = "제휴몰"
+KIND_CATEGORY = "카테고리 묶음"
+KIND_ETC = "기타"
+
+# 브랜드가 아니라 제휴처·외부몰을 적어 둔 값
+PARTNER_KW = [
+    "한국금거래소", "아모레", "올리브영", "이마트", "롯데", "신세계", "현대백화점",
+    "제휴", "입점몰", "위메프", "쿠팡", "네이버", "카카오",
+]
+PARTNER_RE = re.compile("|".join(re.escape(_br_norm(w)) for w in PARTNER_KW))
+
+
+def _partner_label(brand_raw):
+    """제휴몰은 적어 둔 이름을 그대로 살린다 — 어디 제휴인지가 정보다."""
+    s = " ".join(str(brand_raw or "").split())
+    return s[:20] if s else KIND_PARTNER
+
+
+def brand_from_copy(title="", body="", brand_raw="", cat=""):
+    """제목·내용·브랜드칸 → (브랜드, 영업, 구분).
+
+    담당자가 적은 브랜드칸을 먼저 본다 — 'L:ABLE - DAKS LADIES'·'헤지스남성 아울렛'처럼
+    행사명이 섞여 있어도 브랜드가 같이 적혀 있는 경우가 많아서다. 거기서 못 찾으면
+    제목 → 내용 순으로 문구를 훑는다. 한 문자열에 여러 브랜드가 있으면 가장 긴 이름을
+    택한다('질스튜어트 뉴욕'이 '질스튜어트'보다 우선).
+
+    브랜드가 끝내 안 잡히면 그냥 미분류로 버리지 않고 성격별로 묶는다 —
+    전관행사 → 제휴몰 → 트리거발송 → 카테고리 묶음('골프 외') → 기타 순.
+    """
+    nb, nt, nbody = _br_norm(brand_raw), _br_norm(title), _br_norm(body)
+    if nb and nb in BRAND_EXACT:                          # 2글자 브랜드는 정확일치만
+        b, o = BRAND_EXACT[nb]
+        return (b, o, KIND_BRAND)
+    if nb and nb in BRAND_CODE:                           # ADMIN브랜드코드도 정확일치만
+        b, o = BRAND_CODE[nb]
+        return (b, o, KIND_BRAND)
+    for src in (nb, nt, nbody):
+        hit = brand_lookup(src)
+        if hit:
+            return (hit[0], hit[1], KIND_BRAND)
+
+    full = nb + nt + nbody
+    if PROMO_RE.search(full):
+        return (BRAND_PROMO, ORG_UNKNOWN, KIND_PROMO)
+    if PARTNER_RE.search(full):
+        return (_partner_label(brand_raw), ORG_UNKNOWN, KIND_PARTNER)
+    if nb and TRIGGER_RE.search(nb):                      # 트리거는 브랜드칸에서만 본다
+        return (BRAND_TRIGGER, ORG_UNKNOWN, KIND_TRIGGER)
+    c = " ".join(str(cat or "").split())
+    if c and c not in ("통합", "-", "nan"):
+        # 브랜드는 못 집었지만 어느 카테고리 발송인지는 안다 — 그 단위로 묶어 준다
+        return (f"{c} 외", ORG_UNKNOWN, KIND_CATEGORY)
+    return (BRAND_UNKNOWN, ORG_UNKNOWN, KIND_ETC)
+
+
+
+# 사전이 바뀌면 prepare_raw 캐시를 무효화해야 한다 — 안 그러면 사전을 고쳐도 화면엔
+# 옛 분류가 그대로 남는다(KW의 TAGSET_VER와 같은 이유). 브랜드 목록 자체가 커서
+# 내용 해시 대신 '건수 + 별칭/행사 키워드'로 버전을 만든다.
+def brandset_ver(alias=None, promo=None, trigger=None, partner=None, stop=None,
+                 nmap=None, nexact=None, ncode=None, code_alias=None):
+    """브랜드 사전 상태 → 캐시 무효화 키. 기본값은 현재 로드된 사전."""
+    return hashlib.md5(json.dumps([
+        len(BRAND_MAP) if nmap is None else nmap,
+        len(BRAND_EXACT) if nexact is None else nexact,
+        len(BRAND_CODE) if ncode is None else ncode,
+        BRAND_CODE_ALIAS if code_alias is None else code_alias,
+        BRAND_ALIAS if alias is None else alias,
+        PROMO_KW if promo is None else promo,
+        TRIGGER_KW if trigger is None else trigger,
+        PARTNER_KW if partner is None else partner,
+        sorted(BRAND_STOP if stop is None else stop),
+    ], ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+
+
+BRANDSET_VER = brandset_ver()
+
+
 def _s(v):
     """NaN/None/숫자 → 안전한 문자열."""
     if v is None or (isinstance(v, float) and np.isnan(v)):
@@ -1430,6 +1698,15 @@ def add_tags(df):
     titles = df["title"].tolist() if "title" in df else [""] * len(df)
     bodies = df["body"].tolist() if "body" in df else [""] * len(df)
     tdf = pd.DataFrame([tag_copy(t, b) for t, b in zip(titles, bodies)], index=df.index)
+    # 브랜드 자동 분류 — 담당자가 적은 brand 칸이 캠페인명으로 오염돼 있어, 문구와 함께
+    # 훑어 영업별 운영브랜드 시트 기준으로 다시 태깅한다. 영업(org)도 같이 붙인다.
+    brands = df["brand"].tolist() if "brand" in df else [""] * len(df)
+    cats = df["cat"].tolist() if "cat" in df else [""] * len(df)
+    _bo = [brand_from_copy(t, b, br, c)
+           for t, b, br, c in zip(titles, bodies, brands, cats)]
+    tdf["brand2"] = [x[0] for x in _bo]
+    tdf["sales_org"] = [x[1] for x in _bo]
+    tdf["brand_kind"] = [x[2] for x in _bo]
     return pd.concat([df, tdf], axis=1)
 
 
@@ -2037,7 +2314,8 @@ def main():
     # prepare_raw 캐시를 무효화한다. (st.cache_data는 내부에서 호출하는 tag_copy의 변경을
     # 감지하지 못해, 태그명이 그대로면 구버전 태깅 결과가 캐시로 반환되던 구멍 방지)
     TAGSET_VER = (hashlib.md5(json.dumps(KW, ensure_ascii=False, sort_keys=True).encode())
-                  .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS) + "|이모지수v1")
+                  .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS) + "|이모지수v1"
+                  + "|brand:" + BRANDSET_VER)
 
     @st.cache_data(show_spinner=False)
     def prepare_raw(work_df, tagset_ver):
@@ -2670,7 +2948,7 @@ def main():
     # 필터 위젯 키 목록 — 「필터 전체 초기화」가 한 번에 리셋할 대상
     _FLT_KEYS = ("flt_q", "flt_matched", "flt_minsend", "flt_date", "flt_st", "flt_target",
                  "flt_bpu", "flt_prio", "flt_hour", "flt_dow", "flt_cat", "flt_attr",
-                 "flt_owner", "flt_tags", "tags_mode")
+                 "flt_owner", "flt_brand2", "flt_org", "flt_kind", "flt_tags", "tags_mode")
     if st.sidebar.button("↩️ 필터 전체 초기화", width="stretch", key="flt_reset",
                          help="검색·기간·속성 등 아래 모든 필터를 기본값으로 되돌려요"):
         for _k in _FLT_KEYS:
@@ -2753,6 +3031,16 @@ def main():
                                   help="통합·정상·이월·입점·마케팅 등")
         sel_owner = st.multiselect("담당자", _opts(base_opt, "owner"), key="flt_owner")
 
+    # 브랜드는 담당자 수기 입력(brand)이 아니라 문구·브랜드칸에서 자동 태깅한 brand2로
+    # 거른다 — 원본은 캠페인명·행사명이 섞여 있어 브랜드 필터로 쓸 수 없다.
+    with st.sidebar.expander("🏬 브랜드·영업"):
+        sel_brand2 = st.multiselect("브랜드", _opts(base_opt, "brand2"), key="flt_brand2",
+                                    help="제목·내용·브랜드칸에서 영업별 운영브랜드 시트 기준으로 "
+                                         "자동 분류한 브랜드예요.")
+        sel_org = st.multiselect("영업", _opts(base_opt, "sales_org"), key="flt_org")
+        sel_kind = st.multiselect("구분", _opts(base_opt, "brand_kind"), key="flt_kind",
+                                  help="브랜드 발송 / 전관행사 / 트리거발송 등 발송 성격이에요.")
+
     with st.sidebar.expander("✍️ 문구 속성"):
         sel_tags = st.multiselect("소구 속성", TAG_BOOLS, key="flt_tags",
                                   help="할인율·마감임박 등 제목+내용에서 자동으로 분류한 속성이에요")
@@ -2765,7 +3053,8 @@ def main():
 
     CATSEL = {"stype": sel_st, "target": sel_target, "bpu": sel_bpu, "hour": sel_hour,
               "dow_k": sel_dow, "prio": sel_prio, "cat": sel_cat,
-              "attr": sel_attr, "owner": sel_owner}
+              "attr": sel_attr, "owner": sel_owner,
+              "brand2": sel_brand2, "sales_org": sel_org, "brand_kind": sel_kind}
 
     def apply_filters(d):
         d = d.copy()
@@ -2786,7 +3075,8 @@ def main():
             q = search.strip().lower()
             hay = (d["title"].astype(str) + " " + d["body"].astype(str) + " " +
                    d["brand"].astype(str) + " " + d["af"].astype(str) + " " +
-                   d["cat"].astype(str)).str.lower()
+                   d["cat"].astype(str) + " " +
+                   (d["brand2"].astype(str) if "brand2" in d else "")).str.lower()
             d = d[hay.str.contains(q, na=False, regex=False)]
         return d
 
@@ -2801,6 +3091,7 @@ def main():
     for _lab, _sel in (("발송유형", sel_st), ("타겟", sel_target), ("BPU", sel_bpu),
                        ("우선순위", sel_prio), ("시간대", sel_hour), ("요일", sel_dow),
                        ("카테고리", sel_cat), ("대상속성", sel_attr), ("담당자", sel_owner),
+                       ("브랜드", sel_brand2), ("영업", sel_org), ("구분", sel_kind),
                        ("소구", sel_tags)):
         if _sel:
             _active_flt.append(f"{_lab} {len(_sel)}개")
@@ -3133,9 +3424,11 @@ def main():
             dd["date"] = _dts.dt.strftime("%m/%d").where(_dts.notna(), dd["date"])
         if show_hour and "hour" in dd.columns:
             dd["_hh"] = dd["hour"].map(fmt_hhmm)
-        all_cols = ["date", "_hh", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt"]
+        _bcol_show = "brand2" if "brand2" in dd.columns else "brand"
+        all_cols = ["date", "_hh", "cat", _bcol_show, "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt"]
         cols = [c for c in all_cols if c in dd.columns]
-        ren = {"date": "날짜", "_hh": "시간", "cat": "카테고리", "brand": "브랜드", "title": "제목",
+        ren = {"date": "날짜", "_hh": "시간", "cat": "카테고리", "brand": "브랜드",
+               "brand2": "브랜드", "title": "제목",
                "_bprev": "내용",
                "send": "발송", "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
         fmts = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
@@ -4866,8 +5159,10 @@ def main():
         view = base_r.copy()
         view["속성"] = view[tagcols].apply(lambda r: " ".join(t for t in tagcols if r[t]), axis=1)
         view["_bprev"] = view["body"].map(lambda x: " ".join(_s(x).split())[:60]) if "body" in view else ""
-        cols = ["date", "cat", "brand", "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt", "속성"]
-        ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "title": "제목", "_bprev": "내용",
+        _bc = "brand2" if "brand2" in view.columns else "brand"
+        cols = ["date", "cat", _bc, "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt", "속성"]
+        ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "brand2": "브랜드",
+               "title": "제목", "_bprev": "내용",
                "send": "발송", "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
         _styled = view[cols].rename(columns=ren).style.format(
             {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"})
@@ -6411,11 +6706,16 @@ def main():
         # ② AOV vs 전환 기여
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### ② 거래액 드라이버 분석: 판매 수량(Q) vs 객단가(P)")
-        _dim = {"카테고리": "cat", "세그먼트": "target", "브랜드": "brand"}
+        _dim = {"카테고리": "cat", "세그먼트": "target",
+                "브랜드(문구 자동)": "brand2", "구분": "brand_kind", "영업": "sales_org",
+                "브랜드(원본 입력)": "brand"}
         _dim = {k: v for k, v in _dim.items() if v in base.columns and base[v].fillna("").ne("").any()}
         if not _dim:
             _dim = {"카테고리": "cat"}
         dimname = st.radio("기준 차원", list(_dim.keys()), horizontal=True, key="p14_dim")
+        if dimname.startswith("브랜드(원본"):
+            st.caption("원본 입력은 담당자가 손으로 적은 값이라 캠페인명·행사명이 섞여 있어요. "
+                       "브랜드끼리 비교하려면 「브랜드(문구 자동)」를 쓰세요.")
         dcol = _dim[dimname]
         a = base.copy(); a[dcol] = a[dcol].fillna("(미지정)").replace("", "(미지정)")
         gg = a.groupby(dcol).agg(주문CR=("ord_cr", "mean"), AOV=("aov", "mean"),
@@ -6502,7 +6802,50 @@ def main():
         with c2:
             btopn = st.number_input("브랜드 표시 상위", value=20, min_value=5, step=5, key="p15_btopn")
         st.markdown("##### ② 브랜드별 성과 (상위)")
-        _rank("brand", "브랜드", minn=int(bminn), topn=int(btopn))
+        _bsrc = st.radio("브랜드 기준", ["문구 자동 분류", "원본 입력"], horizontal=True,
+                         key="p15_bsrc",
+                         help="원본 입력은 담당자가 손으로 적은 값이라 캠페인명·행사명이 섞여 있어요.")
+        _bcol = "brand2" if (_bsrc == "문구 자동 분류" and "brand2" in base) else "brand"
+        _rank(_bcol, "브랜드", minn=int(bminn), topn=int(btopn))
+
+        # ── 구분별 성과 — 브랜드 발송 / 전관행사 / 카테고리 묶음이 각각 어떤지 ──
+        if "brand_kind" in base:
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### ③ 구분별 성과 (브랜드 · 전관행사 · 트리거)")
+            st.caption("브랜드로 특정되는 발송과 전사 행사·트리거 발송을 갈라서 봐요.")
+            _rank("brand_kind", "구분", minn=1, topn=10)
+
+        # ── 자동 분류 점검 — 사전이 실제 문구를 얼마나 덮는지 눈으로 보고 채워 넣는 창구 ──
+        if "brand2" in base and "brand_kind" in base:
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            with st.expander("🔍 브랜드 자동 분류 점검 — 브랜드로 못 집은 발송"):
+                _kv = base["brand_kind"].fillna(KIND_ETC)
+                _tot = len(_kv)
+                _known = int((_kv == KIND_BRAND).sum())
+                st.caption(f"브랜드로 특정된 건 {_known:,}/{_tot:,}건 "
+                           f"({_known / max(_tot, 1) * 100:.0f}%) · " +
+                           " · ".join(f"{k} {int(v):,}"
+                                      for k, v in _kv.value_counts().items() if k != KIND_BRAND))
+                # 브랜드로 안 잡힌 것 = 사전에 보탤 후보. 거래액 큰 순으로 본다.
+                _un = base[_kv != KIND_BRAND]
+                if not len(_un):
+                    st.success("전부 브랜드로 분류됐어요.")
+                else:
+                    _ug = (_un.groupby(_un["brand"].fillna("(빈칸)").replace("", "(빈칸)"))
+                           .agg(구분=("brand_kind", "first"), 분류결과=("brand2", "first"),
+                                건수=("af", "size"), 발송=("send", "sum"), 거래액=("amt", "sum"),
+                                예시문구=("title", lambda s: _s(s.iloc[0])[:40]))
+                           .reset_index().rename(columns={"brand": "원본 브랜드칸"})
+                           .sort_values("거래액", ascending=False).head(30))
+                    st.dataframe(_ug.style.format({"건수": "{:,.0f}", "발송": "{:,.0f}",
+                                                   "거래액": "{:,.0f}"}),
+                                 hide_index=True, width="stretch", height=320)
+                    st.markdown('<div class="appendix">브랜드 사전은 영업별 운영브랜드 시트에서 만든 '
+                                '<b>data/brand_map.csv</b>가 정본이에요. 여기 뜬 값 중 실제 브랜드가 '
+                                '있는데 안 잡혔다면 시트에 없는 표기(영문·사내 약어)일 가능성이 커요 — '
+                                '<b>BRAND_ALIAS</b>에 한 줄 넣으면 바로 반영돼요. 전사 행사면 '
+                                '<b>PROMO_KW</b>에 넣으면 전관행사로 묶여요.</div>',
+                                unsafe_allow_html=True)
         glossary()
 
     # ══════════════════════════════════════════════════════════════
@@ -6874,7 +7217,10 @@ def main():
                            + " — 해당 주차 기획 시트의 날짜·AF코드 형식을 확인해 보세요.")
 
         st.markdown("##### ⚠️ 매칭 진단 — 실적은 있지만 문구를 못 찾은 건")
-        miss = raw[~raw["matched"]][["date", "af", "cat", "brand", "send", "amt"]].copy()
+        _mcols = ["date", "af", "cat", "brand", "send", "amt"]
+        if "brand2" in raw.columns:
+            _mcols.insert(4, "brand2")
+        miss = raw[~raw["matched"]][_mcols].copy()
         if len(miss):
             # 원인 4분류 — 기획 lookup이 세션에 있을 때만 (업로드 1회성 로그를 상시 진단으로)
             _lk = st.session_state.get("plan_lookup_gs")
@@ -6896,7 +7242,8 @@ def main():
                 _cnt = miss["원인 추정"].value_counts()
                 st.caption("원인 분류 — " + " · ".join(f"**{k}** {v}건" for k, v in _cnt.items()))
             st.dataframe(miss.rename(columns={"date": "날짜", "af": "AF코드", "cat": "카테고리",
-                                              "brand": "브랜드", "send": "발송", "amt": "거래액"}),
+                                              "brand": "브랜드(원본)", "brand2": "브랜드(자동)",
+                                              "send": "발송", "amt": "거래액"}),
                          hide_index=True, width="stretch")
             st.caption("AF코드 오타나 미등록, 날짜 불일치일 수 있어요. 기획 파일을 확인해 보세요. 원인 분류는 "
                        "「기획 문구 가져오기」로 불러온 기획 기준이에요.")
