@@ -565,13 +565,14 @@ MTD_METRICS = {
 }
 MTD_LABELS = {
     "perSend": "인당 발송 건수", "revenue": "거래액", "rps": "발송건당 거래액",
-    "totalSend": "총 발송 건수", "customers": "유니크 발송 고객수", "ctr": "CTR",
+    "totalSend": "총 발송 건수", "customers": "유니크 발송 고객수", "ctr": "CTR(고객당)",
     "uniqueInflow": "유니크 유입", "totalInflow": "총 유입", "visitPerPerson": "인당 방문 횟수",
     "purchaseCust": "구매 고객수", "purchaseCnt": "구매 건수", "purchasePerPerson": "인당 구매 건수",
     "avgOrderVal": "객단가", "unitPrice": "건단가", "mRevenue": "M당 거래액", "pointM": "적립M",
     "purchaseRate": "구매전환율(CR)", "rpc": "고객당 매출",
+    "ctr_send": "유입률(발송당)",
 }
-MTD_DERIVED = ["purchaseRate", "rpc"]
+MTD_DERIVED = ["purchaseRate", "rpc", "ctr_send"]
 MTD_STORE = "send_perf_mtd_store.csv"
 MTD_STORE_COLS = ["date"] + list(MTD_METRICS)
 
@@ -923,6 +924,11 @@ def compute_mtd(df):
     _cust = df["customers"].replace(0, np.nan)
     df["purchaseRate"] = (df["purchaseCust"] / _cust).clip(0, 1)
     df["rpc"] = df["revenue"] / _cust
+    # 전사 MTD 파일의 CTR은 '유니크유입 ÷ 유니크발송고객수'(고객 1명당)라, 캠페인 페이지의
+    # CTR(유입UV ÷ 발송건수, 발송 1건당)과 분모가 다르다. 두 화면을 같은 기준으로 비교할 수
+    # 있도록 '발송 1건당' 유입률을 따로 만든다.
+    _tsend = df["totalSend"].replace(0, np.nan) if "totalSend" in df else np.nan
+    df["ctr_send"] = (df["totalInflow"] / _tsend) if "totalInflow" in df else np.nan
     df["t"] = np.arange(len(df))
     df["dow"] = df["date"].dt.dayofweek
     df["month"] = df["date"].dt.to_period("M").astype(str)
@@ -3452,6 +3458,10 @@ def main():
             "- **UV(유입)**: 메시지를 눌러 들어온 사람 수예요(중복 제거).\n"
             "- **VISIT**: 들어온 사람들이 발생시킨 방문 횟수예요.\n"
             "- **CTR(유입전환율)** = UV ÷ 발송. 보낸 것 중 몇 %가 들어왔는지예요.\n"
+            "- ⚠️ **피로도 페이지의 CTR은 분모가 다릅니다.** 전사 MTD 파일이 주는 CTR은 "
+            "유니크유입 ÷ **유니크발송고객수**(고객 1명당)예요. 발송 1건당으로 보려면 그 페이지의 "
+            "**‘유입률(발송당)’**(= 총유입 ÷ 총발송)을 쓰세요. 단 피로도 페이지는 **전사 발송**, "
+            "여기는 **CRM 발송**만이라 기준을 맞춰도 값 자체는 서로 달라요.\n"
             "- **주문전환율(CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀는지예요.\n"
             "- **RPS** = 거래액 ÷ 발송. 1건 보냈을 때 평균 매출이에요.\n"
             "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건에 평균 얼마를 썼는지예요.\n"
@@ -6610,13 +6620,17 @@ def main():
     # 발송피로도 (전사 MTD) — F1~F4
     # ══════════════════════════════════════════════════════════════
     elif page in ("피로도 시계열", "발송 빈도·한계수익", "요일 패턴"):
-        MTDOPT = {"CTR": "ctr", "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps",
+        # CTR은 파일이 주는 값이 '유니크유입 ÷ 유니크발송고객수'(고객 1명당)다.
+        # 캠페인 페이지 CTR(유입UV ÷ 발송건수)과 분모가 달라 이름에 기준을 박아 둔다.
+        MTDOPT = {"CTR(고객당)": "ctr", "유입률(발송당)": "ctr_send",
+                  "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps",
                   "거래액": "revenue", "인당 발송 건수": "perSend", "객단가": "avgOrderVal",
                   "총거래액": "revenue_sum", "총유입": "totalInflow_sum"}
-        MTD_PCT = {"ctr", "purchaseRate"}
+        MTD_PCT = {"ctr", "ctr_send", "purchaseRate"}
         # ctr는 blue — 대시보드 전역에서 빨강=감소/나쁨(△·급락·이탈)이라 CTR 시리즈가
         # 빨강이면 '나쁜 지표'로 오독됨 (METRIC_OPTS의 CTR 색과도 통일)
-        MCLR = {"ctr": PALETTE["blue"], "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
+        MCLR = {"ctr": PALETTE["blue"], "ctr_send": PALETTE["teal"],
+                "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
                 "revenue": PALETTE["blue"], "perSend": PALETTE["amber"], "avgOrderVal": PALETTE["teal"],
                 "revenue_sum": PALETTE["blue"], "totalInflow_sum": PALETTE["teal"]}
 
@@ -6639,6 +6653,11 @@ def main():
         if page == "피로도 시계열":
             st.title("피로도 시계열·CTR")
             st.markdown("발송량 지표와 성과 지표를 같은 기간 축에 겹쳐서 상관을 봐요.")
+            st.caption("⚠️ 여기 **CTR(고객당)** 은 전사 MTD 파일이 주는 값이라 "
+                       "유니크유입 ÷ 유니크발송고객수예요. 캠페인 페이지의 CTR(유입UV ÷ 발송건수)과 "
+                       "**분모가 다릅니다.** 발송 1건당으로 보려면 **유입률(발송당)** 을 쓰세요. "
+                       "다만 이 페이지는 **전사 발송**이고 캠페인 페이지는 **CRM 발송**만이라, "
+                       "기준을 맞춰도 값 자체는 서로 달라요. 추이 비교용으로 보세요.")
 
             # ── 조회 기간 (기본: 전체) ──
             _md_d = md["date"]
@@ -6707,7 +6726,7 @@ def main():
             # ── 비교할 두 지표 (막대 = 발송량 계열, 선 = 효율 계열) ──
             _bar_opts = [o for o in ("인당 발송 건수", "총거래액", "총유입", "거래액", "객단가")
                          if MTDOPT[o] in agg.columns]
-            _line_opts = [o for o in ("CTR", "구매전환율(CR)", "발송건당거래액(RPS)",
+            _line_opts = [o for o in ("CTR(고객당)", "유입률(발송당)", "구매전환율(CR)", "발송건당거래액(RPS)",
                                       "거래액", "객단가", "총거래액", "총유입")
                           if MTDOPT[o] in agg.columns]
             _mc1, _mc2 = st.columns(2)
@@ -6788,7 +6807,8 @@ def main():
             st.title("발송 빈도 효율·한계수익")
             st.markdown("고객 한 명에게 몇 번 보냈을 때 효율이 어떻게 변하는지, 한 구간 더 늘리면 "
                         "얼마나 남는지 함께 봐요.")
-            lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "객단가"])
+            lab = st.selectbox("지표", ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)",
+                                      "발송건당거래액(RPS)", "거래액", "객단가"])
             mc = MTDOPT[lab]
             b = mtd_data["buckets"]
             if len(b):
@@ -6824,9 +6844,13 @@ def main():
             if len(q):
                 cc = st.columns(2)
                 with cc[0]:
-                    l1 = st.selectbox("막대 지표 (위)", ["발송건당거래액(RPS)", "CTR", "거래액"], key="q_l")
+                    _l1o = ["발송건당거래액(RPS)", "CTR(고객당)", "유입률(발송당)", "거래액"]
+                    guard_select("q_l", _l1o)
+                    l1 = st.selectbox("막대 지표 (위)", _l1o, key="q_l")
                 with cc[1]:
-                    l2 = st.selectbox("선 지표 (아래)", ["CTR", "구매전환율(CR)", "객단가"], key="q_r")
+                    _l2o = ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)", "객단가"]
+                    guard_select("q_r", _l2o)
+                    l2 = st.selectbox("선 지표 (아래)", _l2o, key="q_r")
                 m1, m2 = MTDOPT[l1], MTDOPT[l2]
                 fig = stacked_panels(q["label"], q[m1] * (100 if m1 in MTD_PCT else 1), l1,
                                      q[m2] * (100 if m2 in MTD_PCT else 1), l2,
@@ -6839,7 +6863,8 @@ def main():
         # ── 요일 패턴 ──
         else:
             st.title("요일 패턴")
-            lab = st.selectbox("지표", ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)", "거래액", "인당 발송 건수"])
+            lab = st.selectbox("지표", ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)",
+                                      "발송건당거래액(RPS)", "거래액", "인당 발송 건수"])
             mc = MTDOPT[lab]
             dm = mtd_data["dow_mean"]
             order = ["월", "화", "수", "목", "금", "토", "일"]
