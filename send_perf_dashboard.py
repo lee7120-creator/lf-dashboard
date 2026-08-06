@@ -2089,8 +2089,18 @@ def promo_perf_table(d):
 # 2. Streamlit 앱
 # ══════════════════════════════════════════════════════════════════════
 def get_push_stats(df, start_d, end_d, grp):
+    if df is None or not len(df) or "date" not in df or "group" not in df:
+        return None
     sd = pd.to_datetime(start_d)
     ed = pd.to_datetime(end_d)
+    # 이 함수는 사이드바 렌더 경로라 여기서 죽으면 11개 페이지가 전부 다운된다.
+    # push 저장소는 finalize_push()를 통과하는 게 원칙이지만(구글시트 라운드트립이 전값을
+    # 문자열로 되돌림), 한 군데라도 빠뜨리면 'str vs Timestamp' 비교로 앱 전체가 죽는다.
+    # 여기서 한 번 더 방어한다 — 이미 datetime이면 비용도 사실상 없다.
+    if not pd.api.types.is_datetime64_any_dtype(df["date"]):
+        df = finalize_push(df)
+        if not len(df):
+            return None
     sub = df[(df["group"] == grp) & (df["date"] >= sd) & (df["date"] <= ed) & (~df["is_outlier"])].copy()
     if sub.empty:
         return None

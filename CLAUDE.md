@@ -26,13 +26,14 @@
 python tests/check_shadowing.py           # 몇 초 — 전역 헬퍼 섀도잉 정적 검사
 python tests/test_plan_merge.py           # 몇 초 — 실적↔기획 문구 조인 (날짜·AF 키)
 python tests/test_brand_classify.py       # 몇 초 — 브랜드 자동 분류 (오탐 방어)
+python tests/test_store_layer.py          # 몇 초 — push dtype 방어 (문자열 라운드트립)
 python tests/smoke_pages.py               # 몇 분 — 발송성과 전 페이지·하위탭 렌더
 python tests/test_filter_follows_upload.py # 몇 분 — 업로드 후 기간 필터·차트 레이블
 python tests/smoke_weekly_report.py       # 몇 분 — 주간보고 전 페이지·라디오 렌더
 ```
 
-`.github/workflows/dashboard-ci.yml`이 PR·푸시에서 **문법 → 섀도잉 → 문구조인 → 스모크 →
-필터 → 주간보고** 순으로 자동 실행한다. 두 대시보드나 `tests/`를 건드렸으면 CI가 초록인 걸
+`.github/workflows/dashboard-ci.yml`이 PR·푸시에서 **문법 → 섀도잉 → 문구조인 → 브랜드 →
+저장소 → 스모크 → 필터 → 주간보고** 순으로 자동 실행한다. 두 대시보드나 `tests/`를 건드렸으면 CI가 초록인 걸
 보고 머지할 것.
 
 > 문구 조인이 깨지면 **화면은 멀쩡히 뜨고 문구 칸만 빈다** — 스모크로는 절대 안 잡히니
@@ -520,7 +521,9 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
 - `storage_save()`는 **성공 여부(bool)를 반환** — 반드시 `if storage_save(...):` 로 받아서
   성공 시에만 세션 갱신·성공 메시지. (읽기 실패 상태에선 덮어쓰기 방지를 위해 저장이 차단됨)
 - push 데이터는 로드 직후 **`finalize_push()`** 통과 필수 (gsheets 라운드트립이 전값을
-  문자열로 되돌림 — campaign의 `_finalize`와 대칭).
+  문자열로 되돌림 — campaign의 `_finalize`와 대칭). `get_push_stats`는 **사이드바 렌더
+  경로**라 여기서 죽으면 11개 페이지가 전부 다운된다 — 함수 안에도 dtype 방어가 있지만
+  호출부에서 finalize를 빠뜨리지 말 것 (`test_store_layer.py`가 잡는다).
 - '오늘' 계산은 `date.today()` 금지 — **`today_kst()`** 사용 (서버 UTC라 KST 새벽에 주 경계가 밀림).
   **다운로드 파일명의 날짜도 포함** — UTC면 KST 새벽 0~9시에 하루 전 날짜로 찍힌다.
 
