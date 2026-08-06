@@ -1989,6 +1989,23 @@ def ols_effects(df, attr_cols, ctrl_cols, ycol):
     return pd.DataFrame(rows).sort_values("순효과", ascending=False).reset_index(drop=True)
 
 
+def hour_of_day(v):
+    """발송 시간대(HHMM 또는 H 정수) → 0~23 시(int). 범위를 벗어나면 None.
+
+    실적 엑셀에 '8000'(800 오타)·'2400' 같은 값이 실제로 들어온다. 범위 검증 없이
+    `v // 100`만 하면 80시·24시가 그대로 나와서 시간축이 0~80까지 늘어난다.
+    HHMM 해석이 필요한 곳은 전부 이 함수를 쓸 것.
+    """
+    try:
+        n = int(float(v))
+    except Exception:                                     # noqa: BLE001
+        return None
+    if n < 0:
+        return None
+    hh, mm = (n, 0) if n <= 23 else divmod(n, 100)
+    return hh if (0 <= hh <= 23 and 0 <= mm <= 59) else None
+
+
 def fmt_hhmm(h):
     """발송 시간대(HHMM 또는 H 정수) → '12시' / '08시' / '10시 50분'. 잘못된 값은 '–'."""
     try:
@@ -5683,23 +5700,24 @@ def main():
                                    help="선이 많으면 숫자가 겹쳐요. 전체 값은 아래 표와 "
                                         "마우스 툴팁으로도 볼 수 있어요.")
 
+        _bad_hour = 0                                     # 시간대가 깨진 행 수(안내용)
+
         def _byhour(d):
-            """발송 시간(HHMM)을 '시(0~23)'로 묶어 집계 — 날짜가 달라도 축이 맞아야 겹친다."""
+            """발송 시간(HHMM)을 '시(0~23)'로 묶어 집계 — 날짜가 달라도 축이 맞아야 겹친다.
+
+            범위 밖 값(8000·2400 같은 입력 오타)은 hour_of_day가 None으로 걸러낸다.
+            검증 없이 //100만 하면 80시·24시가 축에 찍혀 가로축이 0~80까지 늘어난다.
+            """
+            nonlocal _bad_hour
             if d is None or not len(d) or "hour" not in d:
                 return {}
-
-            def _hod(v):
-                try:
-                    n = int(float(v))
-                except Exception:
-                    return None
-                return n if n <= 23 else n // 100        # 1030 → 10시
-
             dd = d.dropna(subset=["hour"]).copy()
-            dd["_hod"] = dd["hour"].map(_hod)
+            dd["_hod"] = dd["hour"].map(hour_of_day)
+            _bad_hour += int(dd["_hod"].isna().sum())
             dd = dd[dd["_hod"].notna()]
             if not len(dd):
                 return {}
+            dd["_hod"] = dd["_hod"].astype(int)
             g = dd.groupby("_hod").agg(
                 건수=("af", "size"), 발송=("send", "sum"), UV=("uv", "sum"),
                 주문=("oc", "sum"), 거래액=("amt", "sum")).reset_index()
@@ -5738,6 +5756,10 @@ def main():
         _agg_by = {k: _byhour(v) for k, v in _day_rows.items()}
 
         _hrs = sorted({h for m in _agg_by.values() for h in m})
+        if _bad_hour:
+            st.caption(f"시간대 값이 0~23시로 읽히지 않는 발송 {_bad_hour:,}건은 이 차트에서 뺐어요. "
+                       "실적 파일의 시간대 칸에 8000·2400 같은 오타가 있는지 확인해 보세요. "
+                       "오른쪽 일자 합산 막대에는 그대로 들어가 있어요.")
         if not _hrs:
             st.info("시간대(hour) 정보가 있는 발송이 없어요.")
         else:
@@ -5793,6 +5815,11 @@ def main():
             _lay["showlegend"] = True
             _lay["legend"] = legend_h()
             _lay["xaxis"]["title"] = "발송 시간대(시)"
+            # 실제로 발송이 있었던 시간만 등간격으로 — 숫자축으로 두면 '08'·'10' 같은
+            # 라벨을 수치로 읽어 빈 시간대까지 눈금을 깔고, 값 하나가 튀면 축이 통째로 늘어난다.
+            _lay["xaxis"]["type"] = "category"
+            _lay["xaxis"]["categoryorder"] = "array"
+            _lay["xaxis"]["categoryarray"] = _xl
             figh.update_layout(**_lay)
 
             # 시간대 라인 옆에 '그 날 통째로' 얼마였는지 막대로 — 시간대 분포와 일자 총량을
@@ -6611,30 +6638,146 @@ def main():
         # ── 피로도 시계열 ──
         if page == "피로도 시계열":
             st.title("피로도 시계열·CTR")
-            st.markdown("인당 누적 발송 빈도 대비 성과 지표(CTR, RPS)의 시계열 추이 분석")
-            gran = st.radio("집계", ["월별", "분기별"], horizontal=True)
-            agg = mtd_data["monthly"] if gran == "월별" else mtd_data["quarterly"]
-            xcol = "month" if gran == "월별" else "quarter"
-            _f1_opts = ["CTR", "구매전환율(CR)", "발송건당거래액(RPS)"]
-            _f1_opts += [o for o in ("총거래액", "총유입") if MTDOPT[o] in agg.columns]
-            ylab = st.selectbox("효율 지표(선·아래)", _f1_opts)
-            yc = MTDOPT[ylab]
-            fig = overlay_dual(agg[xcol], agg["perSend"], "인당 발송 건수",
-                               agg[yc] * (100 if yc in MTD_PCT else 1), ylab,
-                               PALETTE["amber"], MCLR[yc], h=430,
+            st.markdown("발송량 지표와 성과 지표를 같은 기간 축에 겹쳐서 상관을 봐요.")
+
+            # ── 조회 기간 (기본: 전체) ──
+            _md_d = md["date"]
+            _p_lo, _p_hi = _md_d.min().date(), _md_d.max().date()
+            _pc1, _pc2 = st.columns([2, 3])
+            with _pc1:
+                gran = st.radio("집계", ["일별", "주차별", "월별", "분기별"],
+                                horizontal=True, index=2, key="p_fat_gran")
+            with _pc2:
+                if _p_lo < _p_hi:
+                    # key 위젯은 value= 가 최초 1회만 반영된다 — 데이터 범위가 넓어지면
+                    # 손 안 댄 필터는 새 범위로 따라가게 하고, 직접 좁힌 건 경계 안으로만 맞춘다.
+                    _fspan = (_p_lo, _p_hi)
+                    _fprev = st.session_state.get("_p_fat_span")
+                    _fcur = st.session_state.get("p_fat_range")
+                    if _fprev != _fspan:
+                        if _fcur is None or (isinstance(_fcur, (tuple, list))
+                                             and tuple(_fcur) == _fprev):
+                            st.session_state["p_fat_range"] = _fspan
+                        elif isinstance(_fcur, (tuple, list)) and len(_fcur) == 2:
+                            st.session_state["p_fat_range"] = tuple(
+                                min(max(d, _p_lo), _p_hi) for d in _fcur)
+                        st.session_state["_p_fat_span"] = _fspan
+                    _fkw = {} if "p_fat_range" in st.session_state else {"value": _fspan}
+                    _prange = st.date_input("조회 기간", min_value=_p_lo, max_value=_p_hi,
+                                            key="p_fat_range",
+                                            help="기본은 전체 기간이에요.", **_fkw)
+                else:
+                    _prange = (_p_lo, _p_hi)
+                    st.caption(f"단일 일자: {_p_lo}")
+
+            _dsel = md
+            if isinstance(_prange, (tuple, list)) and len(_prange) == 2:
+                _lo, _hi = pd.Timestamp(_prange[0]), pd.Timestamp(_prange[1])
+                _dsel = md[(md["date"] >= _lo) & (md["date"] <= _hi)]
+                if (_prange[0], _prange[1]) != (_p_lo, _p_hi):
+                    st.caption(f"{_prange[0]} ~ {_prange[1]} · {len(_dsel):,}일치로 좁혀서 보고 있어요.")
+            else:
+                st.caption("종료일까지 골라야 기간이 적용돼요. 지금은 전체 기간이에요.")
+
+            if len(_dsel) < 2:
+                st.info("선택한 기간에 데이터가 부족해요. 기간을 넓혀 주세요.")
+                st.stop()
+
+            # ── 선택 기간·간격으로 다시 집계 (미리 계산된 월/분기는 전체 기간 기준이라 못 씀) ──
+            _GKEY = {"일별": None, "주차별": "W", "월별": "M", "분기별": "Q"}
+            _allk = [k for k in (list(MTD_METRICS) + MTD_DERIVED) if k in _dsel.columns]
+            _sumk = [k for k in ("revenue", "totalInflow", "uniqueInflow", "totalSend")
+                     if k in _dsel.columns]
+            if _GKEY[gran] is None:
+                agg = _dsel.copy()
+                agg["_x"] = agg["date"].dt.strftime("%m/%d")
+                for k in _sumk:
+                    agg[f"{k}_sum"] = agg[k]
+            else:
+                _per = _dsel["date"].dt.to_period(_GKEY[gran])
+                agg = (_dsel.groupby(_per, sort=True)
+                       .agg(**{k: pd.NamedAgg(k, "mean") for k in _allk},
+                            **{f"{k}_sum": pd.NamedAgg(k, "sum") for k in _sumk})
+                       .reset_index())
+                _pcol = agg.columns[0]
+                agg["_x"] = (agg[_pcol].dt.start_time.dt.strftime("%y-%m/%d")
+                             if gran == "주차별" else agg[_pcol].astype(str))
+            xcol = "_x"
+
+            # ── 비교할 두 지표 (막대 = 발송량 계열, 선 = 효율 계열) ──
+            _bar_opts = [o for o in ("인당 발송 건수", "총거래액", "총유입", "거래액", "객단가")
+                         if MTDOPT[o] in agg.columns]
+            _line_opts = [o for o in ("CTR", "구매전환율(CR)", "발송건당거래액(RPS)",
+                                      "거래액", "객단가", "총거래액", "총유입")
+                          if MTDOPT[o] in agg.columns]
+            _mc1, _mc2 = st.columns(2)
+            guard_select("p_fat_bar", _bar_opts)
+            xlab = _mc1.selectbox("기준 지표(좌·막대)", _bar_opts, key="p_fat_bar",
+                                  help="보통 발송량이에요. 다른 지표로 바꿔서 상관을 볼 수 있어요.")
+            guard_select("p_fat_line", _line_opts)
+            ylab = _mc2.selectbox("효율 지표(우·선)", _line_opts, key="p_fat_line",
+                                  help="위 기준 지표와 같은 축에 겹쳐서 함께 움직이는지 봐요.")
+            xc, yc = MTDOPT[xlab], MTDOPT[ylab]
+            # 같은 화면에 '거래액'(일평균)과 '총거래액'(기간 합계)이 같이 있어서, 집계 기준을
+            # 안 적어 두면 월별 거래액을 월 합계로 오해한다.
+            if gran != "일별":
+                _agg_note = "일별 값의 <b>평균</b>" if not (xc.endswith("_sum") or yc.endswith("_sum")) \
+                    else "일별 값의 <b>평균</b>(‘총거래액·총유입’만 <b>기간 합계</b>)"
+                st.markdown(f'<div class="appendix">{gran} 값은 {_agg_note}이에요. '
+                            f'예: 월별 ‘거래액’은 그 달의 <b>하루 평균</b> 거래액이고, '
+                            f'월 전체 합계는 ‘총거래액’이에요.</div>', unsafe_allow_html=True)
+
+            _xv = agg[xc] * (100 if xc in MTD_PCT else 1)
+            _yv = agg[yc] * (100 if yc in MTD_PCT else 1)
+            fig = overlay_dual(agg[xcol], _xv, xlab, _yv, ylab,
+                               MCLR.get(xc, PALETTE["amber"]), MCLR.get(yc, PALETTE["blue"]),
+                               h=430,
                                line_suffix=("%" if yc in MTD_PCT else ""),
-                               title=f"인당 발송 건수(좌·막대) ↔ {ylab}(우·선)")
+                               title=f"{xlab}(좌·막대) ↔ {ylab}(우·선)")
             st.plotly_chart(fig, width="stretch")
 
+            # ── 두 지표의 상관 — 눈으로만 보면 착시가 생긴다 ──
+            _cx = pd.to_numeric(_xv, errors="coerce")
+            _cy = pd.to_numeric(_yv, errors="coerce")
+            _cm = _cx.notna() & _cy.notna()
+            if int(_cm.sum()) >= 3:
+                _r = float(np.corrcoef(_cx[_cm], _cy[_cm])[0, 1])
+                _rr = _linreg(_cx[_cm].values, _cy[_cm].values)
+                _dir = "같이 오르내려요" if _r > 0 else "반대로 움직여요"
+                _str = ("뚜렷해요" if abs(_r) >= 0.7 else
+                        "어느 정도 보여요" if abs(_r) >= 0.4 else "약해요")
+                st.markdown(
+                    f'<div class="appendix"><b>{xlab} ↔ {ylab} 상관계수 r = {_r:+.2f}</b> '
+                    f'({gran} {int(_cm.sum())}개 구간) — {_dir}. 관계 강도는 {_str}'
+                    + (f' · 유의성 {sig_label(_rr["p"])}' if np.isfinite(_rr.get("p", np.nan)) else "")
+                    + '<br>상관은 인과가 아니에요. 시즌·행사가 두 지표를 같이 밀어 올렸을 수 있어요.</div>',
+                    unsafe_allow_html=True)
+            else:
+                st.caption("구간이 3개 미만이라 상관계수는 계산하지 않았어요.")
+
             st.markdown("##### 추세 분석")
+            # 기간을 좁히면 추세도 그 기간으로 다시 재야 한다 (mtd_data["reg"]는 전체 기간 기준)
+            _full = (len(_dsel) == len(md))
+            if _full:
+                _regs = mtd_data["reg"]
+            else:
+                _t = np.arange(len(_dsel), dtype=float)
+                _regs = {k: _linreg(_t, _dow_residual(_dsel, k) if k != "perSend"
+                                    else _dsel[k].values.astype(float))
+                         for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]
+                         if k in _dsel.columns}
             rows = []
             for k in ["perSend", "ctr", "purchaseRate", "rps", "revenue"]:
-                r = mtd_data["reg"][k]
+                r = _regs.get(k)
+                if r is None:
+                    continue
                 unit = "%p/일" if k in MTD_PCT else ("원/일" if k in ("rps", "revenue") else "/일")
                 sl = r["slope"] * (100 if k in MTD_PCT else 1)
                 rows.append(dict(지표=MTD_LABELS[k], **{"일변화": f"{sl:+.4g}{unit}"},
                                  R2=f"{r['r2']:.3f}", 유의성=sig_label(r["p"])))
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            if not _full:
+                st.caption(f"선택한 기간({len(_dsel):,}일) 기준으로 다시 계산했어요.")
             st.markdown('<div class="appendix">인당 발송량은 느는데 CTR·주문CR·RPS가 같이 떨어지면 피로도가 한계에 왔다는 신호일 수 있어요. '
                         '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 얼마나 잘 들어맞는지예요. 1에 가까우면 경향이 뚜렷하고, 0에 가까우면 들쭉날쭉해요. '
                         '· <b>유의성</b>: 그 추세가 우연인지 아닌지예요. ‘유의함’이면 우연이 아닌 일관된 흐름으로 봐도 돼요.</div>',
