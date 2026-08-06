@@ -1,11 +1,19 @@
 ---
 name: lf-dashboard-dev
-description: 발송성과(send_perf_dashboard.py)·주간보고(weekly_report.py) 대시보드 작업 절차. 페이지·하위탭·차트 추가, 화면 문구 대량 수정, 버그 재현·수정, 검사 통과 후 PR·머지·브랜치 동기화까지의 순서를 다룬다. 규칙 자체는 CLAUDE.md에 있고 이 스킬은 "어떤 순서로 하는지"다.
+description: 발송성과(send_perf_dashboard.py)·주간보고(weekly_report.py) 대시보드 작업 절차. 페이지·하위탭·차트 추가, 화면 문구 대량 수정, 버그 재현·수정, 실백업으로 버그 찾기, 검사 통과 후 PR·머지·브랜치 동기화까지의 순서를 다룬다. 규칙 자체는 CLAUDE.md에 있고 이 스킬은 "어떤 순서로 하는지"다.
 ---
 
 ## 언제 사용하나
 이 저장소의 두 Streamlit 대시보드를 손댈 때. 새 페이지·하위탭·차트를 넣거나, 화면
-문구를 여러 개 한꺼번에 바꾸거나, 버그 리포트를 받아 고치거나, 머지 직전 점검할 때.
+문구를 여러 개 한꺼번에 바꾸거나, 버그 리포트를 받아 고치거나, 리포트 없이 "디버깅해줘"를
+받거나, 머지 직전 점검할 때.
+
+| 상황 | 워크플로 |
+|------|----------|
+| 새 페이지·하위탭·차트 | A |
+| 화면 문구 대량 수정 | B |
+| 버그 리포트를 받음 | C |
+| 리포트 없이 버그 찾기 | D (실백업 필요) |
 
 ## 먼저 읽을 것
 `CLAUDE.md`의 **테스트·CI** / **전역 헬퍼 섀도잉 금지** / **기간 비교 규칙** /
@@ -59,11 +67,12 @@ print(at.exception[0].value if at.exception else "OK")
 
 ### A5. 검사
 ```bash
-python tests/check_shadowing.py && python tests/test_plan_merge.py && python tests/smoke_pages.py
+python tests/check_shadowing.py && python tests/test_plan_merge.py \
+  && python tests/test_brand_classify.py && python tests/smoke_pages.py
 ```
 스모크는 페이지 목록을 앱에서 직접 읽고 하위탭까지 순회하므로, 새 탭은 **자동으로**
 커버된다. 따로 테스트를 추가할 필요 없다.
-**Done when:** 섀도잉 0건, 문구 조인 8건, 스모크 전부 OK.
+**Done when:** 섀도잉 0건, 문구 조인 8건, 브랜드 28건, 스모크 전부 OK.
 
 > 데이터 파싱·조인(`parse_perf_bytes` · `_parse_plan_sheet` · `merge_perf_plan` ·
 > `parse_plan_gsheet`)을 건드렸으면 `test_plan_merge.py`가 본검사다. 조인이 깨져도
@@ -104,8 +113,9 @@ for n in ast.walk(t):
 ```bash
 python -m compileall -q send_perf_dashboard.py weekly_report.py
 python tests/check_shadowing.py && python tests/test_plan_merge.py \
-  && python tests/test_brand_classify.py && python tests/smoke_pages.py \
-  && python tests/test_filter_follows_upload.py && python tests/smoke_weekly_report.py
+  && python tests/test_brand_classify.py && python tests/test_store_layer.py \
+  && python tests/smoke_pages.py && python tests/test_filter_follows_upload.py \
+  && python tests/smoke_weekly_report.py
 ```
 바꾼 문구가 **로직에 쓰이지 않는지** 교차 검증한다(비교문·딕셔너리 키·인덱싱).
 페이지 분기 문자열·컬럼명·세션 키를 건드리면 앱이 조용히 망가진다.
@@ -135,12 +145,63 @@ python tests/check_shadowing.py && python tests/test_plan_merge.py \
 
 ---
 
+## 워크플로 D — 리포트 없이 버그 찾기 ("디버깅해줘")
+
+**합성 데이터로는 안 나온다.** 실백업 ZIP(대시보드 9번 페이지에서 받음)을 받아
+아래 순서로 훑는다. 실제로 이 순서에서 브랜드 오탐 6종과 앱 전면 다운 1건이 나왔다.
+
+### D1. 실데이터로 전 페이지 렌더
+`session_state`에 직접 주입하지 말 것 — `finalize_*`를 우회해서 실제와 다른 경로를 탄다.
+**임시 디렉터리에 로컬 스토어 CSV로 깔고 `os.chdir`** 해서 앱의 진짜 로드 경로를 태운다.
+
+| 백업 파일 | 로컬 스토어 이름 |
+|---|---|
+| `campaign.csv` | `send_perf_store.csv` |
+| `mtd.csv` | `send_perf_mtd_store.csv` |
+| `promo.csv` | `send_perf_promo_store.csv` |
+| `push_consent.csv` | `send_perf_push_store.csv` |
+| `notes.csv` | `send_perf_notes.csv` |
+
+`data/` 폴더도 같이 복사해야 브랜드 사전이 로드된다.
+
+### D2. 0건 유도 시나리오
+세션 키에 값을 넣고 전 페이지·하위탭을 돌린다. **1.2만 건으로 돌리면 몇 시간** 걸리니
+표본 800건이면 충분하다(목적이 규모가 아니라 빈 결과 코드 경로다).
+
+```python
+{"flt_q": "zzzqqq없는문자열"}                     # 검색 0건
+{"flt_brand2": ["헤지스"], "flt_minsend": 9_000_000}  # 필터 교집합 0건
+{"flt_date": (하루, 같은하루)}                      # 단일 일자
+{"flt_matched": False}                            # 미매칭 포함(날짜 없는 행 유입)
+```
+
+빈 저장소(신규 배포)도 같이 볼 것 — 페이지 라디오가 아예 없고 안내 화면이 정상이다.
+
+### D3. 브랜드 분류 감사
+```bash
+python tools/audit_brand_classify.py <백업.zip> --min 40
+```
+브랜드 목록에 일반어가 보이면 `BRAND_STOP` 후보, 미분류 상위에 실제 브랜드가 보이면
+`BRAND_ALIAS`/`BRAND_CODE_ALIAS` 후보다.
+
+### D4. 데이터 이상값 스캔
+`_finalize` + `add_tags` 통과 후 확인: CTR/주문CR > 100%, rps·aov 무한대·음수,
+`dt` 결측, 저장소 중복 키(`store_key_frame`). **이상값이 있어도 기본 필터
+(최소 발송수 5,000·문구 매칭된 것만)가 막고 있는지**까지 확인해야 진짜 버그인지 갈린다.
+
+### D5. 날짜 연산
+전년/전월 동요일을 연말·53주차·윤년으로 태워 **요일이 보존되는지** 본다
+(2026-12-31, 2027-01-04, 2024-02-29, 2020-12-28 등).
+
+---
+
 ## 머지 절차
 
 ```bash
 python tests/check_shadowing.py && python tests/test_plan_merge.py \
-  && python tests/test_brand_classify.py && python tests/smoke_pages.py \
-  && python tests/test_filter_follows_upload.py && python tests/smoke_weekly_report.py
+  && python tests/test_brand_classify.py && python tests/test_store_layer.py \
+  && python tests/smoke_pages.py && python tests/test_filter_follows_upload.py \
+  && python tests/smoke_weekly_report.py
 git add -A && git commit -m "..."
 git fetch origin main && git merge-base --is-ancestor origin/main HEAD && echo "main 포함 OK"
 git push -u origin "$(git branch --show-current)"
@@ -175,3 +236,5 @@ git push -u origin "$(git branch --show-current)"
 | 평범한 문구가 엉뚱한 브랜드로 태깅됨 | 짧은 입점 브랜드('객'·'갭')가 일반 문장에 박힘 | `BRAND_STOP` 추가 · `test_brand_classify.py` |
 | 사전을 고쳤는데 화면은 옛 분류 | `BRANDSET_VER` 해시 입력에 새 요소 누락 | TAGSET_VER에 물려 캐시 무효화되는지 확인 |
 | 옛 실적 재업로드 시 문구 미매칭 | `parse_plan_gsheet`가 최근 N주(기본 12)만 읽음 | 사이드바 '가져올 최근 주차 수'를 늘림 |
+| 브랜드가 긴 단어 속에 오탐 | 클리어'런스'·업'데이트' — 앞 글자 경계 검사 누락 | `_brand_boundary_ok` · `BRAND_STOP` |
+| 앱 전체 다운 `str vs Timestamp` | push 저장소가 `finalize_push()`를 안 거침 (사이드바 경로) | `python tests/test_store_layer.py` |
