@@ -54,6 +54,9 @@ jobs:
       - name: 브랜드 자동 분류 검사
         run: python tests/test_brand_classify.py
 
+      - name: 저장소 계층(dtype 방어) 검사
+        run: python tests/test_store_layer.py
+
       - name: 발송성과 전 페이지 렌더 스모크
         run: python tests/smoke_pages.py
 
