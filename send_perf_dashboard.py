@@ -6720,6 +6720,7 @@ def main():
             _allk = [k for k in (list(MTD_METRICS) + MTD_DERIVED) if k in _dsel.columns]
             _sumk = [k for k in ("revenue", "totalInflow", "uniqueInflow", "totalSend")
                      if k in _dsel.columns]
+            _partial = []                                 # 일수가 모자란 구간 라벨
             if _GKEY[gran] is None:
                 agg = _dsel.copy()
                 agg["_x"] = agg["date"].dt.strftime("%m/%d")
@@ -6728,12 +6729,23 @@ def main():
             else:
                 _per = _dsel["date"].dt.to_period(_GKEY[gran])
                 agg = (_dsel.groupby(_per, sort=True)
-                       .agg(**{k: pd.NamedAgg(k, "mean") for k in _allk},
+                       .agg(_n=pd.NamedAgg("date", "size"),
+                            **{k: pd.NamedAgg(k, "mean") for k in _allk},
                             **{f"{k}_sum": pd.NamedAgg(k, "sum") for k in _sumk})
                        .reset_index())
                 _pcol = agg.columns[0]
                 agg["_x"] = (agg[_pcol].dt.start_time.dt.strftime("%y-%m/%d")
                              if gran == "주차별" else agg[_pcol].astype(str))
+                # 합계 지표(총거래액·총유입)는 구간 길이에 그대로 비례한다 — 첫·끝 구간이
+                # 잘려 있으면 값이 뚝 떨어져 '급락'으로 오독된다. 며칠짜리인지 세어 표시한다.
+                #
+                # 하루 이틀 빠진 달(29/30)까지 빼면 멀쩡한 데이터를 통째로 잃는다 —
+                # 합계가 3% 낮은 건 절벽이 아니다. 8할도 안 차는 구간만 '잘렸다'고 본다.
+                agg["_full"] = agg[_pcol].map(lambda p: (p.end_time.normalize()
+                                                         - p.start_time.normalize()).days + 1)
+                agg["_part"] = agg["_n"] < agg["_full"] * 0.8
+                _partial = [f"{r['_x']}({int(r['_n'])}/{int(r['_full'])}일)"
+                            for _, r in agg.loc[agg["_part"]].iterrows()]
             xcol = "_x"
 
             # ── 비교할 두 지표 (막대 = 발송량 계열, 선 = 효율 계열) ──
@@ -6753,14 +6765,43 @@ def main():
             ylab = _mc2.selectbox("효율 지표(우·선)", _line_opts, key="p_fat_line",
                                   help="위 기준 지표와 같은 축에 겹쳐서 함께 움직이는지 봐요.")
             xc, yc = MTDOPT[xlab], MTDOPT[ylab]
+            _uses_sum = xc.endswith("_sum") or yc.endswith("_sum")
+
+            # 첫·끝 구간이 잘려 있으면 합계 지표가 뚝 떨어져 '급락'으로 오독된다.
+            # (6일치 8월의 총유입은 30일치 7월의 20% — 하루 평균은 같은데도)
+            if _partial:
+                _drop = st.checkbox(
+                    f"잘린 구간 {len(_partial)}개 빼기 — {', '.join(_partial[:3])}"
+                    + ("…" if len(_partial) > 3 else ""),
+                    value=True, key="p_fat_dropparts",
+                    help="합계 지표(총거래액·총유입)는 구간이 짧으면 그만큼 낮게 나와요. "
+                         "끝 달이 며칠치뿐이면 급락처럼 보입니다. "
+                         "일수가 8할도 안 차는 구간만 잡아요.")
+                if _drop:
+                    agg = agg[~agg["_part"]].reset_index(drop=True)
+                    if len(agg) < 2:
+                        st.info("일수가 모자란 구간을 빼면 남는 구간이 부족해요. "
+                                "체크를 해제하거나 기간을 넓혀 주세요.")
+                        st.stop()
+                elif _uses_sum:
+                    _pn = agg.loc[agg["_part"], ["_x", "_n", "_full"]]
+                    st.warning("⚠️ 합계 지표를 보고 있는데 일수가 모자란 구간이 섞여 있어요 — "
+                               "값이 낮은 게 성과 하락이 아니라 **기간이 짧아서**일 수 있어요: "
+                               + " · ".join(f"{r['_x']} {int(r['_n'])}/{int(r['_full'])}일"
+                                            for _, r in _pn.iterrows()))
+
             # 같은 화면에 '거래액'(일평균)과 '총거래액'(기간 합계)이 같이 있어서, 집계 기준을
             # 안 적어 두면 월별 거래액을 월 합계로 오해한다.
             if gran != "일별":
-                _agg_note = "일별 값의 <b>평균</b>" if not (xc.endswith("_sum") or yc.endswith("_sum")) \
+                _agg_note = "일별 값의 <b>평균</b>" if not _uses_sum \
                     else "일별 값의 <b>평균</b>(‘총거래액·총유입’만 <b>기간 합계</b>)"
                 st.markdown(f'<div class="appendix">{gran} 값은 {_agg_note}이에요. '
                             f'예: 월별 ‘거래액’은 그 달의 <b>하루 평균</b> 거래액이고, '
-                            f'월 전체 합계는 ‘총거래액’이에요.</div>', unsafe_allow_html=True)
+                            f'월 전체 합계는 ‘총거래액’이에요.'
+                            + ('<br><b>합계 지표는 구간 길이에 비례해요</b> — 잘린 구간과 온전한 '
+                               '구간을 나란히 놓고 비교하지 마세요. 추세만 보려면 일평균 지표'
+                               '(‘거래액’·‘유입률(발송당)’)가 더 안전해요.' if _uses_sum else '')
+                            + '</div>', unsafe_allow_html=True)
 
             _xv = agg[xc] * (100 if xc in MTD_PCT else 1)
             _yv = agg[yc] * (100 if yc in MTD_PCT else 1)
