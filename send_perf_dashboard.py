@@ -6662,15 +6662,12 @@ def main():
                     "| **CTR(고객당)** | 유니크유입 ÷ 유니크발송고객수 | 접촉한 고객 중 몇 %를 데려왔나 |\n")
                 st.markdown(
                     "**피로도를 볼 거면 「유입률(발송당)」이 맞아요.** CTR(고객당)은 분모인 "
-                    "유니크 고객 수가 거의 고정이라(변동계수 0.15 vs 총발송 0.32), 같은 사람에게 "
-                    "더 보내도 지표가 잘 안 움직여서 **피로도를 과소평가**해요.\n\n"
-                    "실제 데이터에서 인당 발송이 2건 → 4.5건으로 갈 때 "
-                    "**CTR(고객당)은 −35%** 떨어지는데 **유입률(발송당)은 −74%** 떨어져요. "
-                    "발송을 63% 늘렸는데 **유니크 유입은 오히려 2% 줄었거든요** — "
-                    "반응할 사람은 첫 메시지에 이미 반응한다는 뜻이에요.\n\n"
+                    "유니크 고객 수가 거의 고정이라, 같은 사람에게 더 보내도 지표가 잘 안 움직여서 "
+                    "**피로도를 과소평가**해요. 얼마나 차이 나는지는 아래 "
+                    "**「피로도 진단」** 에서 이 데이터로 직접 계산해 보여드려요.\n\n"
                     "대신 **타겟 규모를 정할 땐 CTR(고객당)** 이 맞아요. "
                     "'이 세그먼트에 뿌리면 몇 명이 들어오나'를 보는 지표라서요.\n\n"
-                    "두 지표를 직접 겹쳐 보려면 위 **기준 지표(좌·막대)** 에서 하나, "
+                    "두 지표를 직접 겹쳐 보려면 **기준 지표(좌·막대)** 에서 하나, "
                     "**효율 지표(우·선)** 에서 다른 하나를 고르세요.")
                 st.caption("이 페이지는 **전사 발송**이고 캠페인 페이지는 **CRM 발송**만이라, "
                            "기준을 맞춰도 값 자체는 서로 달라요. 추이 비교용으로 보세요.")
@@ -6816,6 +6813,82 @@ def main():
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
             if not _full:
                 st.caption(f"선택한 기간({len(_dsel):,}일) 기준으로 다시 계산했어요.")
+
+            # ── 피로도 진단 — 선택한 기간의 실제 숫자로 계산한다 (하드코딩하면 금방 낡는다) ──
+            _need = {"perSend", "totalSend", "uniqueInflow", "totalInflow", "ctr", "ctr_send"}
+            if _need <= set(_dsel.columns) and len(_dsel) >= 20:
+                with st.expander("🩺 피로도 진단 — 더 보내면 정말 더 들어올까", expanded=False):
+                    _fd = _dsel.dropna(subset=["perSend", "totalSend", "uniqueInflow", "totalInflow"])
+                    _med = _fd["perSend"].median()
+                    _lo, _hi = _fd[_fd["perSend"] <= _med], _fd[_fd["perSend"] > _med]
+                    if len(_lo) >= 5 and len(_hi) >= 5:
+                        def _chg(c):
+                            a, b = _lo[c].mean(), _hi[c].mean()
+                            return a, b, ((b / a - 1) * 100 if a else np.nan)
+                        _rowsf = []
+                        for _c, _nm in (("perSend", "인당 발송 건수"), ("totalSend", "총발송"),
+                                        ("uniqueInflow", "유니크 유입"), ("totalInflow", "총유입")):
+                            a, b, p = _chg(_c)
+                            _rowsf.append({"항목": _nm,
+                                           "인당발송 적은 날": f"{a:,.2f}" if _c == "perSend" else f"{a:,.0f}",
+                                           "많은 날": f"{b:,.2f}" if _c == "perSend" else f"{b:,.0f}",
+                                           "변화": f"{p:+.1f}%" if np.isfinite(p) else "–"})
+                        st.markdown(f"**인당 발송 중앙값({_med:.2f}건) 기준으로 나눠 본 결과**")
+                        st.dataframe(pd.DataFrame(_rowsf), hide_index=True, width="stretch")
+                        _, _, _dsend = _chg("totalSend")
+                        _, _, _duniq = _chg("uniqueInflow")
+                        _, _, _dtot = _chg("totalInflow")
+                        if np.isfinite(_dsend) and np.isfinite(_duniq) and _dsend > 5:
+                            if _duniq < _dsend / 3:
+                                st.markdown(
+                                    f'<div class="appendix">발송을 <b>{_dsend:+.0f}%</b> 늘렸는데 '
+                                    f'<b>유니크 유입은 {_duniq:+.0f}%</b>에 그쳤어요'
+                                    + (f' (총유입은 {_dtot:+.0f}%).' if np.isfinite(_dtot) else '.')
+                                    + ' 더 보낸 만큼 <b>새로 들어온 사람이 늘지 않았다</b>는 뜻이에요 — '
+                                      '같은 사람이 여러 번 들어온 쪽에 가까워요. '
+                                      '반응할 사람은 첫 메시지에 이미 반응한다는 신호라, '
+                                      '발송량을 늘리기보다 <b>미반응 고객을 깨우는 쪽</b>'
+                                      '(타겟·오퍼·채널 변경)이 남는 장사일 수 있어요.</div>',
+                                    unsafe_allow_html=True)
+                            else:
+                                st.markdown(
+                                    f'<div class="appendix">발송 <b>{_dsend:+.0f}%</b>에 대해 '
+                                    f'유니크 유입이 <b>{_duniq:+.0f}%</b> 따라왔어요. '
+                                    '아직 발송을 늘린 만큼 신규 반응이 붙는 구간이에요.</div>',
+                                    unsafe_allow_html=True)
+
+                    # 두 CTR이 같은 구간에서 얼마나 다르게 떨어지는지
+                    _fd = _fd.copy()
+                    _fd["_b"] = pd.cut(_fd["perSend"], [0, 2, 2.5, 3, 3.5, 4, 4.5, 99],
+                                       labels=["~2.0", "2.0~2.5", "2.5~3.0", "3.0~3.5",
+                                               "3.5~4.0", "4.0~4.5", "4.5+"])
+                    _bg = (_fd.groupby("_b", observed=True)
+                           .agg(일수=("ctr", "size"), _c=("ctr", "mean"), _s=("ctr_send", "mean"))
+                           .reset_index())
+                    _bg = _bg[_bg["일수"] >= 10]
+                    if len(_bg) >= 3:
+                        _c0, _s0 = _bg["_c"].iloc[0], _bg["_s"].iloc[0]
+                        _bg["CTR(고객당)"] = (_bg["_c"] * 100).map(lambda v: f"{v:.2f}%")
+                        _bg["지수 "] = (_bg["_c"] / _c0 * 100).map(lambda v: f"{v:.0f}")
+                        _bg["유입률(발송당)"] = (_bg["_s"] * 100).map(lambda v: f"{v:.2f}%")
+                        _bg["지수"] = (_bg["_s"] / _s0 * 100).map(lambda v: f"{v:.0f}")
+                        st.markdown("**인당 발송 구간별 — 두 지표가 다르게 읽히는 이유**")
+                        st.dataframe(_bg[["_b", "일수", "CTR(고객당)", "지수 ",
+                                          "유입률(발송당)", "지수"]]
+                                     .rename(columns={"_b": "인당 발송"}),
+                                     hide_index=True, width="stretch")
+                        _dc = (_bg["_c"].iloc[-1] / _c0 - 1) * 100
+                        _ds2 = (_bg["_s"].iloc[-1] / _s0 - 1) * 100
+                        st.markdown(
+                            f'<div class="appendix">첫 구간 대비 마지막 구간에서 '
+                            f'<b>CTR(고객당) {_dc:+.0f}%</b> · '
+                            f'<b>유입률(발송당) {_ds2:+.0f}%</b>. '
+                            + ('발송당 기준이 훨씬 가파르게 떨어져요 — 고객당 기준은 분모(유니크 고객)가 '
+                               '거의 고정이라 피로도를 덜 보여줘요. '
+                               if _ds2 < _dc else
+                               '이 기간엔 두 기준의 하락 폭이 비슷해요. ')
+                            + '지수는 첫 구간을 100으로 놓은 상대값이에요.</div>',
+                            unsafe_allow_html=True)
             st.markdown('<div class="appendix">인당 발송량은 느는데 CTR·주문CR·RPS가 같이 떨어지면 피로도가 한계에 왔다는 신호일 수 있어요. '
                         '<br>· <b>R²(결정계수, 0~1)</b>: 추세선이 얼마나 잘 들어맞는지예요. 1에 가까우면 경향이 뚜렷하고, 0에 가까우면 들쭉날쭉해요. '
                         '· <b>유의성</b>: 그 추세가 우연인지 아닌지예요. ‘유의함’이면 우연이 아닌 일관된 흐름으로 봐도 돼요.</div>',
