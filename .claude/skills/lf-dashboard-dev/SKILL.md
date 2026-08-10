@@ -238,3 +238,5 @@ git push -u origin "$(git branch --show-current)"
 | 옛 실적 재업로드 시 문구 미매칭 | `parse_plan_gsheet`가 최근 N주(기본 12)만 읽음 | 사이드바 '가져올 최근 주차 수'를 늘림 |
 | 브랜드가 긴 단어 속에 오탐 | 클리어'런스'·업'데이트' — 앞 글자 경계 검사 누락 | `_brand_boundary_ok` · `BRAND_STOP` |
 | 앱 전체 다운 `str vs Timestamp` | push 저장소가 `finalize_push()`를 안 거침 (사이드바 경로) | `python tests/test_store_layer.py` |
+| 받은 엑셀만 색이 다 빠짐 | `Styler._translate()`가 끝나면서 `ctx`를 비움 — 표시값을 먼저 읽으면 색이 날아감 | `_compute()`로 색 먼저 → 그다음 `_translate()` · `test_table_export.py` |
+| 받은 엑셀 숫자가 문자로 들어옴 | 표시 문자열을 그대로 씀 | 값은 숫자 + `number_format` (`_xl_numfmt`) |

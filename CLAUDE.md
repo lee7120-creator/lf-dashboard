@@ -519,6 +519,10 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   컬럼 컨테이너 안이면 `with col:` 로 감싸고 `table()`을 부를 것(`col.dataframe`은 안 됨).
   내보내기 본체는 `table_export.py`(두 앱 공용) — 값은 **숫자 + 엑셀 표시형식**으로
   넣는다. 문자열로 넣으면 받는 쪽에서 정렬·합계가 안 된다.
+  Styler로 입힌 **글자색·굵기·셀 배경도 그대로 따라간다**(`△` 빨강 / `+` 초록).
+  단 `Styler._translate()`는 **끝나면서 `ctx`를 비우므로**, 색은 `_compute()` 직후에
+  먼저 떠 놓고 표시값을 나중에 읽어야 한다. 순서를 바꾸면 색만 조용히 사라진다
+  (`test_table_export.py`의 `t_delta_font_color_carries_to_excel`이 잡는다).
 - **업로드 문구(title/body)를 unsafe_allow_html로 렌더할 땐 반드시 `esc()`** (실데이터에
   'F&C' 같은 &·< 포함 문구가 있어 태그로 오해석됨). **AI 응답 렌더는 `safe_ai_html()`**
   (프롬프트에 사용자 문구가 들어가므로 script/이벤트핸들러 제거 — span 색상은 보존됨).
