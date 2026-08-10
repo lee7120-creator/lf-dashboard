@@ -27,7 +27,8 @@ python tests/check_shadowing.py           # 몇 초 — 전역 헬퍼 섀도잉 
 python tests/test_plan_merge.py           # 몇 초 — 실적↔기획 문구 조인 (날짜·AF 키)
 python tests/test_brand_classify.py       # 몇 초 — 브랜드 자동 분류 (오탐 방어)
 python tests/test_store_layer.py          # 몇 초 — push dtype 방어 (문자열 라운드트립)
-python tests/test_table_export.py         # 몇 초 — 표 엑셀 내보내기 (숫자 서식)
+python tests/test_table_export.py         # 몇 초 — 표 엑셀 내보내기 (숫자 서식·글자색)
+python tests/test_hour_norm.py            # 몇 초 — 발송 시간대 자동 보정 (2400·8000)
 python tests/smoke_pages.py               # 몇 분 — 발송성과 전 페이지·하위탭 렌더
 python tests/test_filter_follows_upload.py # 몇 분 — 업로드 후 기간 필터·차트 레이블
 python tests/smoke_weekly_report.py       # 몇 분 — 주간보고 전 페이지·라디오 렌더
@@ -491,6 +492,10 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
 - **소구 속성 시리즈 색은 `tag_color(속성명)`** — TAG_BOOLS 순서에 고정. 필터가 바뀌어도 같은 속성=같은 색.
 - 시간대(HHMM) 표시는 반드시 `fmt_hhmm()`(차트/표) 또는 `_hm_label()`(셀렉트박스 format_func).
   `int(hour)`를 그대로 문자열에 붙이면 1050 → "1050시" 버그가 된다.
+- **시간대 해석의 단일 창구는 `norm_hhmm()`** — `hour_of_day`·`fmt_hhmm`·`hhmm_to_minutes`가
+  전부 이걸 쓴다. 보정은 **`_finalize`에서 한 번만**(파싱·저장소 로드 공통). 화면마다
+  따로 고치면 슬롯 집계는 원값(`8000`), 차트는 보정값(`800`)으로 갈려 같은 발송이
+  두 줄로 쪼개진다.
 - `use_container_width` 금지(Streamlit 제거 예정) — **`width="stretch"`** 사용.
 - `st.components.v1.html` 금지(2026-06-01 제거 예정, 이미 지남) — **`st.iframe(html, height=)`** 사용.
 - **선이 3개 넘는 라인차트에 모든 시리즈 데이터 레이블을 켜지 말 것.** 값이 비슷한 구간에서
@@ -575,6 +580,12 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
 - 기획 시트명은 무슬래시 형식(`1월 1주차(1229~14)`) — `_week_sheet_end_date`가 'N월' 힌트로 분해.
 - 6자리 날짜 오타(`250111`)는 `_norm_date`가 `20`을 붙여 복구.
 - 매칭 키는 `(date, af)` 정확 일치 — AF코드만으로 폴백하면 매주 재사용되는 코드라 엉뚱한 문구가 붙는다.
+- 시간대 칸도 수기 입력이라 흔들린다. `norm_hhmm`이 **근거가 있는 두 가지만** 복구한다:
+  `2400`→자정(오타가 아니라 24시 표기 — 실백업에서 `야간푸시` 카테고리에 `0`과 공존),
+  `8000`→`800`(뒤 0 오타 — 같은 AF코드·같은 문구가 전부 `800` 발송).
+  **`HH00` 꼴일 때만** 뒤 0을 떼서, `2460`을 `02:46` 같은 없는 시각으로 지어내지 않는다.
+  복구 못 하면 NaN으로 두고 화면에 몇 건인지 띄운다 — 조용히 지어내는 것보다 낫다.
+  규칙을 손대면 `test_hour_norm.py`가 본검사다 (실백업 근거를 주석에 남겨 둘 것).
 
 ### 브랜드 자동 분류 (brand2 · sales_org · brand_kind)
 실적 엑셀의 `브랜드` 칸은 **담당자 수기 입력이라 캠페인명·행사명이 섞여 있다**

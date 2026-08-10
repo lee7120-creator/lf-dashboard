@@ -240,3 +240,5 @@ git push -u origin "$(git branch --show-current)"
 | 앱 전체 다운 `str vs Timestamp` | push 저장소가 `finalize_push()`를 안 거침 (사이드바 경로) | `python tests/test_store_layer.py` |
 | 받은 엑셀만 색이 다 빠짐 | `Styler._translate()`가 끝나면서 `ctx`를 비움 — 표시값을 먼저 읽으면 색이 날아감 | `_compute()`로 색 먼저 → 그다음 `_translate()` · `test_table_export.py` |
 | 받은 엑셀 숫자가 문자로 들어옴 | 표시 문자열을 그대로 씀 | 값은 숫자 + `number_format` (`_xl_numfmt`) |
+| 시간축이 0~80시까지 늘어남 | 수기 입력 `8000`·`2400`을 검증 없이 `//100` | `norm_hhmm` 경유 · `python tests/test_hour_norm.py` |
+| 같은 08시 발송이 슬롯 표에 두 줄 | 화면마다 따로 보정 — 집계는 원값, 차트는 보정값 | 보정은 `_finalize` 한 곳에서만 |
