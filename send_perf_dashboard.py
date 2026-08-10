@@ -191,6 +191,12 @@ def _finalize(df):
     for c in NUM_COLS:
         if c in df:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+    # 시간대는 여기서 한 번만 표준 HHMM으로 맞춘다. 화면마다 따로 고치면 슬롯 집계·
+    # 필터 선택지는 원값(8000)으로, 차트는 보정값(800)으로 갈려 두 줄로 쪼개진다.
+    # dtype은 float64로 유지할 것 — object로 바뀌면 필터의 astype(str) 비교가
+    # '800.0'에서 '800'으로 달라져 시간대 선택이 조용히 아무것도 못 고른다.
+    if "hour" in df:
+        df["hour"] = pd.to_numeric(df["hour"].map(norm_hhmm), errors="coerce")
     # 분모(발송/주문)가 0·결측이면 0이 아니라 NaN — 0으로 넣으면 평균·BOTTOM 순위가
     # '가짜 0원 캠페인'에 체계적으로 끌려 내려간다 (표시부는 NaN을 '–'로 처리)
     df["rps"] = np.where(df["send"].fillna(0) > 0, df["amt"] / df["send"], np.nan)  # 발송건당 거래액
@@ -2006,12 +2012,21 @@ def ols_effects(df, attr_cols, ctrl_cols, ycol):
     return pd.DataFrame(rows).sort_values("순효과", ascending=False).reset_index(drop=True)
 
 
-def hour_of_day(v):
-    """발송 시간대(HHMM 또는 H 정수) → 0~23 시(int). 범위를 벗어나면 None.
+def norm_hhmm(v):
+    """발송 시간대 원값 → 표준 HHMM(int). 못 읽으면 None. **시간 해석의 단일 창구.**
 
-    실적 엑셀에 '8000'(800 오타)·'2400' 같은 값이 실제로 들어온다. 범위 검증 없이
-    `v // 100`만 하면 80시·24시가 그대로 나와서 시간축이 0~80까지 늘어난다.
-    HHMM 해석이 필요한 곳은 전부 이 함수를 쓸 것.
+    실적 엑셀의 시간대 칸은 수기 입력이라 표준 HHMM이 아닌 값이 섞인다. 범위 검증
+    없이 `v // 100`만 하면 80시·24시가 그대로 나와 시간축이 0~80까지 늘어난다.
+    아래 두 가지는 **실백업에서 근거를 확인하고** 복구한다.
+
+    | 원값 | 복구 | 근거 |
+    |------|------|------|
+    | `2400`~`2459` | `0`~`59` (자정) | 오타가 아니라 24시 표기다. 같은 `야간푸시` 카테고리에 `0`(4건)과 `2400`(3건)이 공존한다 |
+    | `8000` | `800` | 뒤에 0을 하나 더 친 오타. 해당 AF코드(AP59·AP60)의 평소 발송이 `800`(129건)이고, 같은 문구('찐 마지막 1시간')도 `800`(12건)이다 |
+
+    뒤 0 오타는 **`HH00` 꼴(`n % 100 == 0`)일 때만** 복구한다. 그래야 `2460`을
+    `02:46` 같은 없는 시각으로 지어내지 않는다. 복구가 안 되면 None으로 두고
+    화면에서 몇 건인지 알린다 — 조용히 지어내는 것보다 낫다.
     """
     try:
         n = int(float(v))
@@ -2020,34 +2035,38 @@ def hour_of_day(v):
     if n < 0:
         return None
     hh, mm = (n, 0) if n <= 23 else divmod(n, 100)
-    return hh if (0 <= hh <= 23 and 0 <= mm <= 59) else None
+    if 0 <= hh <= 23 and 0 <= mm <= 59:
+        return hh * 100 + mm
+    if hh == 24 and 0 <= mm <= 59:                        # 24:00 = 자정
+        return mm
+    if n >= 2460 and n % 100 == 0:                        # 뒤에 0을 하나 더 침
+        hh2, mm2 = divmod(n // 10, 100)
+        if 0 <= hh2 <= 23 and 0 <= mm2 <= 59:
+            return hh2 * 100 + mm2
+    return None
+
+
+def hour_of_day(v):
+    """발송 시간대 → 0~23 시(int). 못 읽으면 None. HHMM 해석은 전부 이 함수를 쓸 것."""
+    n = norm_hhmm(v)
+    return None if n is None else n // 100
 
 
 def fmt_hhmm(h):
-    """발송 시간대(HHMM 또는 H 정수) → '12시' / '08시' / '10시 50분'. 잘못된 값은 '–'."""
-    try:
-        v = int(float(h))
-    except Exception:
+    """발송 시간대 → '12시' / '08시' / '10시 50분'. 못 읽는 값은 '–'."""
+    n = norm_hhmm(h)
+    if n is None:
         return "–"
-    if v < 0:
-        return "–"
-    hour, minute = (v, 0) if v <= 23 else divmod(v, 100)
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return "–"
+    hour, minute = divmod(n, 100)
     return f"{hour:02d}시" + (f" {minute:02d}분" if minute else "")
 
 
 def hhmm_to_minutes(h):
-    """HHMM(또는 H) → 자정 기준 분(정렬용). 잘못된 값은 0."""
-    try:
-        v = int(float(h))
-    except Exception:
+    """발송 시간대 → 자정 기준 분(정렬용). 못 읽는 값은 0."""
+    n = norm_hhmm(h)
+    if n is None:
         return 0
-    if v < 0:
-        return 0
-    hour, minute = (v, 0) if v <= 23 else divmod(v, 100)
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return 0
+    hour, minute = divmod(n, 100)
     return hour * 60 + minute
 
 
@@ -2426,7 +2445,7 @@ def main():
     # 감지하지 못해, 태그명이 그대로면 구버전 태깅 결과가 캐시로 반환되던 구멍 방지)
     TAGSET_VER = (hashlib.md5(json.dumps(KW, ensure_ascii=False, sort_keys=True).encode())
                   .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS) + "|이모지수v1"
-                  + "|brand:" + BRANDSET_VER)
+                  + "|brand:" + BRANDSET_VER + "|hour:norm1")
 
     @st.cache_data(show_spinner=False)
     def prepare_raw(work_df, tagset_ver):
@@ -3016,6 +3035,13 @@ def main():
         _n_future_rows = int(_future_mask.sum())
         if _n_future_rows:
             raw = raw[~_future_mask].reset_index(drop=True)
+
+    # 시간대 자동 보정 건수 — raw는 이미 표준화됐으므로 보정 전 work와 비교해서 센다
+    _n_hour_fixed = 0
+    if "hour" in work.columns and len(work):
+        _hsrc = pd.to_numeric(work["hour"], errors="coerce")
+        _hfix = _hsrc.map(norm_hhmm)
+        _n_hour_fixed = int((_hsrc.notna() & _hfix.notna() & (_hfix != _hsrc)).sum())
 
     # ── 전사 MTD (발송피로도) 누적 처리 ──
     if "mtd_store_df" not in st.session_state:
@@ -5808,9 +5834,13 @@ def main():
         _agg_by = {k: _byhour(v) for k, v in _day_rows.items()}
 
         _hrs = sorted({h for m in _agg_by.values() for h in m})
+        if _n_hour_fixed:
+            st.caption(f"시간대 표기가 어긋난 발송 {_n_hour_fixed:,}건은 자동으로 맞춰서 넣었어요. "
+                       "`2400`은 자정(`00시`)으로, `8000`처럼 뒤에 0을 하나 더 친 값은 "
+                       "`800`(08시)으로 읽어요.")
         if _bad_hour:
             st.caption(f"시간대 값이 0~23시로 읽히지 않는 발송 {_bad_hour:,}건은 이 차트에서 뺐어요. "
-                       "실적 파일의 시간대 칸에 8000·2400 같은 오타가 있는지 확인해 보세요. "
+                       "자동 보정으로도 못 읽는 값이라 실적 파일의 시간대 칸을 확인해 보세요. "
                        "오른쪽 일자 합산 막대에는 그대로 들어가 있어요.")
         if not _hrs:
             st.info("시간대(hour) 정보가 있는 발송이 없어요.")

@@ -60,6 +60,9 @@ jobs:
       - name: 표 엑셀 내보내기 검사
         run: python tests/test_table_export.py
 
+      - name: 발송 시간대 보정 검사
+        run: python tests/test_hour_norm.py
+
       - name: 발송성과 전 페이지 렌더 스모크
         run: python tests/smoke_pages.py
 
