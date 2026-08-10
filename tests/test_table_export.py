@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 import openpyxl  # noqa: E402
 
-from table_export import _xl_numfmt, xlsx_bytes  # noqa: E402
+from table_export import _css_color, _xl_numfmt, xlsx_bytes  # noqa: E402
 
 CASES = []
 
@@ -103,6 +103,62 @@ def t_nan_and_empty_safe():
     ws = _ws(xlsx_bytes(df, "t"))
     assert ws.cell(3, 1).value in (None, "")
     assert xlsx_bytes(pd.DataFrame(), "t")                # 빈 표도 파일은 나온다
+
+
+@case
+def t_css_color_parsing():
+    """CSS 색 표기 → openpyxl RGB."""
+    assert _css_color("color:#dc2626".split(":")[1]) == "DC2626"
+    assert _css_color("#16a34a") == "16A34A"
+    assert _css_color("#f00") == "FF0000"
+    assert _css_color("rgb(220, 38, 38)") == "DC2626"
+    assert _css_color("red") == "FF0000"
+    assert _css_color("") is None and _css_color("chartreuse-ish") is None
+
+
+@case
+def t_delta_font_color_carries_to_excel():
+    """화면의 증감 색(빨강 △ / 초록 +)이 엑셀 글자색으로 그대로 넘어간다.
+
+    Styler._translate()는 끝나면서 ctx를 비운다. 표시값을 먼저 읽고 색을 나중에
+    읽으면 전부 기본색으로 나간다 — 조용히 깨지는 회귀라 여기서 못 박아 둔다.
+    """
+    df = pd.DataFrame({"지표": ["캠페인수", "발송", "CTR"],
+                       "기준주": [93, 14843856, 0.0311],
+                       "전주비": ["△21.8%", "+5.3%", "–"]})
+
+    def _clr(v):
+        s = str(v)
+        if s.startswith("△"):
+            return "color:#dc2626;font-weight:600"
+        if s.startswith("+"):
+            return "color:#16a34a;font-weight:600"
+        return ""
+
+    ws = _ws(xlsx_bytes(df.style.map(_clr, subset=["전주비"]).format({"기준주": "{:,.0f}"}), "t"))
+    assert ws.cell(2, 3).font.color.rgb.endswith("DC2626"), ws.cell(2, 3).font.color.rgb
+    assert ws.cell(2, 3).font.bold
+    assert ws.cell(3, 3).font.color.rgb.endswith("16A34A")
+    assert not ws.cell(4, 3).font.bold                    # 색 없는 칸은 기본 글자
+    assert ws.cell(2, 2).number_format == "#,##0"         # 색을 입혀도 숫자 서식은 유지
+
+
+@case
+def t_cell_background_beats_zebra():
+    """화면에서 칠한 셀 배경은 줄무늬보다 우선한다."""
+    df = pd.DataFrame({"a": [1, 2]})
+    ws = _ws(xlsx_bytes(df.style.map(lambda v: "background-color:#fff3cd" if v == 2 else ""), "t"))
+    assert ws.cell(3, 1).fill.fgColor.rgb.endswith("FFF3CD"), ws.cell(3, 1).fill.fgColor.rgb
+
+
+@case
+def t_color_column_shift_with_index():
+    """인덱스를 앞에 끼워도 색이 원래 칸에 붙어 있어야 한다."""
+    df = pd.DataFrame({"전주비": ["△9.0%"]}, index=pd.Index(["발송"], name="지표"))
+    styled = df.style.map(lambda v: "color:#dc2626")
+    ws = _ws(xlsx_bytes(styled, "t", index=True))
+    assert ws.cell(2, 1).value == "발송"
+    assert ws.cell(2, 2).font.color.rgb.endswith("DC2626"), ws.cell(2, 2).font.color.rgb
 
 
 @case
