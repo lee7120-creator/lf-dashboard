@@ -5,11 +5,22 @@
 """
 
 import datetime
-import io, json, os, re
+import io, itertools, json, os, re
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+# table_export는 같은 폴더의 모듈이다. 테스트 하네스가 앱만 임시 폴더로 복사해 돌리는
+# 경우가 있어 경로를 직접 얹는다 (없으면 엑셀 버튼만 빠지고 앱은 정상 동작).
+import sys as _sys
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in _sys.path:
+    _sys.path.insert(0, _HERE)
+try:
+    from table_export import xlsx_bytes
+except Exception:                                         # noqa: BLE001
+    xlsx_bytes = None
 
 try:
     from streamlit_quill import st_quill
@@ -730,6 +741,36 @@ def source_upload_widget(key):
             st.success(f"{len(dnew):,}행 인식 — 저장됨 ✓"); st.rerun()
         else:
             st.error("인식된 데이터가 없어요. 파일명과 형식을 확인해 주세요.")
+
+
+# ── 표 렌더 + 엑셀 내려받기 ────────────────────────────────────────────
+# Streamlit 기본 툴바의 'Download as CSV'는 서식이 다 날아간다. 발송성과 대시보드와
+# 같은 검은 헤더 스타일 xlsx를 같은 자리에서 받을 수 있게 감싼다.
+# 바이트는 콜러블로 넘겨 '누를 때만' 만든다.
+_WTBL_SEQ = itertools.count(1)
+
+
+def wtable(data, *args, dl=True, dl_name=None, **kw):
+    """st.dataframe 과 같게 쓰되, 아래에 엑셀 다운로드 버튼을 붙인다."""
+    ev = st.dataframe(data, *args, **kw)
+    if dl and xlsx_bytes is not None:
+        _i = next(_WTBL_SEQ)
+        _nm = dl_name or "표"
+        _fn = re.sub(r"[^\w가-힣.\- ]", "", str(_nm)).strip() or "표"
+        # set_index로 축을 세운 표가 많아 인덱스도 같이 내보낸다(기본 RangeIndex면 제외)
+        _df = getattr(data, "data", data)
+        _idx = (not kw.get("hide_index", False)) and not isinstance(
+            getattr(_df, "index", None), pd.RangeIndex)
+        try:
+            st.download_button(
+                "⬇️ 엑셀", key=f"_wxl{_i}",
+                data=lambda d=data, n=_nm, x=_idx: xlsx_bytes(d, sheet_name=n, title=n, index=x),
+                file_name=f"{_fn}_{today_kst():%Y%m%d}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="화면에 보이는 서식 그대로 받아요. 숫자는 엑셀 숫자로 들어가서 정렬·합계가 돼요.")
+        except Exception:                                 # noqa: BLE001
+            pass                                          # 다운로드가 안 되더라도 표는 보여야 한다
+    return ev
 
 
 # ══════════════════════════════════════════════════════
@@ -1761,7 +1802,7 @@ def render_push_page(df, ref_year, chart_years):
                 return styles
             return tbl.style.apply(_highlight, axis=None)
 
-        st.dataframe(style_yoy_rows(disp), width="stretch")
+        wtable(style_yoy_rows(disp), width="stretch")
 
     if not res_df.empty:
         st.markdown("### 상세 데이터")
@@ -1769,7 +1810,7 @@ def render_push_page(df, ref_year, chart_years):
         disp_df["앱푸시수신동의"] = disp_df["앱푸시수신동의"].apply(lambda x: f"{int(x):,}" if not pd.isna(x) else "–")
         disp_df["가입자수"] = disp_df["가입자수"].apply(lambda x: f"{int(x):,}" if not pd.isna(x) else "–")
         disp_df["동의율"] = disp_df["동의율"].apply(lambda x: f"{x*100:.1f}%" if not pd.isna(x) else "–")
-        st.dataframe(disp_df.set_index("날짜"), width="stretch")
+        wtable(disp_df.set_index("날짜"), width="stretch", dl_name="상세 데이터")
 
 # ══════════════════════════════════════════════════════
 # 페이지 PDF 저장 (브라우저 인쇄 → PDF, 차트 포함)
@@ -2038,22 +2079,22 @@ def main():
                     + (f" · 대응 주차가 없어 {' · '.join(_basis)} 기준으로 비교" if _basis else "")
                     + " — **전년의 전년비**는 전년 동주가 그 전해 대비 어땠는지예요. "
                       "**추세**가 '2년 연속'이면 올해만의 현상이 아니라 이어져 온 흐름이에요.")
-                st.dataframe(style_delta_cols(t2), width="stretch")
+                wtable(style_delta_cols(t2), width="stretch")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 실적 요약 — 전주비 (주차 기준)
         if wlabel:
             st.subheader("실적 요약 (일평균 · 전주비)")
             st.caption(f"기준 주차: {week_disp(wy, wlabel)} — 전주·전년 동주 대비")
-            st.dataframe(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
-                         width="stretch")
+            wtable(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
+                         width="stretch", dl_name="실적 요약 (일평균 · 전주비)")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         # 실적 요약 YoY 표
         st.subheader("실적 요약 (일평균 · 전년비)")
         tbl, (pm_y, pm_m) = yoy_summary_table(df, ref_year, ref_month, METRICS7)
         st.caption(f"전월({pm_m}월)은 월마감, 당월({ref_month}월)은 일마감(MTD) 기준 동일기간 비교")
-        st.dataframe(style_delta_cols(tbl), width="stretch")
+        wtable(style_delta_cols(tbl), width="stretch", dl_name="실적 요약 (일평균 · 전년비)")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
@@ -2256,7 +2297,7 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("월별 추이표 (일평균)")
         tbl = trend_table(df, "월", METRICS7, chart_years)
-        st.dataframe(style_trend(tbl, METRICS7), width="stretch")
+        wtable(style_trend(tbl, METRICS7), width="stretch", dl_name="월별 추이표 (일평균)")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         ai_model = st.session_state.get("wr_ai_model", DEFAULT_AI_MODEL)
@@ -2282,15 +2323,15 @@ def main():
         tbl = trend_table(df, "주", METRICS7, [ref_year])
         if not tbl.empty:
             recent = tbl.columns[-16:]
-            st.dataframe(style_trend(tbl[recent], METRICS7), width="stretch")
+            wtable(style_trend(tbl[recent], METRICS7), width="stretch", dl_name="주차별 추이 차트 — 전년 비교")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("전주비(WoW)·전년비(YoY) 증감")
         wy, wlabel = week_ref(df, ref_year, ref_week)
         if wlabel:
             st.caption(f"기준 주차: {week_disp(wy, wlabel)}")
-            st.dataframe(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
-                         width="stretch")
+            wtable(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
+                         width="stretch", dl_name="전주비(WoW)·전년비(YoY) 증감")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         ai_model = st.session_state.get("wr_ai_model", DEFAULT_AI_MODEL)
@@ -2316,8 +2357,8 @@ def main():
                          f"{ref_year-1}년 {ref_month}월": fmt_value(met, pv),
                          f"{ref_year}년 {ref_month}월": fmt_value(met, cv),
                          "전년비": fmt_delta(met, cv, pv) or "–"})
-        st.dataframe(style_delta_cols(pd.DataFrame(rows).set_index("채널")),
-                     width="stretch")
+        wtable(style_delta_cols(pd.DataFrame(rows).set_index("채널")),
+                     width="stretch", dl_name="채널별 실적")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader(f"{met} — 채널별 월 추이 ({ref_year}년)")
@@ -2347,14 +2388,14 @@ def main():
                 if lb in s.index and not np.isnan(s[lb]):
                     row[lb] = fmt_value(met, s[lb])
             rows.append(row)
-        st.dataframe(pd.DataFrame(rows).set_index("채널"), width="stretch")
+        wtable(pd.DataFrame(rows).set_index("채널"), width="stretch")
 
     # ════════════ 05. 통합 데이터·다운로드 ════════════
     elif page == "05. 통합 데이터·다운로드":
         st.markdown("## 통합 데이터 · 다운로드")
         st.caption("올린 파일을 모두 합친 통합 long 데이터예요.")
-        st.dataframe(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
-                     width="stretch", height=420)
+        wtable(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
+                     width="stretch", height=420, dl_name="통합 데이터 · 다운로드")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("통합 워크북 다운로드")
@@ -2486,7 +2527,7 @@ def main():
             st.caption(f"기준 주차: {week_disp(wy, wlabel)} — 전주·전년 동주 대비")
             tbl1 = wow_segment_table(wy, wlabel)
             if not tbl1.empty:
-                st.dataframe(style_delta_cols(tbl1), width="stretch")
+                wtable(style_delta_cols(tbl1), width="stretch", dl_name="실적 요약 (전주비)")
             else:
                 st.info("이 주차 데이터가 없어요.")
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -2495,7 +2536,7 @@ def main():
         tbl2, (pm_y, pm_m) = yoy_segment_table(ref_year, ref_month)
         st.caption(f"전월({pm_m}월) 마감 및 당월({ref_month}월·MTD) 기준 동일기간 비교")
         if not tbl2.empty:
-            st.dataframe(style_delta_cols(tbl2), width="stretch")
+            wtable(style_delta_cols(tbl2), width="stretch", dl_name="실적 요약 (전년비)")
         else:
             st.info("이 달 데이터가 없어요.")
 
