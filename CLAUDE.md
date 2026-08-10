@@ -27,13 +27,14 @@ python tests/check_shadowing.py           # 몇 초 — 전역 헬퍼 섀도잉 
 python tests/test_plan_merge.py           # 몇 초 — 실적↔기획 문구 조인 (날짜·AF 키)
 python tests/test_brand_classify.py       # 몇 초 — 브랜드 자동 분류 (오탐 방어)
 python tests/test_store_layer.py          # 몇 초 — push dtype 방어 (문자열 라운드트립)
+python tests/test_table_export.py         # 몇 초 — 표 엑셀 내보내기 (숫자 서식)
 python tests/smoke_pages.py               # 몇 분 — 발송성과 전 페이지·하위탭 렌더
 python tests/test_filter_follows_upload.py # 몇 분 — 업로드 후 기간 필터·차트 레이블
 python tests/smoke_weekly_report.py       # 몇 분 — 주간보고 전 페이지·라디오 렌더
 ```
 
 `.github/workflows/dashboard-ci.yml`이 PR·푸시에서 **문법 → 섀도잉 → 문구조인 → 브랜드 →
-저장소 → 스모크 → 필터 → 주간보고** 순으로 자동 실행한다. 두 대시보드나 `tests/`를 건드렸으면 CI가 초록인 걸
+저장소 → 엑셀 → 스모크 → 필터 → 주간보고** 순으로 자동 실행한다. 두 대시보드나 `tests/`를 건드렸으면 CI가 초록인 걸
 보고 머지할 것.
 
 > 문구 조인이 깨지면 **화면은 멀쩡히 뜨고 문구 칸만 빈다** — 스모크로는 절대 안 잡히니
@@ -513,6 +514,11 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   (비율=Jeffreys 경계, 금액=수축 평균 — 소표본 요행의 순위 점령 방지. 표시 값은 원값 유지).
 - 수평 범례는 `legend_h()`, 막대 텍스트 라벨은 `bar_label(v, col, is_pct)` 재사용.
 - 히트맵은 n<3 셀 마스킹 + hover에 표본수(n) 표기 관행 유지.
+- **표는 `st.dataframe` 대신 `table()`** (주간보고는 `wtable()`) — 검은 헤더 스타일
+  엑셀 다운로드 버튼이 자동으로 붙는다. 시트명·파일명은 `dl_name=`으로 준다.
+  컬럼 컨테이너 안이면 `with col:` 로 감싸고 `table()`을 부를 것(`col.dataframe`은 안 됨).
+  내보내기 본체는 `table_export.py`(두 앱 공용) — 값은 **숫자 + 엑셀 표시형식**으로
+  넣는다. 문자열로 넣으면 받는 쪽에서 정렬·합계가 안 된다.
 - **업로드 문구(title/body)를 unsafe_allow_html로 렌더할 땐 반드시 `esc()`** (실데이터에
   'F&C' 같은 &·< 포함 문구가 있어 태그로 오해석됨). **AI 응답 렌더는 `safe_ai_html()`**
   (프롬프트에 사용자 문구가 들어가므로 script/이벤트핸들러 제거 — span 색상은 보존됨).

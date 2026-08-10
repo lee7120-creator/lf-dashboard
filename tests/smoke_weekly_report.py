@@ -81,6 +81,10 @@ def run_pages(store, tag):
     tmp = tempfile.mkdtemp()
     app = os.path.join(tmp, "weekly_report.py")
     shutil.copy(APP, app)
+    # 표 엑셀 내보내기 공용 모듈 — 같이 안 옮기면 다운로드 버튼 경로가 통째로 미검증
+    _te = ROOT / "table_export.py"
+    if _te.exists():
+        shutil.copy(_te, os.path.join(tmp, "table_export.py"))
     store.to_csv(os.path.join(tmp, "wr_data_store.csv"), index=False, encoding="utf-8-sig")
     cwd = os.getcwd()
     os.chdir(tmp)

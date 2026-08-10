@@ -62,20 +62,40 @@ def _bound_names(fn):
     return bound
 
 
+def _module_names(tree):
+    """모듈 스코프에 바인딩되는 이름 → (종류, 줄번호).
+
+    함수뿐 아니라 **임포트한 모듈**과 **대문자 상수**도 본다. 실제로
+    `main()` 안에서 `import itertools` 한 줄 때문에 그 함수 앞쪽의
+    `itertools.count(...)`가 UnboundLocalError로 죽은 적이 있다 —
+    함수만 보던 예전 검사기는 이걸 놓쳤다.
+    """
+    names = {}
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names[n.name] = ("전역 함수", n.lineno)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                names[(a.asname or a.name).split(".")[0]] = ("임포트", n.lineno)
+        elif isinstance(n, ast.Assign):
+            for t in n.targets:                      # 대문자 상수만 (일반 변수는 오탐이 많다)
+                if isinstance(t, ast.Name) and t.id.isupper() and len(t.id) > 2:
+                    names.setdefault(t.id, ("전역 상수", n.lineno))
+    return names
+
+
 def check(path):
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    helpers = {n.name: n.lineno for n in tree.body
-               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    mod = _module_names(tree)
 
     problems = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if node.lineno in helpers.values() and node.col_offset == 0:
-            pass                                     # 최상위 함수도 내부 스코프는 검사 대상
         for name, lineno in _bound_names(node).items():
-            if name in helpers and helpers[name] != lineno:
-                problems.append((lineno, name, node.name, helpers[name]))
+            if name in mod and mod[name][1] != lineno:
+                kind, def_line = mod[name]
+                problems.append((lineno, name, node.name, def_line, kind))
     return sorted(problems)
 
 
@@ -91,14 +111,15 @@ def main():
             print(f"  OK   {fname}")
             continue
         total += len(problems)
-        for lineno, name, fn, def_line in problems:
-            print(f"  FAIL {fname}:{lineno} — 지역변수 '{name}' 가 "
-                  f"모듈 전역 함수 '{name}()' (line {def_line}) 를 가려요. "
-                  f"'{fn}()' 안에서 쓰는 이름이니 다른 이름으로 바꿔 주세요.")
+        for lineno, name, fn, def_line, kind in problems:
+            print(f"  FAIL {fname}:{lineno} — '{fn}()' 안의 '{name}' 이(가) "
+                  f"모듈 {kind} '{name}' (line {def_line}) 을(를) 가려요. "
+                  + ("모듈 상단 import를 쓰고 함수 안에서 다시 import하지 마세요."
+                     if kind == "임포트" else "다른 이름으로 바꿔 주세요."))
 
     print()
     if total:
-        print(f"전역 헬퍼 섀도잉 {total}건 발견 ❌ — 지역변수 이름을 바꿔 주세요.")
+        print(f"전역 이름 섀도잉 {total}건 발견 ❌")
         return 1
     print("전역 헬퍼 섀도잉 없음 ✅")
     return 0
