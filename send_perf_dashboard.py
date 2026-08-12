@@ -347,10 +347,13 @@ def parse_plan_gsheet(sh, recent=None, progress_cb=None):
     _today = today_kst()
     this_week_end = _today + timedelta(days=6 - _today.weekday())
     week_ws = [ws for d, ws in dated if d <= this_week_end]
+    # 날짜를 못 읽은 시트도 버리지 않는다. 예전엔 recent가 설정되면(기본 12) undated가
+    # 통째로 빠져서, 제목에 기간이 아직 안 붙은 **이번 주 시트가 조용히 유실**됐다.
+    # 화면엔 "매칭률 0%"로만 뜨고 원인이 안 보였다. 무한정 늘지 않게 recent로 같이 캡한다.
     if recent and recent > 0:
-        week_ws = week_ws[:recent]
+        week_ws = week_ws[:recent] + undated[:recent]
     else:
-        week_ws = week_ws + undated                  # 전부 불러올 땐 미파싱 시트까지 포함
+        week_ws = week_ws + undated
     lookup = {}
     read = []
     total = len(week_ws)
@@ -2735,7 +2738,12 @@ def main():
             sh_plan = gs_open(st.secrets["gcp_service_account"], _PLAN_SHEET_URL)
             lk, read = parse_plan_gsheet(sh_plan, recent=(recent_n or None), progress_cb=_plan_cb)
             st.session_state.plan_lookup_gs = lk
-            st.session_state.plan_lookup_meta = f"{len(read)}개 주차 · 문구 {len(lk):,}건"
+            st.session_state.plan_lookup_sheets = read
+            # 최신 주차명을 같이 띄운다 — 개수만 보여주면 '이번 주 시트를 읽긴 했나'를
+            # 확인할 방법이 없어서, 매칭 0%일 때 시트 문제인지 키 문제인지 못 가린다.
+            st.session_state.plan_lookup_meta = (
+                f"{len(read)}개 주차 · 문구 {len(lk):,}건"
+                + (f" · 최신 {read[0]}" if read else ""))
             st.session_state.pop("plan_lookup_err", None)
             return True
         except Exception as e:                            # noqa: BLE001
@@ -7691,6 +7699,13 @@ def main():
                 miss["원인 추정"] = [_cause(r) for _, r in miss.iterrows()]
                 _cnt = miss["원인 추정"].value_counts()
                 st.caption("원인 분류 — " + " · ".join(f"**{k}** {v}건" for k, v in _cnt.items()))
+                # '기획 미적재 주차'로 나올 때 진짜 미적재인지, 시트를 안 읽은 건지 갈라 준다
+                _sheets = st.session_state.get("plan_lookup_sheets") or []
+                if _sheets:
+                    st.caption(f"읽은 기획 주차 {len(_sheets)}개 — "
+                               + ", ".join(_sheets[:6])
+                               + (" …" if len(_sheets) > 6 else "")
+                               + "  ·  찾는 주차가 없으면 사이드바 '가져올 최근 주차 수'를 늘려 보세요.")
             table(miss.rename(columns={"date": "날짜", "af": "AF코드", "cat": "카테고리",
                                               "brand": "브랜드(원본)", "brand2": "브랜드(자동)",
                                               "send": "발송", "amt": "거래액"}),

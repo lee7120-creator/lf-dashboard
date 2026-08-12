@@ -157,6 +157,38 @@ def t_gsheet_week_window():
 
 
 @case
+def t_undated_sheet_survives_recent_cap():
+    """제목에 기간이 없는 주차 시트도 읽어야 한다.
+
+    실제로 이번 주 시트에 '(810~816)'이 아직 안 붙어 있으면, 예전 코드는
+    recent(기본 12)가 설정된 기본 경로에서 그 시트를 통째로 버렸다.
+    화면엔 '최신 주 매칭률 0%'로만 뜨고 원인이 안 보여서, 업로드가 실패한 것처럼 읽혔다.
+    """
+    t = S.today_kst()
+    mon = t - datetime.timedelta(days=t.weekday())
+    d = mon.strftime("%Y%m%d")
+    sh = FakeSH([
+        FakeWS("8월 2주차", [["일자", "AF코드", "제목", "내용"],      # ← 기간 없음
+                            [d, "AP100", "이번주제목", "이번주내용"]]),
+        FakeWS("7월 1주차(701~707)", [["일자", "AF코드", "제목", "내용"],
+                                     ["20260701", "AP01", "지난제목", "지난내용"]]),
+    ])
+    lookup, read = S.parse_plan_gsheet(sh, recent=12)
+    assert "8월 2주차" in read, f"기간 없는 시트를 버렸어요 — read={read}"
+    assert (d, "AP100") in lookup, lookup
+
+
+@case
+def t_undated_sheets_are_capped():
+    """기간 없는 시트가 많아도 recent 만큼만 읽는다 (API 호출 폭증 방지)."""
+    sh = FakeSH([FakeWS(f"{i % 12 + 1}월 2주차",
+                        [["일자", "AF코드", "제목", "내용"],
+                         ["20260810", f"AP{i:03d}", "t", "b"]]) for i in range(30)])
+    _lk, read = S.parse_plan_gsheet(sh, recent=5)
+    assert len(read) == 5, f"{len(read)}개를 읽었어요 — recent=5로 캡돼야 해요"
+
+
+@case
 def t_end_to_end_upload_then_plan():
     """업로드 실적 + 기획시트 lookup → 문구가 붙은 저장 가능한 프레임이 나온다."""
     t = S.today_kst()
