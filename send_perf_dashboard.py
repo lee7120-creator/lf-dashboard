@@ -2288,49 +2288,51 @@ def main():
     .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:10px;margin:1px 2px;border:1px solid}
     h1,h2,h3{color:#1e293b}
     /* ── 앱푸시 동의 전략 도식 (10번 페이지) ── */
-    .psx-grid{display:grid;grid-template-columns:58px 1fr 1fr;gap:8px;margin:6px 0 4px}
-    .psx-ax{display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700;
+    /* 본문(14px)보다 작아지지 않게 잡는다 — 도식이라고 글자를 줄이면 안 읽힌다 */
+    .psx-grid{display:grid;grid-template-columns:68px 1fr 1fr;gap:9px;margin:8px 0 4px}
+    .psx-ax{display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;
       color:#475569;letter-spacing:.02em;text-align:center;line-height:1.45}
     /* 세로쓰기(writing-mode)를 쓰면 한글 글자까지 눕혀져 안 읽힌다 — 가로쓰기로 줄만 나눈다 */
-    .psx-ax.v{background:#eef2f7;border-radius:6px;color:#334155;padding:6px 2px}
+    .psx-ax.v{background:#eef2f7;border-radius:6px;color:#334155;padding:8px 2px}
     .psx-cell{background:#fff;border:1px solid #e2e8f0;border-top:3px solid var(--psx-c,#94a3b8);
-      border-radius:8px;padding:13px 15px;min-height:172px}
-    .psx-no{font-size:11px;font-weight:700;color:var(--psx-c,#64748b);letter-spacing:.04em}
-    .psx-st{font-size:13px;font-weight:600;color:#1e293b;margin:3px 0 9px}
-    .psx-ask{font-size:11px;color:#64748b;margin-bottom:2px}
-    .psx-do{font-size:19px;font-weight:700;color:var(--psx-c,#1e293b);line-height:1.25;margin-bottom:9px}
-    .psx-li{font-size:12px;color:#475569;line-height:1.65;padding-left:11px;position:relative}
+      border-radius:8px;padding:16px 18px;min-height:210px}
+    .psx-no{font-size:13px;font-weight:700;color:var(--psx-c,#64748b);letter-spacing:.04em}
+    .psx-st{font-size:16px;font-weight:600;color:#1e293b;margin:3px 0 11px}
+    .psx-ask{font-size:13px;color:#64748b;margin-bottom:3px}
+    .psx-do{font-size:26px;font-weight:700;color:var(--psx-c,#1e293b);line-height:1.25;margin-bottom:11px}
+    .psx-li{font-size:14.5px;color:#475569;line-height:1.7;padding-left:13px;position:relative}
     .psx-li:before{content:"·";position:absolute;left:2px;color:#94a3b8}
-    .psx-kpi{margin-top:9px;padding-top:8px;border-top:1px dashed #e2e8f0;font-size:11px;color:#64748b}
+    .psx-kpi{margin-top:11px;padding-top:9px;border-top:1px dashed #e2e8f0;font-size:13.5px;color:#64748b}
     .psx-kpi b{color:#334155;font-weight:600}
     /* 흐름도 */
-    .psx-flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:6px;margin:8px 0}
-    .psx-node{flex:1 1 108px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;
-      padding:9px 10px;text-align:center;min-width:104px}
+    .psx-flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:7px;margin:10px 0}
+    /* max-width가 없으면 줄바꿈된 마지막 노드가 남은 폭을 통째로 먹어 흐름이 깨진다 */
+    .psx-node{flex:1 1 128px;max-width:210px;background:#fff;border:1px solid #e2e8f0;
+      border-radius:8px;padding:12px 12px;text-align:center;min-width:124px}
     .psx-node.done{background:#f0f9f4;border-color:#bbe5cd}
-    .psx-node .n1{font-size:12px;font-weight:600;color:#1e293b;line-height:1.35}
-    .psx-node .n2{font-size:10.5px;color:#94a3b8;margin-top:2px}
+    .psx-node .n1{font-size:14.5px;font-weight:600;color:#1e293b;line-height:1.4}
+    .psx-node .n2{font-size:12.5px;color:#94a3b8;margin-top:3px}
     .psx-arw{display:flex;flex-direction:column;align-items:center;justify-content:center;
-      font-size:10px;color:#94a3b8;padding:0 1px;min-width:52px}
-    .psx-arw b{color:#2E68B0;font-size:10.5px;font-weight:600;white-space:nowrap}
+      font-size:13px;color:#94a3b8;padding:0 2px;min-width:60px}
+    .psx-arw b{color:#2E68B0;font-size:13px;font-weight:600;white-space:nowrap}
     /* KPI 계층 */
-    .psx-kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:8px;margin:6px 0}
-    .psx-kcol{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px}
-    .psx-kh{font-size:12px;font-weight:700;color:#1e293b;margin-bottom:7px;
-      display:flex;align-items:center;gap:6px}
-    .psx-kn{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;
-      border-radius:50%;background:#1e293b;color:#fff;font-size:10px;font-weight:700;flex-shrink:0}
-    .psx-kli{font-size:11.5px;color:#475569;line-height:1.7}
-    .psx-hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:8px 0 0}
-    .psx-hcard{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:12px 15px}
-    .psx-hcard .hl{font-size:10.5px;color:#7dd3fc;letter-spacing:.09em;font-weight:700}
-    .psx-hcard .hv{font-size:13.5px;font-weight:600;margin-top:4px;line-height:1.45;color:#fff}
+    .psx-kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(212px,1fr));gap:9px;margin:8px 0}
+    .psx-kcol{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:15px 17px}
+    .psx-kh{font-size:15px;font-weight:700;color:#1e293b;margin-bottom:9px;
+      display:flex;align-items:center;gap:7px}
+    .psx-kn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
+      border-radius:50%;background:#1e293b;color:#fff;font-size:12px;font-weight:700;flex-shrink:0}
+    .psx-kli{font-size:14px;color:#475569;line-height:1.75}
+    .psx-hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:9px;margin:10px 0 0}
+    .psx-hcard{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:15px 18px}
+    .psx-hcard .hl{font-size:12.5px;color:#7dd3fc;letter-spacing:.09em;font-weight:700}
+    .psx-hcard .hv{font-size:16.5px;font-weight:600;margin-top:5px;line-height:1.45;color:#fff}
     /* 로드맵 */
-    .psx-road{display:grid;grid-template-columns:repeat(auto-fit,minmax(212px,1fr));gap:8px;margin:6px 0}
-    .psx-rcard{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;
+    .psx-road{display:grid;grid-template-columns:repeat(auto-fit,minmax(248px,1fr));gap:9px;margin:8px 0}
+    .psx-rcard{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:15px 17px;
       border-left:3px solid var(--psx-c,#94a3b8)}
-    .psx-rh{font-size:12.5px;font-weight:700;color:#1e293b}
-    .psx-rw{font-size:10.5px;color:#94a3b8;margin-bottom:7px}
+    .psx-rh{font-size:15.5px;font-weight:700;color:#1e293b}
+    .psx-rw{font-size:12.5px;color:#94a3b8;margin-bottom:9px}
     </style>""", unsafe_allow_html=True)
 
     PALETTE = {
@@ -8329,6 +8331,64 @@ def main():
                     + "".join(f'<div class="psx-li">{t}</div>' for t in _lis)
                     + f'<div class="psx-kpi">대표 KPI · {_kpi}</div></div>')
 
+        # 상태별 상세 — 매트릭스 각 칸을 눌러서 여는 내용 (제목, 주요 대상, 액션, 제외 조건)
+        _PSX_D = [
+            ("① 앱 미설치 · 마케팅 미동의",
+             "신규가입 후 앱 미설치 · 웹만 이용 · 6개월 미구매 중 앱 미설치 · "
+             "앱 삭제 후 장기 미재설치 · 전 채널 미동의",
+             ["**웹 전용 배너** — 가입완료·로그인 직후 홈·상품 상세·장바구니·주문서 진입 전·"
+              "쿠폰함·첫 구매 혜택 페이지. 문구는 '앱 설치하고 혜택 알림에 동의하면 첫 구매 "
+              "20% 쿠폰을 바로 받아요', CTA는 '앱 설치하고 쿠폰 받기'.",
+              "**설치 경로 추적** — 딥링크·캠페인 파라미터로 웹 노출 → 앱스토어 → 설치 → "
+              "첫 실행 → 로그인 → 동의 → 발급을 하나로 연결해요. OS별로 나눠서 봐야 해요.",
+              "**첫 실행 자동 확인** — 쿠폰함을 직접 찾아가게 하지 말고 로그인과 동시에 "
+              "조건을 확인해요.",
+              "**설치 후 미동의 재유도** — 설치는 끝났으니 설치 재요청은 하지 않고 "
+              "동의만 요청해요 (24시간 내 미동의, 쿠폰 페이지 이탈 등)."],
+             "이미 쿠폰 발급 · 이미 동의 완료 · 동의를 방금 명시적으로 거부 · "
+             "동일 혜택 사용 이력 · 최근 설치 캠페인 반복 노출"),
+            ("② 앱 설치 · 마케팅 미동의",
+             "앱 로그인 이력 있으나 미동의 · 앱푸시 OFF · SMS 미동의 · "
+             "한쪽 채널만 동의 · 동의 철회 후 일정 기간 경과",
+             ["**인앱 메시지** — 로그인 직후, 쿠폰함 진입, 찜·장바구니 담기 후, 주문서 진입, "
+              "가격 인하 상품 조회 시점이 효율이 높아요.",
+              "**채널별 분리 요청** — 둘 다 미동의면 선택 화면, 한쪽만 동의면 나머지 하나만 "
+              "제안, OS 알림 권한이 꺼져 있으면 설정 화면으로 연결해요. 통합 숫자로만 보면 "
+              "어느 채널이 병목인지 안 보여요.",
+              "**행동 직후 요청** — 실행하자마자 팝업 대신 필요성이 생긴 순간에. "
+              "장바구니 저장 후 가격 인하 알림, 품절 조회 후 재입고 알림처럼요.",
+              "**철회 경험 고객 별도 운영** — 신규 미동의와 같은 메시지를 반복하면 거부감이 "
+              "커져요. 재노출 제한을 두고, 전체 동의 대신 관심 혜택·채널만 고르게 하세요."],
+             "최근 동의 팝업을 닫음 · 최근 명시적 거부 · 짧은 기간에 동의·철회 반복 · "
+             "동일 쿠폰 사용 이력 · OS 알림 권한 설정이 불가능한 환경"),
+            ("③ 앱 미설치 · 마케팅 이미 동의",
+             "SMS 동의 상태지만 앱 미설치 · 동의 후 앱 삭제 · 웹·SMS 반응은 있으나 미설치 · "
+             "쿠폰 링크를 모바일 웹으로 열어봄 · 최근 SMS 클릭",
+             ["**SMS를 설치 채널로** — 설치 자체보다 앱에서 얻는 편익을 말해요 "
+              "(쿠폰 자동 적용·앱 전용가·장바구니 연동·간편 로그인). CTA는 '앱에서 쿠폰 받기'.",
+              "**스마트 배너** — 모바일 웹에서 설치 여부로 분기해요. 설치 고객은 앱으로 열기, "
+              "미설치는 설치 후 보던 상품·쿠폰 페이지로 복귀. 앱 홈으로만 보내면 다시 찾아야 "
+              "해서 전환이 떨어져요.",
+              "**고의도 고객 우선** — 최근 7일 SMS 클릭·모바일 웹 로그인, 장바구니·찜 보유, "
+              "쿠폰 다운로드 시도, 구매 직전 이탈 고객부터요.",
+              "**재설치 고객 별도 처리** — 신규 설치 쿠폰보다 장바구니 복원·보유 쿠폰·"
+              "적립금·최근 본 상품 이어보기가 맞아요."],
+             "최근 삭제 후 설치 캠페인 반복 수신 · 설치 여부 확인 불가 · "
+             "링크를 여러 번 클릭했지만 미설치 · 앱 지원이 어려운 기기 · 이미 설치 확인됨"),
+            ("④ 앱 설치 · 마케팅 이미 동의",
+             "앱푸시·SMS 동의 고객 · 쿠폰 발급 후 미사용 · 장바구니 보유 미구매 · "
+             "6개월 이상 미구매 · 최근 방문했으나 미구매",
+             ["**쿠폰 자동 발급** — 앱 실행 → 지급 안내 → 적용 가능 상품 → 장바구니로 이어져요.",
+              "**적용 상품 개인화** — '쿠폰이 있어요'보다 '본 상품에 쓸 수 있어요'가 훨씬 "
+              "강해요. 최근 본 상품·찜·장바구니·과거 구매 브랜드·가격대를 써요.",
+              "**단계별 리마인드** — 발급 직후 / 미사용 2~3일 후 / 만료 2일 전 / 장바구니 보유 시. "
+              "**사용을 마친 고객에게는 즉시 중단**해요.",
+              "**피로도 관리** — 이미 동의 상태라 반복 발송하기 쉬운 그룹이에요. 일별 상한, "
+              "전 채널 통합 빈도, 미오픈 고객 저빈도 전환, 구매 완료 시 관련 리마인드 중단."],
+             "쿠폰 사용 완료 후 같은 쿠폰 리마인드 · 구매 직후 동일 프로모션 · "
+             "일별 발송 상한 초과 · 반복 미오픈 고객의 일반 프로모션"),
+        ]
+
         st.markdown("##### ① 상태 매트릭스 — 설치 여부 × 동의 여부")
         st.markdown(
             '<div class="psx-grid">'
@@ -8345,6 +8405,22 @@ def main():
             '세 단계를 건너뛰고 <b>동의 하나만</b> 남아 있어서예요. 반대로 ③에는 동의를 '
             '절대 다시 묻지 마세요 — 설정 화면에 들어간 김에 철회하는 경우가 생겨요.</div>',
             unsafe_allow_html=True)
+
+        # 상태별 상세는 해당 칸을 눌러서 연다. 매트릭스와 같은 배치(위 ①③ / 아래 ②④)로 놓아야
+        # 어느 칸의 상세인지 눈으로 바로 이어진다.
+        st.caption("아래에서 상태를 눌러 대상·액션·제외 조건을 볼 수 있어요.")
+        _psx_pos = [(0, 2), (1, 3)]                    # 매트릭스 배치 그대로
+        for _row in _psx_pos:
+            _cols = st.columns(2)
+            for _ci, _di in enumerate(_row):
+                _t, _who, _acts, _exc = _PSX_D[_di]
+                with _cols[_ci]:
+                    with st.expander(f"{_t} — 상세"):
+                        st.caption(f"주요 대상 — {_who}")
+                        for _a in _acts:
+                            st.markdown(f"- {_a}")
+                        st.markdown(f'<div class="appendix"><b>제외 조건</b> — {_exc}</div>',
+                                    unsafe_allow_html=True)
 
         st.markdown("##### ② 상태 전환 흐름 — 한 단계 끝나면 이전 캠페인에서 즉시 제외")
         _psx_steps = [("앱 미설치<br>미동의", "①", False), ("앱 설치<br>미동의", "②", False),
@@ -8418,72 +8494,6 @@ def main():
             f'<div class="psx-rw">{_w}</div>'
             + "".join(f'<div class="psx-li">{t}</div>' for t in _ls) + '</div>'
             for _h, _w, _c, _ls in _PSX_R) + '</div>', unsafe_allow_html=True)
-
-        with st.expander("📋 상태별 상세 — 대상 · 액션 · 제외 조건"):
-            _PSX_D = [
-                ("① 앱 미설치 · 마케팅 미동의",
-                 "신규가입 후 앱 미설치 · 웹만 이용 · 6개월 미구매 중 앱 미설치 · "
-                 "앱 삭제 후 장기 미재설치 · 전 채널 미동의",
-                 ["**웹 전용 배너** — 가입완료·로그인 직후 홈·상품 상세·장바구니·주문서 진입 전·"
-                  "쿠폰함·첫 구매 혜택 페이지. 문구는 '앱 설치하고 혜택 알림에 동의하면 첫 구매 "
-                  "20% 쿠폰을 바로 받아요', CTA는 '앱 설치하고 쿠폰 받기'.",
-                  "**설치 경로 추적** — 딥링크·캠페인 파라미터로 웹 노출 → 앱스토어 → 설치 → "
-                  "첫 실행 → 로그인 → 동의 → 발급을 하나로 연결해요. OS별로 나눠서 봐야 해요.",
-                  "**첫 실행 자동 확인** — 쿠폰함을 직접 찾아가게 하지 말고 로그인과 동시에 "
-                  "조건을 확인해요.",
-                  "**설치 후 미동의 재유도** — 설치는 끝났으니 설치 재요청은 하지 않고 "
-                  "동의만 요청해요 (24시간 내 미동의, 쿠폰 페이지 이탈 등)."],
-                 "이미 쿠폰 발급 · 이미 동의 완료 · 동의를 방금 명시적으로 거부 · "
-                 "동일 혜택 사용 이력 · 최근 설치 캠페인 반복 노출"),
-                ("② 앱 설치 · 마케팅 미동의",
-                 "앱 로그인 이력 있으나 미동의 · 앱푸시 OFF · SMS 미동의 · "
-                 "한쪽 채널만 동의 · 동의 철회 후 일정 기간 경과",
-                 ["**인앱 메시지** — 로그인 직후, 쿠폰함 진입, 찜·장바구니 담기 후, 주문서 진입, "
-                  "가격 인하 상품 조회 시점이 효율이 높아요.",
-                  "**채널별 분리 요청** — 둘 다 미동의면 선택 화면, 한쪽만 동의면 나머지 하나만 "
-                  "제안, OS 알림 권한이 꺼져 있으면 설정 화면으로 연결해요. 통합 숫자로만 보면 "
-                  "어느 채널이 병목인지 안 보여요.",
-                  "**행동 직후 요청** — 실행하자마자 팝업 대신 필요성이 생긴 순간에. "
-                  "장바구니 저장 후 가격 인하 알림, 품절 조회 후 재입고 알림처럼요.",
-                  "**철회 경험 고객 별도 운영** — 신규 미동의와 같은 메시지를 반복하면 거부감이 "
-                  "커져요. 재노출 제한을 두고, 전체 동의 대신 관심 혜택·채널만 고르게 하세요."],
-                 "최근 동의 팝업을 닫음 · 최근 명시적 거부 · 짧은 기간에 동의·철회 반복 · "
-                 "동일 쿠폰 사용 이력 · OS 알림 권한 설정이 불가능한 환경"),
-                ("③ 앱 미설치 · 마케팅 이미 동의",
-                 "SMS 동의 상태지만 앱 미설치 · 동의 후 앱 삭제 · 웹·SMS 반응은 있으나 미설치 · "
-                 "쿠폰 링크를 모바일 웹으로 열어봄 · 최근 SMS 클릭",
-                 ["**SMS를 설치 채널로** — 설치 자체보다 앱에서 얻는 편익을 말해요 "
-                  "(쿠폰 자동 적용·앱 전용가·장바구니 연동·간편 로그인). CTA는 '앱에서 쿠폰 받기'.",
-                  "**스마트 배너** — 모바일 웹에서 설치 여부로 분기해요. 설치 고객은 앱으로 열기, "
-                  "미설치는 설치 후 보던 상품·쿠폰 페이지로 복귀. 앱 홈으로만 보내면 다시 찾아야 "
-                  "해서 전환이 떨어져요.",
-                  "**고의도 고객 우선** — 최근 7일 SMS 클릭·모바일 웹 로그인, 장바구니·찜 보유, "
-                  "쿠폰 다운로드 시도, 구매 직전 이탈 고객부터요.",
-                  "**재설치 고객 별도 처리** — 신규 설치 쿠폰보다 장바구니 복원·보유 쿠폰·"
-                  "적립금·최근 본 상품 이어보기가 맞아요."],
-                 "최근 삭제 후 설치 캠페인 반복 수신 · 설치 여부 확인 불가 · "
-                 "링크를 여러 번 클릭했지만 미설치 · 앱 지원이 어려운 기기 · 이미 설치 확인됨"),
-                ("④ 앱 설치 · 마케팅 이미 동의",
-                 "앱푸시·SMS 동의 고객 · 쿠폰 발급 후 미사용 · 장바구니 보유 미구매 · "
-                 "6개월 이상 미구매 · 최근 방문했으나 미구매",
-                 ["**쿠폰 자동 발급** — 앱 실행 → 지급 안내 → 적용 가능 상품 → 장바구니로 이어져요.",
-                  "**적용 상품 개인화** — '쿠폰이 있어요'보다 '본 상품에 쓸 수 있어요'가 훨씬 "
-                  "강해요. 최근 본 상품·찜·장바구니·과거 구매 브랜드·가격대를 써요.",
-                  "**단계별 리마인드** — 발급 직후 / 미사용 2~3일 후 / 만료 2일 전 / 장바구니 보유 시. "
-                  "**사용을 마친 고객에게는 즉시 중단**해요.",
-                  "**피로도 관리** — 이미 동의 상태라 반복 발송하기 쉬운 그룹이에요. 일별 상한, "
-                  "전 채널 통합 빈도, 미오픈 고객 저빈도 전환, 구매 완료 시 관련 리마인드 중단."],
-                 "쿠폰 사용 완료 후 같은 쿠폰 리마인드 · 구매 직후 동일 프로모션 · "
-                 "일별 발송 상한 초과 · 반복 미오픈 고객의 일반 프로모션"),
-            ]
-            for _t, _who, _acts, _exc in _PSX_D:
-                st.markdown(f"**{_t}**")
-                st.caption(f"주요 대상 — {_who}")
-                for _a in _acts:
-                    st.markdown(f"- {_a}")
-                st.markdown(f'<div class="appendix"><b>제외 조건</b> — {_exc}</div>',
-                            unsafe_allow_html=True)
-                st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
 
         with st.expander("🧪 추천 A/B 테스트 · 매일 만들어야 할 파생값"):
             _c1, _c2 = st.columns(2)
