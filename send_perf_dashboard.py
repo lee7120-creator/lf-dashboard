@@ -3131,7 +3131,10 @@ def main():
 
     search = st.sidebar.text_input("🔎 검색", "", key="flt_q",
                                    help="제목·내용·브랜드·AF코드·카테고리에서 찾아요")
-    only_matched = st.sidebar.checkbox("문구 매칭된 것만", value=True, key="flt_matched",
+    # 세션값이 있으면 value=를 같이 넘기지 않는다 — '필터 끄기' 버튼이 세션을 직접 바꾸므로
+    # 둘을 같이 주면 Streamlit이 경고를 띄운다(개발 규칙)
+    _mkw = {} if "flt_matched" in st.session_state else {"value": True}
+    only_matched = st.sidebar.checkbox("문구 매칭된 것만", key="flt_matched", **_mkw,
                                        help="문구(제목·내용)를 못 찾은 건 빼요")
     min_send = st.sidebar.number_input(
         "최소 발송수", value=5000, step=1000, min_value=0, key="flt_minsend",
@@ -3279,6 +3282,35 @@ def main():
         st.warning("현재 필터 조합에 맞는 캠페인이 **0건**이에요"
                    + (f" — 활성 필터: {' · '.join(_active_flt)}" if _active_flt else "")
                    + ". 조건을 풀거나 사이드바 「↩️ 필터 전체 초기화」를 눌러 주세요.")
+
+    # ── '문구 매칭된 것만'이 특정 발송일을 통째로 지웠을 때 알린다 ──
+    # 기본 켜짐인 필터라, 방금 올린 실적에 문구가 안 붙으면 그 날짜가 모든 화면에서
+    # 사라진다. 증상이 '기준일 목록에 날짜가 없다'로 나타나서 업로드 실패로 읽힌다.
+    # 일부만 빠진 건(상시 17% 남짓) 알리지 않는다 — 날짜가 통째로 사라진 경우만.
+    _gone_days = []
+    if only_matched and len(dff_all):
+        _wo = dff_all[dff_all["send"].fillna(0) >= min_send]
+        if "dt" in _wo.columns:
+            _d_wo = set(_wo["dt"].dropna().dt.normalize())
+            _d_now = set(fdf["dt"].dropna().dt.normalize()) if len(fdf) and "dt" in fdf else set()
+            _gone_days = sorted(_d_wo - _d_now, reverse=True)
+    if _gone_days:
+        def _off_matched():
+            # 위젯 생성 뒤에 세션값을 직접 대입하면 예외가 난다 — on_click 콜백에서만 바꾼다
+            st.session_state["flt_matched"] = False
+
+        _n_gone = int((~dff_all["matched"]).sum())
+        _shown = " · ".join(f"{pd.Timestamp(d):%-m/%d}" for d in _gone_days[:5])
+        _more = f" 외 {len(_gone_days) - 5}일" if len(_gone_days) > 5 else ""
+        _w1, _w2 = st.columns([5, 1])
+        _w1.warning(
+            f"**{_shown}{_more}** 발송은 문구가 안 붙어서 「문구 매칭된 것만」 필터에 걸려 "
+            f"모든 화면에서 빠져 있어요 (미매칭 {_n_gone:,}건). "
+            "기획 시트에 해당 주차가 올라왔는지 확인하고 사이드바 「📥 기획 문구 다시 가져오기」를 "
+            "눌러 보세요. 문구 없이 실적만 먼저 보려면 필터를 끄면 돼요.")
+        _w2.button("필터 끄기", on_click=_off_matched, key="_off_matched",
+                   help="「문구 매칭된 것만」을 꺼서 문구 없는 발송까지 같이 봐요.",
+                   width="stretch")
 
     st.sidebar.markdown("---")
     # 연관 주제를 그룹으로 묶고(사이드바), 그룹 안 여러 주제는 본문 상단 하위탭으로 전환.
