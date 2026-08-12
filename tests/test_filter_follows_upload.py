@@ -114,6 +114,61 @@ def t_user_narrowed_range_is_kept():
 
 
 @case
+def t_unmatched_days_are_announced():
+    """문구가 안 붙은 날짜가 통째로 숨겨지면 알리고, 한 번에 풀 수 있어야 한다.
+
+    「문구 매칭된 것만」은 기본 켜짐이라, 방금 올린 실적에 문구가 안 붙으면 그 날짜가
+    모든 화면에서 사라진다. 증상이 '기준일 목록에 날짜가 없다'로 나타나 업로드 실패로
+    읽힌다 — 실제로 그렇게 리포트를 받았다.
+    """
+    full = synth_store(weeks=8)
+    dates = sorted(full["date"].unique())
+    new = dates[-2:]
+    full = full.copy()
+    _new_rows = full["date"].isin(new)
+    full.loc[_new_rows, ["title", "body"]] = ""            # 기획 시트 미적재 상황
+    full.loc[_new_rows, "matched"] = False
+
+    at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    at.session_state["camp_store"] = full
+    at.run()
+    assert not at.exception, at.exception[0].value
+
+    warns = [str(w.value) for w in at.warning if "문구 매칭된 것만" in str(w.value)]
+    assert warns, f"숨겨진 날짜 알림이 없어요 — warnings={[str(w.value)[:60] for w in at.warning]}"
+    for d in new:
+        lab = f"{pd.Timestamp(d):%-m/%d}"
+        assert lab in warns[0], f"{lab}이 알림에 없어요 — {warns[0][:120]}"
+
+    btn = [b for b in at.button if b.label == "필터 끄기"]
+    assert btn, "「필터 끄기」 버튼이 없어요"
+    btn[0].click()
+    at.run()
+    assert not at.exception, at.exception[0].value
+    assert at.session_state["flt_matched"] is False, "버튼이 필터를 끄지 못했어요"
+    assert not [w for w in at.warning if "문구 매칭된 것만" in str(w.value)], \
+        "필터를 껐는데 알림이 그대로예요"
+
+    at = _goto_yoy(at)
+    assert not at.exception, at.exception[0].value
+    opts = list([s for s in at.selectbox if s.label == "기준일"][0].options)
+    for d in new:
+        lab = pd.Timestamp(d).strftime("%Y-%m-%d")
+        assert any(lab in o for o in opts), f"필터를 껐는데도 {lab}이 안 보여요 — {opts[:4]}"
+
+
+@case
+def t_no_notice_when_nothing_hidden():
+    """문구가 다 붙어 있으면 알림을 띄우지 않는다 (상시 노출 방지)."""
+    at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    at.session_state["camp_store"] = synth_store(weeks=8)
+    at.run()
+    assert not at.exception, at.exception[0].value
+    assert not [w for w in at.warning if "문구 매칭된 것만" in str(w.value)], \
+        "숨겨진 날짜가 없는데 알림이 떴어요"
+
+
+@case
 def t_label_mode_switches_render():
     """'값 표시' 모드를 바꿔도 시간대 차트가 정상 렌더된다."""
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
