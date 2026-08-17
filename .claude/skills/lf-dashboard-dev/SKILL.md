@@ -242,6 +242,8 @@ git push -u origin "$(git branch --show-current)"
 | 받은 엑셀 숫자가 문자로 들어옴 | 표시 문자열을 그대로 씀 | 값은 숫자 + `number_format` (`_xl_numfmt`) |
 | 시간축이 0~80시까지 늘어남 | 수기 입력 `8000`·`2400`을 검증 없이 `//100` | `norm_hhmm` 경유 · `python tests/test_hour_norm.py` |
 | 같은 08시 발송이 슬롯 표에 두 줄 | 화면마다 따로 보정 — 집계는 원값, 차트는 보정값 | 보정은 `_finalize` 한 곳에서만 |
+| 문구 변경 효과 비교가 전부 '차이 없음' | 빈칸을 True로 읽어 대조군이 사라짐 | `_plan_flag` · `python tests/test_copy_effect.py` |
+| 같은 발송유형이 차트에 두 줄 | `컨틴전시 A/B` ↔ `컨틴`, `시그니처` ↔ `시그니쳐` | `norm_stype()` 경유 |
 | 이번 주만 문구 매칭 0% | 시트명에 기간이 없어 `undated`로 빠짐 (`recent` 경로에서 유실) | 사이드바 '최신 주차명' 확인 · `test_plan_merge.py` |
 | 올린 날짜가 기준일 목록에 없음 | `문구 매칭된 것만`(기본 켜짐)이 그 날짜를 통째로 지움 | 본문 상단 알림 → 「필터 끄기」 · `test_filter_follows_upload.py` |
 | `session_state ... cannot be modified` | 위젯 생성 뒤에 세션값 직접 대입 | `on_click` 콜백에서 바꾸고 `value=`는 세션 없을 때만 |

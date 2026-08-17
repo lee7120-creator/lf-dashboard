@@ -215,13 +215,30 @@ def _finalize(df):
     return df
 
 
+def _plan_flag(v):
+    """기획시트의 체크 칸 → bool. 빈칸은 '해당 없음'(False).
+
+    담당자가 손으로 적는 칸이라 표기가 흔들린다('문구변경'·'문구 변경'·'추가').
+    값이 있으면 True로 보되, 명시적 부정 표기만 False로 되돌린다.
+    """
+    s = str(v or "").strip()
+    if not s or s.lower() in ("nan", "none", "x", "-", "n", "no", "0",
+                              "없음", "미변경", "해당없음", "해당 없음"):
+        return False
+    return True
+
+
 def _parse_plan_sheet(rows, lookup):
     """한 주차 시트의 rows(2차원 리스트/튜플) → lookup 갱신.
 
     헤더가 2줄로 쪼개져 있어도(예: 45행=AF코드, 46행=제목/내용) 컬럼 매핑을
     행마다 '누적' 갱신하며 AF코드 행을 파싱한다. 엑셀/구글시트 공용.
+
+    값은 `(제목, 내용, 문구변경여부, 잔여모수추가여부)` 4-튜플.
+    문구변경·잔여모수 칸은 오른쪽 별도 블록에 있고 헤더 표기가 흔들려서
+    이름 부분 일치로 찾는다('요청문구'는 '변경'이 없어 걸리지 않는다).
     """
-    c_af = c_date = c_title = c_body = None
+    c_af = c_date = c_title = c_body = c_fix = c_rem = None
     _last_date = None                                # 병합셀 forward-fill용 직전 유효 날짜
     for row in rows:
         cells = [("" if v is None else str(v)) for v in row[:45]]
@@ -235,6 +252,10 @@ def _parse_plan_sheet(rows, lookup):
                 c_body = j
             elif (("일자" in cs or cs == "날짜") and len(cs) < 16):
                 c_date = j
+            elif "문구" in cs and "변경" in cs:
+                c_fix = j
+            elif "잔여모수" in cs:
+                c_rem = j
         if c_af is None or c_af >= len(cells):
             continue
         af = cells[c_af].strip().upper()             # 대문자 정규화 (실적 파서와 대칭)
@@ -251,10 +272,18 @@ def _parse_plan_sheet(rows, lookup):
             _last_date = d
         title = cells[c_title].strip() if (c_title is not None and c_title < len(cells)) else ""
         body = cells[c_body].strip() if (c_body is not None and c_body < len(cells)) else ""
+        fix = _plan_flag(cells[c_fix]) if (c_fix is not None and c_fix < len(cells)) else False
+        rem = _plan_flag(cells[c_rem]) if (c_rem is not None and c_rem < len(cells)) else False
         if title or body:
             if d is None:
                 continue                             # 끝내 날짜를 못 구하면 오염 대신 스킵
-            lookup[(d, af)] = (title, body)
+            # 같은 (날짜, AF)가 두 번 나오면(원발송 + 잔여모수 행) 체크는 OR로 합친다.
+            # 덮어쓰면 뒤 행의 빈칸이 앞 행의 체크를 지운다.
+            _prev = lookup.get((d, af))
+            if _prev is not None and len(_prev) >= 4:
+                fix = fix or bool(_prev[2])
+                rem = rem or bool(_prev[3])
+            lookup[(d, af)] = (title, body, fix, rem)
 
 
 def parse_plan_bytes(file_bytes):
@@ -374,16 +403,22 @@ def merge_perf_plan(perf_df, plan_lookup, keep_unmatched=False):
     if perf_df.empty:
         return perf_df.copy()
     df = perf_df.copy()
-    titles, bodies, matched = [], [], []
+    titles, bodies, matched, fixes, rems = [], [], [], [], []
     for key in zip(df["date"].tolist(), df["af"].tolist()):
         tb = plan_lookup.get(key)
         if tb:
             titles.append(tb[0]); bodies.append(tb[1]); matched.append(True)
+            # 옛 2-튜플 lookup도 그대로 받는다(외부에서 만들어 넘기는 경로가 있다)
+            fixes.append(bool(tb[2]) if len(tb) > 2 else False)
+            rems.append(bool(tb[3]) if len(tb) > 3 else False)
         else:
             titles.append(""); bodies.append(""); matched.append(False)
+            fixes.append(False); rems.append(False)
     df["title"] = titles
     df["body"] = bodies
     df["matched"] = matched
+    df["copy_fix"] = fixes                           # 기획시트 W열 — 우리측 문구 수정 여부
+    df["remain_add"] = rems                          # 기획시트 X열 — 잔여모수 추가 발송 여부
     if not keep_unmatched:
         df = df[df["matched"]].reset_index(drop=True)
     return df
@@ -391,7 +426,7 @@ def merge_perf_plan(perf_df, plan_lookup, keep_unmatched=False):
 
 # ── 누적 저장소 — 업로드할 때마다 (발송일+AF코드) 키로 병합·영속 ──────────
 DATA_STORE = "send_perf_store.csv"
-STORE_COLS = list(PERF_COLMAP.values()) + ["title", "body", "matched"]
+STORE_COLS = list(PERF_COLMAP.values()) + ["title", "body", "matched", "copy_fix", "remain_add"]
 
 
 def _to_bool(v):
@@ -2049,6 +2084,30 @@ def norm_hhmm(v):
     return None
 
 
+# 발송유형(stype) 표기 정규화 — 실적 엑셀이 수기 입력이라 같은 유형이 여러 표기로 온다.
+# 2026-08부터 '컨틴전시 A/B'가 '컨틴'으로 바뀌었고, '시그니처/시그니쳐'가 섞여 있다.
+# 정규화하지 않으면 같은 유형이 차트에서 두세 줄로 갈린다.
+STYPE_ALIASES = {"시그니쳐": "시그니처", "컨틴전시": "컨틴", "엘레이블": "L:ABLE", "L:ABLE": "L:ABLE"}
+_STYPE_SUB_RE = re.compile(r"^(우수발송|컨틴전시|컨틴)\s*([A-Za-z0-9]+)?$")
+
+
+def norm_stype(v, group=True):
+    """발송유형 원값 → 표준 표기. group=True면 뒤 번호를 떼어 큰 유형으로 묶는다.
+
+    '우수발송 1'~'우수발송 8'은 같은 성격의 슬롯이라 기본은 '우수발송'으로 묶는다.
+    번호별로 봐야 할 화면은 group=False로 원 표기를 쓴다.
+    """
+    s = str(v or "").strip()
+    if not s or s.lower() in ("nan", "none"):
+        return None
+    s = re.sub(r"\s+", " ", s)
+    m = _STYPE_SUB_RE.match(s)
+    if m:
+        base = "컨틴" if m.group(1).startswith("컨틴") else m.group(1)
+        return base if (group or not m.group(2)) else f"{base} {m.group(2)}"
+    return STYPE_ALIASES.get(s.upper(), STYPE_ALIASES.get(s, s))
+
+
 def hour_of_day(v):
     """발송 시간대 → 0~23 시(int). 못 읽으면 None. HHMM 해석은 전부 이 함수를 쓸 것."""
     n = norm_hhmm(v)
@@ -2504,6 +2563,9 @@ def main():
         r["title"] = r["title"].fillna("").astype(str) if "title" in r else ""
         r["body"] = r["body"].fillna("").astype(str) if "body" in r else ""
         r["matched"] = r["matched"].map(_to_bool) if "matched" in r else False
+        # 구글시트 왕복이 True/False를 문자열로 되돌린다 — matched와 같은 방어
+        for _fc in ("copy_fix", "remain_add"):
+            r[_fc] = r[_fc].map(_to_bool) if _fc in r else False
         return add_tags(r)
 
     # ── 저장소 백엔드: 구글시트(설정 시) ↔ 로컬 CSV(폴백) ──
@@ -3375,6 +3437,7 @@ def main():
         "8. 액션":               ["다음주 발송 플레이북", "AI 처방·카피"],
         "9. 데이터·다운로드":    ["데이터·다운로드"],
         "10. 앱푸시 동의 현황":  ["앱푸시 동의 현황"],
+        "11. 문구 개선 효과":    ["문구 개선 효과"],
     }
     _grp = st.sidebar.radio("페이지", list(CAMPAIGN_GROUPS))
     _subs = CAMPAIGN_GROUPS[_grp]
@@ -8533,6 +8596,210 @@ def main():
             '여기서 측정할 수 없다는 점을 감안해 주세요.</div>', unsafe_allow_html=True)
 
         glossary()                                     # 유일하게 빠져 있던 페이지 (개발 규칙)
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE ✍️ — 문구 개선 효과 (기획시트 W·X열 기반)
+    # ══════════════════════════════════════════════════════════════
+    elif "문구 개선 효과" in page:
+        st.title("✍️ 문구 개선 효과")
+        st.caption("기획 시트에서 **우리측이 문구를 다듬은 건**이 그대로 나간 건보다 잘 나왔는지 봐요. "
+                   "잔여모수를 추가 발송한 건의 효과도 같이 봅니다. 사이드바 필터가 그대로 적용돼요.")
+
+        _cx = fdf.copy()
+        for _fc in ("copy_fix", "remain_add"):
+            _cx[_fc] = _cx[_fc].map(_to_bool) if _fc in _cx.columns else False
+        _cx["_stype"] = _cx["stype"].map(norm_stype) if "stype" in _cx.columns else None
+        _cx["_ctr"] = np.where(_cx["send"].fillna(0) > 0, _cx["uv"] / _cx["send"] * 100, np.nan)
+        _cx["_ocr"] = np.where(_cx["uv"].fillna(0) > 0, _cx["oc"] / _cx["uv"] * 100, np.nan)
+
+        _n_fix, _n_rem = int(_cx["copy_fix"].sum()), int(_cx["remain_add"].sum())
+        if not len(_cx) or (_n_fix == 0 and _n_rem == 0):
+            st.info("문구 변경·잔여모수 추가 표시가 있는 발송이 아직 없어요.\n\n"
+                    "기획 시트의 **문구 변경 여부(W열)**·**잔여모수 추가 여부(X열)**를 채우고 "
+                    "사이드바 「📥 기획 문구 다시 가져오기」를 누르면 여기에 쌓여요. "
+                    "표시가 붙은 주차부터 비교할 수 있어요.")
+        else:
+            _cx_n = len(_cx)
+            c = st.columns(4)
+            c[0].metric("전체 발송", f"{_cx_n:,}건")
+            c[1].metric("문구 변경", f"{_n_fix:,}건", f"{_n_fix / _cx_n * 100:.0f}%",
+                        delta_color="off", help="기획 시트 W열에 표시된 건이에요.")
+            c[2].metric("문구 그대로", f"{_cx_n - _n_fix:,}건", "대조군",
+                        delta_color="off", help="검토했지만 고칠 필요가 없어 원문으로 나간 건이에요.")
+            c[3].metric("잔여모수 추가", f"{_n_rem:,}건",
+                        f"{_n_rem / _cx_n * 100:.0f}%", delta_color="off")
+
+            def _cx_agg(d):
+                s = float(d["send"].sum()); u = float(d["uv"].sum())
+                o = float(d["oc"].sum()); a = float(d["amt"].sum())
+                return {"건수": len(d), "발송": s, "UV": u, "주문": o, "거래액": a,
+                        "CTR": (u / s * 100 if s else np.nan),
+                        "주문CR": (o / u * 100 if u else np.nan),
+                        "RPS": (a / s if s else np.nan),
+                        "객단가": (a / o if o else np.nan)}
+
+            def _cx_block(flag_col, on_lab, off_lab, title, why):
+                """플래그 하나에 대한 비교 블록 — 단순 비교 + 층화 보정 + 유의성."""
+                on, off = _cx[_cx[flag_col]], _cx[~_cx[flag_col]]
+                if len(on) < 3 or len(off) < 3:
+                    st.info(f"{on_lab} {len(on)}건 · {off_lab} {len(off)}건이라 아직 비교하기 일러요. "
+                            "양쪽 3건 이상 쌓이면 자동으로 나타나요.")
+                    return
+                A, B = _cx_agg(on), _cx_agg(off)
+                st.markdown(f"##### {title}")
+                st.caption(why)
+                _mc = st.columns(4)
+                for _i, (_k, _fmt, _pp) in enumerate(
+                        # 총량(거래액·발송)은 넣지 않는다 — 두 군의 표본 크기 차이가
+                        # 그대로 찍혀 '변경군이 45% 적다'처럼 읽힌다. 전부 비율 지표로 본다.
+                        [("CTR", "{:.2f}%", True), ("주문CR", "{:.2f}%", True),
+                         ("RPS", "{:,.0f}원", False), ("객단가", "{:,.0f}원", False)]):
+                    _d = A[_k] - B[_k]
+                    _dl = (f"{_d:+.2f}%p" if _pp else
+                           (f"{(A[_k] / B[_k] - 1) * 100:+.1f}%" if B[_k] else "–"))
+                    _mc[_i].metric(f"{_k} · {on_lab}",
+                                   "–" if not np.isfinite(A[_k]) else _fmt.format(A[_k]),
+                                   f"{_dl} vs {off_lab}",
+                                   help=f"{off_lab} {('–' if not np.isfinite(B[_k]) else _fmt.format(B[_k]))}")
+                # 캠페인 단위 분포로 유의성 검정 (합산값은 큰 발송 몇 건에 끌려간다)
+                _p_ctr = welch(on["_ctr"], off["_ctr"])
+                _p_ocr = welch(on["_ocr"], off["_ocr"])
+                st.caption(f"캠페인 단위 평균 차이의 유의성 — CTR {sig_label(_p_ctr)} · "
+                           f"주문CR {sig_label(_p_ocr)}")
+
+                # ── 층화 보정: 같은 발송유형+BPU 안에서만 맞대고 발송량으로 가중 평균 ──
+                _rows, _pair = [], 0
+                for _k2, _g in _cx.groupby(["_stype", "bpu"], dropna=False):
+                    _a, _b = _g[_g[flag_col]], _g[~_g[flag_col]]
+                    if len(_a) < 2 or len(_b) < 2:
+                        continue
+                    _A, _B = _cx_agg(_a), _cx_agg(_b)
+                    if not (np.isfinite(_A["CTR"]) and np.isfinite(_B["CTR"])):
+                        continue
+                    _w = min(_A["발송"], _B["발송"])
+                    _pair += 1
+                    _rows.append({"발송유형": _k2[0], "BPU": _k2[1],
+                                  f"{on_lab} 건수": _A["건수"], f"{off_lab} 건수": _B["건수"],
+                                  f"{on_lab} CTR": _A["CTR"], f"{off_lab} CTR": _B["CTR"],
+                                  "CTR 차이(%p)": _A["CTR"] - _B["CTR"],
+                                  "RPS 차이(원)": (_A["RPS"] - _B["RPS"]),
+                                  "_w": _w})
+                if _rows:
+                    _sd = pd.DataFrame(_rows)
+                    _wsum = _sd["_w"].sum()
+                    _adj_ctr = float((_sd["CTR 차이(%p)"] * _sd["_w"]).sum() / _wsum) if _wsum else np.nan
+                    _adj_rps = float((_sd["RPS 차이(원)"] * _sd["_w"]).sum() / _wsum) if _wsum else np.nan
+                    _raw_ctr = A["CTR"] - B["CTR"]
+                    _gap = _adj_ctr - _raw_ctr
+                    st.markdown(
+                        f'<div class="appendix"><b>층화 보정</b> — 같은 발송유형·BPU 안에서만 맞대고 '
+                        f'발송량으로 가중 평균한 값이에요 (비교 가능한 조합 {_pair}개).<br>'
+                        f'CTR 차이 <b>{_adj_ctr:+.2f}%p</b> · RPS 차이 <b>{_adj_rps:+,.0f}원</b> '
+                        f'(단순 비교는 {_raw_ctr:+.2f}%p) — '
+                        + ("단순 비교와 방향이 같아요." if _raw_ctr * _adj_ctr > 0 else
+                           "<b>단순 비교와 방향이 반대예요.</b> 층화 값을 믿으세요.")
+                        + f' 두 값의 차이({_gap:+.2f}%p)가 클수록 '
+                        '"어떤 건을 골랐는지"가 결과를 흔들고 있다는 뜻이에요.</div>',
+                        unsafe_allow_html=True)
+                    with st.expander(f"조합별 상세 ({_pair}개)"):
+                        _show = _sd.drop(columns=["_w"]).sort_values("CTR 차이(%p)", ascending=False)
+                        table(_show.style.format({
+                            f"{on_lab} CTR": "{:.2f}%", f"{off_lab} CTR": "{:.2f}%",
+                            "CTR 차이(%p)": "{:+.2f}", "RPS 차이(원)": "{:+,.0f}",
+                            f"{on_lab} 건수": "{:,.0f}", f"{off_lab} 건수": "{:,.0f}"}),
+                            hide_index=True, width="stretch", dl_name=f"{title} 조합별")
+                else:
+                    st.caption("같은 발송유형·BPU 안에 양쪽이 2건 이상인 조합이 아직 없어서 "
+                               "층화 보정은 건너뛰었어요. 단순 비교만 참고해 주세요.")
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            _cx_block("copy_fix", "문구 변경", "문구 그대로",
+                      "① 문구를 다듬은 게 효과가 있었나",
+                      "우리측이 손댄 건과 원문 그대로 나간 건의 비교예요.")
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            _cx_block("remain_add", "잔여모수 추가", "추가 없음",
+                      "② 잔여모수 추가가 효과가 있었나",
+                      "잔여모수를 더 태운 건과 아닌 건의 비교예요. 발송량 자체가 커지므로 "
+                      "총량보다 CTR·RPS 같은 효율 지표를 보세요.")
+
+            # ── 발송유형별 ──
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### ③ 발송유형별 문구 변경 효과")
+            _sr = []
+            for _st2, _g in _cx.groupby("_stype", dropna=True):
+                _a, _b = _g[_g["copy_fix"]], _g[~_g["copy_fix"]]
+                if not len(_a) or not len(_b):
+                    continue
+                _A, _B = _cx_agg(_a), _cx_agg(_b)
+                _sr.append({"발송유형": _st2, "변경 건수": _A["건수"], "그대로 건수": _B["건수"],
+                            "변경 CTR": _A["CTR"], "그대로 CTR": _B["CTR"],
+                            "CTR 차이(%p)": _A["CTR"] - _B["CTR"],
+                            "변경 RPS": _A["RPS"], "그대로 RPS": _B["RPS"]})
+            if _sr:
+                _sdf = pd.DataFrame(_sr).sort_values("CTR 차이(%p)", ascending=False)
+                _fig = go.Figure(go.Bar(
+                    x=_sdf["발송유형"], y=_sdf["CTR 차이(%p)"],
+                    marker_color=[PALETTE["green"] if v > 0 else PALETTE["red"]
+                                  for v in _sdf["CTR 차이(%p)"]],
+                    text=[f"{v:+.2f}%p" for v in _sdf["CTR 차이(%p)"]], textposition="outside",
+                    customdata=np.stack([_sdf["변경 건수"], _sdf["그대로 건수"]], axis=-1),
+                    hovertemplate="%{x}<br>CTR 차이 %{y:+.2f}%p<br>"
+                                  "변경 %{customdata[0]}건 · 그대로 %{customdata[1]}건<extra></extra>"))
+                _fig.update_layout(**base_layout(h=300, title="발송유형별 CTR 차이 (변경 − 그대로)"))
+                st.plotly_chart(_fig, width="stretch")
+                table(_sdf.style.format({
+                    "변경 CTR": "{:.2f}%", "그대로 CTR": "{:.2f}%", "CTR 차이(%p)": "{:+.2f}",
+                    "변경 RPS": "{:,.0f}", "그대로 RPS": "{:,.0f}",
+                    "변경 건수": "{:,.0f}", "그대로 건수": "{:,.0f}"}),
+                    hide_index=True, width="stretch", dl_name="발송유형별 문구 변경 효과")
+                st.caption("표기가 흔들리는 발송유형은 하나로 묶었어요 — 컨틴전시 A·B → 컨틴, "
+                           "시그니쳐 → 시그니처, 우수발송 1~8 → 우수발송.")
+            else:
+                st.caption("발송유형별로 양쪽(변경·그대로)이 모두 있는 유형이 아직 없어요.")
+
+            # ── 주차별 추이 ──
+            if "dt" in _cx.columns and _cx["dt"].notna().any():
+                st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+                st.markdown("##### ④ 주차별 추이")
+                _w = _cx.dropna(subset=["dt"]).copy()
+                _w["주"] = _w["dt"].dt.to_period("W").dt.start_time
+                _wr = []
+                for _k3, _g in _w.groupby("주"):
+                    _a, _b = _g[_g["copy_fix"]], _g[~_g["copy_fix"]]
+                    _A, _B = _cx_agg(_a), _cx_agg(_b)
+                    _wr.append({"주": _k3, "변경 CTR": _A["CTR"], "그대로 CTR": _B["CTR"],
+                                "변경 건수": _A["건수"], "그대로 건수": _B["건수"]})
+                _wdf = pd.DataFrame(_wr)
+                _f2 = go.Figure()
+                _f2.add_trace(go.Scatter(x=_wdf["주"], y=_wdf["변경 CTR"], name="문구 변경",
+                                         mode="lines+markers", line=dict(width=2, color=PALETTE["blue"])))
+                _f2.add_trace(go.Scatter(x=_wdf["주"], y=_wdf["그대로 CTR"], name="문구 그대로",
+                                         mode="lines+markers",
+                                         line=dict(width=2, color=PALETTE["slate"], dash="dot")))
+                _lay2 = base_layout(h=300, title="주차별 CTR (%)", hover="x")
+                _lay2["legend"] = legend_h()
+                _f2.update_layout(**_lay2)
+                st.plotly_chart(_f2, width="stretch")
+                table(_wdf.assign(주=_wdf["주"].dt.strftime("%Y-%m-%d")).style.format({
+                    "변경 CTR": "{:.2f}%", "그대로 CTR": "{:.2f}%",
+                    "변경 건수": "{:,.0f}", "그대로 건수": "{:,.0f}"}),
+                    hide_index=True, width="stretch", dl_name="주차별 문구 변경 효과")
+
+            # ── 해석 주의 ──
+            st.markdown(
+                '<div class="appendix">⚠️ <b>이 비교는 무작위 실험이 아니에요</b><br>'
+                '전량 검토 후 <b>고칠 필요가 있다고 판단한 건만</b> 손대기 때문에, 변경군에는 '
+                '원래 문구가 약했던 건이 몰려 있을 수 있어요. 그러면 문구를 잘 고쳤어도 '
+                '숫자상 차이는 작게 나와요(효과가 과소평가돼요). 반대로 잘 나올 것 같은 '
+                '기획전 위주로 손댔다면 과대평가됩니다.<br>'
+                '그래서 <b>단순 비교보다 층화 보정 값</b>을 먼저 보세요. 두 값이 크게 다르면 '
+                '"어떤 건을 골랐는지"가 결과를 흔들고 있다는 뜻이에요. '
+                '정확히 재려면 같은 조건에서 <b>일부만 무작위로 골라</b> 원문 그대로 내보내는 '
+                '대조군이 필요해요.</div>', unsafe_allow_html=True)
+
+        glossary()
+
 
     # ── 페이지 리포트 다운로드 (HTML → 브라우저 인쇄로 PDF) ──
     if _REPORT:
