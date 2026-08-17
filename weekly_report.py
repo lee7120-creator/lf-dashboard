@@ -1014,9 +1014,15 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
 # ══════════════════════════════════════════════════════
 def month_label(n): return f"{n}월"
 
+def month_trim(s):
+    """표시용 — 앞자리 0 제거 ('08월 2주차' → '8월 2주차').
+    저장 라벨은 조회 키라서 그대로 두고, 화면·엑셀에 찍기 직전에만 쓴다.
+    '10월'은 0 앞이 숫자라 lookbehind에 걸려 안 바뀐다."""
+    return re.sub(r"(?<!\d)0(\d월)", r"\1", str(s)) if s else s
+
 def week_disp(year, label):
-    """주차 표시: 2026년 06월 2주차"""
-    return f"{year}년 {label}" if label else "-"
+    """주차 표시: 2026년 6월 2주차"""
+    return f"{year}년 {month_trim(label)}" if label else "-"
 
 def week_back(df, wy, wlabel, years):
     """wlabel의 `years`년 전 대응 주차 (label, exact). 5주차 등은 그 달 마지막 주로 대체."""
@@ -1122,7 +1128,8 @@ def trend_table(df, gran, metrics, years, seg="*TOTAL"):
         for y, lb in columns:
             vals.append(pick(df, gran, met, seg, y, lb, "final"))
         out[met] = vals
-    tbl = pd.DataFrame(out, index=pd.MultiIndex.from_tuples(columns, names=["연도", "기간"])).T
+    tbl = pd.DataFrame(out, index=pd.MultiIndex.from_tuples(
+        [(y, month_trim(lb)) for y, lb in columns], names=["연도", "기간"])).T
     return tbl
 
 def style_trend(tbl, metrics):
@@ -1165,7 +1172,8 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
         # 연도마다 없는 주차(5주차 등)는 건너뛰고 선을 잇는다
         s = series_by_label(df, gran, metric, seg, y, prefer="final").reindex(x_all).dropna()
         fig.add_trace(go.Scatter(
-            x=s.index.tolist(), y=(s / div).tolist(), mode="lines+markers", name=str(y),
+            x=[month_trim(v) for v in s.index], y=(s / div).tolist(),
+            mode="lines+markers", name=str(y),
             line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
             marker=dict(size=5),
         ))
@@ -1173,7 +1181,7 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
     ly = base_layout(h, ysuffix=unit if unit == "%" else "",
                      title=f"{metric} {gname} 추이 ({unit})")
     ly["xaxis"]["categoryorder"] = "array"
-    ly["xaxis"]["categoryarray"] = x_all
+    ly["xaxis"]["categoryarray"] = [month_trim(v) for v in x_all]
     if gran == "주": ly["xaxis"]["tickangle"] = -45; ly["xaxis"]["nticks"] = 20
     fig.update_layout(**ly)
     return fig
@@ -1207,7 +1215,7 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
             ws.cell(r, 1, met).font = title_font
             for j, (y, lb) in enumerate(cols):
                 ws.cell(r, 2 + j, y).font = head_font
-                ws.cell(r + 1, 2 + j, lb).font = head_font
+                ws.cell(r + 1, 2 + j, month_trim(lb)).font = head_font
                 ws.cell(r + 1, 2 + j).fill = head_fill
             segs = ["*TOTAL"] + [s for s in CHANNELS if s in set(sub_m["segment"])]
             for i, seg in enumerate(segs):
@@ -1265,7 +1273,7 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
         for k, met in enumerate(chart_metrics):
             ws.cell(r, 1, f"{met} {gname} (차트 데이터)").font = head_font
             for j, lb in enumerate(x_all):
-                ws.cell(r, 2 + j, lb).fill = head_fill
+                ws.cell(r, 2 + j, month_trim(lb)).fill = head_fill
             nrow = 0
             for y in sorted(chart_years):
                 s = series_by_label(df, gran, met, "*TOTAL", y).reindex(x_all)
@@ -1536,7 +1544,7 @@ def render_push_page(df, ref_year, chart_years):
                             prev_rate = float('nan')
 
                 rows.append({
-                    "날짜": d,
+                    "날짜": month_trim(d),
                     "가입자수": join_val,
                     "앱푸시수신동의": push_val,
                     "동의율": rate,
@@ -1941,7 +1949,7 @@ def main():
                             else latest_w)
             ref_week = st.selectbox("기준 주차", weeks_avail[::-1],
                                     index=weeks_avail[::-1].index(default_week),
-                                    key="wr_refw",
+                                    key="wr_refw", format_func=month_trim,
                                     help="주간보고 대상 주차예요. 최신 주차가 진행 중이면 직전 완료 주차가 기본으로 잡혀요.")
         else:
             ref_week = None
