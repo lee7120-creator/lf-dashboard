@@ -3909,8 +3909,14 @@ def main():
             st.caption("같은 발송유형·BPU 안에 양쪽이 2건 이상인 조합이 아직 없어서 "
                        "층화 보정은 건너뛰었어요. 단순 비교만 참고해 주세요.")
 
-    def _eff_weekly(d, flag_col, on_lab, off_lab, dl_tag):
-        """주차별 CTR 추이 — 변경군 vs 대조군."""
+    def _eff_weekly(d, flag_col, on_lab, off_lab, dl_tag, min_n=3):
+        """주차별 CTR 추이 — 변경군 vs 대조군.
+
+        표본이 1~2건인 주는 CTR이 0%·5%로 튀어 추세를 가린다. **양쪽 군이 모두
+        min_n건 이상인 주만** 그린다. 그리고 빠진 주는 NaN으로 남겨 선을 끊는다
+        (`connectgaps=False`) — 안 그러면 1년치 공백을 직선 하나로 이어 버려서
+        그 사이에 데이터가 있는 것처럼 보인다.
+        """
         if "dt" not in d.columns or not d["dt"].notna().any():
             return
         _w = d.dropna(subset=["dt"]).copy()
@@ -3918,19 +3924,34 @@ def main():
         _wr = []
         for _k3, _g in _w.groupby("주"):
             _A, _B = _eff_agg(_g[_g[flag_col]]), _eff_agg(_g[~_g[flag_col]])
+            _ok = (_A["건수"] >= min_n and _B["건수"] >= min_n
+                   and _A["발송"] > 0 and _B["발송"] > 0)
             _wr.append({"주": _k3, f"{on_lab} CTR": _A["CTR"], f"{off_lab} CTR": _B["CTR"],
-                        f"{on_lab} 건수": _A["건수"], f"{off_lab} 건수": _B["건수"]})
-        _wdf = pd.DataFrame(_wr)
+                        f"{on_lab} 건수": _A["건수"], f"{off_lab} 건수": _B["건수"], "_ok": _ok})
+        _wall = pd.DataFrame(_wr)
+        _wdf = _wall[_wall["_ok"]].drop(columns=["_ok"]).reset_index(drop=True)
+        _drop = len(_wall) - len(_wdf)
+        if not len(_wdf):
+            st.info(f"양쪽 군이 모두 {min_n}건 이상인 주가 아직 없어요. "
+                    "몇 주 더 쌓이면 추이가 나타나요.")
+            return
+        # 빠진 주를 NaN으로 채워 선이 끊기게 한다 (관측 구간 안에서만)
+        _idx = pd.date_range(_wdf["주"].min(), _wdf["주"].max(), freq="W-MON")
+        _plot = _wdf.set_index("주").reindex(_idx)
         _f2 = go.Figure()
-        _f2.add_trace(go.Scatter(x=_wdf["주"], y=_wdf[f"{on_lab} CTR"], name=on_lab,
-                                 mode="lines+markers", line=dict(width=2, color=PALETTE["blue"])))
-        _f2.add_trace(go.Scatter(x=_wdf["주"], y=_wdf[f"{off_lab} CTR"], name=off_lab,
-                                 mode="lines+markers",
+        _f2.add_trace(go.Scatter(x=_plot.index, y=_plot[f"{on_lab} CTR"], name=on_lab,
+                                 mode="lines+markers", connectgaps=False,
+                                 line=dict(width=2, color=PALETTE["blue"])))
+        _f2.add_trace(go.Scatter(x=_plot.index, y=_plot[f"{off_lab} CTR"], name=off_lab,
+                                 mode="lines+markers", connectgaps=False,
                                  line=dict(width=2, color=PALETTE["slate"], dash="dot")))
         _l2 = base_layout(h=300, title="주차별 CTR (%)", hover="x")
         _l2["legend"] = legend_h()
         _f2.update_layout(**_l2)
         st.plotly_chart(_f2, width="stretch")
+        if _drop:
+            st.caption(f"양쪽 군이 {min_n}건 미만인 주 {_drop}개는 뺐어요 — 1~2건짜리 주는 "
+                       "CTR이 0%·100% 근처로 튀어서 추세를 가려요. 표에도 안 나옵니다.")
         table(_wdf.assign(주=_wdf["주"].dt.strftime("%Y-%m-%d")).style.format({
             f"{on_lab} CTR": "{:.2f}%", f"{off_lab} CTR": "{:.2f}%",
             f"{on_lab} 건수": "{:,.0f}", f"{off_lab} 건수": "{:,.0f}"}),
@@ -9055,6 +9076,11 @@ def main():
                    .groupby("월").agg(전체=("af", "size"), 남은발송=("_rem", "sum")).reset_index())
             _mg["남은발송 비중(%)"] = np.where(_mg["전체"] > 0,
                                           _mg["남은발송"] / _mg["전체"] * 100, np.nan)
+            # 진행 중인 달·데이터가 몇 건뿐인 달은 비중이 튀어 추세를 가린다.
+            # 그 달 전체 발송의 30% 미만이면(중앙값 기준) 미완결로 보고 뺀다.
+            _med = float(_mg["전체"].median()) if len(_mg) else 0.0
+            _mpart = _mg[_mg["전체"] < _med * 0.3]
+            _mg = _mg[_mg["전체"] >= _med * 0.3]
             _fm = go.Figure(go.Scatter(
                 x=_mg["월"], y=_mg["남은발송 비중(%)"], mode="lines+markers",
                 line=dict(width=2, color=PALETTE["red"]),
@@ -9063,6 +9089,10 @@ def main():
                               "%{customdata[0]}건 / %{customdata[1]}건<extra></extra>"))
             _fm.update_layout(**base_layout(h=280, title="월별 남은발송 비중 (%)", hover="x"))
             st.plotly_chart(_fm, width="stretch")
+            if len(_mpart):
+                st.caption("발송이 몇 건뿐인 달 "
+                           + ", ".join(f"{pd.Timestamp(_d):%Y-%m}" for _d in _mpart["월"])
+                           + "은 뺐어요 — 진행 중이거나 실적이 덜 올라온 달이라 비중이 튀어요.")
 
             _cmp = []
             for _s3 in ("남은발송", "컨틴", "기본발송", "우수발송"):
