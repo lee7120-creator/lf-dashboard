@@ -3909,8 +3909,14 @@ def main():
             st.caption("같은 발송유형·BPU 안에 양쪽이 2건 이상인 조합이 아직 없어서 "
                        "층화 보정은 건너뛰었어요. 단순 비교만 참고해 주세요.")
 
-    def _eff_weekly(d, flag_col, on_lab, off_lab, dl_tag):
-        """주차별 CTR 추이 — 변경군 vs 대조군."""
+    def _eff_weekly(d, flag_col, on_lab, off_lab, dl_tag, min_n=3):
+        """주차별 CTR 추이 — 변경군 vs 대조군.
+
+        표본이 1~2건인 주는 CTR이 0%·5%로 튀어 추세를 가린다. **양쪽 군이 모두
+        min_n건 이상인 주만** 그린다. 그리고 빠진 주는 NaN으로 남겨 선을 끊는다
+        (`connectgaps=False`) — 안 그러면 1년치 공백을 직선 하나로 이어 버려서
+        그 사이에 데이터가 있는 것처럼 보인다.
+        """
         if "dt" not in d.columns or not d["dt"].notna().any():
             return
         _w = d.dropna(subset=["dt"]).copy()
@@ -3918,19 +3924,34 @@ def main():
         _wr = []
         for _k3, _g in _w.groupby("주"):
             _A, _B = _eff_agg(_g[_g[flag_col]]), _eff_agg(_g[~_g[flag_col]])
+            _ok = (_A["건수"] >= min_n and _B["건수"] >= min_n
+                   and _A["발송"] > 0 and _B["발송"] > 0)
             _wr.append({"주": _k3, f"{on_lab} CTR": _A["CTR"], f"{off_lab} CTR": _B["CTR"],
-                        f"{on_lab} 건수": _A["건수"], f"{off_lab} 건수": _B["건수"]})
-        _wdf = pd.DataFrame(_wr)
+                        f"{on_lab} 건수": _A["건수"], f"{off_lab} 건수": _B["건수"], "_ok": _ok})
+        _wall = pd.DataFrame(_wr)
+        _wdf = _wall[_wall["_ok"]].drop(columns=["_ok"]).reset_index(drop=True)
+        _drop = len(_wall) - len(_wdf)
+        if not len(_wdf):
+            st.info(f"양쪽 군이 모두 {min_n}건 이상인 주가 아직 없어요. "
+                    "몇 주 더 쌓이면 추이가 나타나요.")
+            return
+        # 빠진 주를 NaN으로 채워 선이 끊기게 한다 (관측 구간 안에서만)
+        _idx = pd.date_range(_wdf["주"].min(), _wdf["주"].max(), freq="W-MON")
+        _plot = _wdf.set_index("주").reindex(_idx)
         _f2 = go.Figure()
-        _f2.add_trace(go.Scatter(x=_wdf["주"], y=_wdf[f"{on_lab} CTR"], name=on_lab,
-                                 mode="lines+markers", line=dict(width=2, color=PALETTE["blue"])))
-        _f2.add_trace(go.Scatter(x=_wdf["주"], y=_wdf[f"{off_lab} CTR"], name=off_lab,
-                                 mode="lines+markers",
+        _f2.add_trace(go.Scatter(x=_plot.index, y=_plot[f"{on_lab} CTR"], name=on_lab,
+                                 mode="lines+markers", connectgaps=False,
+                                 line=dict(width=2, color=PALETTE["blue"])))
+        _f2.add_trace(go.Scatter(x=_plot.index, y=_plot[f"{off_lab} CTR"], name=off_lab,
+                                 mode="lines+markers", connectgaps=False,
                                  line=dict(width=2, color=PALETTE["slate"], dash="dot")))
         _l2 = base_layout(h=300, title="주차별 CTR (%)", hover="x")
         _l2["legend"] = legend_h()
         _f2.update_layout(**_l2)
         st.plotly_chart(_f2, width="stretch")
+        if _drop:
+            st.caption(f"양쪽 군이 {min_n}건 미만인 주 {_drop}개는 뺐어요 — 1~2건짜리 주는 "
+                       "CTR이 0%·100% 근처로 튀어서 추세를 가려요. 표에도 안 나옵니다.")
         table(_wdf.assign(주=_wdf["주"].dt.strftime("%Y-%m-%d")).style.format({
             f"{on_lab} CTR": "{:.2f}%", f"{off_lab} CTR": "{:.2f}%",
             f"{on_lab} 건수": "{:,.0f}", f"{off_lab} 건수": "{:,.0f}"}),
@@ -8833,18 +8854,59 @@ def main():
 
         _kt = _eff_frame()
         _kt = _kt[_kt["dt"].notna()] if "dt" in _kt.columns else _kt
-        _c1, _c2, _c3 = st.columns([1.3, 1, 1])
+        _c1, _c2 = st.columns([2, 1.4])
         with _c1:
             _scope = st.radio("기준 표본", ["평일 16시 슬롯 전체", "컨틴 배정분만", "전체 발송"],
                               horizontal=True, key="kt_scope",
                               help="컨틴 실적이 적을 땐 '평일 16시 슬롯 전체'가 현실적인 기준이에요.")
         with _c2:
+            # 총 거래액은 발송량이 큰 쪽이 무조건 위로 와서 구좌 배정 판단에 못 쓴다.
+            # '캠페인 1건당 평균 거래액'으로 바꿔 규모가 다른 카테고리끼리 맞댈 수 있게 한다.
+            # (발송 1건당은 RPS가 이미 담당한다)
+            _KT_MET = {k: v for k, v in METRIC_OPTS.items() if v[0] != "amt"}
+            _KT_MET["거래액(캠페인 건당)"] = ("amt_pc", "원", PALETTE["teal"])
+            guard_select("kt_metric", list(_KT_MET.keys()))
+            _mlab = st.selectbox("판단 지표", list(_KT_MET.keys()), key="kt_metric",
+                                 help="이 지표 기준으로 아래 순위·리프트·추천이 전부 바뀌어요. "
+                                      "무엇을 노리는 구좌인지에 따라 골라 보세요.")
+        _mcol, _munit, _mcolor = _KT_MET[_mlab]
+        _c3, _c4 = st.columns([1, 1])
+        with _c3:
             _recent = st.selectbox("기간", ["최근 12주", "최근 26주", "최근 52주", "전체"],
                                    index=0, key="kt_recent",
                                    help="매주 보는 화면이라 기본은 최근 12주예요.")
-        with _c3:
+        with _c4:
             _minn = st.number_input("최소 표본(건)", value=5, min_value=1, step=1, key="kt_minn",
                                     help="이보다 적은 항목은 우연에 흔들려서 숨겨요.")
+
+        def _kt_metric(d):
+            """합산 분자/분모에서 선택 지표 값을 만든다 (캠페인 평균이 아니라 합산 기준)."""
+            # 원본 DataFrame(여러 행)과 집계된 한 행(Series) 둘 다 들어온다.
+            # 지역명이 전역 헬퍼 _s 를 가리지 않게 접두어를 붙인다 (check_shadowing 규칙)
+            def _kt_num(_c):
+                _v = d[_c] if _c in d else 0
+                _v = pd.to_numeric(_v, errors="coerce")
+                if hasattr(_v, "sum"):                   # 여러 행 → 합산
+                    return float(_v.fillna(0).sum())
+                return 0.0 if pd.isna(_v) else float(_v)  # 집계된 한 행 → 그 값
+
+            _vs, _vu = _kt_num("send"), _kt_num("uv")
+            _vo, _va = _kt_num("oc"), _kt_num("amt")
+            if _mcol == "amt_pc":                        # 캠페인 1건당 평균 거래액
+                _vn = _kt_num("건수") if "건수" in d else float(len(d))
+                return (_va / _vn) if _vn else np.nan
+            if _mcol == "infl_cr":
+                return (_vu / _vs * 100) if _vs else np.nan
+            if _mcol == "ord_cr":
+                return (_vo / _vu * 100) if _vu else np.nan
+            if _mcol == "rps":
+                return (_va / _vs) if _vs else np.nan
+            if _mcol == "aov":
+                return (_va / _vo) if _vo else np.nan
+            return _va                                   # 거래액 — 총량
+
+        _mfmt = "{:.2f}%" if _munit == "%" else "{:,.0f}"
+        _mtxt = (lambda v: f"{v:.2f}%") if _munit == "%" else (lambda v: f"{v:,.0f}")
 
         if _recent != "전체" and len(_kt):
             _wk = int(re.search(r"\d+", _recent).group())
@@ -8874,7 +8936,7 @@ def main():
 
             # ── ① 무엇을 넣으면 잘 됐나 — 카테고리 ──
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown(f"##### ① 어떤 카테고리가 잘 됐나 — {_scope_txt}")
+            st.markdown(f"##### ① 어떤 카테고리가 잘 됐나 — {_scope_txt} · {_mlab}")
             _cg = (_base.groupby("cat").agg(건수=("af", "size"), send=("send", "sum"),
                                             uv=("uv", "sum"), oc=("oc", "sum"),
                                             amt=("amt", "sum")).reset_index())
@@ -8883,31 +8945,53 @@ def main():
                 _cg["CTR"] = np.where(_cg["send"] > 0, _cg["uv"] / _cg["send"] * 100, np.nan)
                 _cg["주문CR"] = np.where(_cg["uv"] > 0, _cg["oc"] / _cg["uv"] * 100, np.nan)
                 _cg["RPS"] = np.where(_cg["send"] > 0, _cg["amt"] / _cg["send"], np.nan)
+                _cg["객단가"] = np.where(_cg["oc"] > 0, _cg["amt"] / _cg["oc"], np.nan)
+                _cg[_mlab] = [_kt_metric(_r) for _, _r in _cg.iterrows()]
                 # 소표본 요행이 1등을 먹지 않도록 정렬은 보정 점수로 (표시 값은 원값)
-                _cg["_rk"] = rank_adjusted(_cg, "rps", ascending=False)
+                if _mcol == "amt_pc":
+                    # rank_adjusted의 금액 지표와 같은 수축: (분자 + k·전체평균)/(분모 + k)
+                    _num = pd.to_numeric(_cg["amt"], errors="coerce").fillna(0).clip(lower=0)
+                    _den = pd.to_numeric(_cg["건수"], errors="coerce").fillna(0).clip(lower=0)
+                    _gd = _den.sum()
+                    _pri = (_num.sum() / _gd) if _gd else 0.0
+                    _pos = _den[_den > 0]
+                    _kk = float(np.median(_pos)) if len(_pos) else 1.0
+                    _cg["_rk"] = (_num + _kk * _pri) / (_den + _kk)
+                else:
+                    _cg["_rk"] = rank_adjusted(_cg, _mcol, ascending=False)
                 _cg = _cg.sort_values("_rk", ascending=False)
                 _fc = go.Figure(go.Bar(
-                    x=_cg["cat"], y=_cg["RPS"], marker_color=PALETTE["blue"],
-                    text=[f"{v:,.0f}" for v in _cg["RPS"]], textposition="outside",
-                    customdata=np.stack([_cg["건수"], _cg["CTR"]], axis=-1),
-                    hovertemplate="%{x}<br>RPS %{y:,.0f}원<br>"
-                                  "%{customdata[0]}건 · CTR %{customdata[1]:.2f}%<extra></extra>"))
-                _fc.update_layout(**base_layout(h=320, title="카테고리별 발송건당 거래액(RPS) — 표본 보정 순"))
+                    x=_cg["cat"], y=_cg[_mlab], marker_color=_mcolor,
+                    text=[_mtxt(v) if np.isfinite(v) else "–" for v in _cg[_mlab]],
+                    textposition="outside",
+                    customdata=np.stack([_cg["건수"], _cg["CTR"], _cg["RPS"]], axis=-1),
+                    hovertemplate="%{x}<br>" + _mlab + " %{y:,.2f}" + (_munit if _munit == "%" else "원")
+                                  + "<br>%{customdata[0]}건 · CTR %{customdata[1]:.2f}%"
+                                  " · RPS %{customdata[2]:,.0f}원<extra></extra>"))
+                _fc.update_layout(**base_layout(
+                    h=320, ysuffix=("%" if _munit == "%" else ""),
+                    title=f"카테고리별 {_mlab} — 표본 보정 순"))
                 st.plotly_chart(_fc, width="stretch")
-                table(_cg[["cat", "건수", "CTR", "주문CR", "RPS"]]
+                table(_cg[["cat", "건수", "CTR", "주문CR", "RPS", "객단가"]]
                       .rename(columns={"cat": "카테고리"}).style.format({
-                          "건수": "{:,.0f}", "CTR": "{:.2f}%", "주문CR": "{:.2f}%", "RPS": "{:,.0f}"}),
+                          "건수": "{:,.0f}", "CTR": "{:.2f}%", "주문CR": "{:.2f}%",
+                          "RPS": "{:,.0f}", "객단가": "{:,.0f}"}),
                       hide_index=True, width="stretch", dl_name=f"컨틴 구좌 카테고리별 ({_scope_txt})")
-                st.caption(f"{_minn}건 미만 카테고리는 숨겼어요. 정렬은 표본 보정 점수라 "
-                           "표시된 RPS 순서와 다를 수 있어요 — 적은 표본의 요행을 밀어내기 위해서예요.")
+                st.caption(f"{_minn}건 미만 카테고리는 숨겼어요. 표에는 네 지표를 다 넣었고, "
+                           f"차트와 순위만 **{_mlab}** 기준이에요. 정렬은 표본 보정 점수라 "
+                           "표시 값 순서와 다를 수 있어요 — 적은 표본의 요행을 밀어내기 위해서예요."
+                           + ("  캠페인 건당 평균이라 '한 번 태우면 평균 얼마'로 읽으면 돼요. "
+                              "발송 모수가 큰 카테고리가 유리하니 RPS와 같이 보세요."
+                              if _mcol == "amt_pc" else ""))
             else:
                 st.caption(f"{_minn}건 이상인 카테고리가 없어요. 최소 표본을 낮춰 보세요.")
 
             # ── ② 소구 속성 리프트 ──
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown(f"##### ② 어떤 소구가 잘 먹혔나 — {_scope_txt}")
-            _bs = float(_base["send"].sum())
-            _bc = (float(_base["uv"].sum()) / _bs * 100) if _bs else np.nan
+            st.markdown(f"##### ② 어떤 소구가 잘 먹혔나 — {_scope_txt} · {_mlab}")
+            _bm = _kt_metric(_base)
+            _is_total = False                        # 총량 지표는 없앴다(전부 비율·평균)
+            _lift_lab = _mlab if _is_total else (f"{_mlab} 리프트" + ("(%p)" if _munit == "%" else ""))
             _tr = []
             for _t in TAG_BOOLS:
                 if _t not in _base.columns:
@@ -8915,37 +8999,52 @@ def main():
                 _sub = _base[_base[_t].astype(bool)]
                 if len(_sub) < _minn:
                     continue
-                _ss = float(_sub["send"].sum())
-                if not _ss:
+                _mv = _kt_metric(_sub)
+                if not np.isfinite(_mv):
                     continue
-                _cc = float(_sub["uv"].sum()) / _ss * 100
-                _rr = float(_sub["amt"].sum()) / _ss
-                _tr.append({"소구 속성": _t, "건수": len(_sub), "CTR": _cc,
-                            "CTR 리프트(%p)": _cc - _bc, "RPS": _rr})
+                _ss = float(_sub["send"].sum())
+                _row = {"소구 속성": _t, "건수": len(_sub),
+                        "CTR": (float(_sub["uv"].sum()) / _ss * 100) if _ss else np.nan,
+                        "RPS": (float(_sub["amt"].sum()) / _ss) if _ss else np.nan}
+                _row[_lift_lab] = _mv if _is_total else (_mv - _bm)
+                if not _is_total:
+                    _row[_mlab] = _mv
+                _tr.append(_row)
             if _tr:
-                _tdf = pd.DataFrame(_tr).sort_values("CTR 리프트(%p)", ascending=False)
+                _tdf = pd.DataFrame(_tr).sort_values(_lift_lab, ascending=False)
                 _ft = go.Figure(go.Bar(
-                    x=_tdf["소구 속성"], y=_tdf["CTR 리프트(%p)"],
+                    x=_tdf["소구 속성"], y=_tdf[_lift_lab],
                     marker_color=[tag_color(t) for t in _tdf["소구 속성"]],
-                    text=[f"{v:+.2f}" for v in _tdf["CTR 리프트(%p)"]], textposition="outside",
+                    text=[((f"{v:,.0f}" if _is_total else (f"{v:+.2f}" if _munit == "%"
+                            else f"{v:+,.0f}"))) for v in _tdf[_lift_lab]],
+                    textposition="outside",
                     customdata=np.stack([_tdf["건수"], _tdf["CTR"]], axis=-1),
-                    hovertemplate="%{x}<br>리프트 %{y:+.2f}%p<br>"
+                    hovertemplate="%{x}<br>" + _lift_lab + " %{y:,.2f}<br>"
                                   "%{customdata[0]}건 · CTR %{customdata[1]:.2f}%<extra></extra>"))
                 _ft.update_layout(**base_layout(
-                    h=320, title=f"소구 속성별 CTR 리프트 (기준 {_bc:.2f}%)"))
+                    h=320, title=(f"소구 속성별 {_mlab}" if _is_total
+                                  else f"소구 속성별 {_mlab} 리프트 (기준 {_mtxt(_bm)})")))
                 st.plotly_chart(_ft, width="stretch")
-                table(_tdf.style.format({"건수": "{:,.0f}", "CTR": "{:.2f}%",
-                                         "CTR 리프트(%p)": "{:+.2f}", "RPS": "{:,.0f}"}),
+                _tfmt = {"건수": "{:,.0f}", "CTR": "{:.2f}%", "RPS": "{:,.0f}",
+                         _lift_lab: ("{:,.0f}" if _is_total else
+                                     ("{:+.2f}" if _munit == "%" else "{:+,.0f}"))}
+                if not _is_total:
+                    _tfmt[_mlab] = _mfmt
+                table(_tdf.style.format(_tfmt),
                       hide_index=True, width="stretch", dl_name=f"컨틴 구좌 소구별 ({_scope_txt})")
-                st.caption("리프트는 그 속성이 붙은 발송의 CTR에서 이 슬롯 평균 CTR을 뺀 값이에요. "
-                           "여러 속성이 한 문구에 같이 붙으니 서로 겹쳐요 — 단독 효과가 아닙니다.")
+                st.caption(
+                    (f"거래액은 총량이라 리프트 대신 값 그대로 줄 세웠어요. 발송량이 많은 소구가 "
+                     "위로 오니, 어떤 소구가 '잘 먹혔나'는 비율 지표로 보세요."
+                     if _is_total else
+                     f"리프트는 그 속성이 붙은 발송의 {_mlab}에서 이 슬롯 평균을 뺀 값이에요.")
+                    + " 여러 속성이 한 문구에 같이 붙으니 서로 겹쳐요 — 단독 효과가 아닙니다.")
             else:
                 st.caption(f"{_minn}건 이상인 소구 속성이 없어요.")
 
             # ── ③ 추천 요약 ──
             if len(_cg) or _tr:
                 _top_c = list(_cg["cat"].head(3)) if len(_cg) else []
-                _top_t = list(pd.DataFrame(_tr).sort_values("CTR 리프트(%p)", ascending=False)
+                _top_t = list(pd.DataFrame(_tr).sort_values(_lift_lab, ascending=False)
                               ["소구 속성"].head(3)) if _tr else []
                 st.markdown(
                     '<div class="appendix"><b>이번 주 컨틴 구좌 요청이 오면</b><br>'
@@ -8953,8 +9052,9 @@ def main():
                        if _top_c else "")
                     + (f'· 소구는 <b>{" · ".join(_top_t)}</b>를 얹은 문구가 반응이 좋았어요<br>'
                        if _top_t else "")
-                    + f'· 기준 표본은 {_scope_txt} {_B["건수"]:,}건 ({_recent})이에요. '
-                    '표본이 얇으면 순위가 흔들리니 몇 주 더 쌓고 다시 보세요.</div>',
+                    + f'· 판단 지표는 <b>{_mlab}</b>, 기준 표본은 {_scope_txt} '
+                    f'{_B["건수"]:,}건 ({_recent})이에요. 지표를 바꾸면 추천도 바뀌니 '
+                    '노리는 목적에 맞춰 두세 개 지표로 교차 확인해 보세요.</div>',
                     unsafe_allow_html=True)
 
             # ── ④ 실제 발송 문구 ──
@@ -8976,6 +9076,11 @@ def main():
                    .groupby("월").agg(전체=("af", "size"), 남은발송=("_rem", "sum")).reset_index())
             _mg["남은발송 비중(%)"] = np.where(_mg["전체"] > 0,
                                           _mg["남은발송"] / _mg["전체"] * 100, np.nan)
+            # 진행 중인 달·데이터가 몇 건뿐인 달은 비중이 튀어 추세를 가린다.
+            # 그 달 전체 발송의 30% 미만이면(중앙값 기준) 미완결로 보고 뺀다.
+            _med = float(_mg["전체"].median()) if len(_mg) else 0.0
+            _mpart = _mg[_mg["전체"] < _med * 0.3]
+            _mg = _mg[_mg["전체"] >= _med * 0.3]
             _fm = go.Figure(go.Scatter(
                 x=_mg["월"], y=_mg["남은발송 비중(%)"], mode="lines+markers",
                 line=dict(width=2, color=PALETTE["red"]),
@@ -8984,6 +9089,10 @@ def main():
                               "%{customdata[0]}건 / %{customdata[1]}건<extra></extra>"))
             _fm.update_layout(**base_layout(h=280, title="월별 남은발송 비중 (%)", hover="x"))
             st.plotly_chart(_fm, width="stretch")
+            if len(_mpart):
+                st.caption("발송이 몇 건뿐인 달 "
+                           + ", ".join(f"{pd.Timestamp(_d):%Y-%m}" for _d in _mpart["월"])
+                           + "은 뺐어요 — 진행 중이거나 실적이 덜 올라온 달이라 비중이 튀어요.")
 
             _cmp = []
             for _s3 in ("남은발송", "컨틴", "기본발송", "우수발송"):
