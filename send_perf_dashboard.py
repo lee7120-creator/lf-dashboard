@@ -2091,6 +2091,12 @@ STYPE_ALIASES = {"시그니쳐": "시그니처", "컨틴전시": "컨틴", "엘�
 _STYPE_SUB_RE = re.compile(r"^(우수발송|컨틴전시|컨틴)\s*([A-Za-z0-9]+)?$")
 
 
+# 2026-08 발송 정책 변경일 — 영업 세일즈 구좌를 10개에서 5개로 줄이고 16시를 컨틴 구좌로
+# 돌린 시점. 그 전에는 구좌가 없으면 타겟팅 없는 남은모수로 내보내 남은발송이 20% 가까이
+# 됐다. 운영 자체가 다르므로 전후를 섞어 비교하면 대조군이 오염된다.
+POLICY_CHANGE_DATE = "20260801"
+
+
 def norm_stype(v, group=True):
     """발송유형 원값 → 표준 표기. group=True면 뒤 번호를 떼어 큰 유형으로 묶는다.
 
@@ -3725,10 +3731,12 @@ def main():
             g2.markdown(stats_md)
 
     @st.fragment
-    def render_messages(d, mcol, key, n=200, show_hour=False):
+    def render_messages(d, mcol, key, n=200, show_hour=False, show_tags=False):
         """선택 구간/속성에 해당하는 실제 발송 메시지 + 성과 표 + 원문 보기.
 
         show_hour=True면 발송시간 칼럼을 날짜 뒤에 넣는다(시간대 비교 화면용).
+        show_tags=True면 그 문구에 붙은 소구 속성을 한 칸에 모아 보여준다
+        (어떤 소구를 얹었을 때 잘 됐는지 문구 단위로 확인하는 화면용).
         기본값은 기존 동작 그대로라 다른 호출부는 영향 없다.
 
         fragment — 행 클릭·원문 선택 때 전체 스크립트(필터·사이드바·전 페이지)가
@@ -3743,12 +3751,19 @@ def main():
             dd["date"] = _dts.dt.strftime("%m/%d").where(_dts.notna(), dd["date"])
         if show_hour and "hour" in dd.columns:
             dd["_hh"] = dd["hour"].map(fmt_hhmm)
+        if show_tags:
+            _tcols = [t for t in TAG_BOOLS if t in dd.columns]
+            if _tcols:
+                _tb = dd[_tcols].fillna(False).astype(bool)
+                dd["_tags"] = [" · ".join([_c for _c in _tcols if _r[_c]]) or "–"
+                               for _, _r in _tb.iterrows()]
         _bcol_show = "brand2" if "brand2" in dd.columns else "brand"
-        all_cols = ["date", "_hh", "cat", _bcol_show, "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt"]
+        all_cols = ["date", "_hh", "cat", _bcol_show, "title", "_bprev", "_tags",
+                    "send", "infl_cr", "ord_cr", "rps", "amt"]
         cols = [c for c in all_cols if c in dd.columns]
         ren = {"date": "날짜", "_hh": "시간", "cat": "카테고리", "brand": "브랜드",
                "brand2": "브랜드", "title": "제목",
-               "_bprev": "내용",
+               "_bprev": "내용", "_tags": "소구 속성",
                "send": "발송", "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
         fmts = {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"}
         show = dd[cols].rename(columns=ren)
@@ -3823,9 +3838,24 @@ def main():
     # ── 「11. 개선 효과 검증」 공용 헬퍼 ─────────────────────────────
     # 문구 개선·잔여모수 두 탭이 같은 비교 로직을 쓴다. 페이지 분기 앞에 두어야
     # 두 탭에서 같이 부를 수 있다(welch·sig_label·table이 main() 지역이라 모듈로 못 뺀다).
-    def _eff_frame():
-        """비교용 파생 칼럼을 붙인 fdf 사본."""
+    def _eff_scope(key):
+        """비교 범위 선택 — 기본은 2026-08 정책 변경 이후.
+
+        정책 변경 전후는 구좌 수·남은발송 비중이 달라 운영 자체가 다르다. 대조군에
+        변경 전 캠페인을 섞으면 '문구를 고쳐서'가 아니라 '운영이 달라서' 생긴 차이를
+        문구 효과로 읽게 된다.
+        """
+        _opt = ["2026-08 정책 변경 이후", "전체 기간"]
+        _sel = st.radio("비교 범위", _opt, horizontal=True, key=key,
+                        help="정책 변경 전(구좌 10개·남은발송 20%)과 후는 운영이 달라요. "
+                             "섞어서 비교하면 문구 효과가 아니라 운영 차이를 보게 됩니다.")
+        return _sel == _opt[0]
+
+    def _eff_frame(after_policy=False):
+        """비교용 파생 칼럼을 붙인 fdf 사본. after_policy면 정책 변경 이후만."""
         d = fdf.copy()
+        if after_policy and "date" in d.columns:
+            d = d[d["date"].astype(str) >= POLICY_CHANGE_DATE]
         for _fc in ("copy_fix", "remain_add"):
             d[_fc] = d[_fc].map(_to_bool) if _fc in d.columns else False
         d["_stype"] = d["stype"].map(norm_stype) if "stype" in d.columns else None
@@ -8757,11 +8787,14 @@ def main():
         st.title("✍️ 문구 개선 효과")
         st.caption("영업이 올린 문구를 **우리측이 다듬은 건**이 그대로 나간 건보다 잘 나왔는지 봐요. "
                    "사이드바 필터가 그대로 적용돼요.")
-        _ef = _eff_frame()
+        _after = _eff_scope("cf_scope")
+        _ef = _eff_frame(_after)
         _n_fix = int(_ef["copy_fix"].sum())
         if not len(_ef) or _n_fix == 0:
-            st.info("문구 변경 표시가 있는 발송이 아직 없어요.\n\n"
-                    "기획 시트의 **문구 변경 여부(W열)**를 채우고 사이드바 "
+            st.info("문구 변경 표시가 있는 발송이 아직 없어요."
+                    + (" (2026-08 정책 변경 이후 기준 — 「전체 기간」으로 바꿔 보세요)"
+                       if _after else "")
+                    + "\n\n기획 시트의 **문구 변경 여부(W열)**를 채우고 사이드바 "
                     "「📥 기획 문구 다시 가져오기」를 누르면 여기에 쌓여요.")
         else:
             _c = st.columns(3)
@@ -8810,6 +8843,12 @@ def main():
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
             st.markdown("##### 주차별 추이")
             _eff_weekly(_ef, "copy_fix", "문구 변경", "문구 그대로", "문구 개선 효과")
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 문구를 다듬은 캠페인 목록")
+            render_messages(_ef[_ef["copy_fix"]], "title", key="cf_msg",
+                            show_hour=True, show_tags=True)
+            st.caption("우리측이 손댄 건만 모았어요. 소구 속성은 문구에서 자동으로 뽑은 태그예요.")
             st.markdown(_eff_bias_note(
                 "전량 검토 후 <b>고칠 필요가 있다고 판단한 건만</b> 손대기 때문에, 변경군에는 "
                 "원래 문구가 약했던 건이 몰려 있을 수 있어요. 그러면 잘 고쳤어도 숫자 차이는 "
@@ -8823,11 +8862,14 @@ def main():
         st.title("➕ 잔여모수 추가 효과")
         st.caption("타겟 발송에 **잔여모수를 더 태운 건**과 아닌 건의 비교예요. "
                    "발송량 자체가 커지니 총량이 아니라 CTR·RPS 같은 효율로 봅니다.")
-        _ef = _eff_frame()
+        _after = _eff_scope("ra_scope")
+        _ef = _eff_frame(_after)
         _n_rem = int(_ef["remain_add"].sum())
         if not len(_ef) or _n_rem == 0:
-            st.info("잔여모수 추가 표시가 있는 발송이 아직 없어요.\n\n"
-                    "기획 시트의 **잔여모수 추가 여부(X열)**를 채우고 사이드바 "
+            st.info("잔여모수 추가 표시가 있는 발송이 아직 없어요."
+                    + (" (2026-08 정책 변경 이후 기준 — 「전체 기간」으로 바꿔 보세요)"
+                       if _after else "")
+                    + "\n\n기획 시트의 **잔여모수 추가 여부(X열)**를 채우고 사이드바 "
                     "「📥 기획 문구 다시 가져오기」를 누르면 여기에 쌓여요.")
         else:
             _c = st.columns(3)
@@ -8841,6 +8883,13 @@ def main():
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
             st.markdown("##### 주차별 추이")
             _eff_weekly(_ef, "remain_add", "잔여모수 추가", "추가 없음", "잔여모수 추가 효과")
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 잔여모수를 추가한 캠페인 목록")
+            render_messages(_ef[_ef["remain_add"]], "title", key="ra_msg",
+                            show_hour=True, show_tags=True)
+            st.caption("잔여모수를 더 태운 건만 모았어요. 어떤 기획전에 붙였을 때 "
+                       "효율이 유지됐는지 문구 단위로 확인할 수 있어요.")
             st.markdown(_eff_bias_note(
                 "잔여모수는 <b>모수가 남았을 때만</b> 붙이기 때문에, 추가군에는 타겟이 좁았던 "
                 "기획전이 몰릴 수 있어요. 또 타겟 밖 고객이 섞이므로 CTR이 내려가는 게 "
@@ -8881,9 +8930,11 @@ def main():
         _mcol, _munit, _mcolor = _KT_MET[_mlab]
         _c3, _c4 = st.columns([1, 1])
         with _c3:
-            _recent = st.selectbox("기간", ["최근 12주", "최근 26주", "최근 52주", "전체"],
-                                   index=0, key="kt_recent",
-                                   help="매주 보는 화면이라 기본은 최근 12주예요.")
+            _recent = st.selectbox(
+                "기간", ["최근 12주", "최근 26주", "최근 52주", "2026-08 정책 변경 이후", "전체"],
+                index=0, key="kt_recent",
+                help="매주 보는 화면이라 기본은 최근 12주예요. '정책 변경 이후'는 새 운영 "
+                     "기준만 보지만 아직 표본이 얇아요.")
         with _c4:
             _minn = st.number_input("최소 표본(건)", value=5, min_value=1, step=1, key="kt_minn",
                                     help="이보다 적은 항목은 우연에 흔들려서 숨겨요.")
@@ -8917,7 +8968,9 @@ def main():
         _mfmt = "{:.2f}%" if _munit == "%" else "{:,.0f}"
         _mtxt = (lambda v: f"{v:.2f}%") if _munit == "%" else (lambda v: f"{v:,.0f}")
 
-        if _recent != "전체" and len(_kt):
+        if _recent.startswith("2026-08") and len(_kt):
+            _kt = _kt[_kt["date"].astype(str) >= POLICY_CHANGE_DATE]
+        elif _recent != "전체" and len(_kt):
             _wk = int(re.search(r"\d+", _recent).group())
             _kt = _kt[_kt["dt"] >= _kt["dt"].max() - pd.Timedelta(weeks=_wk)]
         if _scope == "평일 16시 슬롯 전체":
@@ -9069,7 +9122,9 @@ def main():
             # ── ④ 실제 발송 문구 ──
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
             st.markdown(f"##### ③ {_scope_txt} 실제 발송 문구")
-            render_messages(_base, "title", key="kt_msg", show_hour=True)
+            render_messages(_base, "title", key="kt_msg", show_hour=True, show_tags=True)
+        st.caption("소구 속성은 문구에서 자동으로 뽑은 태그예요. 위 ② 리프트 표와 같은 기준이라, "
+                   "리프트가 높게 나온 소구가 실제 어떤 문구였는지 여기서 확인하면 돼요.")
 
         # ── ⑤ 회고: 남은발송 대체 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
