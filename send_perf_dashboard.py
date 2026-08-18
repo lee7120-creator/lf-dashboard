@@ -3935,20 +3935,29 @@ def main():
             st.info(f"양쪽 군이 모두 {min_n}건 이상인 주가 아직 없어요. "
                     "몇 주 더 쌓이면 추이가 나타나요.")
             return
-        # 빠진 주를 NaN으로 채워 선이 끊기게 한다 (관측 구간 안에서만)
-        _idx = pd.date_range(_wdf["주"].min(), _wdf["주"].max(), freq="W-MON")
-        _plot = _wdf.set_index("주").reindex(_idx)
-        _f2 = go.Figure()
-        _f2.add_trace(go.Scatter(x=_plot.index, y=_plot[f"{on_lab} CTR"], name=on_lab,
-                                 mode="lines+markers", connectgaps=False,
-                                 line=dict(width=2, color=PALETTE["blue"])))
-        _f2.add_trace(go.Scatter(x=_plot.index, y=_plot[f"{off_lab} CTR"], name=off_lab,
-                                 mode="lines+markers", connectgaps=False,
-                                 line=dict(width=2, color=PALETTE["slate"], dash="dot")))
-        _l2 = base_layout(h=300, title="주차별 CTR (%)", hover="x")
-        _l2["legend"] = legend_h()
-        _f2.update_layout(**_l2)
-        st.plotly_chart(_f2, width="stretch")
+        if len(_wdf) < 3:
+            # 주가 1~2개뿐이면 '추이'가 성립하지 않는다. 억지로 선차트를 그리면 x축이
+            # 밀리초 단위(23:59:59.999)로 무너져 오히려 못 읽는다 — 표로만 보여준다.
+            st.info(f"비교 가능한 주가 **{len(_wdf)}주**뿐이라 추이 대신 표로 보여드려요. "
+                    f"양쪽 군이 모두 {min_n}건 이상인 주가 3개는 쌓여야 선이 의미가 있어요.")
+        else:
+            # 빠진 주를 NaN으로 채워 선이 끊기게 한다 (관측 구간 안에서만)
+            _idx = pd.date_range(_wdf["주"].min(), _wdf["주"].max(), freq="W-MON")
+            _plot = _wdf.set_index("주").reindex(_idx)
+            _f2 = go.Figure()
+            _f2.add_trace(go.Scatter(x=_plot.index, y=_plot[f"{on_lab} CTR"], name=on_lab,
+                                     mode="lines+markers", connectgaps=False,
+                                     line=dict(width=2, color=PALETTE["blue"])))
+            _f2.add_trace(go.Scatter(x=_plot.index, y=_plot[f"{off_lab} CTR"], name=off_lab,
+                                     mode="lines+markers", connectgaps=False,
+                                     line=dict(width=2, color=PALETTE["slate"], dash="dot")))
+            _l2 = base_layout(h=300, title="주차별 CTR (%)", hover="x")
+            _l2["legend"] = legend_h()
+            # 날짜축을 명시한다 — 점이 적으면 plotly가 시각(밀리초)까지 쪼개 눈금을 만든다
+            _l2["xaxis"] = {**_l2["xaxis"], "type": "date", "tickformat": "%m/%d",
+                            "dtick": 7 * 86400000}
+            _f2.update_layout(**_l2)
+            st.plotly_chart(_f2, width="stretch")
         if _drop:
             st.caption(f"양쪽 군이 {min_n}건 미만인 주 {_drop}개는 뺐어요 — 1~2건짜리 주는 "
                        "CTR이 0%·100% 근처로 튀어서 추세를 가려요. 표에도 안 나옵니다.")

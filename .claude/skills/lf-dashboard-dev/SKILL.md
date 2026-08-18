@@ -243,6 +243,7 @@ git push -u origin "$(git branch --show-current)"
 | 시간축이 0~80시까지 늘어남 | 수기 입력 `8000`·`2400`을 검증 없이 `//100` | `norm_hhmm` 경유 · `python tests/test_hour_norm.py` |
 | 같은 08시 발송이 슬롯 표에 두 줄 | 화면마다 따로 보정 — 집계는 원값, 차트는 보정값 | 보정은 `_finalize` 한 곳에서만 |
 | 문구 변경 효과 비교가 전부 '차이 없음' | 빈칸을 True로 읽어 대조군이 사라짐 | `_plan_flag` · `python tests/test_copy_effect.py` |
+| x축이 `23:59:59.999` 같은 밀리초로 깨짐 | 점이 1~2개뿐이라 plotly가 시각까지 쪼갬 | 3주 미만이면 선차트 대신 표 · `type="date"` 명시 |
 | 추이 차트에 0%·5% 점이 튀고 긴 직선이 그어짐 | 1~2건짜리 주를 그대로 그림 + 공백을 선으로 이음 | 양쪽 `min_n`건 이상만 · `connectgaps=False` |
 | 같은 발송유형이 차트에 두 줄 | `컨틴전시 A/B` ↔ `컨틴`, `시그니처` ↔ `시그니쳐` | `norm_stype()` 경유 |
 | 이번 주만 문구 매칭 0% | 시트명에 기간이 없어 `undated`로 빠짐 (`recent` 경로에서 유실) | 사이드바 '최신 주차명' 확인 · `test_plan_merge.py` |
