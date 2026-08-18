@@ -2116,6 +2116,24 @@ def norm_prio(v):
     return 1 if n <= 1 else n
 
 
+def prio_series(df):
+    """우선순위(0순위→1순위 합침) 숫자 시리즈.
+
+    `_finalize`가 붙이는 `prio_g`를 쓰되, 없으면 원본 `prio`에서 즉석에서 만든다.
+    `prepare_raw`가 `@st.cache_data`라 `_finalize`를 고쳐도 캐시는 그걸 모른다 —
+    버전 표식(`TAGSET_VER`)을 올려도 옛 프레임이 남아 있을 수 있어 여기서 한 번 더 막는다.
+    """
+    if df is None or len(df) == 0:
+        return pd.Series(dtype="float64")
+    if "prio_g" in df.columns:
+        s = pd.to_numeric(df["prio_g"], errors="coerce")
+        if s.notna().any():
+            return s
+    if "prio" in df.columns:
+        return pd.to_numeric(df["prio"].map(norm_prio), errors="coerce")
+    return pd.Series(np.nan, index=df.index)
+
+
 def norm_stype(v, group=True):
     """발송유형 원값 → 표준 표기. group=True면 뒤 번호를 떼어 큰 유형으로 묶는다.
 
@@ -2597,7 +2615,7 @@ def main():
     # 감지하지 못해, 태그명이 그대로면 구버전 태깅 결과가 캐시로 반환되던 구멍 방지)
     TAGSET_VER = (hashlib.md5(json.dumps(KW, ensure_ascii=False, sort_keys=True).encode())
                   .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS) + "|이모지수v1"
-                  + "|brand:" + BRANDSET_VER + "|hour:norm1")
+                  + "|brand:" + BRANDSET_VER + "|hour:norm1" + "|prio:g1")
 
     @st.cache_data(show_spinner=False)
     def prepare_raw(work_df, tagset_ver):
@@ -3192,6 +3210,13 @@ def main():
 
     # 작업 데이터 확정: 파생 재계산 + 타입 정리 + 문구 태깅 (캐시 — 성능 핵심)
     raw = prepare_raw(work, TAGSET_VER)
+
+    # prio_g 복구 — prepare_raw는 @st.cache_data라 _finalize 변경을 모른다. 옛 캐시가
+    # 살아 있으면 우선순위 필터·9번 페이지·감축 효과 탭이 통째로 빈다(증상: '20건 미만').
+    if len(raw) and ("prio_g" not in raw.columns
+                     or not pd.to_numeric(raw["prio_g"], errors="coerce").notna().any()):
+        raw = raw.copy()
+        raw["prio_g"] = prio_series(raw)
 
     # 미래 날짜 행 제외 — 발송 실적은 과거만 가능하다. 업로드 파일의 연도 오타(예: 2027)로
     # 미래 날짜가 섞이면 13주 추이·KPI·리더보드가 오염되고 차트 x축이 미래까지 늘어난다.
@@ -6758,7 +6783,7 @@ def main():
         st.markdown("##### 우선순위별 효율")
         base2 = base.copy()
         # 0순위는 1순위에 합쳐 둔 prio_g를 쓴다 (실백업 기준 0순위는 2건뿐)
-        base2["_prio"] = pd.to_numeric(base2.get("prio_g"), errors="coerce")
+        base2["_prio"] = prio_series(base2)
         pr = agg_eff(base2.dropna(subset=["_prio"]), "_prio")
         if len(pr):
             pr["_key"] = pr["_key"].astype(float)
@@ -9456,7 +9481,7 @@ def main():
 
         _pf = _eff_frame()
         _pf = _pf[_pf["dt"].notna()].copy() if "dt" in _pf.columns else _pf.copy()
-        _pf["_pg"] = pd.to_numeric(_pf.get("prio_g"), errors="coerce")
+        _pf["_pg"] = prio_series(_pf)
         _pf = _pf.dropna(subset=["_pg"])
         if len(_pf) < 20:
             st.info("우선순위가 붙은 캠페인이 20건 미만이라 아직 비교할 수 없어요.")

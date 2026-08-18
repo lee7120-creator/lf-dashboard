@@ -122,6 +122,40 @@ def t_finalize_adds_prio_g():
 
 
 @case
+def t_prio_series_falls_back_without_prio_g():
+    """prio_g가 없는 프레임(구버전 캐시·옛 백업)에서도 우선순위를 되살려야 한다.
+
+    `prepare_raw`가 @st.cache_data라 `_finalize`를 고쳐도 캐시는 그걸 모른다. 옛 프레임이
+    남으면 우선순위 필터·9번 페이지·감축 효과 탭이 통째로 비고, 증상은 '20건 미만'으로만
+    보여서 원인이 안 드러난다.
+    """
+    d = pd.DataFrame({"prio": ["0", "1", "2", "", "3.0"]})
+    got = [None if pd.isna(v) else int(v) for v in S.prio_series(d)]
+    assert got == [1, 1, 2, None, 3], got
+    # prio_g가 있지만 통째로 비어 있어도(구버전 저장본) 원본에서 복구한다
+    d2 = d.assign(prio_g=np.nan)
+    got2 = [None if pd.isna(v) else int(v) for v in S.prio_series(d2)]
+    assert got2 == [1, 1, 2, None, 3], got2
+    # 정상 프레임이면 prio_g를 그대로 쓴다
+    d3 = pd.DataFrame({"prio": ["9", "9"], "prio_g": [1, 2]})
+    assert [int(v) for v in S.prio_series(d3)] == [1, 2]
+    assert len(S.prio_series(pd.DataFrame())) == 0
+
+
+@case
+def t_cache_marker_mentions_prio():
+    """_finalize에 파생을 추가하면 TAGSET_VER 표식도 같이 올려야 한다.
+
+    표식을 안 올리면 캐시가 옛 프레임을 그대로 돌려준다 — hour:norm1이 같은 이유로 붙어 있다.
+    실제로 prio_g를 넣고 표식을 안 올려서 화면이 통째로 빈 적이 있다.
+    """
+    src = (ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8")
+    _i = src.index("TAGSET_VER = ")
+    _marker = src[_i:_i + 400]
+    assert "prio:" in _marker, f"TAGSET_VER에 prio 표식이 없어요 — {_marker[:200]}"
+
+
+@case
 def t_zero_prio_absent_from_filter():
     """사이드바 우선순위 선택지에 0순위가 남아 있으면 안 된다."""
     store = synth_store(weeks=8)

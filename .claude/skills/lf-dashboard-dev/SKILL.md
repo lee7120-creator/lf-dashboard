@@ -256,3 +256,4 @@ git push -u origin "$(git branch --show-current)"
 | `시그니처이 가장 나아요` | 받침 없는 이름에 주격 조사 `이`를 고정으로 붙임 | 마지막 글자 받침으로 `이/가` 분기 |
 | 감축 후 특정 순위만 확 좋아짐 | 남은발송이 그 순위에만 몰려 있어 빼기만 해도 평균이 오름(구성 효과) | 양쪽에서 다 빼고 비교 · `test_prio_reduction.py` |
 | 우선순위 필터가 예외로 죽음 | 세션에 남은 옛 값('0')이 선택지 밖 | `guard_multi()` 를 위젯 직전에 |
+| 새 파생을 쓰는 화면만 통째로 빔 | `prepare_raw`가 `@st.cache_data`라 `_finalize` 변경을 모름 | `TAGSET_VER` 표식 올리기 + 캐시 밖 복구 (`prio_series()`) |
