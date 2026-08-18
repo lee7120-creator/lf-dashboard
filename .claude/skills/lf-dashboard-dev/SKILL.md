@@ -115,7 +115,8 @@ python -m compileall -q send_perf_dashboard.py weekly_report.py
 python tests/check_shadowing.py && python tests/test_plan_merge.py \
   && python tests/test_brand_classify.py && python tests/test_store_layer.py \
   && python tests/smoke_pages.py && python tests/test_filter_follows_upload.py \
-  && python tests/test_send_volume_band.py && python tests/smoke_weekly_report.py
+  && python tests/test_send_volume_band.py && python tests/test_prio_reduction.py \
+  && python tests/smoke_weekly_report.py
 ```
 바꾼 문구가 **로직에 쓰이지 않는지** 교차 검증한다(비교문·딕셔너리 키·인덱싱).
 페이지 분기 문자열·컬럼명·세션 키를 건드리면 앱이 조용히 망가진다.
@@ -201,7 +202,8 @@ python tools/audit_brand_classify.py <백업.zip> --min 40
 python tests/check_shadowing.py && python tests/test_plan_merge.py \
   && python tests/test_brand_classify.py && python tests/test_store_layer.py \
   && python tests/smoke_pages.py && python tests/test_filter_follows_upload.py \
-  && python tests/test_send_volume_band.py && python tests/smoke_weekly_report.py
+  && python tests/test_send_volume_band.py && python tests/test_prio_reduction.py \
+  && python tests/smoke_weekly_report.py
 git add -A && git commit -m "..."
 git fetch origin main && git merge-base --is-ancestor origin/main HEAD && echo "main 포함 OK"
 git push -u origin "$(git branch --show-current)"
@@ -252,3 +254,5 @@ git push -u origin "$(git branch --show-current)"
 | 손익분기가 '이탈 1명당 3억원'처럼 터무니없음 | 이탈 기울기가 0에 가까운데 나눠 버림 | 기울기≤0·p≥0.05면 계산 금지 · `test_send_volume_band.py` |
 | 회귀 상관이 과하게 큼 | 요일 효과를 안 뺌 (주말엔 적게 보내고 매출도 적음) | `_dow_residual()` 경유 |
 | `시그니처이 가장 나아요` | 받침 없는 이름에 주격 조사 `이`를 고정으로 붙임 | 마지막 글자 받침으로 `이/가` 분기 |
+| 감축 후 특정 순위만 확 좋아짐 | 남은발송이 그 순위에만 몰려 있어 빼기만 해도 평균이 오름(구성 효과) | 양쪽에서 다 빼고 비교 · `test_prio_reduction.py` |
+| 우선순위 필터가 예외로 죽음 | 세션에 남은 옛 값('0')이 선택지 밖 | `guard_multi()` 를 위젯 직전에 |

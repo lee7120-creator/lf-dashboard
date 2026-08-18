@@ -199,6 +199,9 @@ def _finalize(df):
         df["hour"] = pd.to_numeric(df["hour"].map(norm_hhmm), errors="coerce")
     # 분모(발송/주문)가 0·결측이면 0이 아니라 NaN — 0으로 넣으면 평균·BOTTOM 순위가
     # '가짜 0원 캠페인'에 체계적으로 끌려 내려간다 (표시부는 NaN을 '–'로 처리)
+    # 우선순위는 0순위를 1순위에 합친 prio_g로 본다 (원본 prio는 그대로 남긴다)
+    if "prio" in df:
+        df["prio_g"] = df["prio"].map(norm_prio)
     df["rps"] = np.where(df["send"].fillna(0) > 0, df["amt"] / df["send"], np.nan)  # 발송건당 거래액
     df["aov"] = np.where(df["oc"].fillna(0) > 0, df["amt"] / df["oc"], np.nan)      # 객단가
     df["dt"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
@@ -2097,6 +2100,22 @@ _STYPE_SUB_RE = re.compile(r"^(우수발송|컨틴전시|컨틴)\s*([A-Za-z0-9]+
 POLICY_CHANGE_DATE = "20260801"
 
 
+def norm_prio(v):
+    """우선순위 원값 → 정수. 0순위는 1순위에 합친다.
+
+    같은 시간대에 몇 번째로 나갔는지를 뜻하는 칸인데, 수기 입력이라 `1`·`1.0`·공백이
+    섞인다. `0`은 실백업 1.2만 건에서 2건뿐이라(1순위 3,539건) 따로 두면 표·차트에
+    표본 2짜리 칸이 생겨 순번↔효율 관계를 왜곡한다 — 가장 먼저 나간다는 뜻이 같으니
+    1순위로 합친다. 못 읽으면 None.
+    """
+    n = pd.to_numeric(str(v).strip().replace(".0", "") if v is not None else None,
+                      errors="coerce")
+    if pd.isna(n):
+        return None
+    n = int(n)
+    return 1 if n <= 1 else n
+
+
 def norm_stype(v, group=True):
     """발송유형 원값 → 표준 표기. group=True면 뒤 번호를 떼어 큰 유형으로 묶는다.
 
@@ -2812,6 +2831,15 @@ def main():
                 pass                                      # 다운로드가 안 되더라도 표는 보여야 한다
         return ev
 
+    def guard_multi(key, opts):
+        """multiselect용 가드 — 선택지에서 사라진 값이 세션에 남으면 위젯이 예외로 죽는다.
+        (우선순위 0순위를 1순위로 합치면서 세션에 남은 '0'이 그대로 터졌다)"""
+        _cur = st.session_state.get(key)
+        if isinstance(_cur, (list, tuple)):
+            _keep = [v for v in _cur if v in opts]
+            if len(_keep) != len(_cur):
+                st.session_state[key] = _keep
+
     def guard_select(key, opts):
         """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
         무효 선택은 버려서 조용한 리셋/예외를 막는다 (개발 규칙의 pop 가드 일원화)."""
@@ -3318,8 +3346,13 @@ def main():
         sel_target = st.multiselect("타겟 구분", _opts(base_opt, "target"), key="flt_target",
                                     help="신규·휴면·전체 등 누구에게 보냈는지")
         sel_bpu = st.multiselect("BPU(사업부)", _opts(base_opt, "bpu"), key="flt_bpu")
-        sel_prio = st.multiselect("우선순위", _opts(base_opt, "prio"), key="flt_prio",
-                                  help="같은 시간에 몇 번째로 보냈는지 (1=가장 먼저)")
+        _prio_opts = sorted(_opts(base_opt, "prio_g"),
+                            key=lambda v: int(v) if str(v).isdigit() else 10 ** 9)
+        guard_multi("flt_prio", _prio_opts)
+        sel_prio = st.multiselect("우선순위", _prio_opts, key="flt_prio",
+                                  format_func=lambda v: f"{v}순위",
+                                  help="같은 시간에 몇 번째로 보냈는지 (1=가장 먼저). "
+                                       "0순위는 건수가 적어 1순위에 합쳐서 봐요.")
 
     def _hm_label(v):  # 시간대 HHMM 문자열 → 'HH시MM분' (예: 1030→10시30분, 800→08시00분)
         try:
@@ -3362,7 +3395,7 @@ def main():
                 == "모두 충족(AND)"
 
     CATSEL = {"stype": sel_st, "target": sel_target, "bpu": sel_bpu, "hour": sel_hour,
-              "dow_k": sel_dow, "prio": sel_prio, "cat": sel_cat,
+              "dow_k": sel_dow, "prio_g": sel_prio, "cat": sel_cat,
               "attr": sel_attr, "owner": sel_owner,
               "brand2": sel_brand2, "sales_org": sel_org, "brand_kind": sel_kind}
 
@@ -3399,7 +3432,8 @@ def main():
     if search.strip():
         _active_flt.append(f"검색 '{search.strip()[:12]}'")
     for _lab, _sel in (("발송유형", sel_st), ("타겟", sel_target), ("BPU", sel_bpu),
-                       ("우선순위", sel_prio), ("시간대", sel_hour), ("요일", sel_dow),
+                       ("우선순위", [f"{v}순위" for v in sel_prio]),
+                       ("시간대", sel_hour), ("요일", sel_dow),
                        ("카테고리", sel_cat), ("대상속성", sel_attr), ("담당자", sel_owner),
                        ("브랜드", sel_brand2), ("영업", sel_org), ("구분", sel_kind),
                        ("소구", sel_tags)):
@@ -3463,7 +3497,8 @@ def main():
         "8. 액션":               ["다음주 발송 플레이북", "AI 처방·카피"],
         "9. 데이터·다운로드":    ["데이터·다운로드"],
         "10. 앱푸시 동의 현황":  ["앱푸시 동의 현황"],
-        "11. 개선 효과 검증":    ["문구 개선 효과", "잔여모수 추가 효과", "컨틴 구좌 효율"],
+        "11. 개선 효과 검증":    ["문구 개선 효과", "잔여모수 추가 효과", "컨틴 구좌 효율",
+                                 "발송 감축 효과"],
     }
     _grp = st.sidebar.radio("페이지", list(CAMPAIGN_GROUPS))
     _subs = CAMPAIGN_GROUPS[_grp]
@@ -6722,8 +6757,8 @@ def main():
         # ── 우선순위별 ──
         st.markdown("##### 우선순위별 효율")
         base2 = base.copy()
-        base2["_prio"] = pd.to_numeric(
-            base2["prio"].astype(str).str.replace(r'\.0$', '', regex=True), errors="coerce")
+        # 0순위는 1순위에 합쳐 둔 prio_g를 쓴다 (실백업 기준 0순위는 2건뿐)
+        base2["_prio"] = pd.to_numeric(base2.get("prio_g"), errors="coerce")
         pr = agg_eff(base2.dropna(subset=["_prio"]), "_prio")
         if len(pr):
             pr["_key"] = pr["_key"].astype(float)
@@ -6792,10 +6827,9 @@ def main():
         sub9 = base.copy()
         if sel_bpu9 != "전체" and "bpu" in sub9:
             sub9 = sub9[sub9["bpu"].astype(str) == sel_bpu9]
-        if sel_prio9 != "전체" and "prio" in sub9:
+        if sel_prio9 != "전체" and "prio_g" in sub9:
             pval = sel_prio9.replace("순위", "")
-            sub9 = sub9[pd.to_numeric(sub9["prio"].astype(str).str.replace(r'\.0$', '', regex=True),
-                                       errors="coerce") == int(pval)]
+            sub9 = sub9[pd.to_numeric(sub9["prio_g"], errors="coerce") == int(pval)]
         st.caption(f"조건 일치 {len(sub9)}건 — {mlabel} 높은 순")
         render_messages(sub9, mcol, "p09_drill")
 
@@ -9406,6 +9440,253 @@ def main():
                         '오른다"로 읽으면 안 돼요. 남은발송은 타겟팅 없이 남은 모수로 나가는 게 '
                         '전제라, 격차의 상당 부분은 타겟팅 차이예요.</div>',
                         unsafe_allow_html=True)
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 📉 — 개선 효과 검증 ④ 발송 감축 효과 (순위별)
+    # ══════════════════════════════════════════════════════════════
+    # 가설: 남은발송을 빼서 피로도를 낮췄으니 1~3순위 지표가 올랐을 것이다.
+    # 그냥 전후를 맞대면 '구성 변화'가 효과로 둔갑한다 — 남은발송은 2~4순위에만
+    # 몰려 있어서, 빼기만 해도 그 순위 평균이 저절로 올라간다. 그래서 기본은
+    # 남은발송을 양쪽에서 다 뺀 같은 성격끼리의 비교다.
+    elif "발송 감축 효과" in page:
+        st.title("📉 발송 감축 효과 (순위별)")
+        st.markdown("**남은발송을 줄여 피로도를 낮추면 앞 순위 발송 지표도 오를까** — "
+                    "이 가설을 감축 시점 전후로 확인해요. 사이드바 필터가 그대로 적용돼요.")
+
+        _pf = _eff_frame()
+        _pf = _pf[_pf["dt"].notna()].copy() if "dt" in _pf.columns else _pf.copy()
+        _pf["_pg"] = pd.to_numeric(_pf.get("prio_g"), errors="coerce")
+        _pf = _pf.dropna(subset=["_pg"])
+        if len(_pf) < 20:
+            st.info("우선순위가 붙은 캠페인이 20건 미만이라 아직 비교할 수 없어요.")
+            st.stop()
+
+        _pf_dmin, _pf_dmax = _pf["dt"].min().date(), _pf["dt"].max().date()
+        _pf_c = st.columns([1.1, 1, 1])
+        with _pf_c[0]:
+            _pf_def = datetime.date(2026, 6, 15)
+            _pf_def = min(max(_pf_def, _pf_dmin), _pf_dmax)
+            _pf_cut = st.date_input("감축 시점", value=_pf_def, min_value=_pf_dmin,
+                                    max_value=_pf_dmax, key="pf_cut",
+                                    help="이 날부터를 '감축 후'로 봐요. 아래 ①에서 실제로 "
+                                         "남은발송이 꺾인 지점을 확인하고 맞춰 보세요.")
+        with _pf_c[1]:
+            _pf_like = st.checkbox("남은발송 빼고 비교", value=True, key="pf_like",
+                                   help="남은발송은 2~4순위에만 몰려 있어서, 그냥 빼기만 해도 "
+                                        "그 순위 평균이 저절로 올라가요. 켜면 양쪽에서 다 빼고 "
+                                        "같은 성격끼리 비교해요.")
+        with _pf_c[2]:
+            _pf_nopol = st.checkbox("8월 정책 변경 전까지만", value=True, key="pf_nopol",
+                                    help="8/1 구좌 감축(10→5)이 '후' 구간에 섞이면 남은발송 "
+                                         "제거 효과와 구분이 안 돼요.")
+
+        _pf_cut_ts = pd.Timestamp(_pf_cut)
+        _pf_end = pd.Timestamp(_pf_dmax)
+        if _pf_nopol:
+            _pf_end = min(_pf_end, pd.Timestamp(POLICY_CHANGE_DATE) - pd.Timedelta(days=1))
+        _pf_span = (_pf_end - _pf_cut_ts).days + 1
+        if _pf_span < 14:
+            st.info(f"감축 후 구간이 {max(_pf_span, 0)}일뿐이라 비교하기 일러요. "
+                    "감축 시점을 앞으로 당기거나 「8월 정책 변경 전까지만」을 꺼 보세요.")
+            st.stop()
+        _pf_lo = _pf_cut_ts - pd.Timedelta(days=_pf_span)
+
+        _pf_src = _pf[_pf["_stype"] != "남은발송"] if _pf_like else _pf
+        _pf_A = _pf_src[(_pf_src["dt"] >= _pf_cut_ts) & (_pf_src["dt"] <= _pf_end)]
+        _pf_B = _pf_src[(_pf_src["dt"] >= _pf_lo) & (_pf_src["dt"] < _pf_cut_ts)]
+        st.caption(f"감축 전 **{_pf_lo.date()} ~ {(_pf_cut_ts - pd.Timedelta(days=1)).date()}** "
+                   f"{len(_pf_B):,}건 ↔ 감축 후 **{_pf_cut_ts.date()} ~ {_pf_end.date()}** "
+                   f"{len(_pf_A):,}건 · 같은 {_pf_span}일 길이로 잘랐어요"
+                   + (" · 남은발송 제외" if _pf_like else " · 남은발송 포함"))
+        if len(_pf_A) < 10 or len(_pf_B) < 10:
+            st.info("양쪽 구간 중 한쪽이 10건 미만이에요. 기간 필터를 넓히거나 감축 시점을 옮겨 보세요.")
+            st.stop()
+
+        # ── ① 전제 검증 — 남은발송이 실제로 줄었나 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ① 전제 — 남은발송이 실제로 줄었나")
+        st.caption("가설의 앞부분이에요. 이게 안 줄었으면 뒤는 볼 필요가 없어요.")
+        _pf_m = _pf.copy()
+        _pf_m["월"] = _pf_m["dt"].dt.to_period("M").dt.to_timestamp()
+        _pf_mg = (_pf_m.assign(_rm=np.where(_pf_m["_stype"] == "남은발송",
+                                            _pf_m["send"].fillna(0), 0.0))
+                  .groupby("월").agg(발송=("send", "sum"), 남은=("_rm", "sum"),
+                                    캠페인=("af", "size")).reset_index())
+        _pf_mg = _pf_mg[_pf_mg["캠페인"] >= 20]                 # 표본이 얇은 달은 비중이 튄다
+        if len(_pf_mg) >= 3:
+            _pf_mg["비중"] = np.where(_pf_mg["발송"] > 0, _pf_mg["남은"] / _pf_mg["발송"] * 100, np.nan)
+            fig = stacked_panels(_pf_mg["월"], _pf_mg["발송"] / 1e6, "월 발송량(백만 건)",
+                                 _pf_mg["비중"], "남은발송 비중",
+                                 PALETTE["slate"], PALETTE["red"], h=380,
+                                 bar_suffix="백만", line_suffix="%",
+                                 title="월 발송량(위)과 남은발송 비중(아래)")
+            fig.add_vline(x=_pf_cut_ts, line_dash="dot", line_color="#94a3b8")
+            fig.update_xaxes(type="date", tickformat="%y/%m")
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.caption(f"월별로 캠페인 20건 넘는 달이 {len(_pf_mg)}개뿐이라 추이는 생략했어요.")
+        _pf_rb = _pf[(_pf["dt"] >= _pf_lo) & (_pf["dt"] < _pf_cut_ts)]
+        _pf_ra = _pf[(_pf["dt"] >= _pf_cut_ts) & (_pf["dt"] <= _pf_end)]
+
+        def _pf_share(d):
+            _t = float(d["send"].sum())
+            return (float(d.loc[d["_stype"] == "남은발송", "send"].sum()) / _t * 100) if _t else np.nan
+
+        _pf_sb, _pf_sa = _pf_share(_pf_rb), _pf_share(_pf_ra)
+        _pf_vb = float(_pf_rb["send"].sum()); _pf_va = float(_pf_ra["send"].sum())
+        _pk = st.columns(3)
+        _pk[0].metric("남은발송 비중", f"{_pf_sa:.1f}%",
+                      f"{_pf_sa - _pf_sb:+.1f}%p" if pd.notna(_pf_sb) else None,
+                      delta_color="inverse")
+        _pk[1].metric("총 발송량", f"{_pf_va/1e6:,.1f}백만",
+                      f"{(_pf_va - _pf_vb)/max(_pf_vb, 1)*100:+.1f}%", delta_color="off")
+        _pk[2].metric("캠페인 수", f"{len(_pf_ra):,}건",
+                      f"{len(_pf_ra) - len(_pf_rb):+,}건", delta_color="off")
+        if pd.notna(_pf_sb) and _pf_sb - _pf_sa >= 5:
+            st.markdown(f'<div class="appendix">전제는 확인됐어요. 남은발송 비중이 '
+                        f'<b>{_pf_sb:.1f}% → {_pf_sa:.1f}%</b>로 줄었고 총 발송량도 '
+                        f'<b>{(_pf_va - _pf_vb)/max(_pf_vb, 1)*100:+.1f}%</b> 움직였어요.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="appendix">이 구간에서는 남은발송 비중이 뚜렷하게 줄지 '
+                        '않았어요. 감축 시점을 위 차트에서 실제로 꺾인 달로 옮겨 보세요 — '
+                        '전제가 성립하지 않으면 아래 비교는 다른 이야기를 보는 거예요.</div>',
+                        unsafe_allow_html=True)
+
+        # ── ② 순위별 전후 비교 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ② 순위별 전후 비교")
+        _PF_MET = {k: v for k, v in METRIC_OPTS.items() if v[0] != "amt"}
+        _pf_keys = list(_PF_MET.keys())
+        guard_select("pf_metric", _pf_keys)
+        _pf_lab = st.selectbox(
+            "지표", _pf_keys,
+            index=next((i for i, k in enumerate(_pf_keys) if "CTR" in k), 0), key="pf_metric",
+            help="피로도는 CTR에 가장 먼저 나타나요. 주문·거래액은 시즌·행사에 더 흔들려요.")
+        _pf_col, _pf_unit, _pf_clr = _PF_MET[_pf_lab]
+        _pf_pct = _pf_unit == "%"
+
+        def _pf_agg(d, col):
+            """합산 기준 값 — 캠페인 평균이 아니라 분자·분모를 각각 더해서 낸다."""
+            _snd = float(d["send"].sum()); _uv = float(d["uv"].sum())
+            _oc = float(d["oc"].sum()); _amt = float(d["amt"].sum())
+            if col == "infl_cr":
+                return (_uv / _snd * 100) if _snd else np.nan
+            if col == "ord_cr":
+                return (_oc / _uv * 100) if _uv else np.nan
+            if col == "rps":
+                return (_amt / _snd) if _snd else np.nan
+            return (_amt / _oc) if _oc else np.nan
+
+        _PF_GRP = [("1순위", lambda d: d[d["_pg"] == 1]), ("2순위", lambda d: d[d["_pg"] == 2]),
+                   ("3순위", lambda d: d[d["_pg"] == 3]), ("4순위+", lambda d: d[d["_pg"] >= 4])]
+        _pf_rows = []
+        for _gname, _gsel in _PF_GRP:
+            _a, _b = _gsel(_pf_A), _gsel(_pf_B)
+            if len(_a) < 3 or len(_b) < 3:
+                continue
+            _va, _vb = _pf_agg(_a, _pf_col), _pf_agg(_b, _pf_col)
+            _pv = welch(_a[_pf_col].dropna(), _b[_pf_col].dropna())
+            _pf_rows.append(dict(순위=_gname, 전_건수=len(_b), 후_건수=len(_a),
+                                 전=_vb, 후=_va,
+                                 변화율=((_va - _vb) / _vb * 100) if _vb else np.nan,
+                                 p=_pv))
+        if not _pf_rows:
+            st.info("순위별로 양쪽 구간에 3건 이상인 그룹이 없어요.")
+            st.stop()
+        _pf_t = pd.DataFrame(_pf_rows)
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=_pf_t["순위"], y=_pf_t["전"], name="감축 전",
+                             marker_color=PALETTE["slate"], opacity=0.65,
+                             text=[bar_label(v, _pf_col, _pf_pct) for v in _pf_t["전"]],
+                             textposition="outside"))
+        fig.add_trace(go.Bar(x=_pf_t["순위"], y=_pf_t["후"], name="감축 후",
+                             marker_color=_pf_clr,
+                             text=[bar_label(v, _pf_col, _pf_pct) for v in _pf_t["후"]],
+                             textposition="outside"))
+        _pf_lay = base_layout(h=380, ysuffix=("%" if _pf_pct else ""),
+                              title=f"우선순위별 {_pf_lab} — 감축 전 vs 후")
+        _pf_lay["showlegend"] = True
+        _pf_lay["legend"] = legend_h()
+        _pf_lay["barmode"] = "group"
+        fig.update_layout(**_pf_lay)
+        st.plotly_chart(fig, width="stretch")
+
+        _pf_show = _pf_t.copy()
+        _pf_show.columns = ["우선순위", "전 캠페인", "후 캠페인", f"전 {_pf_lab}",
+                            f"후 {_pf_lab}", "변화율", "유의성"]
+        _pf_show["유의성"] = _pf_show["유의성"].map(sig_label)
+        _pf_fmt = {"전 캠페인": "{:,.0f}", "후 캠페인": "{:,.0f}", "변화율": "{:+.1f}%"}
+        _pf_fmt[f"전 {_pf_lab}"] = "{:.2f}%" if _pf_pct else "{:,.0f}"
+        _pf_fmt[f"후 {_pf_lab}"] = "{:.2f}%" if _pf_pct else "{:,.0f}"
+        _pf_sty = (_pf_show.style.format(_pf_fmt)
+                   .map(lambda v: ("color:#B03030;font-weight:600" if v < 0 else
+                                   "color:#367A4C;font-weight:600") if pd.notna(v) else "",
+                        subset=["변화율"]))
+        table(_pf_sty, hide_index=True, width="stretch", dl_name="순위별 감축 전후 비교")
+        st.caption("값은 합산 기준(분자·분모를 각각 더해서 계산)이고, 유의성은 캠페인 단위 "
+                   "Welch 검정이에요. 캠페인이 3건 미만인 순위는 뺐어요.")
+
+        # ── ③ 구성 변화 — 진짜 효과인지 갈라내기 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ③ 이 숫자를 그대로 믿기 전에")
+        _pf_mix = []
+        for _gname, _gsel in _PF_GRP:
+            _all_b, _all_a = _gsel(_pf_rb), _gsel(_pf_ra)        # 비중은 남은발송 포함 전체에서
+            _cmp_b, _cmp_a = _gsel(_pf_B), _gsel(_pf_A)          # 모수 크기는 실제 비교한 집합에서
+            _pf_mix.append(dict(
+                순위=_gname,
+                남은발송비중_전=_pf_share(_all_b), 남은발송비중_후=_pf_share(_all_a),
+                캠페인당발송_전=float(_cmp_b["send"].mean()) if len(_cmp_b) else np.nan,
+                캠페인당발송_후=float(_cmp_a["send"].mean()) if len(_cmp_a) else np.nan))
+        _pf_mx = pd.DataFrame(_pf_mix)
+        _pf_mx.columns = ["우선순위", "남은발송 비중 전", "남은발송 비중 후",
+                          "캠페인당 발송 전", "캠페인당 발송 후"]
+        table(_pf_mx.style.format({"남은발송 비중 전": "{:.1f}%", "남은발송 비중 후": "{:.1f}%",
+                                   "캠페인당 발송 전": "{:,.0f}", "캠페인당 발송 후": "{:,.0f}"}),
+              hide_index=True, width="stretch", dl_name="순위별 구성 변화")
+        st.caption("남은발송 비중은 전체 발송 기준이고, 캠페인당 발송은 위 ②에서 실제로 비교한 "
+                   "집합 기준이에요"
+                   + (" (남은발송 제외)." if _pf_like else "."))
+        # 문자열은 전부 여기서 쓴 고정 문구라 esc 대상이 아니다 (업로드 문구가 아님)
+        _pf_warn = ["<b>구성 변화</b> — 남은발송이 특정 순위에만 몰려 있으면, 그걸 빼기만 해도 "
+                    "그 순위 평균이 저절로 올라가요. 위 표에서 비중이 크게 빠진 순위는 "
+                    "「남은발송 빼고 비교」를 켜고 봐야 진짜 효과가 보여요.",
+                    "<b>모수 크기</b> — 구좌를 줄이면 한 번에 더 많이 보내게 돼요. 캠페인당 발송이 "
+                    "늘었다면 리스트 아래쪽까지 내려간 거라 CTR이 떨어지는 게 정상이에요.",
+                    "<b>같은 기간의 다른 변화</b> — 시즌·행사·문구 개선이 같이 움직여요. "
+                    "전후 비교는 인과가 아니라 '무슨 일이 있었나'예요."]
+        st.markdown('<div class="appendix">' +
+                    "<br>".join(f"· {_w}" for _w in _pf_warn) + '</div>',
+                    unsafe_allow_html=True)
+
+        # ── ④ 판정 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ④ 가설 판정")
+        _pf_top = _pf_t[_pf_t["순위"].isin(["1순위", "2순위", "3순위"])]
+        _pf_up = int((_pf_top["변화율"] > 0).sum())
+        _pf_sig_up = int(((_pf_top["변화율"] > 0) & (_pf_top["p"] < 0.05)).sum())
+        _pf_sig_dn = int(((_pf_top["변화율"] < 0) & (_pf_top["p"] < 0.05)).sum())
+        _pf_n = len(_pf_top)
+        if _pf_sig_up and not _pf_sig_dn:
+            _pf_head, _pf_col_v = "가설을 지지해요", "#367A4C"
+            _pf_body = (f"1~3순위 {_pf_n}개 중 <b>{_pf_sig_up}개</b>가 {esc(_pf_lab)} 기준으로 "
+                        "통계적으로 유의하게 올랐어요.")
+        elif _pf_sig_dn and not _pf_sig_up:
+            _pf_head, _pf_col_v = "가설과 반대예요", "#B03030"
+            _pf_body = (f"1~3순위 {_pf_n}개 중 <b>{_pf_sig_dn}개</b>가 오히려 유의하게 "
+                        f"내려갔어요 ({esc(_pf_lab)} 기준).")
+        else:
+            _pf_head, _pf_col_v = "아직 근거가 부족해요", "#A07010"
+            _pf_body = (f"1~3순위 {_pf_n}개 중 {_pf_up}개가 올랐지만 "
+                        "유의한 변화는 없어요. 방향만 보고 결론 내리면 우연을 성과로 읽게 돼요.")
+        st.markdown(f'<div class="vg" style="border-left:4px solid {_pf_col_v}">'
+                    f'<b style="color:{_pf_col_v}">{_pf_head}</b><br>{_pf_body}<br><br>'
+                    '피로도 개선이 앞 순위까지 올라오는 데는 시간이 걸려요. 감축 시점을 옮겨 가며 '
+                    '보고, 「6. 효율·피로도 › 발송량 최적 구간」의 인당발송↔효율 회귀와 같이 보면 '
+                    '같은 이야기인지 확인할 수 있어요.</div>', unsafe_allow_html=True)
         glossary()
 
     # ── 페이지 리포트 다운로드 (HTML → 브라우저 인쇄로 PDF) ──
