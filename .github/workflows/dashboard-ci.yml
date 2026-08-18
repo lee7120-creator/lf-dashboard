@@ -72,5 +72,8 @@ jobs:
       - name: 업로드 후 기간 필터·레이블 검사
         run: python tests/test_filter_follows_upload.py
 
+      - name: 발송량 최적 구간(MTD·앱푸시 결합) 검사
+        run: python tests/test_send_volume_band.py
+
       - name: 주간보고 전 페이지 렌더 스모크
         run: python tests/smoke_weekly_report.py

@@ -3457,7 +3457,8 @@ def main():
         "3. 캠페인 리더보드":    ["캠페인 리더보드"],
         "4. 성과 진단":          ["전환·AOV 진단", "발송유형·브랜드 랭킹", "BPU·우선순위 효율"],
         "5. 맥락·타이밍":        ["카테고리·시간대", "타이밍·발송슬롯", "전년 동요일 비교"],
-        "6. 효율·피로도":        ["전체 효율·추이", "피로도 시계열", "발송 빈도·한계수익", "요일 패턴"],
+        "6. 효율·피로도":        ["전체 효율·추이", "피로도 시계열", "발송 빈도·한계수익",
+                                 "발송량 최적 구간", "요일 패턴"],
         "7. 기획전 비교분석":    ["기획전 비교분석"],
         "8. 액션":               ["다음주 발송 플레이북", "AI 처방·카피"],
         "9. 데이터·다운로드":    ["데이터·다운로드"],
@@ -7042,7 +7043,7 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # 발송피로도 (전사 MTD) — F1~F4
     # ══════════════════════════════════════════════════════════════
-    elif page in ("피로도 시계열", "발송 빈도·한계수익", "요일 패턴"):
+    elif page in ("피로도 시계열", "발송 빈도·한계수익", "발송량 최적 구간", "요일 패턴"):
         # CTR은 파일이 주는 값이 '유니크유입 ÷ 유니크발송고객수'(고객 1명당)다.
         # 캠페인 페이지 CTR(유입UV ÷ 발송건수)과 분모가 달라 이름에 기준을 박아 둔다.
         MTDOPT = {"CTR(고객당)": "ctr", "유입률(발송당)": "ctr_send",
@@ -7415,6 +7416,207 @@ def main():
                                      line_suffix=("%" if m2 in MTD_PCT else ""),
                                      title="발송량 5분위(Q1 소량→Q5 대량)")
                 st.plotly_chart(fig, width="stretch")
+
+        # ── 발송량 최적 구간 ──
+        # '감축했다가 다시 올려도 되나'에 답하는 화면. 총량은 늘고 효율은 떨어지는 게
+        # 정상이라, 어디까지가 남는 장사인지를 ①총량↔효율 ②이탈 손익분기 ③구좌 선택
+        # 세 조각으로 나눠 본다.
+        elif page == "발송량 최적 구간":
+            st.title("발송량 최적 구간")
+            st.markdown("발송을 더 늘리면 매출이 느는지, 늘린 만큼 이탈로 잃는지, 늘린다면 "
+                        "어떤 구좌로 늘려야 하는지를 한 화면에서 봐요.")
+            st.markdown('<div class="appendix">관측 데이터라 <b>인과가 아니라 상관</b>이에요. '
+                        '발송을 늘린 날은 대개 행사일이라, 행사 효과가 발송 효과로 섞여 보일 수 '
+                        '있어요. 방향과 크기를 가늠하는 용도로 보세요.</div>',
+                        unsafe_allow_html=True)
+
+            _ob_md = md.dropna(subset=["perSend"]).copy()
+
+            # ── ① 총거래액 ↔ 효율 트레이드오프 ──
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### ① 더 보내면 총매출은 늘고, 효율은 떨어져요")
+            st.caption("요일 평균을 뺀 잔차로 회귀했어요. 주말·월요일 발송 패턴이 상관을 부풀리는 걸 막으려고요.")
+
+            def _ob_fit(col):
+                """인당발송 → col 회귀 (양쪽 다 요일 잔차). 못 구하면 None."""
+                if col not in _ob_md or len(_ob_md) < 10:
+                    return None
+                _res = _linreg(_dow_residual(_ob_md, "perSend"), _dow_residual(_ob_md, col))
+                if np.isnan(_res["slope"]):
+                    return None
+                _res["r"] = float(np.sqrt(_res["r2"])) * (1 if _res["slope"] >= 0 else -1)
+                return _res
+
+            _ob_rev, _ob_rps, _ob_ctr = _ob_fit("revenue"), _ob_fit("rps"), _ob_fit("ctr_send")
+
+            _obk = st.columns(3)
+            _obk[0].metric("인당발송 +1건당 일 거래액",
+                           (won(_ob_rev["slope"]) + "원") if _ob_rev else "–",
+                           help="같은 요일끼리 비교했을 때, 인당 발송이 1건 늘면 그날 거래액이 평균 얼마나 움직였는지예요.")
+            _obk[1].metric("인당발송 +1건당 RPS",
+                           f"{_ob_rps['slope']:+,.1f}원" if _ob_rps else "–",
+                           help="발송 1건이 벌어오는 돈이에요. 총매출이 늘어도 이 값이 내려가면 효율은 나빠지는 거예요.")
+            _obk[2].metric("인당발송 +1건당 유입률",
+                           f"{_ob_ctr['slope']*100:+.3f}%p" if _ob_ctr else "–",
+                           help="발송 1건당 유입이에요. 피로도를 가장 먼저 보여 주는 지표예요.")
+
+            _ob_msg = [f"{_nm} r={_fit['r']:+.2f} · p={_fit['p']:.3f} "
+                       f"({'유의해요' if _fit['p'] < 0.05 else '유의하지 않아요'})"
+                       for _nm, _fit in (("거래액", _ob_rev), ("RPS", _ob_rps), ("유입률", _ob_ctr)) if _fit]
+            if _ob_msg:
+                st.caption(" · ".join(_ob_msg) + f" · 표본 {len(_ob_md):,}일")
+
+            _ob_b = mtd_data["buckets"]
+            if len(_ob_b) >= 2 and _ob_b["revenue"].notna().any():
+                fig = stacked_panels(_ob_b["bucket"].astype(str), _ob_b["revenue"] / 1e8,
+                                     "일평균 거래액(억원)",
+                                     _ob_b["rps"], "발송건당 거래액(RPS)",
+                                     MCLR["revenue"], MCLR["rps"], h=420,
+                                     bar_suffix="억", line_suffix="원",
+                                     title="인당 발송 구간별 — 총량(위) vs 효율(아래)")
+                st.plotly_chart(fig, width="stretch")
+                _ob_peak = str(_ob_b.loc[_ob_b["revenue"].idxmax(), "bucket"])
+                if _ob_peak == str(_ob_b["bucket"].iloc[-1]):
+                    st.markdown('<div class="appendix">일평균 거래액이 <b>가장 높은 구간이 관측된 '
+                                f'맨 끝({esc(_ob_peak)})</b>이에요. 지금 데이터 안에서는 총매출이 꺾이는 '
+                                '지점이 아직 안 보여요. 더 올려 보고 그 구간이 쌓이면 다시 봐야 해요.</div>',
+                                unsafe_allow_html=True)
+                else:
+                    st.markdown('<div class="appendix">일평균 거래액은 '
+                                f'<b>{esc(_ob_peak)}</b> 구간에서 가장 높고, 그 위로는 다시 내려가요. '
+                                '총매출 기준으로는 여기가 최적 구간이에요.</div>', unsafe_allow_html=True)
+                _ob_t = _ob_b[["bucket", "n", "perSend", "revenue", "rps", "ctr_send", "purchaseRate"]].copy()
+                _ob_t.columns = ["인당발송 구간", "일수", "평균 인당발송", "일평균 거래액(억)", "RPS", "유입률", "구매전환율"]
+                _ob_t["일평균 거래액(억)"] = _ob_t["일평균 거래액(억)"] / 1e8    # 9자리 원 단위는 안 읽힌다
+                _ob_t["유입률"] = _ob_t["유입률"] * 100
+                _ob_t["구매전환율"] = _ob_t["구매전환율"] * 100
+                table(_ob_t.style.format({"평균 인당발송": "{:.2f}건", "일평균 거래액(억)": "{:,.2f}",
+                                          "RPS": "{:,.0f}", "유입률": "{:.2f}%", "구매전환율": "{:.2f}%"}),
+                      hide_index=True, width="stretch", dl_name="인당 발송 구간별 총량·효율")
+                st.caption("표본이 30일 넘게 쌓인 구간만 그려요.")
+            else:
+                st.info("인당 발송 구간별로 30일 넘게 쌓인 구간이 2개 미만이라 아직 곡선을 못 그려요.")
+
+            # ── ② 이탈 손익분기 ──
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### ② 이탈 손익분기 — 이탈 1명이 얼마 이상 가치가 있으면 손해일까")
+            _ob_push = st.session_state.get("push_consent_df")
+            if _ob_push is None or len(_ob_push) == 0:
+                st.info("앱푸시 수신동의 파일을 올리면 발송량과 이탈을 같은 날짜 축에 놓고 "
+                        "손익분기를 계산해요. 왼쪽 📂 파일 올리기에서 올려 주세요.")
+            else:
+                _ob_p = finalize_push(_ob_push)
+                _ob_p = _ob_p[(_ob_p["group"].astype(str) == "Total")
+                              & (~_ob_p["is_outlier"].fillna(False).astype(bool))]
+                _ob_p = _ob_p[["date", "removed"]].dropna()
+                _ob_j = _ob_md[["date", "dow", "perSend", "revenue"]].merge(_ob_p, on="date", how="inner")
+                if len(_ob_j) < 20:
+                    st.info(f"발송 데이터와 앱푸시 데이터가 같이 있는 날이 {len(_ob_j)}일뿐이라 "
+                            "손익분기를 계산하기엔 부족해요 (20일 이상 필요해요).")
+                else:
+                    _ob_jx = _dow_residual(_ob_j, "perSend")
+                    _ob_fc = _linreg(_ob_jx, _dow_residual(_ob_j, "removed"))
+                    _ob_fr = _linreg(_ob_jx, _dow_residual(_ob_j, "revenue"))
+                    _ob_rr = (float(np.sqrt(_ob_fc["r2"])) * (1 if _ob_fc["slope"] >= 0 else -1)
+                              if not np.isnan(_ob_fc["r2"]) else np.nan)
+                    _ob_c = st.columns(3)
+                    _ob_c[0].metric("발송 +1건당 이탈 증가",
+                                    f"{_ob_fc['slope']:+,.0f}명" if not np.isnan(_ob_fc["slope"]) else "–",
+                                    help="발송을 한 건 더 태운 날, 그날 수신동의 해제가 평균 몇 명 더 늘었는지예요.")
+                    _ob_c[1].metric("발송 +1건당 거래액 증가",
+                                    (won(_ob_fr["slope"]) + "원") if not np.isnan(_ob_fr["slope"]) else "–",
+                                    help="①과 같은 계산인데 앱푸시 데이터가 같이 있는 날만 써서 값이 조금 달라요.")
+                    _ob_c[2].metric("발송량 ↔ 이탈 상관",
+                                    f"{_ob_rr:+.2f}" if not np.isnan(_ob_rr) else "–",
+                                    help="0에 가까우면 발송을 늘려도 이탈이 따라 늘지 않는다는 뜻이에요.")
+                    _ob_weak = (np.isnan(_ob_fc["slope"]) or _ob_fc["slope"] <= 0
+                                or np.isnan(_ob_fc["p"]) or _ob_fc["p"] >= 0.05)
+                    if _ob_weak:
+                        _ob_ev = (f" (r={_ob_rr:+.2f}, p={_ob_fc['p']:.3f})"
+                                  if not (np.isnan(_ob_rr) or np.isnan(_ob_fc["p"])) else "")
+                        st.markdown('<div class="appendix">이 데이터에서는 <b>발송을 늘린 날에 이탈이 '
+                                    f'더 늘어나는 신호가 안 보여요</b>{_ob_ev}. 관측된 발송 범위 안에서는 '
+                                    '이탈을 이유로 발송량을 묶어 둘 근거가 약해요. 다만 이탈은 몇 주 늦게 '
+                                    '나타나기도 하니 「앱푸시 동의」의 시차 탐색도 같이 보세요.</div>',
+                                    unsafe_allow_html=True)
+                    else:
+                        _ob_be = _ob_fr["slope"] / _ob_fc["slope"]
+                        st.markdown('<div class="appendix">인당발송을 1건 올리면 거래액이 하루 '
+                                    f'<b>{won(_ob_fr["slope"])}원</b> 늘고 이탈이 '
+                                    f'<b>{_ob_fc["slope"]:,.0f}명</b> 늘어요. 이탈 1명의 가치가 '
+                                    f'<b>{won(_ob_be)}원</b>보다 크면 손해, 작으면 이득이에요.</div>',
+                                    unsafe_allow_html=True)
+                        st.caption("이탈 1명의 가치는 그 고객이 앞으로 낼 거래액(LTV)으로 보면 돼요. "
+                                   "하루치 증분과 평생 가치를 견주는 셈이라 이 값은 상한선으로만 쓰세요.")
+                    st.caption(f"두 데이터에 같은 날짜가 있는 {len(_ob_j):,}일로 계산했어요. "
+                               "배치 이관 같은 이상치 날짜는 뺐어요.")
+
+            # ── ③ 어떤 구좌로 늘릴까 ──
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### ③ 늘린다면 어떤 발송유형으로 — 유형별 효율")
+            st.caption("같은 한 건을 더 보낸다면 어디에 태울지 고르는 자리예요. 총량이 아니라 건당 효율로 봐요.")
+            _ob_after = st.checkbox("정책 변경(2026-08-01) 이후만", value=True, key="ob_after",
+                                    help="구좌를 10개에서 5개로 줄이기 전후는 운영 자체가 달라요. 끄면 전체 기간을 봐요.")
+            _ob_cf = fdf.copy()
+            if _ob_after and "date" in _ob_cf:
+                _ob_cf = _ob_cf[_ob_cf["date"].astype(str) >= POLICY_CHANGE_DATE]
+            if not len(_ob_cf) or "stype" not in _ob_cf:
+                st.info("이 조건에 맞는 캠페인이 없어요. 기간 필터를 넓히거나 위 체크를 꺼 보세요.")
+            else:
+                _ob_cf = _ob_cf.assign(_styp=_ob_cf["stype"].map(norm_stype)).dropna(subset=["_styp"])
+                _ob_g = _ob_cf.groupby("_styp").agg(
+                    cnt=("send", "size"), send=("send", "sum"), uv=("uv", "sum"),
+                    oc=("oc", "sum"), amt=("amt", "sum")).reset_index()
+                _ob_g = _ob_g[_ob_g["send"] > 0].reset_index(drop=True)
+                if len(_ob_g) < 2:
+                    st.info("비교할 발송유형이 2개 미만이에요.")
+                else:
+                    _ob_g["rps"] = _ob_g["amt"] / _ob_g["send"]
+                    _ob_g["infl_cr"] = _ob_g["uv"] / _ob_g["send"]
+                    _ob_g["ord_cr"] = _ob_g["oc"] / _ob_g["uv"].replace(0, np.nan)
+                    _ob_g["aov"] = _ob_g["amt"] / _ob_g["oc"].replace(0, np.nan)
+                    _ob_mo = ["발송건당거래액(RPS)", "CTR(유입전환율)", "주문전환율", "객단가(AOV)"]
+                    guard_select("ob_met", _ob_mo)
+                    _ob_lab = st.selectbox("판단 지표", _ob_mo, key="ob_met")
+                    _ob_col, _ob_unit, _ob_clr = METRIC_OPTS[_ob_lab]
+                    _ob_pct = _ob_unit == "%"
+                    _ob_g["_rk"] = rank_adjusted(_ob_g, _ob_col, ascending=False)
+                    _ob_g = _ob_g.sort_values("_rk", ascending=False).reset_index(drop=True)
+                    _ob_y = _ob_g[_ob_col] * (100 if _ob_pct else 1)
+                    fig = go.Figure(go.Bar(
+                        x=_ob_g["_styp"], y=_ob_y, marker_color=_ob_clr,
+                        text=[bar_label(v, _ob_col, _ob_pct) for v in _ob_y], textposition="outside",
+                        customdata=_ob_g["send"],
+                        hovertemplate="%{x}<br>" + _ob_lab + ": %{y:,.2f}<br>발송 %{customdata:,}건<extra></extra>"))
+                    fig.update_layout(**base_layout(h=380, ysuffix=("%" if _ob_pct else ""),
+                                                    title=f"발송유형별 {_ob_lab}"))
+                    st.plotly_chart(fig, width="stretch")
+                    _ob_show = _ob_g[["_styp", "cnt", "send", "rps", "infl_cr", "ord_cr", "aov", "amt"]].copy()
+                    _ob_show.columns = ["발송유형", "캠페인 수", "발송", "RPS", "CTR", "주문CR", "객단가", "거래액"]
+                    _ob_show["CTR"] = _ob_show["CTR"] * 100
+                    _ob_show["주문CR"] = _ob_show["주문CR"] * 100
+                    table(_ob_show.style.format({"캠페인 수": "{:,.0f}", "발송": "{:,.0f}", "RPS": "{:,.0f}",
+                                                 "CTR": "{:.2f}%", "주문CR": "{:.2f}%",
+                                                 "객단가": "{:,.0f}", "거래액": "{:,.0f}"}),
+                          hide_index=True, width="stretch", dl_name="발송유형별 효율")
+                    def _ob_ga(w):
+                        """받침에 맞는 주격 조사 — '시그니처이'처럼 어색해지는 걸 막는다."""
+                        _c = str(w).strip()[-1:]
+                        if not _c or not ("가" <= _c <= "힣"):
+                            return "가"
+                        return "이" if (ord(_c) - 0xAC00) % 28 else "가"
+
+                    _ob_tv = _ob_g[_ob_col].iloc[0]
+                    _ob_bv = _ob_g[_ob_col].iloc[-1]
+                    if pd.notna(_ob_tv) and pd.notna(_ob_bv) and _ob_bv:
+                        st.markdown('<div class="appendix">한 건을 더 보낸다면 '
+                                    f'<b>{esc(str(_ob_g["_styp"].iloc[0]))}</b>'
+                                    f'{_ob_ga(_ob_g["_styp"].iloc[0])} 가장 나아요 — '
+                                    f'{esc(_ob_lab)} 기준으로 <b>{esc(str(_ob_g["_styp"].iloc[-1]))}</b>의 '
+                                    f'<b>{_ob_tv / _ob_bv:,.1f}배</b>예요. 같은 양을 늘려도 어디에 태우느냐로 '
+                                    '결과가 갈려요.</div>', unsafe_allow_html=True)
+                    st.caption("순위는 표본 보정 점수로 정렬했어요(표시 값은 원값). "
+                               "건수가 적은 유형이 요행으로 1등을 먹는 걸 막으려고요.")
 
         # ── 요일 패턴 ──
         else:
