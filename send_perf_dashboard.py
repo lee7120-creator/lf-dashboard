@@ -2354,13 +2354,32 @@ def main():
     h1,h2,h3{color:#1e293b}
     /* ── 앱푸시 동의 전략 도식 (10번 페이지) ── */
     /* 본문(14px)보다 작아지지 않게 잡는다 — 도식이라고 글자를 줄이면 안 읽힌다 */
-    .psx-grid{display:grid;grid-template-columns:68px 1fr 1fr;gap:9px;margin:8px 0 4px}
+    /* align-items:start — 한 칸을 펼쳤을 때 옆 칸이 같이 늘어나지 않게 */
+    .psx-grid{display:grid;grid-template-columns:68px 1fr 1fr;gap:9px;margin:8px 0 4px;
+      align-items:start}
     .psx-ax{display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;
       color:#475569;letter-spacing:.02em;text-align:center;line-height:1.45}
     /* 세로쓰기(writing-mode)를 쓰면 한글 글자까지 눕혀져 안 읽힌다 — 가로쓰기로 줄만 나눈다 */
     .psx-ax.v{background:#eef2f7;border-radius:6px;color:#334155;padding:8px 2px}
+    /* 카드 자체가 클릭 영역 — <details>라 리런 없이 그 자리에서 펼쳐진다 */
     .psx-cell{background:#fff;border:1px solid #e2e8f0;border-top:3px solid var(--psx-c,#94a3b8);
-      border-radius:8px;padding:16px 18px;min-height:210px}
+      border-radius:8px}
+    .psx-cell > summary{padding:16px 18px;min-height:210px;cursor:pointer;list-style:none;
+      display:block;position:relative;border-radius:8px;transition:background .12s}
+    .psx-cell > summary::-webkit-details-marker{display:none}
+    .psx-cell > summary:hover{background:#fafbfd}
+    .psx-cell > summary:focus-visible{outline:2px solid var(--psx-c,#2E68B0);outline-offset:2px}
+    .psx-more{position:absolute;right:16px;bottom:13px;font-size:12.5px;font-weight:600;
+      color:var(--psx-c,#64748b);display:flex;align-items:center;gap:4px}
+    .psx-more:after{content:"▾";font-size:11px;transition:transform .15s}
+    .psx-cell[open] > summary{background:#fafbfd;border-radius:8px 8px 0 0}
+    .psx-cell[open] .psx-more:after{transform:rotate(180deg)}
+    .psx-det{padding:2px 18px 16px;border-top:1px dashed #e2e8f0;margin:0 0 0}
+    .psx-det h6{font-size:12px;font-weight:700;color:#64748b;margin:14px 0 5px;
+      letter-spacing:.04em;text-transform:uppercase}
+    .psx-det p{font-size:14px;color:#475569;line-height:1.7;margin:0 0 4px}
+    .psx-det .psx-exc{background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;
+      padding:11px 14px;font-size:13.5px;color:#475569;margin-top:12px;line-height:1.65}
     .psx-no{font-size:13px;font-weight:700;color:var(--psx-c,#64748b);letter-spacing:.04em}
     .psx-st{font-size:16px;font-weight:600;color:#1e293b;margin:3px 0 11px}
     .psx-ask{font-size:13px;color:#64748b;margin-bottom:3px}
@@ -8568,14 +8587,30 @@ def main():
              "쿠폰 사용률 · 30일 내 구매 고객 수"),
         ]
 
-        def _psx_cell(it):
+        def _psx_md(t):
+            """상세 본문의 **굵게** 표기만 태그로 바꾼다 (나머지는 이스케이프)."""
+            return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc(t))
+
+        def _psx_cell(it, det=None):
+            """매트릭스 한 칸. det가 있으면 카드를 눌러 상세가 그 자리에서 펼쳐진다."""
             _no, _st, _do, _c, _lis, _kpi = it
-            return (f'<div class="psx-cell" style="--psx-c:{_c}">'
-                    f'<div class="psx-no">{_no}</div><div class="psx-st">{esc(_st)}</div>'
-                    f'<div class="psx-ask">요청할 한 가지 행동</div>'
-                    f'<div class="psx-do">{esc(_do)}</div>'
-                    + "".join(f'<div class="psx-li">{t}</div>' for t in _lis)
-                    + f'<div class="psx-kpi">대표 KPI · {_kpi}</div></div>')
+            _head = (f'<summary><div class="psx-no">{_no}</div>'
+                     f'<div class="psx-st">{esc(_st)}</div>'
+                     f'<div class="psx-ask">요청할 한 가지 행동</div>'
+                     f'<div class="psx-do">{esc(_do)}</div>'
+                     + "".join(f'<div class="psx-li">{t}</div>' for t in _lis)
+                     + f'<div class="psx-kpi">대표 KPI · {_kpi}</div>'
+                     + ('<span class="psx-more">상세</span>' if det else '')
+                     + '</summary>')
+            _body = ""
+            if det:
+                _t, _who, _acts, _exc = det
+                _body = ('<div class="psx-det">'
+                         f'<h6>주요 대상</h6><p>{_psx_md(_who)}</p>'
+                         '<h6>실제 액션</h6>'
+                         + "".join(f'<p>· {_psx_md(a)}</p>' for a in _acts)
+                         + f'<div class="psx-exc"><b>제외 조건</b> — {_psx_md(_exc)}</div></div>')
+            return f'<details class="psx-cell" style="--psx-c:{_c}">{_head}{_body}</details>'
 
         # 상태별 상세 — 매트릭스 각 칸을 눌러서 여는 내용 (제목, 주요 대상, 액션, 제외 조건)
         _PSX_D = [
@@ -8636,6 +8671,7 @@ def main():
         ]
 
         st.markdown("##### ① 상태 매트릭스 — 설치 여부 × 동의 여부")
+        st.caption("각 칸을 누르면 대상·액션·제외 조건이 그 자리에서 펼쳐져요.")
         st.markdown(
             '<div class="psx-grid">'
             # 텍스트와 인라인 태그 사이의 공백은 렌더링에서 먹히므로 &nbsp;로 고정한다
@@ -8643,30 +8679,16 @@ def main():
             '<div class="psx-ax"></div>'
             '<div class="psx-ax">마케팅&nbsp;<b>미동의</b></div>'
             '<div class="psx-ax">마케팅&nbsp;<b>이미&nbsp;동의</b></div>'
-            '<div class="psx-ax v">앱<br>미설치</div>' + _psx_cell(_PSX[0]) + _psx_cell(_PSX[2]) +
-            '<div class="psx-ax v">앱<br>설치</div>' + _psx_cell(_PSX[1]) + _psx_cell(_PSX[3]) +
+            '<div class="psx-ax v">앱<br>미설치</div>'
+            + _psx_cell(_PSX[0], _PSX_D[0]) + _psx_cell(_PSX[2], _PSX_D[2]) +
+            '<div class="psx-ax v">앱<br>설치</div>'
+            + _psx_cell(_PSX[1], _PSX_D[1]) + _psx_cell(_PSX[3], _PSX_D[3]) +
             '</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="appendix">②가 가장 빨리 성과가 나요. 앱스토어 이동·설치·첫 실행 '
             '세 단계를 건너뛰고 <b>동의 하나만</b> 남아 있어서예요. 반대로 ③에는 동의를 '
             '절대 다시 묻지 마세요 — 설정 화면에 들어간 김에 철회하는 경우가 생겨요.</div>',
             unsafe_allow_html=True)
-
-        # 상태별 상세는 해당 칸을 눌러서 연다. 매트릭스와 같은 배치(위 ①③ / 아래 ②④)로 놓아야
-        # 어느 칸의 상세인지 눈으로 바로 이어진다.
-        st.caption("아래에서 상태를 눌러 대상·액션·제외 조건을 볼 수 있어요.")
-        _psx_pos = [(0, 2), (1, 3)]                    # 매트릭스 배치 그대로
-        for _row in _psx_pos:
-            _cols = st.columns(2)
-            for _ci, _di in enumerate(_row):
-                _t, _who, _acts, _exc = _PSX_D[_di]
-                with _cols[_ci]:
-                    with st.expander(f"{_t} — 상세"):
-                        st.caption(f"주요 대상 — {_who}")
-                        for _a in _acts:
-                            st.markdown(f"- {_a}")
-                        st.markdown(f'<div class="appendix"><b>제외 조건</b> — {_exc}</div>',
-                                    unsafe_allow_html=True)
 
         st.markdown("##### ② 상태 전환 흐름 — 한 단계 끝나면 이전 캠페인에서 즉시 제외")
         _psx_steps = [("앱 미설치<br>미동의", "①", False), ("앱 설치<br>미동의", "②", False),
