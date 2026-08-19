@@ -4734,10 +4734,12 @@ def main():
 
             _wk_c, _wk_p = _wk_sm(ref_ws), _wk_sm(prev_ws)
             _wk_m, _wk_y = _wk_sm(pm_ws), _wk_sm(yo_ws)
-            for _mk in ("uv", "amt"):
+            # 거래액은 위 '거래액' 행이 이미 담당한다 — 분모가 다른 값을 나란히 두면
+            # 어느 쪽을 봐야 할지 헷갈린다. 여기선 회원UV만.
+            for _mk in ("uv",):
                 if not _wr_site[_mk].notna().any():
                     continue
-                _nm = f"앱푸시 {SITE_LABEL[_mk]}({SITE_UNIT[_mk]})"
+                _nm = f"앱푸시 {SITE_LABEL[_mk]}(일평균·{SITE_UNIT[_mk]})"
 
                 def _wfmt(v):
                     return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
@@ -4769,10 +4771,11 @@ def main():
                    "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
                    "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
         if _wk_site_rows:
-            st.markdown('<div class="appendix"><b>앱푸시 행은 사이트 전체 지표</b>라 위 발송 '
-                        '실적과 분모가 달라요 — 합계가 아니라 <b>그 주의 일평균</b>이에요. '
+            st.markdown('<div class="appendix"><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 '
+                        '실적과 분모가 달라요 — 주 합계가 아니라 <b>그 주의 일평균</b>(천명)이에요. '
                         '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
-                        '잡은 값이고요. 회원UV는 천명, 거래액은 백만원 단위예요.</div>',
+                        '잡은 값이고요. 앱푸시 거래액까지 보려면 아래 <b>월 누계(MTD)</b> 표나 '
+                        '「12. 회원UV·거래액」을 보면 돼요.</div>',
                         unsafe_allow_html=True)
 
         # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 저장 백엔드에 영속 ──
