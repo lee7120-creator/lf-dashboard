@@ -938,6 +938,8 @@ SITE_DIV = 1000.0
 # 화면 기본 조회 시작일. 파일에는 2024년치도 들어 있지만 평소 보는 건 2025년 이후라
 # 기본을 여기로 잡는다. 더 과거는 기간을 직접 넓히면 그대로 보인다(데이터는 안 지운다).
 SITE_DEFAULT_FROM = datetime.date(2025, 1, 1)
+# 채널 패널 기본 선택 — 8개를 다 켜면 패널이 잘아져 모양이 안 읽힌다. 평소 보는 세 개만.
+SITE_DEFAULT_PANELS = ["Total", "직접", "PUSH"]
 SITE_UNIT = {"uv": "천명", "amt": "백만원"}
 SITE_LABEL = {"uv": "회원UV", "amt": "거래액"}
 
@@ -10142,7 +10144,10 @@ def main():
         st.markdown(f"##### ② 채널별 {esc(_sv_mlab)} — 전년 대비")
         _sv_c2 = st.columns([2.4, 1, 1])
         with _sv_c2[0]:
-            _sv_pick = st.multiselect("볼 채널", _sv_chs, default=_sv_chs, key="sv_panels")
+            _sv_dfp = [c for c in SITE_DEFAULT_PANELS if c in _sv_chs] or _sv_chs
+            _sv_pick = st.multiselect("볼 채널", _sv_chs, default=_sv_dfp, key="sv_panels",
+                                      help="기본은 Total·직접·PUSH예요. 다른 채널도 골라서 "
+                                           "같이 볼 수 있어요.")
         with _sv_c2[1]:
             _sv_yrs = st.selectbox("비교", ["전년까지", "전전년까지", "안 함"], key="sv_yrs",
                                    help="같은 시점의 작년·재작년을 겹쳐 그려요. "

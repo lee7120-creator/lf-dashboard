@@ -231,6 +231,17 @@ def t_period_defaults_to_2025_and_keeps_older_selectable():
 
 
 @case
+def t_channel_panels_default_to_three():
+    """채널 패널 기본은 Total·직접·PUSH. 8개를 다 켜면 패널이 잘아져 모양이 안 읽힌다."""
+    at = _open(PAGE, site=_site_store(days=200))
+    ms = [m for m in at.multiselect if m.label == "볼 채널"]
+    assert ms, f"'볼 채널' 위젯이 없어요 — {[m.label for m in at.multiselect]}"
+    assert list(ms[0].value) == S.SITE_DEFAULT_PANELS, \
+        f"기본 선택이 {list(ms[0].value)}예요 — {S.SITE_DEFAULT_PANELS}이어야 해요"
+    assert set(S.SITE_DEFAULT_PANELS) <= set(ms[0].options), "선택지에 기본 채널이 없어요"
+
+
+@case
 def t_device_pie_is_year_over_year():
     """디바이스 비중은 기간과 무관하게 '올해 vs 전년'을 같은 날짜까지 잘라 본다."""
     at = _open(PAGE, site=_site_store(days=700))
