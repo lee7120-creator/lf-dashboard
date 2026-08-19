@@ -78,5 +78,8 @@ jobs:
       - name: 우선순위·발송 감축 효과 검사
         run: python tests/test_prio_reduction.py
 
+      - name: 사이트 회원UV·거래액 검사
+        run: python tests/test_site_metrics.py
+
       - name: 주간보고 전 페이지 렌더 스모크
         run: python tests/smoke_weekly_report.py

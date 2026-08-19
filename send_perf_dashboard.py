@@ -529,6 +529,11 @@ def classify_upload(name, file_bytes):
         if any(k in flat_head for k in ("기존 이탈", "기존이탈", "신규추가")):
             return "push"
 
+        # 사이트 지표(회원UV·거래액) — C열에 디바이스(App/Mobile Web/PC Web)가 온다.
+        # MTD 판정(날짜행)보다 먼저 봐야 한다 — 둘 다 날짜가 가로로 눕는 리포트라서.
+        if "Mobile Web" in flat_head and "PC Web" in flat_head:
+            return "site"
+
         # 3) 기획전 성과시트 — 첫 칸이 '기획전 번호'
         for r in head:
             if r and r[0].replace(" ", "") == "기획전번호":
@@ -917,6 +922,163 @@ def finalize_push(df):
     return d.reset_index(drop=True)
 
 
+# ── 전사 사이트 지표 (회원UV · 거래액) — 채널×디바이스×일자 와이드 리포트 ──────────
+# 태블로 export 구조: 0행=연도, 1행=월, 2행=일 (연·월은 병합셀이라 ffill 필요),
+# A열=블록(기준/전주비/전년비/전전년비/전전전년비), B열=채널, C열=디바이스, D열부터 날짜.
+# 실측치인 '기준' 블록만 읽는다 — 나머지는 증감률이라 필요하면 다시 계산하면 된다.
+# 'Total' 행은 하위 항목의 합이 아니라 파일이 준 값이다. 채널·디바이스를 더해서 만들지 말 것
+# (중복 방문이 제거된 유니크 수라 합계와 다르다).
+SITE_CHANNELS = ["Total", "직접", "광고", "PUSH", "제휴", "EP", "미디어커머스", "브랜드광고"]
+SITE_DEVICES = ["Total", "App", "Mobile Web", "PC Web"]
+SITE_STORE = "send_perf_site_store.csv"
+SITE_STORE_COLS = ["date", "ch", "dev", "uv", "amt"]
+# 원본 단위는 회원UV=명, 거래액=천원. 화면 표기는 회원UV 천명 · 거래액 백만원이라 둘 다 ÷1000.
+# (실파일 기준 Total 일평균 UV 25.2만명 · 거래액 9.8억원 → 방문자 1명당 3,880원으로 앞뒤가 맞음)
+SITE_DIV = 1000.0
+SITE_UNIT = {"uv": "천명", "amt": "백만원"}
+SITE_LABEL = {"uv": "회원UV", "amt": "거래액"}
+
+
+def _site_dates(d):
+    """0~2행(연·월·일) → 날짜 리스트. 연·월은 병합셀이라 ffill한다. 못 읽으면 NaT."""
+    yr = d.iloc[0, 3:].ffill()
+    mo = d.iloc[1, 3:].ffill()
+    dy = d.iloc[2, 3:]
+    out = []
+    for y, m, x in zip(yr, mo, dy):
+        try:
+            y = int(re.sub(r"[^0-9]", "", str(y)))
+            m = int(re.sub(r"[^0-9]", "", str(m)))
+            x = int(float(x))
+            out.append(pd.Timestamp(y, m, x))
+        except Exception:
+            out.append(pd.NaT)
+    return out
+
+
+def site_metric_kind(vals, name=""):
+    """회원UV 파일인지 거래액 파일인지 — 두 리포트는 구조가 완전히 같아서 값으로 가른다.
+
+    회원UV는 사람 수라 정수만 나오고, 거래액은 환산값이라 소수가 섞인다
+    (실파일에서 UV 0% vs 거래액 85%). 파일명에 '거래액·매출'이 있으면 그걸 먼저 믿는다.
+    """
+    nm = str(name or "").lower()
+    if any(k in nm for k in ("거래액", "매출", "revenue", "sales", "_amt")):
+        return "amt"
+    v = pd.to_numeric(pd.Series(np.asarray(vals).ravel()), errors="coerce").dropna().values
+    if len(v) == 0:
+        return "uv"
+    frac = float(np.mean(np.abs(v - np.round(v)) > 1e-9))
+    return "amt" if frac >= 0.2 else "uv"
+
+
+def parse_site_bytes(file_bytes, name=""):
+    """태블로 회원UV/거래액 리포트 → (kind, long DataFrame[date, ch, dev, uv|amt]).
+
+    kind는 'uv' 또는 'amt'. 읽을 게 없으면 빈 프레임을 돌려준다.
+    """
+    d = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0, header=None)
+    if d.shape[0] < 5 or d.shape[1] < 5:
+        return "uv", pd.DataFrame(columns=SITE_STORE_COLS)
+    dates = _site_dates(d)
+    body = d.iloc[3:].copy()
+    blk = body.iloc[:, 0].ffill().astype(str).str.strip()
+    body = body[blk == "기준"]
+    if not len(body):
+        return "uv", pd.DataFrame(columns=SITE_STORE_COLS)
+    ch = body.iloc[:, 1].ffill().astype(str).str.strip()
+    dev = body.iloc[:, 2].astype(str).str.strip()
+    vals = body.iloc[:, 3:].apply(pd.to_numeric, errors="coerce")
+    kind = site_metric_kind(vals.values, name)
+    vals.columns = [x.strftime("%Y%m%d") if pd.notna(x) else "" for x in dates]
+    vals = vals.loc[:, [c for c in vals.columns if c]]
+    vals.insert(0, "ch", ch.values)
+    vals.insert(1, "dev", dev.values)
+    keep = vals["ch"].isin(SITE_CHANNELS) & vals["dev"].isin(SITE_DEVICES)
+    vals = vals[keep]
+    m = vals.melt(id_vars=["ch", "dev"], var_name="date", value_name=kind)
+    m = m.dropna(subset=[kind])
+    other = "amt" if kind == "uv" else "uv"
+    m[other] = np.nan
+    return kind, m[SITE_STORE_COLS].reset_index(drop=True)
+
+
+def finalize_site(df):
+    """저장소 로드 공통 — dtype 복구 (구글시트 라운드트립이 전값을 문자열로 되돌린다)."""
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=SITE_STORE_COLS)
+    d = df.copy()
+    for c in SITE_STORE_COLS:
+        if c not in d.columns:
+            d[c] = np.nan
+    d["date"] = d["date"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    for c in ("ch", "dev"):
+        d[c] = d[c].astype(str).str.strip()
+    for c in ("uv", "amt"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d[d["date"].str.match(r"^\d{8}$", na=False)]
+    return d[SITE_STORE_COLS].reset_index(drop=True)
+
+
+def merge_site_store(old, new):
+    """(date, ch, dev) 키로 병합 — 값이 있는 쪽이 이긴다.
+
+    회원UV 파일만 다시 올렸다고 이미 쌓인 거래액이 NaN으로 덮이면 안 되므로,
+    행 교체가 아니라 **칼럼별 coalesce**로 합친다.
+    """
+    o, n = finalize_site(old), finalize_site(new)
+    if not len(o):
+        return n
+    if not len(n):
+        return o
+    key = ["date", "ch", "dev"]
+    o = o.drop_duplicates(subset=key, keep="last").set_index(key)
+    n = n.drop_duplicates(subset=key, keep="last").set_index(key)
+    m = n.combine_first(o)                       # 신규 우선, 빈 칸만 기존으로 채움
+    return m.reset_index().sort_values(key).reset_index(drop=True)
+
+
+def load_site_store():
+    if os.path.exists(SITE_STORE):
+        try:
+            return finalize_site(pd.read_csv(SITE_STORE, encoding="utf-8-sig", dtype={"date": str}))
+        except Exception:
+            pass
+    return pd.DataFrame(columns=SITE_STORE_COLS)
+
+
+def save_site_store(df):
+    out = finalize_site(df)
+    out.to_csv(SITE_STORE, index=False, encoding="utf-8-sig")
+    return out
+
+
+def site_pick(df, ch="Total", dev="Total"):
+    """채널×디바이스 한 조합만 뽑아 날짜 인덱스 프레임으로. 값은 표시 단위(÷1000)로 환산."""
+    d = finalize_site(df)
+    if not len(d):
+        return pd.DataFrame(columns=["dt", "uv", "amt"])
+    d = d[(d["ch"] == ch) & (d["dev"] == dev)].copy()
+    if not len(d):
+        return pd.DataFrame(columns=["dt", "uv", "amt"])
+    d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d", errors="coerce")
+    d = d.dropna(subset=["dt"]).sort_values("dt")
+    for c in ("uv", "amt"):
+        d[c] = pd.to_numeric(d[c], errors="coerce") / SITE_DIV
+    return d[["dt", "uv", "amt"]].reset_index(drop=True)
+
+
+def site_mean(df, ch, dev, d0, d1):
+    """[d0, d1] 구간의 일평균 (표시 단위). 데이터가 없으면 NaN."""
+    d = site_pick(df, ch, dev)
+    if not len(d):
+        return {"uv": np.nan, "amt": np.nan, "days": 0}
+    m = d[(d["dt"] >= pd.Timestamp(d0)) & (d["dt"] <= pd.Timestamp(d1))]
+    if not len(m):
+        return {"uv": np.nan, "amt": np.nan, "days": 0}
+    return {"uv": float(m["uv"].mean()), "amt": float(m["amt"].mean()), "days": int(len(m))}
+
+
 # ── 주간보고 보고란(전주 지표 현황·금주 집행) 영속 저장 — 주차별 key/text ──
 NOTES_STORE = "send_perf_notes.csv"
 NOTES_STORE_COLS = ["key", "text"]
@@ -1223,7 +1385,7 @@ def push_week_note(row):
 
 # ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
 GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store",
-             "push": "push_store", "notes": "notes_store"}
+             "push": "push_store", "notes": "notes_store", "site": "site_store"}
 
 
 def _fix_pem(pk):
@@ -2655,13 +2817,14 @@ def main():
             return {"mode": "local", "status": f"⚠️ 구글시트 연결 실패 → 로컬에 저장해요 ({str(e)[:50]})"}
 
     _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS,
-                           "push": PUSH_STORE_COLS, "notes": NOTES_STORE_COLS}
+                           "push": PUSH_STORE_COLS, "notes": NOTES_STORE_COLS,
+                           "site": SITE_STORE_COLS}
     _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store,
-                   "push": load_push_store, "notes": load_notes_store}
+                   "push": load_push_store, "notes": load_notes_store, "site": load_site_store}
     _LOCAL_SAVE = {"campaign": save_store, "mtd": save_mtd_store, "promo": save_promo_store,
-                   "push": save_push_store, "notes": save_notes_store}
+                   "push": save_push_store, "notes": save_notes_store, "site": save_site_store}
     _LOCAL_FILE = {"campaign": DATA_STORE, "mtd": MTD_STORE, "promo": PROMO_STORE,
-                   "push": PUSH_STORE, "notes": NOTES_STORE}
+                   "push": PUSH_STORE, "notes": NOTES_STORE, "site": SITE_STORE}
 
     def storage_load(bk, kind):
         cols = _STORE_COLS_BY_KIND[kind]
@@ -2892,6 +3055,10 @@ def main():
         st.session_state.push_consent_df = finalize_push(storage_load(BK, "push"))
     push_consent_df = st.session_state.push_consent_df
 
+    if "site_store_df" not in st.session_state:
+        st.session_state.site_store_df = finalize_site(storage_load(BK, "site"))
+    site_df = st.session_state.site_store_df
+
     # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
     _PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1xqlaRnHa5HMLz3ASUn-H7AvMkUsvQw6l7aw1rWLqfjw"
     plan_file = None
@@ -2947,8 +3114,9 @@ def main():
     perf_files, promo_files, mtd_files = [], None, []
     if uni_files:
         _LBL = {"perf": "발송실적", "plan": "발송기획", "promo": "기획전성과",
-                "mtd": "전사MTD", "push": "📱앱푸시", "unknown": "❓미인식"}
+                "mtd": "전사MTD", "push": "📱앱푸시", "site": "🌐사이트", "unknown": "❓미인식"}
         _perf_b, _promo_b, _mtd_b, _cls = [], [], [], []
+        _site_new, _site_read = None, []
         with st.spinner("파일 종류를 파악하고 있어요…"):
             for nm, b in expand_uploads(uni_files):
                 if b is None:
@@ -2988,6 +3156,14 @@ def main():
                                                    f"(총 {len(merged_push)//3:,}일치).")
                     except Exception as _e:
                         st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
+                elif k == "site":
+                    try:
+                        _skind, _sdf = parse_site_bytes(b, nm)
+                        if len(_sdf):
+                            _site_read.append((nm, _skind, len(_sdf)))
+                            _site_new = merge_site_store(_site_new, _sdf)
+                    except Exception as _e:
+                        st.sidebar.error(f"사이트 지표 파일 읽기 실패: {str(_e)[:80]}")
 
         perf_files = [_UF(n, b) for n, b in _perf_b]
         promo_files = _UF(_promo_b[0][0], _promo_b[0][1]) if _promo_b else None
@@ -2995,7 +3171,22 @@ def main():
         from collections import Counter
         _cnt = Counter(k for _, k in _cls)
         st.sidebar.success("자동 분류 — " + " · ".join(
-            f"{_LBL[k]} {_cnt[k]}" for k in ("perf", "plan", "promo", "mtd", "push", "unknown") if _cnt.get(k)))
+            f"{_LBL[k]} {_cnt[k]}"
+            for k in ("perf", "plan", "promo", "mtd", "push", "site", "unknown") if _cnt.get(k)))
+        if _site_read:
+            # 어느 파일을 무엇으로 읽었는지 보여 준다 — 두 리포트는 구조가 같아서
+            # 값(정수/소수)으로 가르기 때문에 오판을 눈으로 잡을 수 있어야 한다.
+            for _nm, _kk, _n in _site_read:
+                st.sidebar.caption(f"🌐 {SITE_LABEL[_kk]} ← {_nm[:26]} ({_n:,}행)")
+        if _site_new is not None and len(_site_new):
+            _site_cur = st.session_state.get("site_store_df")
+            if _site_cur is None:
+                _site_cur = storage_load(BK, "site")
+            _site_m = merge_site_store(_site_cur, _site_new)
+            if storage_save(BK, "site", _site_m):
+                st.session_state.site_store_df = _site_m
+                _sd = _site_m["date"].nunique()
+                st.sidebar.success(f"🌐 사이트 지표를 병합 저장했어요 (총 {_sd:,}일치).")
         with st.sidebar.expander("분류 상세"):
             for nm, k in _cls:
                 st.caption(f"**{_LBL[k]}** ← {nm[:34]}")
@@ -3006,7 +3197,7 @@ def main():
     st.sidebar.caption(BK["status"])
     if st.sidebar.button("🔄 새로 불러오기", width="stretch"):
         for k in ("camp_store", "mtd_store_df", "promo_store_df", "push_consent_df", "push_consent_hash",
-                  "_merge_sig", "_merge_new_raw", "_merge_parse_log", "wr_notes"):
+                  "site_store_df", "_merge_sig", "_merge_new_raw", "_merge_parse_log", "wr_notes"):
             st.session_state.pop(k, None)
         for k in [k for k in st.session_state if str(k).startswith("_load_failed_")]:
             st.session_state.pop(k, None)
@@ -3155,6 +3346,15 @@ def main():
                     if storage_save(BK, "notes", notes_dict_to_df(merged_n)):
                         st.session_state.wr_notes = merged_n
                         done.append(f"보고란 {len(merged_n):,}")
+                elif base.startswith("site"):
+                    df = finalize_site(pd.read_csv(data, encoding="utf-8-sig", dtype={"date": str}))
+                    _cur_s = st.session_state.get("site_store_df")
+                    if _cur_s is None:
+                        _cur_s = storage_load(BK, "site")
+                    m = merge_site_store(_cur_s, df)
+                    if storage_save(BK, "site", m):
+                        st.session_state.site_store_df = m
+                        done.append(f"사이트 {m['date'].nunique():,}일")
                 elif "push" in base or "consent" in base:
                     # dtype 정규화 후 병합 — 문자열/Timestamp 혼재로 dedupe가 실패해
                     # 같은 날이 두 벌 남던 문제 방지
@@ -3524,6 +3724,7 @@ def main():
         "10. 앱푸시 동의 현황":  ["앱푸시 동의 현황"],
         "11. 개선 효과 검증":    ["문구 개선 효과", "잔여모수 추가 효과", "컨틴 구좌 효율",
                                  "발송 감축 효과"],
+        "12. 회원UV·거래액":     ["회원UV·거래액"],
     }
     _grp = st.sidebar.radio("페이지", list(CAMPAIGN_GROUPS))
     _subs = CAMPAIGN_GROUPS[_grp]
@@ -3597,7 +3798,8 @@ def main():
         except Exception:
             _notes_sig = 0
         _bak_sig = (len(work), _dfsig(work),
-                    _dfsig(mtd_work), _dfsig(promo_work), _dfsig(_push_df), _notes_sig)
+                    _dfsig(mtd_work), _dfsig(promo_work), _dfsig(_push_df),
+                    _dfsig(st.session_state.get("site_store_df")), _notes_sig)
         if st.button("📦 백업 파일 만들기", width="stretch", key="bak_make"):
             _zbuf = io.BytesIO()
             _has_any = False
@@ -3617,6 +3819,11 @@ def main():
                 if _push_df is not None and not _push_df.empty:
                     _z.writestr("push_consent.csv",
                         _push_df.to_csv(index=False).encode("utf-8-sig"))
+                    _has_any = True
+                _site_bak = st.session_state.get("site_store_df")
+                if _site_bak is not None and len(_site_bak):
+                    _z.writestr("site.csv",
+                        finalize_site(_site_bak).to_csv(index=False).encode("utf-8-sig"))
                     _has_any = True
                 # 보고란(notes)도 백업에 포함 — 재배포(로컬 CSV 초기화) 시 유일한 복구 수단
                 try:
@@ -4820,12 +5027,45 @@ def main():
                          "전월비": _dlt_sig(met, cur_mtd, prev_mtd),
                          _py_lab: _fmt(met, yoy_mtd[met]),
                          "전년비": _dlt_sig(met, cur_mtd, yoy_mtd)})
+        # ── 사이트 지표(앱 디바이스 · PUSH 채널) — 있을 때만 같은 표에 붙인다 ──
+        # 발송 실적과 분모가 달라 합계로 못 섞는다. '월 평균(일평균)'으로 나란히 놓는다.
+        _wr_site = finalize_site(st.session_state.get("site_store_df"))
+        _site_rows = 0
+        if len(_wr_site):
+            _SITE_MTD = [("앱", "Total", "App"), ("PUSH", "PUSH", "Total")]
+            for _slab, _sch, _sdev in _SITE_MTD:
+                _c = site_mean(_wr_site, _sch, _sdev, m_first, ref_end)
+                _p = site_mean(_wr_site, _sch, _sdev, pm0, pm1)
+                _y = site_mean(_wr_site, _sch, _sdev, py0, py1)
+                for _mk in ("uv", "amt"):
+                    if not _wr_site[_mk].notna().any():
+                        continue
+                    # 라벨이 길면 '지표' 칸에서 잘린다 — 일평균이라는 설명은 아래 주석에 둔다
+                    _nm = f"{_slab} {SITE_LABEL[_mk]}({SITE_UNIT[_mk]})"
+
+                    def _sfmt(v):
+                        return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
+
+                    rows.append({"지표": _nm,
+                                 _pm_lab: _sfmt(_p[_mk]), _cur_lab: _sfmt(_c[_mk]),
+                                 "전월비": _dlt(_nm, _c[_mk], _p[_mk]),
+                                 _py_lab: _sfmt(_y[_mk]),
+                                 "전년비": _dlt(_nm, _c[_mk], _y[_mk])})
+                    _site_rows += 1
+
         table(pd.DataFrame(rows).style.map(_clr, subset=["전월비", "전년비"]),
                      hide_index=True, width="stretch", height=38 + 35 * len(rows), dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
         st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
-                    '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.</div>',
+                    '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
+                    + ('<br><b>앱·PUSH 행은 사이트 전체 지표</b>라 위 발송 실적과 분모가 달라요 '
+                       '— 누계가 아니라 <b>그 기간의 일평균</b>이에요. 회원UV는 천명, 거래액은 '
+                       '백만원 단위고요. 자세한 추이는 「12. 회원UV·거래액」에서 봐요.'
+                       if _site_rows else '') + '</div>',
                     unsafe_allow_html=True)
+        if not _site_rows:
+            st.caption("회원UV·거래액 리포트를 올리면 앱 디바이스·PUSH 채널의 월 평균도 이 표에 "
+                       "같이 나와요.")
 
         # ── 📱 앱푸시 수신동의 주간 요약 (주간보고용 연동) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -9712,6 +9952,196 @@ def main():
                     '피로도 개선이 앞 순위까지 올라오는 데는 시간이 걸려요. 감축 시점을 옮겨 가며 '
                     '보고, 「6. 효율·피로도 › 발송량 최적 구간」의 인당발송↔효율 회귀와 같이 보면 '
                     '같은 이야기인지 확인할 수 있어요.</div>', unsafe_allow_html=True)
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 🌐 — 사이트 회원UV · 거래액 (전사 채널×디바이스)
+    # ══════════════════════════════════════════════════════════════
+    # CRM 발송 실적이 아니라 사이트 전체 유입·매출이다. 같은 화면에서 섞어 비교하지 말 것
+    # (분모가 다르다 — 여긴 사이트 방문자, 캠페인 페이지는 발송 건수).
+    elif "회원UV" in page:
+        st.title("🌐 회원UV · 거래액")
+        st.caption(f"전사 사이트 지표예요. 회원UV는 **{SITE_UNIT['uv']}**, "
+                   f"거래액은 **{SITE_UNIT['amt']}** 단위예요.")
+        _sv_all = finalize_site(st.session_state.get("site_store_df"))
+        if not len(_sv_all):
+            st.info("회원UV·거래액 리포트를 왼쪽 📂 파일 올리기에 올려 주세요. "
+                    "두 파일(회원UV·거래액)을 같이 올리면 한 화면에서 같이 봐요.")
+            st.stop()
+
+        _sv_days = _sv_all["date"].nunique()
+        _sv_has = {k: bool(_sv_all[k].notna().any()) for k in ("uv", "amt")}
+        st.caption(f"{_sv_days:,}일치 · "
+                   + " · ".join(f"{SITE_LABEL[k]} {'있음' if v else '없음'}"
+                                for k, v in _sv_has.items()))
+
+        _sv_c = st.columns([1, 1, 1, 1.2])
+        with _sv_c[0]:
+            _sv_unit = st.radio("집계 단위", ["일별", "주차별", "월별"], horizontal=False,
+                                index=1, key="sv_unit")
+        with _sv_c[1]:
+            _sv_chs = [c for c in SITE_CHANNELS if c in set(_sv_all["ch"])]
+            guard_select("sv_ch", _sv_chs)
+            _sv_ch = st.selectbox("채널", _sv_chs, key="sv_ch")
+        with _sv_c[2]:
+            _sv_devs = [c for c in SITE_DEVICES if c in set(_sv_all["dev"])]
+            guard_select("sv_dev", _sv_devs)
+            _sv_dev = st.selectbox("디바이스", _sv_devs, key="sv_dev")
+        with _sv_c[3]:
+            _sv_how = st.radio("값", ["일평균", "합계"], horizontal=True, key="sv_how",
+                               help="진행 중인 주·달은 합계로 보면 날짜 수가 모자라 뚝 떨어져 "
+                                    "보여요. 기본은 일평균이에요.")
+        _sv_avg = _sv_how == "일평균"
+
+        _SV_FREQ = {"일별": ("D", "%m/%d", None), "주차별": ("W-MON", "%y/%m/%d", 7 * 86400000),
+                    "월별": ("MS", "%y/%m", "M1")}
+        _sv_fq, _sv_tick, _sv_dtick = _SV_FREQ[_sv_unit]
+        _SV_TAIL = {"일별": 120, "주차별": 52, "월별": 24}
+
+        def _sv_roll(ch, dev):
+            """채널×디바이스 한 조합 → 집계 단위별 프레임 [dt, uv, amt, n]."""
+            d = site_pick(_sv_all, ch, dev)
+            if not len(d):
+                return d.assign(n=0) if "n" not in d else d
+            if _sv_fq == "D":
+                return d.assign(n=1)
+            g = d.set_index("dt").resample(_sv_fq)
+            out = g[["uv", "amt"]].mean() if _sv_avg else g[["uv", "amt"]].sum(min_count=1)
+            out["n"] = g["uv"].count().reindex(out.index).fillna(0).astype(int)
+            if not out["n"].any():                        # 거래액만 있는 경우
+                out["n"] = g["amt"].count().reindex(out.index).fillna(0).astype(int)
+            return out.reset_index().rename(columns={"index": "dt"})
+
+        _sv_d = _sv_roll(_sv_ch, _sv_dev)
+        _sv_d = _sv_d[_sv_d.get("n", 1) > 0] if "n" in _sv_d else _sv_d
+        _sv_tl = _SV_TAIL[_sv_unit]
+        _sv_show = _sv_d.tail(_sv_tl)
+        if not len(_sv_show):
+            st.info("이 조합에는 데이터가 없어요. 채널·디바이스를 바꿔 보세요.")
+            st.stop()
+
+        # ── ① 추이 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown(f"##### ① {esc(_sv_ch)} · {esc(_sv_dev)} 추이")
+        _sv_last = _sv_show.iloc[-1]
+        _sv_prev = _sv_show.iloc[-2] if len(_sv_show) >= 2 else None
+
+        def _sv_delta(col):
+            if _sv_prev is None or pd.isna(_sv_prev[col]) or not _sv_prev[col]:
+                return None
+            _p = (_sv_last[col] / _sv_prev[col] - 1) * 100
+            return f"{_p:+.1f}%"
+
+        _svk = st.columns(3)
+        _svk[0].metric(f"회원UV ({SITE_UNIT['uv']})",
+                       f"{_sv_last['uv']:,.1f}" if pd.notna(_sv_last["uv"]) else "–",
+                       _sv_delta("uv"))
+        _svk[1].metric(f"거래액 ({SITE_UNIT['amt']})",
+                       f"{_sv_last['amt']:,.1f}" if pd.notna(_sv_last["amt"]) else "–",
+                       _sv_delta("amt"))
+        _sv_rpu = (_sv_last["amt"] * 1000 / _sv_last["uv"]) if (
+            pd.notna(_sv_last["uv"]) and _sv_last["uv"]) else np.nan
+        _svk[2].metric("방문 1명당 거래액",
+                       f"{_sv_rpu:,.0f}원" if pd.notna(_sv_rpu) else "–",
+                       help="거래액 ÷ 회원UV예요. 단위가 달라 환산해서 계산해요.")
+        _sv_full = {"일별": 1, "주차별": 7, "월별": 28}[_sv_unit]
+        _sv_n = int(_sv_last.get("n", 1) or 1)
+        if _sv_n < _sv_full:
+            st.caption(f"위 카드는 마지막 구간({_sv_last['dt']:%Y-%m-%d} 시작)이고 아직 "
+                       f"**{_sv_n}일치**예요. 일평균이라 비교는 되지만 하루 이틀로는 "
+                       "많이 흔들려요.")
+
+        if _sv_has["uv"] and _sv_has["amt"]:
+            fig = stacked_panels(_sv_show["dt"], _sv_show["uv"], f"회원UV({SITE_UNIT['uv']})",
+                                 _sv_show["amt"], f"거래액({SITE_UNIT['amt']})",
+                                 PALETTE["blue"], PALETTE["teal"], h=430,
+                                 title=f"{_sv_ch} · {_sv_dev} — {_sv_unit} {_sv_how}")
+        else:
+            _sv_m = "uv" if _sv_has["uv"] else "amt"
+            fig = go.Figure(go.Bar(x=_sv_show["dt"], y=_sv_show[_sv_m],
+                                   marker_color=PALETTE["blue"]))
+            fig.update_layout(**base_layout(
+                h=380, title=f"{_sv_ch} · {_sv_dev} — {SITE_LABEL[_sv_m]}({SITE_UNIT[_sv_m]})"))
+        _sv_ax = dict(type="date", tickformat=_sv_tick)
+        if _sv_dtick and len(_sv_show) <= 16:
+            # 점이 적을 때만 눈금을 고정한다. 52주짜리에 7일 눈금을 박으면 라벨이 전부
+            # 세로로 눕고 축이 데이터 바깥까지 늘어난다.
+            _sv_ax["dtick"] = _sv_dtick
+        fig.update_xaxes(**_sv_ax)
+        st.plotly_chart(fig, width="stretch")
+        if not _sv_avg and _sv_unit != "일별":
+            st.caption("합계로 보고 있어요. 진행 중인 마지막 구간은 날짜 수가 모자라 낮게 보여요.")
+        if _sv_unit != "일별" and _sv_avg:
+            st.caption("회원UV는 일별 값의 평균이에요. 주·월 단위 순방문자(중복 제거)가 아니에요.")
+
+        # ── ② 채널·디바이스 구성 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ② 무엇이 움직였나 — 채널·디바이스별")
+        _SV_MET = {f"회원UV({SITE_UNIT['uv']})": "uv", f"거래액({SITE_UNIT['amt']})": "amt"}
+        _SV_MET = {k: v for k, v in _SV_MET.items() if _sv_has[v]}
+        guard_select("sv_met", list(_SV_MET.keys()))
+        _sv_mlab = st.selectbox("지표", list(_SV_MET.keys()), key="sv_met")
+        _sv_mcol = _SV_MET[_sv_mlab]
+
+        def _sv_multi(kind, keys, fixed):
+            """keys(채널 또는 디바이스)별 시계열을 한 차트에. Total은 빼고 본다."""
+            fig = go.Figure()
+            _drawn = 0
+            for _i, _k in enumerate(keys):
+                _one = _sv_roll(_k, fixed) if kind == "ch" else _sv_roll(fixed, _k)
+                if "n" in _one:
+                    _one = _one[_one["n"] > 0]
+                _one = _one.tail(_sv_tl)
+                if _one[_sv_mcol].notna().sum() < 2:
+                    continue
+                fig.add_trace(go.Scatter(
+                    x=_one["dt"], y=_one[_sv_mcol], name=str(_k), mode="lines",
+                    line=dict(color=SERIES_SEQ[_i % len(SERIES_SEQ)], width=2),
+                    connectgaps=False))
+                _drawn += 1
+            if not _drawn:
+                return None
+            _lay = base_layout(h=380, hover="x",
+                               title=f"{'채널' if kind == 'ch' else '디바이스'}별 {_sv_mlab}"
+                                     f" ({fixed} 기준 · {_sv_unit} {_sv_how})")
+            _lay["showlegend"] = True
+            _lay["legend"] = legend_h()
+            fig.update_layout(**_lay)
+            fig.update_xaxes(**_sv_ax)
+            return fig
+
+        _sv_t1, _sv_t2 = st.tabs(["채널별", "디바이스별"])
+        with _sv_t1:
+            _f = _sv_multi("ch", [c for c in _sv_chs if c != "Total"], _sv_dev)
+            if _f is not None:
+                st.plotly_chart(_f, width="stretch")
+                st.caption(f"디바이스는 **{_sv_dev}** 로 고정했어요. 위에서 바꾸면 같이 바뀌어요.")
+            else:
+                st.info("그릴 채널 데이터가 부족해요.")
+        with _sv_t2:
+            _f = _sv_multi("dev", [c for c in _sv_devs if c != "Total"], _sv_ch)
+            if _f is not None:
+                st.plotly_chart(_f, width="stretch")
+                st.caption(f"채널은 **{_sv_ch}** 로 고정했어요.")
+            else:
+                st.info("그릴 디바이스 데이터가 부족해요.")
+
+        # ── ③ 표 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ③ 표로 보기")
+        _sv_tb = _sv_show.copy()
+        _sv_tb["기간"] = _sv_tb["dt"].dt.strftime("%Y-%m-%d" if _sv_unit != "월별" else "%Y-%m")
+        _sv_tb["방문 1명당 거래액"] = np.where(
+            _sv_tb["uv"].fillna(0) > 0, _sv_tb["amt"] * 1000 / _sv_tb["uv"], np.nan)
+        _sv_tb = _sv_tb[["기간", "uv", "amt", "방문 1명당 거래액", "n"]]
+        _sv_tb.columns = ["기간", f"회원UV({SITE_UNIT['uv']})", f"거래액({SITE_UNIT['amt']})",
+                          "방문 1명당 거래액", "일수"]
+        table(_sv_tb.iloc[::-1].style.format({
+            f"회원UV({SITE_UNIT['uv']})": "{:,.1f}", f"거래액({SITE_UNIT['amt']})": "{:,.1f}",
+            "방문 1명당 거래액": "{:,.0f}", "일수": "{:,.0f}"}),
+            hide_index=True, width="stretch",
+            dl_name=f"사이트 {_sv_ch} {_sv_dev} {_sv_unit}")
+        st.caption("최근 구간이 위로 오게 뒤집어 놨어요. 엑셀로 받으면 같은 순서예요.")
         glossary()
 
     # ── 페이지 리포트 다운로드 (HTML → 브라우저 인쇄로 PDF) ──
