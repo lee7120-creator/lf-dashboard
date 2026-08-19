@@ -169,6 +169,31 @@ def t_no_notice_when_nothing_hidden():
 
 
 @case
+def t_hour_table_has_total_row():
+    """전년 동요일 비교의 시간대 표에 합계 행이 있어야 한다.
+
+    비율은 시간대 값을 더하면 안 되므로, 합계는 오른쪽 '일자 합산' 막대와 같은
+    '그 날 전체 재계산' 값이어야 한다.
+    """
+    at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    at.session_state["camp_store"] = synth_store(weeks=60)
+    at.run()
+    at = _goto_yoy(at)
+    assert not at.exception, at.exception[0].value
+    tbls = [t.value for t in at.dataframe
+            if "시간" in list(getattr(t.value, "columns", []))]
+    assert tbls, f"시간대 표가 없어요 — {[list(getattr(t.value,'columns',[]))[:3] for t in at.dataframe]}"
+    tv = tbls[0]
+    assert "합계" in set(tv["시간"].astype(str)), f"합계 행이 없어요 — {list(tv['시간'])}"
+    assert str(tv["시간"].iloc[-1]) == "합계", "합계 행은 맨 아래여야 해요"
+    _sc = [c for c in tv.columns if c.endswith("발송")]
+    assert _sc, list(tv.columns)
+    _tot = float(tv[_sc[0]].iloc[-1])
+    _parts = pd.to_numeric(tv[_sc[0]].iloc[:-1], errors="coerce").sum()
+    assert _tot >= _parts - 1, f"발송 합계({_tot})가 시간대 합({_parts})보다 작아요"
+
+
+@case
 def t_label_mode_switches_render():
     """'값 표시' 모드를 바꿔도 시간대 차트가 정상 렌더된다."""
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)

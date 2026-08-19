@@ -6653,6 +6653,17 @@ def main():
                     _diff = _pt("기준일", h) - _pt("전년 동요일", h)
                     row[f"전년비 차이"] = _diff
                 _rows.append(row)
+            # 합계 행 — 비율은 시간대 값을 더하면 안 되니 오른쪽 '일자 합산' 막대와 같은
+            # 값(_daytot)을 쓴다. 그래야 한 화면의 두 합계가 서로 어긋나지 않는다.
+            _sum = {"시간": "합계"}
+            for _k in ["기준일"] + _cmp_sel:
+                _dk = _day_rows.get(_k)
+                _sum[f"{_k} 발송"] = (float(pd.to_numeric(_dk["send"], errors="coerce").sum())
+                                    if _dk is not None and len(_dk) else np.nan)
+                _sum[f"{_k} {_ymet}"] = _tot.get(_k, np.nan)
+            if "전년 동요일" in _cmp_sel:
+                _sum["전년비 차이"] = _tot.get("기준일", np.nan) - _tot.get("전년 동요일", np.nan)
+            _rows.append(_sum)
             _num = st.column_config.NumberColumn
             _cfg = {}
             for _k in ["기준일"] + _cmp_sel:
@@ -6663,7 +6674,11 @@ def main():
             table(pd.DataFrame(_rows), hide_index=True, width="stretch",
                          height=min(38 + 35 * len(_rows), 420), column_config=_cfg)
             st.markdown('<div class="appendix">발송량이 크게 다르면 비율 차이는 타겟 구성 차이일 수 있어요. '
-                        '발송 규모를 같이 보고 판단하세요.</div>', unsafe_allow_html=True)
+                        '발송 규모를 같이 보고 판단하세요.<br><b>합계 행</b>은 오른쪽 '
+                        '「일자 합산」 막대와 같은 값이에요 — 비율은 시간대 값을 더한 게 아니라 '
+                        '<b>그 날 전체를 다시 계산</b>한 값이라, 위 시간대 값들의 합과는 달라요.'
+                        + (' 시간대를 못 읽은 발송도 합계에는 들어가 있어요.' if _bad_hour else "")
+                        + '</div>', unsafe_allow_html=True)
 
         # ── 소재(문구) 비교 — 그날 무엇을 보냈나 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
