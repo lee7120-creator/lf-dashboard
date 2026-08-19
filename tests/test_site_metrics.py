@@ -151,6 +151,50 @@ def t_merge_keeps_other_metric():
 
 
 @case
+def t_append_newer_file_keeps_history():
+    """최신 파일을 올리면 기존 날짜를 지우지 않고 이어붙여야 한다.
+
+    기간이 짧은 새 리포트를 올렸다고 과거가 통째로 사라지면(교체 저장) 2년치가 날아간다.
+    """
+    old = _site_store(days=60)
+    new_k, new = S.parse_site_bytes(synth_site_xlsx("uv", days=10, seed=11), "새로.xlsx")
+    m = S.merge_site_store(old, new)
+    assert m["date"].nunique() >= old["date"].nunique(), \
+        f"과거 날짜가 줄었어요 — {old['date'].nunique()} → {m['date'].nunique()}"
+    assert set(old["date"]) <= set(m["date"]), "옛 날짜가 사라졌어요"
+    # 겹치는 날짜는 새 값이 이긴다
+    key = ["date", "ch", "dev"]
+    _n = new.set_index(key)["uv"]
+    _m = m.set_index(key)["uv"]
+    _both = _n.index.intersection(_m.index)
+    assert len(_both) and np.allclose(_m.loc[_both].values, _n.loc[_both].values), \
+        "겹치는 날짜에 새 값이 안 들어갔어요"
+
+
+@case
+def t_registered_in_storage_and_backup():
+    """다른 데이터와 같은 저장·백업 경로에 등록돼 있어야 한다."""
+    assert S.GS_TITLES.get("site") == "site_store", S.GS_TITLES
+    assert S.SITE_STORE_COLS == ["date", "ch", "dev", "uv", "amt"]
+    src = (ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8")
+    for need in ('"site": load_site_store', '"site": save_site_store',
+                 '"site": SITE_STORE_COLS', '_z.writestr("site.csv"',
+                 'base.startswith("site")'):
+        assert need in src, f"저장·백업 경로에 {need} 가 없어요"
+
+
+@case
+def t_backup_csv_roundtrip():
+    """백업 CSV로 나갔다 들어와도 값이 그대로여야 한다."""
+    d = _site_store(days=30)
+    csv = S.finalize_site(d).to_csv(index=False)
+    back = S.finalize_site(pd.read_csv(io.StringIO(csv), dtype={"date": str}))
+    assert len(back) == len(d), (len(back), len(d))
+    for c in ("uv", "amt"):
+        assert np.allclose(back[c].values, d[c].values, equal_nan=True), c
+
+
+@case
 def t_finalize_recovers_string_roundtrip():
     """구글시트 왕복(전부 문자열)에서도 dtype이 살아나야 한다."""
     d = _site_store(days=10)
