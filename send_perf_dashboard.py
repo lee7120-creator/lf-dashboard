@@ -4734,10 +4734,12 @@ def main():
 
             _wk_c, _wk_p = _wk_sm(ref_ws), _wk_sm(prev_ws)
             _wk_m, _wk_y = _wk_sm(pm_ws), _wk_sm(yo_ws)
-            for _mk in ("uv", "amt"):
+            # 거래액은 위 '거래액' 행이 이미 담당한다 — 분모가 다른 값을 나란히 두면
+            # 어느 쪽을 봐야 할지 헷갈린다. 여기선 회원UV만.
+            for _mk in ("uv",):
                 if not _wr_site[_mk].notna().any():
                     continue
-                _nm = f"앱푸시 {SITE_LABEL[_mk]}({SITE_UNIT[_mk]})"
+                _nm = f"앱푸시 {SITE_LABEL[_mk]}(일평균·{SITE_UNIT[_mk]})"
 
                 def _wfmt(v):
                     return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
@@ -4769,10 +4771,11 @@ def main():
                    "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
                    "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
         if _wk_site_rows:
-            st.markdown('<div class="appendix"><b>앱푸시 행은 사이트 전체 지표</b>라 위 발송 '
-                        '실적과 분모가 달라요 — 합계가 아니라 <b>그 주의 일평균</b>이에요. '
+            st.markdown('<div class="appendix"><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 '
+                        '실적과 분모가 달라요 — 주 합계가 아니라 <b>그 주의 일평균</b>(천명)이에요. '
                         '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
-                        '잡은 값이고요. 회원UV는 천명, 거래액은 백만원 단위예요.</div>',
+                        '잡은 값이고요. 앱푸시 거래액까지 보려면 아래 <b>월 누계(MTD)</b> 표나 '
+                        '「12. 회원UV·거래액」을 보면 돼요.</div>',
                         unsafe_allow_html=True)
 
         # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 저장 백엔드에 영속 ──
@@ -6650,6 +6653,17 @@ def main():
                     _diff = _pt("기준일", h) - _pt("전년 동요일", h)
                     row[f"전년비 차이"] = _diff
                 _rows.append(row)
+            # 합계 행 — 비율은 시간대 값을 더하면 안 되니 오른쪽 '일자 합산' 막대와 같은
+            # 값(_daytot)을 쓴다. 그래야 한 화면의 두 합계가 서로 어긋나지 않는다.
+            _sum = {"시간": "합계"}
+            for _k in ["기준일"] + _cmp_sel:
+                _dk = _day_rows.get(_k)
+                _sum[f"{_k} 발송"] = (float(pd.to_numeric(_dk["send"], errors="coerce").sum())
+                                    if _dk is not None and len(_dk) else np.nan)
+                _sum[f"{_k} {_ymet}"] = _tot.get(_k, np.nan)
+            if "전년 동요일" in _cmp_sel:
+                _sum["전년비 차이"] = _tot.get("기준일", np.nan) - _tot.get("전년 동요일", np.nan)
+            _rows.append(_sum)
             _num = st.column_config.NumberColumn
             _cfg = {}
             for _k in ["기준일"] + _cmp_sel:
@@ -6660,7 +6674,11 @@ def main():
             table(pd.DataFrame(_rows), hide_index=True, width="stretch",
                          height=min(38 + 35 * len(_rows), 420), column_config=_cfg)
             st.markdown('<div class="appendix">발송량이 크게 다르면 비율 차이는 타겟 구성 차이일 수 있어요. '
-                        '발송 규모를 같이 보고 판단하세요.</div>', unsafe_allow_html=True)
+                        '발송 규모를 같이 보고 판단하세요.<br><b>합계 행</b>은 오른쪽 '
+                        '「일자 합산」 막대와 같은 값이에요 — 비율은 시간대 값을 더한 게 아니라 '
+                        '<b>그 날 전체를 다시 계산</b>한 값이라, 위 시간대 값들의 합과는 달라요.'
+                        + (' 시간대를 못 읽은 발송도 합계에는 들어가 있어요.' if _bad_hour else "")
+                        + '</div>', unsafe_allow_html=True)
 
         # ── 소재(문구) 비교 — 그날 무엇을 보냈나 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -9481,10 +9499,21 @@ def main():
             '화면이에요. 2026-08부터 영업 구좌를 줄이고 <b>16시 구좌를 컨틴으로</b> 돌려 인당 '
             '발송건수(피로도)를 낮추려는 구좌라, 아무거나 채우면 목적이 무너져요.<br>'
             '컨틴 실적이 아직 적어서 <b>같은 조건의 과거 이력(평일 16시 슬롯)</b>으로 기준을 '
-            '만들고, 컨틴 건이 쌓이면 그쪽으로 좁혀 보면 돼요.</div>', unsafe_allow_html=True)
+            '만들고, 컨틴 건이 쌓이면 그쪽으로 좁혀 보면 돼요.<br>'
+            f'이 화면은 <b>{POLICY_CHANGE_DATE[:4]}-{POLICY_CHANGE_DATE[4:6]}-'
+            f'{POLICY_CHANGE_DATE[6:]} 이후</b>만 봐요 — 2025년 <b>컨틴전시 A/B</b>(주말 17시)는 '
+            '이름만 같고 성격이 다른 구좌라 섞으면 다른 구좌 성과를 같이 평균 내게 돼요.</div>',
+            unsafe_allow_html=True)
 
         _kt = _eff_frame()
         _kt = _kt[_kt["dt"].notna()] if "dt" in _kt.columns else _kt
+        # 2025년 '컨틴전시 A/B'(주말 17시)는 이름만 같고 성격이 다른 구좌다. 지금 보려는 건
+        # 2026-08에 새로 만든 평일 16시 구좌에 쌓이는 실적이라, 이 화면 전체를 정책 변경일
+        # 이후로 자른다. (옛 컨틴을 섞으면 표본은 늘지만 다른 구좌 성과를 같이 평균 낸다)
+        _kt_n0 = len(_kt)
+        if len(_kt):
+            _kt = _kt[_kt["date"].astype(str) >= POLICY_CHANGE_DATE]
+        _kt_cut = _kt_n0 - len(_kt)
         _c1, _c2 = st.columns([2, 1.4])
         with _c1:
             _scope = st.radio("기준 표본", ["평일 16시 슬롯 전체", "컨틴 배정분만", "전체 발송"],
@@ -9504,10 +9533,10 @@ def main():
         _c3, _c4 = st.columns([1, 1])
         with _c3:
             _recent = st.selectbox(
-                "기간", ["최근 12주", "최근 26주", "최근 52주", "2026-08 정책 변경 이후", "전체"],
+                "기간", ["2026-08 이후 전체", "최근 12주", "최근 26주"],
                 index=0, key="kt_recent",
-                help="매주 보는 화면이라 기본은 최근 12주예요. '정책 변경 이후'는 새 운영 "
-                     "기준만 보지만 아직 표본이 얇아요.")
+                help="화면 전체가 2026-08-01 이후예요. 실적이 더 쌓이면 최근 12·26주로 "
+                     "좁혀 보면 돼요.")
         with _c4:
             _minn = st.number_input("최소 표본(건)", value=5, min_value=1, step=1, key="kt_minn",
                                     help="이보다 적은 항목은 우연에 흔들려서 숨겨요.")
@@ -9541,9 +9570,7 @@ def main():
         _mfmt = "{:.2f}%" if _munit == "%" else "{:,.0f}"
         _mtxt = (lambda v: f"{v:.2f}%") if _munit == "%" else (lambda v: f"{v:,.0f}")
 
-        if _recent.startswith("2026-08") and len(_kt):
-            _kt = _kt[_kt["date"].astype(str) >= POLICY_CHANGE_DATE]
-        elif _recent != "전체" and len(_kt):
+        if (not _recent.startswith("2026-08")) and len(_kt):
             _wk = int(re.search(r"\d+", _recent).group())
             _kt = _kt[_kt["dt"] >= _kt["dt"].max() - pd.Timedelta(weeks=_wk)]
         if _scope == "평일 16시 슬롯 전체":
@@ -9555,6 +9582,97 @@ def main():
         else:
             _base = _kt
             _scope_txt = "전체 발송"
+
+        # ── ① 컨틴 구좌 vs 영업 세일즈 푸시 ──
+        # 컨틴 구좌를 만든 목적이 '영업 요청 푸시를 줄이고 그 자리를 대체하는 것'이라,
+        # 판단 기준도 영업 세일즈 푸시와의 비교여야 한다. 카테고리 순위만 봐서는
+        # '컨틴에 뭘 넣을까'는 알아도 '컨틴이 나은가'는 알 수 없다.
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ① 컨틴 구좌 vs 영업 세일즈 푸시")
+
+        def _kt_is_sales(v):
+            """영업 사업부 요청분 — BPU 칸이 '1BPU'~'4BPU' 꼴인 발송."""
+            return bool(re.match(r"^\s*\d+\s*BPU\s*$", str(v), re.I))
+
+        _kt_sameslot = st.checkbox("같은 슬롯(평일 16시)으로 맞춰 비교", value=False,
+                                   key="kt_sameslot",
+                                   help="컨틴은 16시 구좌라 시간대가 고정이에요. 안 맞추면 "
+                                        "'컨틴이 나은지'가 아니라 '16시가 나은지'를 보게 돼요.")
+        _kt_cmp = _kt.copy()
+        if _kt_sameslot:
+            _kt_cmp = _kt_cmp[(_kt_cmp["hour"] == 1600) & (~_kt_cmp["dow_k"].isin(["토", "일"]))]
+        _kt_A = _kt_cmp[_kt_cmp["_stype"] == "컨틴"]
+        _kt_B = _kt_cmp[_kt_cmp["bpu"].map(_kt_is_sales) & (_kt_cmp["_stype"] != "컨틴")]
+        if _kt_sameslot and (not len(_kt_A) or not len(_kt_B)):
+            st.warning(f"평일 16시로 맞추면 컨틴 {len(_kt_A)}건 · 영업 {len(_kt_B)}건이라 "
+                       "비교가 안 돼요. 체크를 풀면 전체 슬롯으로 봐요.")
+        elif not len(_kt_A) or not len(_kt_B):
+            st.info(f"컨틴 {len(_kt_A)}건 · 영업 세일즈 푸시 {len(_kt_B)}건이에요. "
+                    "이 화면은 2026-08-01 이후만 보니까, 새 구좌 실적이 더 쌓여야 비교가 돼요.")
+        else:
+            _kt_ga, _kt_gb = _eff_agg(_kt_A), _eff_agg(_kt_B)
+            _KT_CMP = [("CTR", "infl_cr", "%"), ("주문CR", "ord_cr", "%"),
+                       ("RPS", "rps", "원"), ("객단가", "aov", "원")]
+            _kt_rows = []
+            for _nm, _cc, _un in _KT_CMP:
+                _va, _vb = _kt_ga[_nm], _kt_gb[_nm]
+                _dd = ((_va - _vb) / _vb * 100) if (pd.notna(_vb) and _vb) else np.nan
+                _kt_rows.append({
+                    "지표": _nm,
+                    "컨틴": (f"{_va:.2f}%" if _un == "%" else f"{_va:,.0f}원")
+                            if pd.notna(_va) else "–",
+                    "영업 세일즈 푸시": (f"{_vb:.2f}%" if _un == "%" else f"{_vb:,.0f}원")
+                                  if pd.notna(_vb) else "–",
+                    "차이": ("–" if pd.isna(_dd)
+                           else (f"△{abs(_dd):.1f}%" if _dd < 0 else f"+{_dd:.1f}%")),
+                    "유의성": sig_label(welch(_kt_A[_cc].dropna(), _kt_B[_cc].dropna()))})
+            _kt_k = st.columns(3)
+            _kt_k[0].metric("컨틴", f"{_kt_ga['건수']:,}건",
+                            f"발송 {_kt_ga['발송']/1e6:,.1f}백만", delta_color="off")
+            _kt_k[1].metric("영업 세일즈 푸시", f"{_kt_gb['건수']:,}건",
+                            f"발송 {_kt_gb['발송']/1e6:,.1f}백만", delta_color="off")
+            _kt_pick = [r for r in _kt_rows if r["지표"] == ("CTR" if _munit == "%" else "RPS")]
+            _kt_k[2].metric(f"{_kt_pick[0]['지표']} 차이" if _kt_pick else "차이",
+                            _kt_pick[0]["차이"] if _kt_pick else "–",
+                            help="컨틴이 영업 세일즈 푸시보다 얼마나 높은지예요.")
+
+            _kt_bar = go.Figure()
+            _kt_y = [_kt_ga[n] for n, _, _ in _KT_CMP]
+            _kt_y2 = [_kt_gb[n] for n, _, _ in _KT_CMP]
+            # 비율(%)과 금액(원)은 스케일이 달라 한 축에 못 놓는다 — 영업을 100으로 둔 지수로.
+            _kt_idx = [(a / b * 100) if (pd.notna(b) and b) else np.nan
+                       for a, b in zip(_kt_y, _kt_y2)]
+            _kt_bar.add_trace(go.Bar(
+                x=[n for n, _, _ in _KT_CMP], y=_kt_idx, marker_color=PALETTE["teal"],
+                text=[f"{v:,.0f}" if pd.notna(v) else "–" for v in _kt_idx],
+                textposition="outside"))
+            _kt_bar.add_hline(y=100, line_dash="dot", line_color="#94a3b8")
+            _kt_bar.update_layout(**base_layout(
+                h=320, title="영업 세일즈 푸시를 100으로 뒀을 때 컨틴 (100 위면 컨틴이 나음)"))
+            st.plotly_chart(_kt_bar, width="stretch")
+            table(pd.DataFrame(_kt_rows).style.map(
+                lambda v: ("color:#dc2626;font-weight:600" if str(v).startswith("△")
+                           else "color:#16a34a;font-weight:600" if str(v).startswith("+")
+                           else ""), subset=["차이"]),
+                hide_index=True, width="stretch", dl_name="컨틴 vs 영업 세일즈 푸시")
+            _kt_min = min(_kt_ga["건수"], _kt_gb["건수"])
+            if _kt_min < 20:
+                st.warning(f"적은 쪽 표본이 {_kt_min:,}건뿐이에요. 방향만 참고하고 "
+                           "유의성 칸이 '유의하지 않음'이면 결론 내지 마세요.")
+            st.markdown('<div class="appendix">'
+                        '<b>영업 세일즈 푸시</b> = BPU 칸이 <b>1BPU~4BPU</b>인 발송(컨틴 제외)이에요. '
+                        '마케팅·편성·브랜드컨텐츠 요청분은 성격이 달라 뺐어요.<br>'
+                        + ('시간대를 맞춰 비교하고 있어요.' if _kt_sameslot else
+                           '<b>시간대가 안 맞춰져 있어요</b> — 컨틴은 16시 고정인데 영업 푸시는 '
+                           '여러 슬롯이라, 차이의 일부는 시간대 효과예요. 위 체크를 켜면 '
+                           '평일 16시끼리만 비교해요.')
+                        + f'<br>표본은 {POLICY_CHANGE_DATE[:4]}-{POLICY_CHANGE_DATE[4:6]}-'
+                          f'{POLICY_CHANGE_DATE[6:]} 이후만이에요 — 2025년 컨틴전시(주말 17시)는 '
+                          '아예 안 들어와요.</div>',
+                        unsafe_allow_html=True)
+        if _kt_cut:
+            st.caption(f"2026-08-01 이전 발송 {_kt_cut:,}건은 이 화면에서 뺐어요 "
+                       "(2025년 컨틴전시 포함).")
 
         if not len(_base):
             st.info(f"{_scope_txt}에 해당하는 발송이 없어요. 기준 표본이나 기간을 넓혀 보세요.")
@@ -9568,58 +9686,6 @@ def main():
             if _B["건수"] < 20:
                 st.warning(f"표본이 {_B['건수']}건뿐이라 순위가 크게 흔들려요. "
                            "기간을 넓히거나 기준 표본을 '평일 16시 슬롯 전체'로 바꿔 보세요.")
-
-            # ── ① 무엇을 넣으면 잘 됐나 — 카테고리 ──
-            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown(f"##### ① 어떤 카테고리가 잘 됐나 — {_scope_txt} · {_mlab}")
-            _cg = (_base.groupby("cat").agg(건수=("af", "size"), send=("send", "sum"),
-                                            uv=("uv", "sum"), oc=("oc", "sum"),
-                                            amt=("amt", "sum")).reset_index())
-            _cg = _cg[_cg["건수"] >= _minn]
-            if len(_cg):
-                _cg["CTR"] = np.where(_cg["send"] > 0, _cg["uv"] / _cg["send"] * 100, np.nan)
-                _cg["주문CR"] = np.where(_cg["uv"] > 0, _cg["oc"] / _cg["uv"] * 100, np.nan)
-                _cg["RPS"] = np.where(_cg["send"] > 0, _cg["amt"] / _cg["send"], np.nan)
-                _cg["객단가"] = np.where(_cg["oc"] > 0, _cg["amt"] / _cg["oc"], np.nan)
-                _cg[_mlab] = [_kt_metric(_r) for _, _r in _cg.iterrows()]
-                # 소표본 요행이 1등을 먹지 않도록 정렬은 보정 점수로 (표시 값은 원값)
-                if _mcol == "amt_pc":
-                    # rank_adjusted의 금액 지표와 같은 수축: (분자 + k·전체평균)/(분모 + k)
-                    _num = pd.to_numeric(_cg["amt"], errors="coerce").fillna(0).clip(lower=0)
-                    _den = pd.to_numeric(_cg["건수"], errors="coerce").fillna(0).clip(lower=0)
-                    _gd = _den.sum()
-                    _pri = (_num.sum() / _gd) if _gd else 0.0
-                    _pos = _den[_den > 0]
-                    _kk = float(np.median(_pos)) if len(_pos) else 1.0
-                    _cg["_rk"] = (_num + _kk * _pri) / (_den + _kk)
-                else:
-                    _cg["_rk"] = rank_adjusted(_cg, _mcol, ascending=False)
-                _cg = _cg.sort_values("_rk", ascending=False)
-                _fc = go.Figure(go.Bar(
-                    x=_cg["cat"], y=_cg[_mlab], marker_color=_mcolor,
-                    text=[_mtxt(v) if np.isfinite(v) else "–" for v in _cg[_mlab]],
-                    textposition="outside",
-                    customdata=np.stack([_cg["건수"], _cg["CTR"], _cg["RPS"]], axis=-1),
-                    hovertemplate="%{x}<br>" + _mlab + " %{y:,.2f}" + (_munit if _munit == "%" else "원")
-                                  + "<br>%{customdata[0]}건 · CTR %{customdata[1]:.2f}%"
-                                  " · RPS %{customdata[2]:,.0f}원<extra></extra>"))
-                _fc.update_layout(**base_layout(
-                    h=320, ysuffix=("%" if _munit == "%" else ""),
-                    title=f"카테고리별 {_mlab} — 표본 보정 순"))
-                st.plotly_chart(_fc, width="stretch")
-                table(_cg[["cat", "건수", "CTR", "주문CR", "RPS", "객단가"]]
-                      .rename(columns={"cat": "카테고리"}).style.format({
-                          "건수": "{:,.0f}", "CTR": "{:.2f}%", "주문CR": "{:.2f}%",
-                          "RPS": "{:,.0f}", "객단가": "{:,.0f}"}),
-                      hide_index=True, width="stretch", dl_name=f"컨틴 구좌 카테고리별 ({_scope_txt})")
-                st.caption(f"{_minn}건 미만 카테고리는 숨겼어요. 표에는 네 지표를 다 넣었고, "
-                           f"차트와 순위만 **{_mlab}** 기준이에요. 정렬은 표본 보정 점수라 "
-                           "표시 값 순서와 다를 수 있어요 — 적은 표본의 요행을 밀어내기 위해서예요."
-                           + ("  캠페인 건당 평균이라 '한 번 태우면 평균 얼마'로 읽으면 돼요. "
-                              "발송 모수가 큰 카테고리가 유리하니 RPS와 같이 보세요."
-                              if _mcol == "amt_pc" else ""))
-            else:
-                st.caption(f"{_minn}건 이상인 카테고리가 없어요. 최소 표본을 낮춰 보세요.")
 
             # ── ② 소구 속성 리프트 ──
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -9676,17 +9742,13 @@ def main():
             else:
                 st.caption(f"{_minn}건 이상인 소구 속성이 없어요.")
 
-            # ── ③ 추천 요약 ──
-            if len(_cg) or _tr:
-                _top_c = list(_cg["cat"].head(3)) if len(_cg) else []
+            # ── 추천 요약 ──
+            if _tr:
                 _top_t = list(pd.DataFrame(_tr).sort_values(_lift_lab, ascending=False)
-                              ["소구 속성"].head(3)) if _tr else []
+                              ["소구 속성"].head(3))
                 st.markdown(
                     '<div class="appendix"><b>이번 주 컨틴 구좌 요청이 오면</b><br>'
-                    + (f'· 카테고리는 <b>{" · ".join(_top_c)}</b>가 이 슬롯에서 가장 잘 나왔어요<br>'
-                       if _top_c else "")
-                    + (f'· 소구는 <b>{" · ".join(_top_t)}</b>를 얹은 문구가 반응이 좋았어요<br>'
-                       if _top_t else "")
+                    + f'· 소구는 <b>{" · ".join(_top_t)}</b>를 얹은 문구가 반응이 좋았어요<br>'
                     + f'· 판단 지표는 <b>{_mlab}</b>, 기준 표본은 {_scope_txt} '
                     f'{_B["건수"]:,}건 ({_recent})이에요. 지표를 바꾸면 추천도 바뀌니 '
                     '노리는 목적에 맞춰 두세 개 지표로 교차 확인해 보세요.</div>',

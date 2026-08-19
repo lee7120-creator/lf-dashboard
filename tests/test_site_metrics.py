@@ -299,7 +299,7 @@ def t_weekly_mtd_rows_appear_with_data():
     for t in tbls:
         names |= set(t.value["지표"].astype(str))
     for want in ("앱푸시 회원UV(천명)", "앱푸시 거래액(백만원)"):
-        assert want in names, f"{want} 행이 없어요 — {sorted(names)}"
+        assert want in names, f"MTD에 {want} 행이 없어요 — {sorted(names)}"
     for nope in ("앱 회원UV(천명)", "PUSH 회원UV(천명)"):
         assert nope not in names, f"채널·디바이스를 따로 본 행이 남았어요 — {nope}"
 
@@ -316,8 +316,10 @@ def t_weekly_kpi_table_has_apppush_rows():
             break
     assert hit is not None, "주요 지표 현황 표를 못 찾았어요"
     names = set(hit["지표"].astype(str))
-    for want in ("앱푸시 회원UV(천명)", "앱푸시 거래액(백만원)"):
-        assert want in names, f"{want} 행이 없어요 — {sorted(names)}"
+    assert "앱푸시 회원UV(일평균·천명)" in names, f"앱푸시 회원UV 행이 없어요 — {sorted(names)}"
+    # 거래액은 위 '거래액' 행이 이미 담당한다 — 분모가 다른 값을 겹쳐 두지 않는다
+    assert not [n for n in names if n.startswith("앱푸시 거래액")], \
+        f"주간 표에 앱푸시 거래액이 남았어요 — {sorted(names)}"
     # 발송 실적 행과 같은 표에 있어야 한다(따로 떨어진 표면 보고서에서 안 붙는다)
     assert "발송" in names and "CTR" in names, sorted(names)
 
