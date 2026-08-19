@@ -206,15 +206,21 @@ def t_channel_and_device_switch():
 
 @case
 def t_weekly_mtd_rows_appear_with_data():
-    """사이트 데이터가 있으면 주간보고 MTD 표에 앱·PUSH 행이 붙는다."""
+    """사이트 데이터가 있으면 주간보고 MTD 표에 앱푸시 행이 붙는다.
+
+    앱과 PUSH를 따로 보면 '앱으로 들어온 광고 유입'·'PC로 받은 푸시'까지 섞인다 —
+    보려는 건 두 축의 교집합(PUSH 채널 × App 디바이스)이다.
+    """
     at = _open("0. 주간보고", site=_site_store(days=200))
     tbls = [t for t in at.dataframe if "지표" in list(getattr(t.value, "columns", []))]
     assert tbls, "MTD 표를 찾지 못했어요"
     names = set()
     for t in tbls:
         names |= set(t.value["지표"].astype(str))
-    for want in ("앱 회원UV(천명)", "앱 거래액(백만원)", "PUSH 회원UV(천명)", "PUSH 거래액(백만원)"):
+    for want in ("앱푸시 회원UV(천명)", "앱푸시 거래액(백만원)"):
         assert want in names, f"{want} 행이 없어요 — {sorted(names)}"
+    for nope in ("앱 회원UV(천명)", "PUSH 회원UV(천명)"):
+        assert nope not in names, f"채널·디바이스를 따로 본 행이 남았어요 — {nope}"
 
 
 @case
@@ -225,7 +231,7 @@ def t_weekly_mtd_rows_vanish_without_data():
     for t in at.dataframe:
         if "지표" in list(getattr(t.value, "columns", [])):
             names |= set(t.value["지표"].astype(str))
-    assert not [n for n in names if n.startswith(("앱 ", "PUSH "))], \
+    assert not [n for n in names if n.startswith("앱푸시")], \
         f"데이터가 없는데 사이트 행이 남았어요 — {sorted(names)}"
     assert any("올리면" in t and "월 평균" in t for t in _texts(at)), "안내 문구가 없어요"
 
@@ -239,21 +245,21 @@ def t_weekly_mtd_value_is_daily_mean():
     row, curcol = None, None
     for t in tbls:
         v = t.value
-        hit = v[v["지표"].astype(str) == "앱 회원UV(천명)"]
+        hit = v[v["지표"].astype(str) == "앱푸시 회원UV(천명)"]
         if len(hit):
             row = hit.iloc[0]
             curcol = [c for c in v.columns if str(c).startswith("당월 MTD")][0]
             break
-    assert row is not None, "앱 회원UV 행을 못 찾았어요"
+    assert row is not None, "앱푸시 회원UV 행을 못 찾았어요"
     shown = float(str(row[curcol]).replace(",", ""))
     # 화면이 쓴 것과 같은 창으로 직접 계산해 맞춰 본다
     import re
     m = re.search(r"\((\d+)/(\d+)~(\d+)/(\d+)\)", str(curcol))
     assert m, curcol
-    _y = S.site_pick(site, "Total", "App")["dt"].max().year
+    _y = S.site_pick(site, "PUSH", "App")["dt"].max().year
     d0 = pd.Timestamp(_y, int(m.group(1)), int(m.group(2)))
     d1 = pd.Timestamp(_y, int(m.group(3)), int(m.group(4)))
-    want = S.site_mean(site, "Total", "App", d0, d1)["uv"]
+    want = S.site_mean(site, "PUSH", "App", d0, d1)["uv"]
     assert abs(shown - want) < 0.15, f"화면 {shown} vs 계산 {want}"
 
 

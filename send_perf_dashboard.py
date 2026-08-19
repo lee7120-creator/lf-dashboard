@@ -5032,7 +5032,9 @@ def main():
         _wr_site = finalize_site(st.session_state.get("site_store_df"))
         _site_rows = 0
         if len(_wr_site):
-            _SITE_MTD = [("앱", "Total", "App"), ("PUSH", "PUSH", "Total")]
+            # 앱과 PUSH를 따로 보면 '앱으로 들어온 광고 유입'·'PC로 받은 푸시'까지 섞인다.
+            # 보려는 건 앱푸시를 눌러 앱으로 들어온 사람이라 두 축의 교집합으로 잡는다.
+            _SITE_MTD = [("앱푸시", "PUSH", "App")]
             for _slab, _sch, _sdev in _SITE_MTD:
                 _c = site_mean(_wr_site, _sch, _sdev, m_first, ref_end)
                 _p = site_mean(_wr_site, _sch, _sdev, pm0, pm1)
@@ -5058,14 +5060,16 @@ def main():
         st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
-                    + ('<br><b>앱·PUSH 행은 사이트 전체 지표</b>라 위 발송 실적과 분모가 달라요 '
-                       '— 누계가 아니라 <b>그 기간의 일평균</b>이에요. 회원UV는 천명, 거래액은 '
-                       '백만원 단위고요. 자세한 추이는 「12. 회원UV·거래액」에서 봐요.'
+                    + ('<br><b>앱푸시 행은 사이트 전체 지표</b>라 위 발송 실적과 분모가 달라요 '
+                       '— 누계가 아니라 <b>그 기간의 일평균</b>이에요. <b>PUSH 채널 × App '
+                       '디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 잡은 값이고요. '
+                       '회원UV는 천명, 거래액은 백만원 단위예요. 채널·디바이스를 따로 떼서 보려면 '
+                       '「12. 회원UV·거래액」에서 골라 보면 돼요.'
                        if _site_rows else '') + '</div>',
                     unsafe_allow_html=True)
         if not _site_rows:
-            st.caption("회원UV·거래액 리포트를 올리면 앱 디바이스·PUSH 채널의 월 평균도 이 표에 "
-                       "같이 나와요.")
+            st.caption("회원UV·거래액 리포트를 올리면 앱푸시(PUSH 채널 × App 디바이스)의 "
+                       "월 평균도 이 표에 같이 나와요.")
 
         # ── 📱 앱푸시 수신동의 주간 요약 (주간보고용 연동) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
