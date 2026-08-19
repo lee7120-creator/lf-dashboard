@@ -935,6 +935,11 @@ SITE_STORE_COLS = ["date", "ch", "dev", "uv", "amt"]
 # 원본 단위는 회원UV=명, 거래액=천원. 화면 표기는 회원UV 천명 · 거래액 백만원이라 둘 다 ÷1000.
 # (실파일 기준 Total 일평균 UV 25.2만명 · 거래액 9.8억원 → 방문자 1명당 3,880원으로 앞뒤가 맞음)
 SITE_DIV = 1000.0
+# 화면 기본 조회 시작일. 파일에는 2024년치도 들어 있지만 평소 보는 건 2025년 이후라
+# 기본을 여기로 잡는다. 더 과거는 기간을 직접 넓히면 그대로 보인다(데이터는 안 지운다).
+SITE_DEFAULT_FROM = datetime.date(2025, 1, 1)
+# 채널 패널 기본 선택 — 8개를 다 켜면 패널이 잘아져 모양이 안 읽힌다. 평소 보는 세 개만.
+SITE_DEFAULT_PANELS = ["Total", "직접", "PUSH"]
 SITE_UNIT = {"uv": "천명", "amt": "백만원"}
 SITE_LABEL = {"uv": "회원UV", "amt": "거래액"}
 
@@ -4713,6 +4718,38 @@ def main():
                          col_pm: _fmt(met, pm_w[met]),
                          "전월비": _dlt_sig(met, cur_w, pm_w),
                          col_yoy: _fmt(met, yv), "전년비": _dlt_sig(met, cur_w, yoy_w)})
+
+        # ── 앱푸시(PUSH 채널 × App 디바이스) — 사이트 데이터가 있을 때만 같은 표에 붙인다.
+        # 발송 실적과 분모가 달라 합계로 못 섞으니 '주 일평균'으로 나란히 놓는다.
+        # 부분 주면 위 지표와 같은 동요일 누계 창(_elapsed)을 그대로 쓴다.
+        _wr_site = finalize_site(st.session_state.get("site_store_df"))
+        _wk_site_rows = 0
+        if len(_wr_site):
+            def _wk_sm(ws):
+                if ws is None:
+                    return {"uv": np.nan, "amt": np.nan, "days": 0}
+                _w = pd.Timestamp(ws)
+                return site_mean(_wr_site, "PUSH", "App", _w,
+                                 _w + pd.Timedelta(days=_elapsed))
+
+            _wk_c, _wk_p = _wk_sm(ref_ws), _wk_sm(prev_ws)
+            _wk_m, _wk_y = _wk_sm(pm_ws), _wk_sm(yo_ws)
+            for _mk in ("uv", "amt"):
+                if not _wr_site[_mk].notna().any():
+                    continue
+                _nm = f"앱푸시 {SITE_LABEL[_mk]}({SITE_UNIT[_mk]})"
+
+                def _wfmt(v):
+                    return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
+
+                rows.append({"지표": _nm,
+                             col_prev: _wfmt(_wk_p[_mk]), col_cur: _wfmt(_wk_c[_mk]),
+                             "전주비": _dlt(_nm, _wk_c[_mk], _wk_p[_mk]),
+                             col_pm: _wfmt(_wk_m[_mk]),
+                             "전월비": _dlt(_nm, _wk_c[_mk], _wk_m[_mk]),
+                             col_yoy: _wfmt(_wk_y[_mk]),
+                             "전년비": _dlt(_nm, _wk_c[_mk], _wk_y[_mk])})
+                _wk_site_rows += 1
         wr_tbl = pd.DataFrame(rows)
 
         def _clr(v):
@@ -4723,12 +4760,20 @@ def main():
                 return "color:#dc2626;font-weight:600"
             return ""
         table(wr_tbl.style.map(_clr, subset=["전주비", "전월비", "전년비"]),
-                     hide_index=True, width="stretch", height=38 + 35 * len(wr_tbl), dl_name="주요 지표 현황")
+                     hide_index=True, width="stretch", height=38 + 35 * len(wr_tbl),
+                     column_config={"지표": st.column_config.Column(width="medium")},
+                     dl_name="주요 지표 현황")
         st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
                    "전월비는 전월 동주(기준주의 정확히 4주 전 주)와 비교해요. "
                    "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
                    "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
+        if _wk_site_rows:
+            st.markdown('<div class="appendix"><b>앱푸시 행은 사이트 전체 지표</b>라 위 발송 '
+                        '실적과 분모가 달라요 — 합계가 아니라 <b>그 주의 일평균</b>이에요. '
+                        '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
+                        '잡은 값이고요. 회원UV는 천명, 거래액은 백만원 단위예요.</div>',
+                        unsafe_allow_html=True)
 
         # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 저장 백엔드에 영속 ──
         # 구글시트(설정 시) 또는 로컬 CSV에 {key:text}를 저장 → 세션이 끊겨도 유지된다.
@@ -5029,7 +5074,6 @@ def main():
                          "전년비": _dlt_sig(met, cur_mtd, yoy_mtd)})
         # ── 사이트 지표(앱 디바이스 · PUSH 채널) — 있을 때만 같은 표에 붙인다 ──
         # 발송 실적과 분모가 달라 합계로 못 섞는다. '월 평균(일평균)'으로 나란히 놓는다.
-        _wr_site = finalize_site(st.session_state.get("site_store_df"))
         _site_rows = 0
         if len(_wr_site):
             # 앱과 PUSH를 따로 보면 '앱으로 들어온 광고 유입'·'PC로 받은 푸시'까지 섞인다.
@@ -5056,7 +5100,9 @@ def main():
                     _site_rows += 1
 
         table(pd.DataFrame(rows).style.map(_clr, subset=["전월비", "전년비"]),
-                     hide_index=True, width="stretch", height=38 + 35 * len(rows), dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
+                     hide_index=True, width="stretch", height=38 + 35 * len(rows),
+                     column_config={"지표": st.column_config.Column(width="medium")},
+                     dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
         st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
@@ -10012,29 +10058,35 @@ def main():
         # 120일만 나와서 "데이터가 잘렸다"로 보였다 — 기본값은 전체 기간이다.
         _sv_dts = pd.to_datetime(_sv_all["date"], format="%Y%m%d", errors="coerce").dropna()
         _sv_lo0, _sv_hi0 = _sv_dts.min().date(), _sv_dts.max().date()
-        _sv_span = (_sv_lo0, _sv_hi0)
+        # 기본은 2025년부터. 고를 수 있는 범위(min_value)는 데이터 전체 그대로라
+        # 2024년을 보려면 시작일만 당기면 된다.
+        _sv_dlo = max(_sv_lo0, SITE_DEFAULT_FROM) if SITE_DEFAULT_FROM < _sv_hi0 else _sv_lo0
+        _sv_def = (_sv_dlo, _sv_hi0)
+        _sv_span = _sv_def
         if _sv_lo0 < _sv_hi0:
             # key 위젯은 value=가 최초 1회만 먹는다 — 새 파일로 범위가 넓어져도 옛 범위를
             # 계속 써서 새 날짜가 통째로 사라진다(사이드바 기간 필터와 같은 처리).
+            # 비교 기준은 '직전 기본값' — 손 안 댄 필터만 새 기본값으로 따라가게 한다.
             _sv_prev = st.session_state.get("_sv_span_seen")
             _sv_cur = st.session_state.get("sv_span")
-            if _sv_prev != _sv_span:
+            if _sv_prev != _sv_def:
                 if _sv_cur is None or (isinstance(_sv_cur, (tuple, list))
                                        and tuple(_sv_cur) == _sv_prev):
-                    st.session_state["sv_span"] = _sv_span
+                    st.session_state["sv_span"] = _sv_def
                 elif isinstance(_sv_cur, (tuple, list)) and len(_sv_cur) == 2:
                     st.session_state["sv_span"] = tuple(min(max(d, _sv_lo0), _sv_hi0)
                                                         for d in _sv_cur)
-                st.session_state["_sv_span_seen"] = _sv_span
-            _skw = {} if "sv_span" in st.session_state else {"value": _sv_span}
+                st.session_state["_sv_span_seen"] = _sv_def
+            _skw = {} if "sv_span" in st.session_state else {"value": _sv_def}
             _sv_sel = st.date_input("기간", min_value=_sv_lo0, max_value=_sv_hi0,
                                     key="sv_span", **_skw,
-                                    help="기본은 올린 데이터 전체예요. 좁히면 아래 블록이 "
-                                         "전부 그 기간만 봐요.")
+                                    help=f"기본은 {SITE_DEFAULT_FROM:%Y년 %-m월}부터예요. "
+                                         f"{_sv_lo0:%Y-%m-%d}까지 데이터가 있으니 시작일을 "
+                                         "당기면 더 과거도 보여요.")
             if isinstance(_sv_sel, (tuple, list)) and len(_sv_sel) == 2:
                 _sv_span = (_sv_sel[0], _sv_sel[1])
             else:
-                st.caption("종료일까지 골라야 적용돼요. 지금은 전체 기간으로 보고 있어요.")
+                st.caption("종료일까지 골라야 적용돼요. 지금은 기본 기간으로 보고 있어요.")
         _sv_w0, _sv_w1 = pd.Timestamp(_sv_span[0]), pd.Timestamp(_sv_span[1])
 
 
@@ -10133,7 +10185,10 @@ def main():
         st.markdown(f"##### ② 채널별 {esc(_sv_mlab)} — 전년 대비")
         _sv_c2 = st.columns([2.4, 1, 1])
         with _sv_c2[0]:
-            _sv_pick = st.multiselect("볼 채널", _sv_chs, default=_sv_chs, key="sv_panels")
+            _sv_dfp = [c for c in SITE_DEFAULT_PANELS if c in _sv_chs] or _sv_chs
+            _sv_pick = st.multiselect("볼 채널", _sv_chs, default=_sv_dfp, key="sv_panels",
+                                      help="기본은 Total·직접·PUSH예요. 다른 채널도 골라서 "
+                                           "같이 볼 수 있어요.")
         with _sv_c2[1]:
             _sv_yrs = st.selectbox("비교", ["전년까지", "전전년까지", "안 함"], key="sv_yrs",
                                    help="같은 시점의 작년·재작년을 겹쳐 그려요. "
@@ -10216,17 +10271,23 @@ def main():
                     out[_d] = float(_m.sum())
             return out
 
-        _sv_now = _sv_share(_sv_w0, _sv_w1)
-        _sv_yb = _sv_back([_sv_w0, _sv_w1], 1)
-        _sv_ago = _sv_share(_sv_yb[0], _sv_yb[1])
+        # 비중은 연 단위로 본다 — 기간을 반년으로 잡아도 '올해 vs 전년'이 궁금한 자리다.
+        # 전년은 같은 날짜까지만 잘라(YTD) 계절성이 섞이지 않게 한다.
+        _sv_yr = _sv_w1.year
+        _sv_a0, _sv_a1 = pd.Timestamp(_sv_yr, 1, 1), _sv_w1
+        _sv_b1 = _sv_w1 - pd.DateOffset(years=1)
+        _sv_b0 = pd.Timestamp(_sv_yr - 1, 1, 1)
+        _sv_now = _sv_share(_sv_a0, _sv_a1)
+        _sv_ago = _sv_share(_sv_b0, _sv_b1)
         if not _sv_now or sum(_sv_now.values()) <= 0:
             st.info("이 채널에는 디바이스별 데이터가 없어요.")
         else:
             _SV_DC = {"App": PALETTE["blue"], "Mobile Web": PALETTE["teal"],
                       "PC Web": PALETTE["amber"]}
-            _sv_pies = [("지금", _sv_now, f"{_sv_w0:%y/%m/%d}~{_sv_w1:%y/%m/%d}")]
+            _sv_pies = [(f"{_sv_yr}년", _sv_now, f"1/1~{_sv_a1.month}/{_sv_a1.day}")]
             if _sv_ago and sum(_sv_ago.values()) > 0:
-                _sv_pies.append(("전년 동기", _sv_ago, f"{_sv_yb[0]:%y/%m/%d}~{_sv_yb[1]:%y/%m/%d}"))
+                _sv_pies.append((f"{_sv_yr - 1}년", _sv_ago,
+                                 f"1/1~{_sv_b1.month}/{_sv_b1.day}"))
             _pc = st.columns(len(_sv_pies))
             for _col, (_plab, _pv, _prng) in zip(_pc, _sv_pies):
                 _fig = go.Figure(go.Pie(
@@ -10238,7 +10299,7 @@ def main():
                 _pl.pop("xaxis", None); _pl.pop("yaxis", None)
                 _fig.update_layout(**_pl)
                 _col.plotly_chart(_fig, width="stretch")
-            if _sv_ago and sum(_sv_ago.values()) > 0:
+            if len(_sv_pies) > 1:
                 _tn, _ta = sum(_sv_now.values()), sum(_sv_ago.values())
                 _sh = []
                 for _d in _sv_pdev:
@@ -10247,11 +10308,14 @@ def main():
                     _dd = _sv_now[_d] / _tn * 100 - _sv_ago[_d] / _ta * 100
                     _sh.append(f"{_d} {_dd:+.1f}%p")
                 if _sh:
-                    st.markdown('<div class="appendix">전년 같은 기간 대비 비중 변화 — '
+                    st.markdown(f'<div class="appendix">{_sv_yr - 1}년 같은 기간 대비 비중 변화 — '
                                 + " · ".join(esc(x) for x in _sh) + '</div>',
                                 unsafe_allow_html=True)
-            st.caption("합계 기준 비중이에요. 'Total' 행은 유니크 방문자라 App+Mobile Web+PC Web "
-                       "합과 다를 수 있어서 비중 계산에서는 뺐어요.")
+            st.caption(f"연 단위 비중이에요 — 위 기간과 상관없이 **{_sv_yr}년과 "
+                       f"{_sv_yr - 1}년을 같은 날짜까지(1/1~{_sv_a1.month}/{_sv_a1.day}) 잘라** "
+                       "비교해요. 기간 종료일을 바꾸면 비교 연도도 따라가요. 'Total' 행은 "
+                       "유니크 방문자라 App+Mobile Web+PC Web 합과 다를 수 있어서 비중 계산에서 "
+                       "뺐어요.")
 
         # ── ④ 표 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)

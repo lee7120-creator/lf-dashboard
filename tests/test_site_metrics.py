@@ -215,6 +215,43 @@ def t_display_unit_is_divided():
 
 
 @case
+def t_period_defaults_to_2025_and_keeps_older_selectable():
+    """기간 기본값은 2025년부터. 더 과거는 고를 수 있어야 한다(데이터는 안 지운다)."""
+    site = _site_store(days=700)                          # 2024년까지 걸치게
+    at = _open(PAGE, site=site)
+    di = [d for d in at.date_input if d.label == "기간"]
+    assert di, f"기간 위젯이 없어요 — {[d.label for d in at.date_input]}"
+    lo, hi = at.session_state["sv_span"]
+    _all = S.site_pick(site, "Total", "Total")["dt"]
+    _dmin, _dmax = _all.min().date(), _all.max().date()
+    assert _dmin < S.SITE_DEFAULT_FROM, "테스트 전제가 깨졌어요 — 2024년치가 있어야 해요"
+    assert lo == S.SITE_DEFAULT_FROM, f"기본 시작일이 {lo}예요 — {S.SITE_DEFAULT_FROM}이어야 해요"
+    assert hi == _dmax, (hi, _dmax)
+    assert di[0].min == _dmin, f"더 과거를 못 고르게 막혔어요 — min={di[0].min}"
+
+
+@case
+def t_channel_panels_default_to_three():
+    """채널 패널 기본은 Total·직접·PUSH. 8개를 다 켜면 패널이 잘아져 모양이 안 읽힌다."""
+    at = _open(PAGE, site=_site_store(days=200))
+    ms = [m for m in at.multiselect if m.label == "볼 채널"]
+    assert ms, f"'볼 채널' 위젯이 없어요 — {[m.label for m in at.multiselect]}"
+    assert list(ms[0].value) == S.SITE_DEFAULT_PANELS, \
+        f"기본 선택이 {list(ms[0].value)}예요 — {S.SITE_DEFAULT_PANELS}이어야 해요"
+    assert set(S.SITE_DEFAULT_PANELS) <= set(ms[0].options), "선택지에 기본 채널이 없어요"
+
+
+@case
+def t_device_pie_is_year_over_year():
+    """디바이스 비중은 기간과 무관하게 '올해 vs 전년'을 같은 날짜까지 잘라 본다."""
+    at = _open(PAGE, site=_site_store(days=700))
+    txt = " ".join(_texts(at))
+    _hi = pd.Timestamp(at.session_state["sv_span"][1])
+    assert f"{_hi.year}년과 {_hi.year - 1}년" in txt, f"연 비교 설명이 없어요 — {txt[-400:]}"
+    assert "디바이스 비중" in txt
+
+
+@case
 def t_page_without_data_asks_for_upload():
     """데이터가 없으면 죽지 말고 올려 달라고 안내해야 한다."""
     at = _open(PAGE)
@@ -268,6 +305,36 @@ def t_weekly_mtd_rows_appear_with_data():
 
 
 @case
+def t_weekly_kpi_table_has_apppush_rows():
+    """주간 비교 표(주요 지표 현황)에도 앱푸시 행이 붙어야 한다."""
+    at = _open("0. 주간보고", site=_site_store(days=400))
+    hit = None
+    for t in at.dataframe:
+        cols = [str(c) for c in getattr(t.value, "columns", [])]
+        if "지표" in cols and any(c.startswith("전주 (") for c in cols):
+            hit = t.value
+            break
+    assert hit is not None, "주요 지표 현황 표를 못 찾았어요"
+    names = set(hit["지표"].astype(str))
+    for want in ("앱푸시 회원UV(천명)", "앱푸시 거래액(백만원)"):
+        assert want in names, f"{want} 행이 없어요 — {sorted(names)}"
+    # 발송 실적 행과 같은 표에 있어야 한다(따로 떨어진 표면 보고서에서 안 붙는다)
+    assert "발송" in names and "CTR" in names, sorted(names)
+
+
+@case
+def t_weekly_kpi_rows_vanish_without_data():
+    """사이트 데이터가 없으면 주간 비교 표에서도 그 행만 빠진다."""
+    at = _open("0. 주간보고")
+    names = set()
+    for t in at.dataframe:
+        if "지표" in [str(c) for c in getattr(t.value, "columns", [])]:
+            names |= set(t.value["지표"].astype(str))
+    assert not [n for n in names if n.startswith("앱푸시")], \
+        f"데이터가 없는데 앱푸시 행이 남았어요 — {sorted(names)}"
+
+
+@case
 def t_weekly_mtd_rows_vanish_without_data():
     """사이트 데이터가 없으면 그 행만 통째로 빠져야 한다 (빈 행 금지)."""
     at = _open("0. 주간보고")
@@ -289,10 +356,13 @@ def t_weekly_mtd_value_is_daily_mean():
     row, curcol = None, None
     for t in tbls:
         v = t.value
+        # 같은 이름의 행이 주간 비교 표에도 있다 — ' 당월 MTD' 칼럼이 있는 표만 본다
+        _cc = [c for c in v.columns if str(c).startswith("당월 MTD")]
+        if not _cc:
+            continue
         hit = v[v["지표"].astype(str) == "앱푸시 회원UV(천명)"]
         if len(hit):
-            row = hit.iloc[0]
-            curcol = [c for c in v.columns if str(c).startswith("당월 MTD")][0]
+            row, curcol = hit.iloc[0], _cc[0]
             break
     assert row is not None, "앱푸시 회원UV 행을 못 찾았어요"
     shown = float(str(row[curcol]).replace(",", ""))
