@@ -298,8 +298,10 @@ def t_weekly_mtd_rows_appear_with_data():
     names = set()
     for t in tbls:
         names |= set(t.value["지표"].astype(str))
-    for want in ("앱푸시 회원UV(천명)", "앱푸시 거래액(백만원)"):
-        assert want in names, f"MTD에 {want} 행이 없어요 — {sorted(names)}"
+    assert "앱푸시 회원UV(일평균·천명)" in names, f"MTD에 앱푸시 행이 없어요 — {sorted(names)}"
+    # 거래액은 위 '거래액' 행이 이미 담당한다 (주간 비교 표와 같은 이유)
+    assert not [n for n in names if n.startswith("앱푸시 거래액")], \
+        f"MTD에 앱푸시 거래액이 남았어요 — {sorted(names)}"
     for nope in ("앱 회원UV(천명)", "PUSH 회원UV(천명)"):
         assert nope not in names, f"채널·디바이스를 따로 본 행이 남았어요 — {nope}"
 
@@ -362,7 +364,7 @@ def t_weekly_mtd_value_is_daily_mean():
         _cc = [c for c in v.columns if str(c).startswith("당월 MTD")]
         if not _cc:
             continue
-        hit = v[v["지표"].astype(str) == "앱푸시 회원UV(천명)"]
+        hit = v[v["지표"].astype(str) == "앱푸시 회원UV(일평균·천명)"]
         if len(hit):
             row, curcol = hit.iloc[0], _cc[0]
             break

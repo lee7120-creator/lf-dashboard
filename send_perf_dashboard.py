@@ -4774,8 +4774,8 @@ def main():
             st.markdown('<div class="appendix"><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 '
                         '실적과 분모가 달라요 — 주 합계가 아니라 <b>그 주의 일평균</b>(천명)이에요. '
                         '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
-                        '잡은 값이고요. 앱푸시 거래액까지 보려면 아래 <b>월 누계(MTD)</b> 표나 '
-                        '「12. 회원UV·거래액」을 보면 돼요.</div>',
+                        '잡은 값이고요. 앱푸시 거래액은 「12. 회원UV·거래액」에서 보면 돼요 '
+                        '(채널 PUSH · 디바이스 App).</div>',
                         unsafe_allow_html=True)
 
         # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 저장 백엔드에 영속 ──
@@ -5086,11 +5086,12 @@ def main():
                 _c = site_mean(_wr_site, _sch, _sdev, m_first, ref_end)
                 _p = site_mean(_wr_site, _sch, _sdev, pm0, pm1)
                 _y = site_mean(_wr_site, _sch, _sdev, py0, py1)
-                for _mk in ("uv", "amt"):
+                # 거래액은 위 '거래액' 행이 이미 담당한다 — 분모가 다른 값을 나란히 두면
+                # 어느 쪽을 봐야 할지 헷갈린다(주간 비교 표와 같은 이유). 여기선 회원UV만.
+                for _mk in ("uv",):
                     if not _wr_site[_mk].notna().any():
                         continue
-                    # 라벨이 길면 '지표' 칸에서 잘린다 — 일평균이라는 설명은 아래 주석에 둔다
-                    _nm = f"{_slab} {SITE_LABEL[_mk]}({SITE_UNIT[_mk]})"
+                    _nm = f"{_slab} {SITE_LABEL[_mk]}(일평균·{SITE_UNIT[_mk]})"
 
                     def _sfmt(v):
                         return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
@@ -5109,16 +5110,16 @@ def main():
         st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
-                    + ('<br><b>앱푸시 행은 사이트 전체 지표</b>라 위 발송 실적과 분모가 달라요 '
-                       '— 누계가 아니라 <b>그 기간의 일평균</b>이에요. <b>PUSH 채널 × App '
-                       '디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 잡은 값이고요. '
-                       '회원UV는 천명, 거래액은 백만원 단위예요. 채널·디바이스를 따로 떼서 보려면 '
-                       '「12. 회원UV·거래액」에서 골라 보면 돼요.'
+                    + ('<br><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 실적과 분모가 '
+                       '달라요 — 월 누계가 아니라 <b>그 기간의 일평균</b>(천명)이에요. '
+                       '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
+                       '잡은 값이고요. 거래액과 채널·디바이스별 추이는 '
+                       '「12. 회원UV·거래액」에서 보면 돼요.'
                        if _site_rows else '') + '</div>',
                     unsafe_allow_html=True)
         if not _site_rows:
-            st.caption("회원UV·거래액 리포트를 올리면 앱푸시(PUSH 채널 × App 디바이스)의 "
-                       "월 평균도 이 표에 같이 나와요.")
+            st.caption("회원UV·거래액 리포트를 올리면 앱푸시(PUSH 채널 × App 디바이스) "
+                       "회원UV의 월 평균도 이 표에 같이 나와요.")
 
         # ── 📱 앱푸시 수신동의 주간 요약 (주간보고용 연동) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
