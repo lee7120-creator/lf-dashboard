@@ -87,8 +87,10 @@ def synth_slot_store(seed=6):
     """
     rng = np.random.default_rng(seed)
     end = pd.Timestamp.utcnow().tz_localize(None).normalize()
+    # 컨틴 탭은 정책 변경일(2026-08-01) 이후만 본다 — 그 뒤로 넉넉히 깔아 둔다
+    _start = max(pd.Timestamp(S.POLICY_CHANGE_DATE), end - pd.Timedelta(days=180))
     rows = []
-    for d in pd.date_range(end - pd.Timedelta(days=180), end, freq="D"):
+    for d in pd.date_range(_start, end, freq="D"):
         if d.weekday() >= 5:
             continue
         for stype, bpu, hour in (("컨틴", "1BPU", "1600"), ("기본발송", "2BPU", "1600"),
@@ -129,6 +131,23 @@ def case(fn):
 
 
 @case
+def t_contin_tab_excludes_pre_policy():
+    """2025년 컨틴전시(주말 17시)는 성격이 다른 구좌라 이 화면에 들어오면 안 된다."""
+    store = synth_slot_store()
+    old = store.head(40).copy()                          # 정책 변경 전 옛 컨틴
+    old["date"] = "20250715"
+    old["stype"] = "컨틴전시 A"
+    old["af"] = "OLD" + old["af"]
+    at = _open_tab(pd.concat([old, store], ignore_index=True), tab="컨틴 구좌 효율")
+    txt = " ".join(_texts(at))
+    assert "이전 발송" in txt and "뺐어요" in txt, f"제외 안내가 없어요 — {txt[:300]}"
+    labs = {m.label: m.value for m in at.metric}
+    _n = int(str(labs["컨틴"]).replace("건", "").replace(",", ""))
+    _want = len(store[store["stype"] == "컨틴"])
+    assert _n == _want, f"컨틴 표본이 {_n}건 — 옛 컨틴을 빼면 {_want}건이어야 해요"
+
+
+@case
 def t_contin_tab_compares_against_sales_bpu():
     """컨틴 탭 ①은 컨틴 구좌와 영업(BPU) 요청 세일즈 푸시를 맞대야 한다.
 
@@ -152,15 +171,17 @@ def t_contin_sales_group_excludes_non_sales_bpu():
     """영업 세일즈 푸시는 1~4BPU만 — 마케팅·편성 요청분이 섞이면 안 된다."""
     store = synth_slot_store()
     at = _open_tab(store, tab="컨틴 구좌 효율")
-    _p = [s_ for s_ in at.selectbox if s_.label == "기간"]      # 기본은 최근 12주
+    _p = [s_ for s_ in at.selectbox if s_.label == "기간"]
     assert _p, f"기간 셀렉트가 없어요 — {[s_.label for s_ in at.selectbox]}"
-    _p[0].set_value("전체")
+    assert "2026-08 이후 전체" in list(_p[0].options), _p[0].options
+    _p[0].set_value("2026-08 이후 전체")
     at.run()
     assert not at.exception, at.exception[0].value
     labs = {m.label: m.value for m in at.metric}
     _n = int(str(labs["영업 세일즈 푸시"]).replace("건", "").replace(",", ""))
     _want = len(store[store["bpu"].isin(["1BPU", "2BPU", "3BPU", "4BPU"])
-                      & (store["stype"] != "컨틴")])
+                      & (store["stype"] != "컨틴")
+                      & (store["date"] >= S.POLICY_CHANGE_DATE)])
     assert _n == _want, f"영업 표본이 {_n}건 — 1~4BPU 기준이면 {_want}건이어야 해요"
     assert _n < len(store), "전체가 다 들어갔어요 — 마케팅 요청분이 안 걸러졌어요"
 

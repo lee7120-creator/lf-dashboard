@@ -9499,10 +9499,21 @@ def main():
             '화면이에요. 2026-08부터 영업 구좌를 줄이고 <b>16시 구좌를 컨틴으로</b> 돌려 인당 '
             '발송건수(피로도)를 낮추려는 구좌라, 아무거나 채우면 목적이 무너져요.<br>'
             '컨틴 실적이 아직 적어서 <b>같은 조건의 과거 이력(평일 16시 슬롯)</b>으로 기준을 '
-            '만들고, 컨틴 건이 쌓이면 그쪽으로 좁혀 보면 돼요.</div>', unsafe_allow_html=True)
+            '만들고, 컨틴 건이 쌓이면 그쪽으로 좁혀 보면 돼요.<br>'
+            f'이 화면은 <b>{POLICY_CHANGE_DATE[:4]}-{POLICY_CHANGE_DATE[4:6]}-'
+            f'{POLICY_CHANGE_DATE[6:]} 이후</b>만 봐요 — 2025년 <b>컨틴전시 A/B</b>(주말 17시)는 '
+            '이름만 같고 성격이 다른 구좌라 섞으면 다른 구좌 성과를 같이 평균 내게 돼요.</div>',
+            unsafe_allow_html=True)
 
         _kt = _eff_frame()
         _kt = _kt[_kt["dt"].notna()] if "dt" in _kt.columns else _kt
+        # 2025년 '컨틴전시 A/B'(주말 17시)는 이름만 같고 성격이 다른 구좌다. 지금 보려는 건
+        # 2026-08에 새로 만든 평일 16시 구좌에 쌓이는 실적이라, 이 화면 전체를 정책 변경일
+        # 이후로 자른다. (옛 컨틴을 섞으면 표본은 늘지만 다른 구좌 성과를 같이 평균 낸다)
+        _kt_n0 = len(_kt)
+        if len(_kt):
+            _kt = _kt[_kt["date"].astype(str) >= POLICY_CHANGE_DATE]
+        _kt_cut = _kt_n0 - len(_kt)
         _c1, _c2 = st.columns([2, 1.4])
         with _c1:
             _scope = st.radio("기준 표본", ["평일 16시 슬롯 전체", "컨틴 배정분만", "전체 발송"],
@@ -9522,10 +9533,10 @@ def main():
         _c3, _c4 = st.columns([1, 1])
         with _c3:
             _recent = st.selectbox(
-                "기간", ["최근 12주", "최근 26주", "최근 52주", "2026-08 정책 변경 이후", "전체"],
+                "기간", ["2026-08 이후 전체", "최근 12주", "최근 26주"],
                 index=0, key="kt_recent",
-                help="매주 보는 화면이라 기본은 최근 12주예요. '정책 변경 이후'는 새 운영 "
-                     "기준만 보지만 아직 표본이 얇아요.")
+                help="화면 전체가 2026-08-01 이후예요. 실적이 더 쌓이면 최근 12·26주로 "
+                     "좁혀 보면 돼요.")
         with _c4:
             _minn = st.number_input("최소 표본(건)", value=5, min_value=1, step=1, key="kt_minn",
                                     help="이보다 적은 항목은 우연에 흔들려서 숨겨요.")
@@ -9559,9 +9570,7 @@ def main():
         _mfmt = "{:.2f}%" if _munit == "%" else "{:,.0f}"
         _mtxt = (lambda v: f"{v:.2f}%") if _munit == "%" else (lambda v: f"{v:,.0f}")
 
-        if _recent.startswith("2026-08") and len(_kt):
-            _kt = _kt[_kt["date"].astype(str) >= POLICY_CHANGE_DATE]
-        elif _recent != "전체" and len(_kt):
+        if (not _recent.startswith("2026-08")) and len(_kt):
             _wk = int(re.search(r"\d+", _recent).group())
             _kt = _kt[_kt["dt"] >= _kt["dt"].max() - pd.Timedelta(weeks=_wk)]
         if _scope == "평일 16시 슬롯 전체":
@@ -9598,8 +9607,8 @@ def main():
             st.warning(f"평일 16시로 맞추면 컨틴 {len(_kt_A)}건 · 영업 {len(_kt_B)}건이라 "
                        "비교가 안 돼요. 체크를 풀면 전체 슬롯으로 봐요.")
         elif not len(_kt_A) or not len(_kt_B):
-            st.info(f"이 기간에 컨틴 {len(_kt_A)}건 · 영업 세일즈 푸시 {len(_kt_B)}건이에요. "
-                    "기간을 넓혀 보세요.")
+            st.info(f"컨틴 {len(_kt_A)}건 · 영업 세일즈 푸시 {len(_kt_B)}건이에요. "
+                    "이 화면은 2026-08-01 이후만 보니까, 새 구좌 실적이 더 쌓여야 비교가 돼요.")
         else:
             _kt_ga, _kt_gb = _eff_agg(_kt_A), _eff_agg(_kt_B)
             _KT_CMP = [("CTR", "infl_cr", "%"), ("주문CR", "ord_cr", "%"),
@@ -9657,9 +9666,14 @@ def main():
                            '<b>시간대가 안 맞춰져 있어요</b> — 컨틴은 16시 고정인데 영업 푸시는 '
                            '여러 슬롯이라, 차이의 일부는 시간대 효과예요. 위 체크를 켜면 '
                            '평일 16시끼리만 비교해요.')
-                        + '<br>2025년 <b>컨틴전시 A/B</b>(주말 17시)는 지금 컨틴 구좌와 성격이 '
-                          '다른 구좌예요. 기간을 넓히면 그게 섞이니 같이 보세요.</div>',
+                        + f'<br>표본은 {POLICY_CHANGE_DATE[:4]}-{POLICY_CHANGE_DATE[4:6]}-'
+                          f'{POLICY_CHANGE_DATE[6:]} 이후만이에요 — 2025년 컨틴전시(주말 17시)는 '
+                          '아예 안 들어와요.</div>',
                         unsafe_allow_html=True)
+        if _kt_cut:
+            st.caption(f"2026-08-01 이전 발송 {_kt_cut:,}건은 이 화면에서 뺐어요 "
+                       "(2025년 컨틴전시 포함).")
+
         if not len(_base):
             st.info(f"{_scope_txt}에 해당하는 발송이 없어요. 기준 표본이나 기간을 넓혀 보세요.")
         else:
