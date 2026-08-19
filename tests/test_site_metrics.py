@@ -215,6 +215,32 @@ def t_display_unit_is_divided():
 
 
 @case
+def t_period_defaults_to_2025_and_keeps_older_selectable():
+    """기간 기본값은 2025년부터. 더 과거는 고를 수 있어야 한다(데이터는 안 지운다)."""
+    site = _site_store(days=700)                          # 2024년까지 걸치게
+    at = _open(PAGE, site=site)
+    di = [d for d in at.date_input if d.label == "기간"]
+    assert di, f"기간 위젯이 없어요 — {[d.label for d in at.date_input]}"
+    lo, hi = at.session_state["sv_span"]
+    _all = S.site_pick(site, "Total", "Total")["dt"]
+    _dmin, _dmax = _all.min().date(), _all.max().date()
+    assert _dmin < S.SITE_DEFAULT_FROM, "테스트 전제가 깨졌어요 — 2024년치가 있어야 해요"
+    assert lo == S.SITE_DEFAULT_FROM, f"기본 시작일이 {lo}예요 — {S.SITE_DEFAULT_FROM}이어야 해요"
+    assert hi == _dmax, (hi, _dmax)
+    assert di[0].min == _dmin, f"더 과거를 못 고르게 막혔어요 — min={di[0].min}"
+
+
+@case
+def t_device_pie_is_year_over_year():
+    """디바이스 비중은 기간과 무관하게 '올해 vs 전년'을 같은 날짜까지 잘라 본다."""
+    at = _open(PAGE, site=_site_store(days=700))
+    txt = " ".join(_texts(at))
+    _hi = pd.Timestamp(at.session_state["sv_span"][1])
+    assert f"{_hi.year}년과 {_hi.year - 1}년" in txt, f"연 비교 설명이 없어요 — {txt[-400:]}"
+    assert "디바이스 비중" in txt
+
+
+@case
 def t_page_without_data_asks_for_upload():
     """데이터가 없으면 죽지 말고 올려 달라고 안내해야 한다."""
     at = _open(PAGE)
