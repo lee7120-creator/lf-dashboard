@@ -305,6 +305,36 @@ def t_weekly_mtd_rows_appear_with_data():
 
 
 @case
+def t_weekly_kpi_table_has_apppush_rows():
+    """주간 비교 표(주요 지표 현황)에도 앱푸시 행이 붙어야 한다."""
+    at = _open("0. 주간보고", site=_site_store(days=400))
+    hit = None
+    for t in at.dataframe:
+        cols = [str(c) for c in getattr(t.value, "columns", [])]
+        if "지표" in cols and any(c.startswith("전주 (") for c in cols):
+            hit = t.value
+            break
+    assert hit is not None, "주요 지표 현황 표를 못 찾았어요"
+    names = set(hit["지표"].astype(str))
+    for want in ("앱푸시 회원UV(천명)", "앱푸시 거래액(백만원)"):
+        assert want in names, f"{want} 행이 없어요 — {sorted(names)}"
+    # 발송 실적 행과 같은 표에 있어야 한다(따로 떨어진 표면 보고서에서 안 붙는다)
+    assert "발송" in names and "CTR" in names, sorted(names)
+
+
+@case
+def t_weekly_kpi_rows_vanish_without_data():
+    """사이트 데이터가 없으면 주간 비교 표에서도 그 행만 빠진다."""
+    at = _open("0. 주간보고")
+    names = set()
+    for t in at.dataframe:
+        if "지표" in [str(c) for c in getattr(t.value, "columns", [])]:
+            names |= set(t.value["지표"].astype(str))
+    assert not [n for n in names if n.startswith("앱푸시")], \
+        f"데이터가 없는데 앱푸시 행이 남았어요 — {sorted(names)}"
+
+
+@case
 def t_weekly_mtd_rows_vanish_without_data():
     """사이트 데이터가 없으면 그 행만 통째로 빠져야 한다 (빈 행 금지)."""
     at = _open("0. 주간보고")
@@ -326,10 +356,13 @@ def t_weekly_mtd_value_is_daily_mean():
     row, curcol = None, None
     for t in tbls:
         v = t.value
+        # 같은 이름의 행이 주간 비교 표에도 있다 — ' 당월 MTD' 칼럼이 있는 표만 본다
+        _cc = [c for c in v.columns if str(c).startswith("당월 MTD")]
+        if not _cc:
+            continue
         hit = v[v["지표"].astype(str) == "앱푸시 회원UV(천명)"]
         if len(hit):
-            row = hit.iloc[0]
-            curcol = [c for c in v.columns if str(c).startswith("당월 MTD")][0]
+            row, curcol = hit.iloc[0], _cc[0]
             break
     assert row is not None, "앱푸시 회원UV 행을 못 찾았어요"
     shown = float(str(row[curcol]).replace(",", ""))

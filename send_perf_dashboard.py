@@ -4718,6 +4718,38 @@ def main():
                          col_pm: _fmt(met, pm_w[met]),
                          "전월비": _dlt_sig(met, cur_w, pm_w),
                          col_yoy: _fmt(met, yv), "전년비": _dlt_sig(met, cur_w, yoy_w)})
+
+        # ── 앱푸시(PUSH 채널 × App 디바이스) — 사이트 데이터가 있을 때만 같은 표에 붙인다.
+        # 발송 실적과 분모가 달라 합계로 못 섞으니 '주 일평균'으로 나란히 놓는다.
+        # 부분 주면 위 지표와 같은 동요일 누계 창(_elapsed)을 그대로 쓴다.
+        _wr_site = finalize_site(st.session_state.get("site_store_df"))
+        _wk_site_rows = 0
+        if len(_wr_site):
+            def _wk_sm(ws):
+                if ws is None:
+                    return {"uv": np.nan, "amt": np.nan, "days": 0}
+                _w = pd.Timestamp(ws)
+                return site_mean(_wr_site, "PUSH", "App", _w,
+                                 _w + pd.Timedelta(days=_elapsed))
+
+            _wk_c, _wk_p = _wk_sm(ref_ws), _wk_sm(prev_ws)
+            _wk_m, _wk_y = _wk_sm(pm_ws), _wk_sm(yo_ws)
+            for _mk in ("uv", "amt"):
+                if not _wr_site[_mk].notna().any():
+                    continue
+                _nm = f"앱푸시 {SITE_LABEL[_mk]}({SITE_UNIT[_mk]})"
+
+                def _wfmt(v):
+                    return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
+
+                rows.append({"지표": _nm,
+                             col_prev: _wfmt(_wk_p[_mk]), col_cur: _wfmt(_wk_c[_mk]),
+                             "전주비": _dlt(_nm, _wk_c[_mk], _wk_p[_mk]),
+                             col_pm: _wfmt(_wk_m[_mk]),
+                             "전월비": _dlt(_nm, _wk_c[_mk], _wk_m[_mk]),
+                             col_yoy: _wfmt(_wk_y[_mk]),
+                             "전년비": _dlt(_nm, _wk_c[_mk], _wk_y[_mk])})
+                _wk_site_rows += 1
         wr_tbl = pd.DataFrame(rows)
 
         def _clr(v):
@@ -4728,12 +4760,20 @@ def main():
                 return "color:#dc2626;font-weight:600"
             return ""
         table(wr_tbl.style.map(_clr, subset=["전주비", "전월비", "전년비"]),
-                     hide_index=True, width="stretch", height=38 + 35 * len(wr_tbl), dl_name="주요 지표 현황")
+                     hide_index=True, width="stretch", height=38 + 35 * len(wr_tbl),
+                     column_config={"지표": st.column_config.Column(width="medium")},
+                     dl_name="주요 지표 현황")
         st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
                    "전월비는 전월 동주(기준주의 정확히 4주 전 주)와 비교해요. "
                    "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
                    "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
+        if _wk_site_rows:
+            st.markdown('<div class="appendix"><b>앱푸시 행은 사이트 전체 지표</b>라 위 발송 '
+                        '실적과 분모가 달라요 — 합계가 아니라 <b>그 주의 일평균</b>이에요. '
+                        '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
+                        '잡은 값이고요. 회원UV는 천명, 거래액은 백만원 단위예요.</div>',
+                        unsafe_allow_html=True)
 
         # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 저장 백엔드에 영속 ──
         # 구글시트(설정 시) 또는 로컬 CSV에 {key:text}를 저장 → 세션이 끊겨도 유지된다.
@@ -5034,7 +5074,6 @@ def main():
                          "전년비": _dlt_sig(met, cur_mtd, yoy_mtd)})
         # ── 사이트 지표(앱 디바이스 · PUSH 채널) — 있을 때만 같은 표에 붙인다 ──
         # 발송 실적과 분모가 달라 합계로 못 섞는다. '월 평균(일평균)'으로 나란히 놓는다.
-        _wr_site = finalize_site(st.session_state.get("site_store_df"))
         _site_rows = 0
         if len(_wr_site):
             # 앱과 PUSH를 따로 보면 '앱으로 들어온 광고 유입'·'PC로 받은 푸시'까지 섞인다.
@@ -5061,7 +5100,9 @@ def main():
                     _site_rows += 1
 
         table(pd.DataFrame(rows).style.map(_clr, subset=["전월비", "전년비"]),
-                     hide_index=True, width="stretch", height=38 + 35 * len(rows), dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
+                     hide_index=True, width="stretch", height=38 + 35 * len(rows),
+                     column_config={"지표": st.column_config.Column(width="medium")},
+                     dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
         st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
