@@ -64,7 +64,7 @@ def synth_cut_store(seed=4, lift=0.0, remain_prio=(2, 3, 4)):
     return pd.DataFrame(rows)
 
 
-def _open_tab(store):
+def _open_tab(store, tab=TAB):
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
     at.session_state["camp_store"] = store
     at.run()
@@ -72,11 +72,37 @@ def _open_tab(store):
     at.sidebar.radio[0].set_value("11. 개선 효과 검증")
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
-    assert subs and TAB in subs[0].options, f"{TAB} 탭이 없어요 — {subs[0].options if subs else None}"
-    subs[0].set_value(TAB)
+    assert subs and tab in subs[0].options, f"{tab} 탭이 없어요 — {subs[0].options if subs else None}"
+    subs[0].set_value(tab)
     at.run()
     assert not at.exception, at.exception[0].value
     return at
+
+
+def synth_slot_store(seed=6):
+    """컨틴 구좌와 영업(BPU) 세일즈 푸시가 같이 있는 데이터 — 평일 16시 슬롯 포함.
+
+    smoke_pages의 합성 데이터는 16시 발송도 컨틴도 없어서 컨틴 탭의 본문 경로를
+    통째로 안 밟는다 (실제로 그 경로에 남아 있던 NameError를 스모크가 못 잡았다).
+    """
+    rng = np.random.default_rng(seed)
+    end = pd.Timestamp.utcnow().tz_localize(None).normalize()
+    rows = []
+    for d in pd.date_range(end - pd.Timedelta(days=180), end, freq="D"):
+        if d.weekday() >= 5:
+            continue
+        for stype, bpu, hour in (("컨틴", "1BPU", "1600"), ("기본발송", "2BPU", "1600"),
+                                 ("기본발송", "3BPU", "1000"), ("기본발송", "마케팅", "2000")):
+            send = int(rng.integers(30_000, 80_000))
+            uv = max(int(send * float(rng.uniform(0.02, 0.05))), 1)
+            oc = max(int(uv * float(rng.uniform(0.004, 0.012))), 1)
+            rows.append(dict(
+                date=d.strftime("%Y%m%d"), af=f"AF{d:%m%d}{hour}{bpu}", hour=hour,
+                target="전체", stype=stype, bpu=bpu, prio="1", cat="패션", attr="정상",
+                owner="김", brand="닥스", send=send, uv=uv, visit=uv + 5, cust=uv // 3,
+                oc=oc, amt=int(oc * 130_000), infl_cr=uv / send, ord_cr=oc / uv,
+                promo="", title=f"제목{hour}", body="본문", matched=True))
+    return pd.DataFrame(rows)
 
 
 def _texts(at):
@@ -100,6 +126,43 @@ CASES = []
 def case(fn):
     CASES.append(fn)
     return fn
+
+
+@case
+def t_contin_tab_compares_against_sales_bpu():
+    """컨틴 탭 ①은 컨틴 구좌와 영업(BPU) 요청 세일즈 푸시를 맞대야 한다.
+
+    카테고리 순위만 봐서는 '컨틴에 뭘 넣을까'는 알아도 '컨틴이 나은가'는 알 수 없다.
+    """
+    at = _open_tab(synth_slot_store(), tab="컨틴 구좌 효율")
+    txt = " ".join(_texts(at))
+    assert "컨틴 구좌 vs 영업 세일즈 푸시" in txt, f"비교 블록이 없어요 — {txt[:300]}"
+    assert "카테고리가 잘 됐나" not in txt, "카테고리 블록이 아직 남아 있어요"
+    labs = [m.label for m in at.metric]
+    assert "컨틴" in labs and "영업 세일즈 푸시" in labs, f"비교 KPI가 없어요 — {labs}"
+    tbl = [t.value for t in at.dataframe
+           if "컨틴" in list(getattr(t.value, "columns", []))]
+    assert tbl, "비교 표를 찾지 못했어요"
+    assert set(tbl[0]["지표"].astype(str)) >= {"CTR", "주문CR", "RPS", "객단가"}, \
+        sorted(set(tbl[0]["지표"].astype(str)))
+
+
+@case
+def t_contin_sales_group_excludes_non_sales_bpu():
+    """영업 세일즈 푸시는 1~4BPU만 — 마케팅·편성 요청분이 섞이면 안 된다."""
+    store = synth_slot_store()
+    at = _open_tab(store, tab="컨틴 구좌 효율")
+    _p = [s_ for s_ in at.selectbox if s_.label == "기간"]      # 기본은 최근 12주
+    assert _p, f"기간 셀렉트가 없어요 — {[s_.label for s_ in at.selectbox]}"
+    _p[0].set_value("전체")
+    at.run()
+    assert not at.exception, at.exception[0].value
+    labs = {m.label: m.value for m in at.metric}
+    _n = int(str(labs["영업 세일즈 푸시"]).replace("건", "").replace(",", ""))
+    _want = len(store[store["bpu"].isin(["1BPU", "2BPU", "3BPU", "4BPU"])
+                      & (store["stype"] != "컨틴")])
+    assert _n == _want, f"영업 표본이 {_n}건 — 1~4BPU 기준이면 {_want}건이어야 해요"
+    assert _n < len(store), "전체가 다 들어갔어요 — 마케팅 요청분이 안 걸러졌어요"
 
 
 @case
