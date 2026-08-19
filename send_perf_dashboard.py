@@ -5032,7 +5032,9 @@ def main():
         _wr_site = finalize_site(st.session_state.get("site_store_df"))
         _site_rows = 0
         if len(_wr_site):
-            _SITE_MTD = [("앱", "Total", "App"), ("PUSH", "PUSH", "Total")]
+            # 앱과 PUSH를 따로 보면 '앱으로 들어온 광고 유입'·'PC로 받은 푸시'까지 섞인다.
+            # 보려는 건 앱푸시를 눌러 앱으로 들어온 사람이라 두 축의 교집합으로 잡는다.
+            _SITE_MTD = [("앱푸시", "PUSH", "App")]
             for _slab, _sch, _sdev in _SITE_MTD:
                 _c = site_mean(_wr_site, _sch, _sdev, m_first, ref_end)
                 _p = site_mean(_wr_site, _sch, _sdev, pm0, pm1)
@@ -5058,14 +5060,16 @@ def main():
         st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
-                    + ('<br><b>앱·PUSH 행은 사이트 전체 지표</b>라 위 발송 실적과 분모가 달라요 '
-                       '— 누계가 아니라 <b>그 기간의 일평균</b>이에요. 회원UV는 천명, 거래액은 '
-                       '백만원 단위고요. 자세한 추이는 「12. 회원UV·거래액」에서 봐요.'
+                    + ('<br><b>앱푸시 행은 사이트 전체 지표</b>라 위 발송 실적과 분모가 달라요 '
+                       '— 누계가 아니라 <b>그 기간의 일평균</b>이에요. <b>PUSH 채널 × App '
+                       '디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 잡은 값이고요. '
+                       '회원UV는 천명, 거래액은 백만원 단위예요. 채널·디바이스를 따로 떼서 보려면 '
+                       '「12. 회원UV·거래액」에서 골라 보면 돼요.'
                        if _site_rows else '') + '</div>',
                     unsafe_allow_html=True)
         if not _site_rows:
-            st.caption("회원UV·거래액 리포트를 올리면 앱 디바이스·PUSH 채널의 월 평균도 이 표에 "
-                       "같이 나와요.")
+            st.caption("회원UV·거래액 리포트를 올리면 앱푸시(PUSH 채널 × App 디바이스)의 "
+                       "월 평균도 이 표에 같이 나와요.")
 
         # ── 📱 앱푸시 수신동의 주간 요약 (주간보고용 연동) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -9975,19 +9979,26 @@ def main():
                    + " · ".join(f"{SITE_LABEL[k]} {'있음' if v else '없음'}"
                                 for k, v in _sv_has.items()))
 
-        _sv_c = st.columns([1, 1, 1, 1.2])
+        # ── 조회 조건 — 지표는 맨 위에서 고른다 (아래 블록이 전부 이걸 따라간다) ──
+        _SV_MET = {f"{SITE_LABEL[k]}({SITE_UNIT[k]})": k for k in ("uv", "amt") if _sv_has[k]}
+        _sv_c = st.columns([1.1, 1.4, 1, 1, 1.1])
         with _sv_c[0]:
-            _sv_unit = st.radio("집계 단위", ["일별", "주차별", "월별"], horizontal=False,
-                                index=1, key="sv_unit")
+            _sv_unit = st.radio("집계 단위", ["일별", "주차별", "월별"], index=1, key="sv_unit")
         with _sv_c[1]:
+            guard_select("sv_met", list(_SV_MET.keys()))
+            _sv_mlab = st.selectbox("지표", list(_SV_MET.keys()), key="sv_met",
+                                    help="아래 모든 블록이 이 지표를 따라가요.")
+            _sv_mcol = _SV_MET[_sv_mlab]
+            _sv_other = "amt" if _sv_mcol == "uv" else "uv"
+        with _sv_c[2]:
             _sv_chs = [c for c in SITE_CHANNELS if c in set(_sv_all["ch"])]
             guard_select("sv_ch", _sv_chs)
             _sv_ch = st.selectbox("채널", _sv_chs, key="sv_ch")
-        with _sv_c[2]:
+        with _sv_c[3]:
             _sv_devs = [c for c in SITE_DEVICES if c in set(_sv_all["dev"])]
             guard_select("sv_dev", _sv_devs)
             _sv_dev = st.selectbox("디바이스", _sv_devs, key="sv_dev")
-        with _sv_c[3]:
+        with _sv_c[4]:
             _sv_how = st.radio("값", ["일평균", "합계"], horizontal=True, key="sv_how",
                                help="진행 중인 주·달은 합계로 보면 날짜 수가 모자라 뚝 떨어져 "
                                     "보여요. 기본은 일평균이에요.")
@@ -9996,31 +10007,75 @@ def main():
         _SV_FREQ = {"일별": ("D", "%m/%d", None), "주차별": ("W-MON", "%y/%m/%d", 7 * 86400000),
                     "월별": ("MS", "%y/%m", "M1")}
         _sv_fq, _sv_tick, _sv_dtick = _SV_FREQ[_sv_unit]
-        _SV_TAIL = {"일별": 120, "주차별": 52, "월별": 24}
 
-        def _sv_roll(ch, dev):
-            """채널×디바이스 한 조합 → 집계 단위별 프레임 [dt, uv, amt, n]."""
+        # 기간은 사용자가 정한다. 예전엔 최근 N개로 잘라 그렸는데, 2년치를 올려도 화면엔
+        # 120일만 나와서 "데이터가 잘렸다"로 보였다 — 기본값은 전체 기간이다.
+        _sv_dts = pd.to_datetime(_sv_all["date"], format="%Y%m%d", errors="coerce").dropna()
+        _sv_lo0, _sv_hi0 = _sv_dts.min().date(), _sv_dts.max().date()
+        _sv_span = (_sv_lo0, _sv_hi0)
+        if _sv_lo0 < _sv_hi0:
+            # key 위젯은 value=가 최초 1회만 먹는다 — 새 파일로 범위가 넓어져도 옛 범위를
+            # 계속 써서 새 날짜가 통째로 사라진다(사이드바 기간 필터와 같은 처리).
+            _sv_prev = st.session_state.get("_sv_span_seen")
+            _sv_cur = st.session_state.get("sv_span")
+            if _sv_prev != _sv_span:
+                if _sv_cur is None or (isinstance(_sv_cur, (tuple, list))
+                                       and tuple(_sv_cur) == _sv_prev):
+                    st.session_state["sv_span"] = _sv_span
+                elif isinstance(_sv_cur, (tuple, list)) and len(_sv_cur) == 2:
+                    st.session_state["sv_span"] = tuple(min(max(d, _sv_lo0), _sv_hi0)
+                                                        for d in _sv_cur)
+                st.session_state["_sv_span_seen"] = _sv_span
+            _skw = {} if "sv_span" in st.session_state else {"value": _sv_span}
+            _sv_sel = st.date_input("기간", min_value=_sv_lo0, max_value=_sv_hi0,
+                                    key="sv_span", **_skw,
+                                    help="기본은 올린 데이터 전체예요. 좁히면 아래 블록이 "
+                                         "전부 그 기간만 봐요.")
+            if isinstance(_sv_sel, (tuple, list)) and len(_sv_sel) == 2:
+                _sv_span = (_sv_sel[0], _sv_sel[1])
+            else:
+                st.caption("종료일까지 골라야 적용돼요. 지금은 전체 기간으로 보고 있어요.")
+        _sv_w0, _sv_w1 = pd.Timestamp(_sv_span[0]), pd.Timestamp(_sv_span[1])
+
+
+        def _sv_roll(ch, dev, w0=None, w1=None):
+            """채널×디바이스 한 조합을 [w0, w1]로 자른 뒤 집계 → [dt, uv, amt, n].
+
+            자르기를 집계 **전**에 한다. 집계 후에 자르면 마지막 부분 주(라벨이 창 밖으로
+            나가는 주)가 통째로 사라져 '최근 데이터가 없다'로 보인다.
+            """
             d = site_pick(_sv_all, ch, dev)
+            _w0 = _sv_w0 if w0 is None else pd.Timestamp(w0)
+            _w1 = _sv_w1 if w1 is None else pd.Timestamp(w1)
+            if len(d):
+                d = d[(d["dt"] >= _w0) & (d["dt"] <= _w1)]
             if not len(d):
-                return d.assign(n=0) if "n" not in d else d
+                return pd.DataFrame(columns=["dt", "uv", "amt", "n"])
             if _sv_fq == "D":
-                return d.assign(n=1)
+                return d.assign(n=1).reset_index(drop=True)
             g = d.set_index("dt").resample(_sv_fq)
             out = g[["uv", "amt"]].mean() if _sv_avg else g[["uv", "amt"]].sum(min_count=1)
             out["n"] = g["uv"].count().reindex(out.index).fillna(0).astype(int)
             if not out["n"].any():                        # 거래액만 있는 경우
                 out["n"] = g["amt"].count().reindex(out.index).fillna(0).astype(int)
-            return out.reset_index().rename(columns={"index": "dt"})
+            out = out.reset_index()
+            return out.rename(columns={out.columns[0]: "dt"})
 
-        _sv_d = _sv_roll(_sv_ch, _sv_dev)
-        _sv_d = _sv_d[_sv_d.get("n", 1) > 0] if "n" in _sv_d else _sv_d
-        _sv_tl = _SV_TAIL[_sv_unit]
-        _sv_show = _sv_d.tail(_sv_tl)
+        def _sv_off(yrs):
+            """yrs년 시차 — 일·주는 364일(52주)이라 요일이 보존되고, 월은 12개월."""
+            return (pd.DateOffset(years=yrs) if _sv_unit == "월별"
+                    else pd.Timedelta(days=364 * yrs))
+
+        def _sv_back(dts, yrs):
+            return pd.DatetimeIndex(dts) - _sv_off(yrs)
+
+        _sv_show = _sv_roll(_sv_ch, _sv_dev)
+        _sv_show = _sv_show[_sv_show["n"] > 0] if "n" in _sv_show else _sv_show
         if not len(_sv_show):
             st.info("이 조합에는 데이터가 없어요. 채널·디바이스를 바꿔 보세요.")
             st.stop()
 
-        # ── ① 추이 ──
+        # ── ① 선택 조합 추이 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown(f"##### ① {esc(_sv_ch)} · {esc(_sv_dev)} 추이")
         _sv_last = _sv_show.iloc[-1]
@@ -10029,8 +10084,7 @@ def main():
         def _sv_delta(col):
             if _sv_prev is None or pd.isna(_sv_prev[col]) or not _sv_prev[col]:
                 return None
-            _p = (_sv_last[col] / _sv_prev[col] - 1) * 100
-            return f"{_p:+.1f}%"
+            return f"{(_sv_last[col] / _sv_prev[col] - 1) * 100:+.1f}%"
 
         _svk = st.columns(3)
         _svk[0].metric(f"회원UV ({SITE_UNIT['uv']})",
@@ -10051,22 +10105,22 @@ def main():
                        f"**{_sv_n}일치**예요. 일평균이라 비교는 되지만 하루 이틀로는 "
                        "많이 흔들려요.")
 
-        if _sv_has["uv"] and _sv_has["amt"]:
-            fig = stacked_panels(_sv_show["dt"], _sv_show["uv"], f"회원UV({SITE_UNIT['uv']})",
-                                 _sv_show["amt"], f"거래액({SITE_UNIT['amt']})",
-                                 PALETTE["blue"], PALETTE["teal"], h=430,
-                                 title=f"{_sv_ch} · {_sv_dev} — {_sv_unit} {_sv_how}")
-        else:
-            _sv_m = "uv" if _sv_has["uv"] else "amt"
-            fig = go.Figure(go.Bar(x=_sv_show["dt"], y=_sv_show[_sv_m],
-                                   marker_color=PALETTE["blue"]))
-            fig.update_layout(**base_layout(
-                h=380, title=f"{_sv_ch} · {_sv_dev} — {SITE_LABEL[_sv_m]}({SITE_UNIT[_sv_m]})"))
         _sv_ax = dict(type="date", tickformat=_sv_tick)
-        if _sv_dtick and len(_sv_show) <= 16:
+        if _sv_dtick and len(_sv_show) <= 16:      # 점이 많으면 plotly 자동 눈금이 낫다
             # 점이 적을 때만 눈금을 고정한다. 52주짜리에 7일 눈금을 박으면 라벨이 전부
             # 세로로 눕고 축이 데이터 바깥까지 늘어난다.
             _sv_ax["dtick"] = _sv_dtick
+        if _sv_has[_sv_other]:
+            fig = stacked_panels(_sv_show["dt"], _sv_show[_sv_mcol], _sv_mlab,
+                                 _sv_show[_sv_other],
+                                 f"{SITE_LABEL[_sv_other]}({SITE_UNIT[_sv_other]})",
+                                 PALETTE["blue"], PALETTE["teal"], h=430,
+                                 title=f"{_sv_ch} · {_sv_dev} — {_sv_unit} {_sv_how}")
+        else:
+            fig = go.Figure(go.Bar(x=_sv_show["dt"], y=_sv_show[_sv_mcol],
+                                   marker_color=PALETTE["blue"]))
+            fig.update_layout(**base_layout(h=380,
+                                            title=f"{_sv_ch} · {_sv_dev} — {_sv_mlab}"))
         fig.update_xaxes(**_sv_ax)
         st.plotly_chart(fig, width="stretch")
         if not _sv_avg and _sv_unit != "일별":
@@ -10074,61 +10128,134 @@ def main():
         if _sv_unit != "일별" and _sv_avg:
             st.caption("회원UV는 일별 값의 평균이에요. 주·월 단위 순방문자(중복 제거)가 아니에요.")
 
-        # ── ② 채널·디바이스 구성 ──
+        # ── ② 채널별 — 패널을 나란히 놓고 전년과 겹쳐 본다 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ② 무엇이 움직였나 — 채널·디바이스별")
-        _SV_MET = {f"회원UV({SITE_UNIT['uv']})": "uv", f"거래액({SITE_UNIT['amt']})": "amt"}
-        _SV_MET = {k: v for k, v in _SV_MET.items() if _sv_has[v]}
-        guard_select("sv_met", list(_SV_MET.keys()))
-        _sv_mlab = st.selectbox("지표", list(_SV_MET.keys()), key="sv_met")
-        _sv_mcol = _SV_MET[_sv_mlab]
+        st.markdown(f"##### ② 채널별 {esc(_sv_mlab)} — 전년 대비")
+        _sv_c2 = st.columns([2.4, 1, 1])
+        with _sv_c2[0]:
+            _sv_pick = st.multiselect("볼 채널", _sv_chs, default=_sv_chs, key="sv_panels")
+        with _sv_c2[1]:
+            _sv_yrs = st.selectbox("비교", ["전년까지", "전전년까지", "안 함"], key="sv_yrs",
+                                   help="같은 시점의 작년·재작년을 겹쳐 그려요. "
+                                        "일·주는 364일(52주) 전이라 요일이 보존돼요.")
+        with _sv_c2[2]:
+            _sv_lbl = st.checkbox("값 표시", value=False, key="sv_lbl",
+                                  help="패널이 좁아서 점이 많으면 숫자가 겹쳐요.")
+        _SV_YN = {"안 함": 0, "전년까지": 1, "전전년까지": 2}[_sv_yrs]
 
-        def _sv_multi(kind, keys, fixed):
-            """keys(채널 또는 디바이스)별 시계열을 한 차트에. Total은 빼고 본다."""
-            fig = go.Figure()
-            _drawn = 0
-            for _i, _k in enumerate(keys):
-                _one = _sv_roll(_k, fixed) if kind == "ch" else _sv_roll(fixed, _k)
-                if "n" in _one:
-                    _one = _one[_one["n"] > 0]
-                _one = _one.tail(_sv_tl)
-                if _one[_sv_mcol].notna().sum() < 2:
-                    continue
-                fig.add_trace(go.Scatter(
-                    x=_one["dt"], y=_one[_sv_mcol], name=str(_k), mode="lines",
-                    line=dict(color=SERIES_SEQ[_i % len(SERIES_SEQ)], width=2),
-                    connectgaps=False))
-                _drawn += 1
-            if not _drawn:
-                return None
-            _lay = base_layout(h=380, hover="x",
-                               title=f"{'채널' if kind == 'ch' else '디바이스'}별 {_sv_mlab}"
-                                     f" ({fixed} 기준 · {_sv_unit} {_sv_how})")
+        if not _sv_pick:
+            st.info("볼 채널을 하나 이상 골라 주세요.")
+        else:
+            from plotly.subplots import make_subplots
+            _sv_cols = min(4, len(_sv_pick))
+            _sv_rows = int(np.ceil(len(_sv_pick) / _sv_cols))
+            _sv_fig = make_subplots(rows=_sv_rows, cols=_sv_cols,
+                                    subplot_titles=[str(c) for c in _sv_pick],
+                                    horizontal_spacing=0.05,
+                                    # 간격이 좁으면 아랫줄 패널 제목이 윗줄 차트를 덮는다
+                                    vertical_spacing=(0.14 if _sv_rows > 1 else 0.1))
+            _SV_YC = [("기준", PALETTE["red"]), ("전년", PALETTE["blue"]),
+                      ("전전년", PALETTE["green"])]
+            for _i, _pc in enumerate(_sv_pick):
+                _r, _c = _i // _sv_cols + 1, _i % _sv_cols + 1
+                for _k in range(_SV_YN + 1):
+                    _nm, _clr = _SV_YC[_k]
+                    if _k == 0:
+                        _ser = _sv_roll(_pc, _sv_dev)
+                    else:
+                        # 시차 창을 따로 집계해 x를 앞으로 되돌린다. 현재 축에 reindex로
+                        # 끌어오면 부분 주에서 한 칸씩 어긋난다.
+                        _ser = _sv_roll(_pc, _sv_dev, _sv_w0 - _sv_off(_k), _sv_w1 - _sv_off(_k))
+                        if len(_ser):
+                            _ser = _ser.assign(dt=pd.DatetimeIndex(_ser["dt"]) + _sv_off(_k))
+                    if "n" in _ser:
+                        _ser = _ser[_ser["n"] > 0]
+                    if not len(_ser) or _ser[_sv_mcol].notna().sum() == 0:
+                        continue
+                    _tx = ([f"{v:,.0f}" if pd.notna(v) else "" for v in _ser[_sv_mcol]]
+                           if (_sv_lbl and _k == 0) else None)
+                    _sv_fig.add_trace(go.Scatter(
+                        x=_ser["dt"], y=_ser[_sv_mcol], name=_nm, legendgroup=_nm,
+                        showlegend=(_i == 0), mode="lines+markers+text" if _tx else "lines+markers",
+                        text=_tx, textposition="top center", textfont=dict(size=9),
+                        cliponaxis=False, connectgaps=False,
+                        line=dict(color=_clr, width=1.8), marker=dict(size=4),
+                        hovertemplate=f"{_pc} · {_nm}<br>%{{x|%Y-%m-%d}}<br>%{{y:,.1f}}<extra></extra>"),
+                        row=_r, col=_c)
+            _lay = base_layout(h=max(320, 290 * _sv_rows),
+                               title=f"채널별 {_sv_mlab} · {_sv_dev} 기준 ({_sv_unit} {_sv_how})")
+            _lay.pop("xaxis", None); _lay.pop("yaxis", None)
             _lay["showlegend"] = True
             _lay["legend"] = legend_h()
-            fig.update_layout(**_lay)
-            fig.update_xaxes(**_sv_ax)
-            return fig
+            _sv_fig.update_layout(**_lay)
+            _sv_fig.update_xaxes(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
+                                 tickfont=dict(color="#64748b", size=9), **_sv_ax)
+            _sv_fig.update_yaxes(gridcolor="#f1f5f9", linecolor="#e2e8f0",
+                                 tickfont=dict(color="#64748b", size=9))
+            for _an in _sv_fig.layout.annotations:
+                _an.font.size = 12
+            st.plotly_chart(_sv_fig, width="stretch")
+            st.caption(f"패널마다 세로축이 달라요 — 채널끼리 높이를 비교하지 말고 **각 채널의 "
+                       f"모양과 전년 격차**를 보세요. 디바이스는 **{_sv_dev}** 로 고정했어요."
+                       + ("" if _SV_YN else " 비교를 켜면 전년 선이 겹쳐 그려져요."))
 
-        _sv_t1, _sv_t2 = st.tabs(["채널별", "디바이스별"])
-        with _sv_t1:
-            _f = _sv_multi("ch", [c for c in _sv_chs if c != "Total"], _sv_dev)
-            if _f is not None:
-                st.plotly_chart(_f, width="stretch")
-                st.caption(f"디바이스는 **{_sv_dev}** 로 고정했어요. 위에서 바꾸면 같이 바뀌어요.")
-            else:
-                st.info("그릴 채널 데이터가 부족해요.")
-        with _sv_t2:
-            _f = _sv_multi("dev", [c for c in _sv_devs if c != "Total"], _sv_ch)
-            if _f is not None:
-                st.plotly_chart(_f, width="stretch")
-                st.caption(f"채널은 **{_sv_ch}** 로 고정했어요.")
-            else:
-                st.info("그릴 디바이스 데이터가 부족해요.")
-
-        # ── ③ 표 ──
+        # ── ③ 디바이스 비중 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### ③ 표로 보기")
+        st.markdown(f"##### ③ 디바이스 비중 — {esc(_sv_ch)} 채널의 {esc(_sv_mlab)}")
+        _sv_pdev = [d for d in _sv_devs if d != "Total"]
+
+        def _sv_share(d0, d1):
+            """[d0, d1] 구간 합계 기준 디바이스 비중."""
+            out = {}
+            for _d in _sv_pdev:
+                _p = site_pick(_sv_all, _sv_ch, _d)
+                if not len(_p):
+                    continue
+                _m = _p[(_p["dt"] >= d0) & (_p["dt"] <= d1)][_sv_mcol]
+                if _m.notna().any():
+                    out[_d] = float(_m.sum())
+            return out
+
+        _sv_now = _sv_share(_sv_w0, _sv_w1)
+        _sv_yb = _sv_back([_sv_w0, _sv_w1], 1)
+        _sv_ago = _sv_share(_sv_yb[0], _sv_yb[1])
+        if not _sv_now or sum(_sv_now.values()) <= 0:
+            st.info("이 채널에는 디바이스별 데이터가 없어요.")
+        else:
+            _SV_DC = {"App": PALETTE["blue"], "Mobile Web": PALETTE["teal"],
+                      "PC Web": PALETTE["amber"]}
+            _sv_pies = [("지금", _sv_now, f"{_sv_w0:%y/%m/%d}~{_sv_w1:%y/%m/%d}")]
+            if _sv_ago and sum(_sv_ago.values()) > 0:
+                _sv_pies.append(("전년 동기", _sv_ago, f"{_sv_yb[0]:%y/%m/%d}~{_sv_yb[1]:%y/%m/%d}"))
+            _pc = st.columns(len(_sv_pies))
+            for _col, (_plab, _pv, _prng) in zip(_pc, _sv_pies):
+                _fig = go.Figure(go.Pie(
+                    labels=list(_pv.keys()), values=list(_pv.values()), hole=0.45, sort=False,
+                    marker=dict(colors=[_SV_DC.get(k, PALETTE["slate"]) for k in _pv]),
+                    textinfo="label+percent", textfont=dict(size=12),
+                    hovertemplate="%{label}<br>%{value:,.1f}<br>%{percent}<extra></extra>"))
+                _pl = base_layout(h=330, title=f"{_plab} ({_prng})")
+                _pl.pop("xaxis", None); _pl.pop("yaxis", None)
+                _fig.update_layout(**_pl)
+                _col.plotly_chart(_fig, width="stretch")
+            if _sv_ago and sum(_sv_ago.values()) > 0:
+                _tn, _ta = sum(_sv_now.values()), sum(_sv_ago.values())
+                _sh = []
+                for _d in _sv_pdev:
+                    if _d not in _sv_now or _d not in _sv_ago:
+                        continue
+                    _dd = _sv_now[_d] / _tn * 100 - _sv_ago[_d] / _ta * 100
+                    _sh.append(f"{_d} {_dd:+.1f}%p")
+                if _sh:
+                    st.markdown('<div class="appendix">전년 같은 기간 대비 비중 변화 — '
+                                + " · ".join(esc(x) for x in _sh) + '</div>',
+                                unsafe_allow_html=True)
+            st.caption("합계 기준 비중이에요. 'Total' 행은 유니크 방문자라 App+Mobile Web+PC Web "
+                       "합과 다를 수 있어서 비중 계산에서는 뺐어요.")
+
+        # ── ④ 표 ──
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ④ 표로 보기")
         _sv_tb = _sv_show.copy()
         _sv_tb["기간"] = _sv_tb["dt"].dt.strftime("%Y-%m-%d" if _sv_unit != "월별" else "%Y-%m")
         _sv_tb["방문 1명당 거래액"] = np.where(
