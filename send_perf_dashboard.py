@@ -8120,6 +8120,169 @@ def main():
                        "보완하면 좋아요.")
         else:
             st.caption("차원별 3캠페인 이상 있어야 해요.")
+
+        # ── ③ 목표 CTR 역산 ──
+        # 거래액 = 발송 × CTR × 주문CR × 객단가. 나머지를 지금 수준으로 붙들면
+        # 목표 거래액에 필요한 CTR이 나눗셈 한 번으로 나온다. 다만 그 값이 '달성 가능한
+        # 수준인지'까지 말해 주지 않으면 숫자만 보고 목표를 잡게 된다 — 최근 1년 분포와
+        # 같이 놓고, 다른 레버를 움직였을 때의 필요 CTR도 같이 보여 준다.
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ③ 목표 CTR 역산 — 거래액을 되돌리려면 CTR이 얼마여야 하나")
+
+        # 전년 같은 기간을 같이 봐야 해서 기간은 여기서 따로 고른다. 속성 필터는 그대로 적용.
+        _tg_all = raw.copy()
+        for _tc, _tsel in CATSEL.items():
+            _tg_all = _apply_in(_tg_all, _tc, _tsel)
+        if only_matched and "matched" in _tg_all:
+            _tg_all = _tg_all[_tg_all["matched"]]
+        _tg_all = _tg_all[_tg_all["send"].fillna(0) >= min_send].dropna(subset=["dt"])
+        _tg_all = _tg_all[_tg_all["send"].fillna(0) > 0]
+
+        if len(_tg_all) < 20:
+            st.info("역산에 쓸 발송이 부족해요. 사이드바 필터를 넓혀 보세요.")
+        else:
+            _tg_c = st.columns([1, 1.3, 1])
+            with _tg_c[0]:
+                _tg_wk = st.selectbox("현재 구간", ["최근 4주", "최근 8주", "최근 13주"],
+                                      key="p14_tgt_wk",
+                                      help="사이드바 기간 필터와 별개예요. 전년 같은 기간을 "
+                                           "같이 봐야 해서 여기서 따로 골라요.")
+            with _tg_c[1]:
+                _tg_basis = st.selectbox("목표 기준", ["전년 같은 기간", "전월 같은 기간",
+                                                   "직접 입력"], key="p14_tgt_basis")
+            _tg_n = int(re.search(r"\d+", _tg_wk).group())
+            _tg_hi = _tg_all["dt"].max()
+            _tg_lo = _tg_hi - pd.Timedelta(weeks=_tg_n) + pd.Timedelta(days=1)
+
+            def _tg_agg(d0, d1):
+                _w = _tg_all[(_tg_all["dt"] >= d0) & (_tg_all["dt"] <= d1)]
+                if not len(_w):
+                    return None
+                _snd, _uv = float(_w["send"].sum()), float(_w["uv"].sum())
+                _oc, _amt = float(_w["oc"].sum()), float(_w["amt"].sum())
+                if not (_snd and _uv and _oc):
+                    return None
+                return {"건수": len(_w), "발송": _snd, "CTR": _uv / _snd,
+                        "주문CR": _oc / _uv, "객단가": _amt / _oc, "거래액": _amt,
+                        "범위": f"{d0:%y/%m/%d}~{d1:%y/%m/%d}"}
+
+            _tg_cur = _tg_agg(_tg_lo, _tg_hi)
+            # 시차: 전년은 364일(52주, 요일 보존) · 전월은 28일(4주)
+            _tg_off = pd.Timedelta(days=364) if _tg_basis.startswith("전년") else pd.Timedelta(days=28)
+            _tg_ref = _tg_agg(_tg_lo - _tg_off, _tg_hi - _tg_off)
+            with _tg_c[2]:
+                _tg_manual = st.number_input(
+                    "목표 거래액(억원)", min_value=0.0, step=0.5,
+                    value=float(round((_tg_ref or _tg_cur or {}).get("거래액", 0) / 1e8, 2)),
+                    key="p14_tgt_amt", disabled=(_tg_basis != "직접 입력"),
+                    help="'직접 입력'을 골랐을 때만 써요.")
+
+            if _tg_cur is None:
+                st.info("현재 구간에 발송이 없어요. 구간을 넓혀 보세요.")
+            elif _tg_basis != "직접 입력" and _tg_ref is None:
+                st.info(f"{_tg_basis}에 발송 데이터가 없어요. 「직접 입력」으로 목표를 넣거나 "
+                        "구간을 바꿔 보세요.")
+            else:
+                _tg_goal = (_tg_manual * 1e8) if _tg_basis == "직접 입력" else _tg_ref["거래액"]
+                if _tg_goal <= 0:
+                    st.info("목표 거래액이 0이에요. 값을 넣어 주세요.")
+                else:
+                    # 나머지를 지금 수준으로 붙들었을 때 필요한 CTR
+                    _tg_need = _tg_goal / (_tg_cur["발송"] * _tg_cur["주문CR"] * _tg_cur["객단가"])
+                    _tg_gap = _tg_goal / _tg_cur["거래액"] - 1
+
+                    _tk = st.columns(3)
+                    _tk[0].metric("현재 거래액", won(_tg_cur["거래액"]) + "원",
+                                  f"목표까지 {_tg_gap*100:+.1f}%" if abs(_tg_gap) > 1e-9 else "목표 달성",
+                                  delta_color="off")
+                    _tk[1].metric("현재 CTR", f"{_tg_cur['CTR']*100:.2f}%")
+                    _tk[2].metric("목표 CTR", f"{_tg_need*100:.2f}%",
+                                  f"{(_tg_need - _tg_cur['CTR'])*100:+.2f}%p",
+                                  delta_color="off",
+                                  help="발송·주문CR·객단가를 지금 수준으로 붙들었을 때 "
+                                       "목표 거래액에 닿는 CTR이에요.")
+
+                    # 실현 가능성 — 최근 52주 주별 CTR 분포에서 목표가 어디쯤인지
+                    _tw = _tg_all[_tg_all["dt"] >= _tg_hi - pd.Timedelta(weeks=52)].copy()
+                    _tw["_wk"] = _tw["dt"].dt.to_period("W").apply(lambda p: p.start_time)
+                    _twg = _tw.groupby("_wk").apply(
+                        lambda x: (float(x["uv"].sum()) / float(x["send"].sum())
+                                   if x["send"].sum() else np.nan), include_groups=False).dropna()
+                    _tg_hist = None
+                    if len(_twg) >= 8:
+                        _tg_hist = {"중앙값": float(_twg.median()), "상위10%": float(_twg.quantile(.9)),
+                                    "최대": float(_twg.max()), "주수": len(_twg)}
+
+                    _tg_rows = [{"레버": "CTR", "현재": f"{_tg_cur['CTR']*100:.2f}%",
+                                 "필요": f"{_tg_need*100:.2f}%",
+                                 "필요 변화": f"{(_tg_need/_tg_cur['CTR']-1)*100:+.1f}%"}]
+                    for _lv, _key, _fm in (("주문CR", "주문CR", lambda v: f"{v*100:.2f}%"),
+                                           ("발송", "발송", lambda v: f"{v:,.0f}건"),
+                                           ("객단가", "객단가", lambda v: f"{v:,.0f}원")):
+                        _oth = np.prod([_tg_cur[k] for k in ("발송", "CTR", "주문CR", "객단가")
+                                        if k != _key])
+                        _nd = _tg_goal / _oth if _oth else np.nan
+                        _tg_rows.append({"레버": _lv, "현재": _fm(_tg_cur[_key]),
+                                         "필요": _fm(_nd) if np.isfinite(_nd) else "–",
+                                         "필요 변화": (f"{(_nd/_tg_cur[_key]-1)*100:+.1f}%"
+                                                   if np.isfinite(_nd) and _tg_cur[_key] else "–")})
+                    table(pd.DataFrame(_tg_rows), hide_index=True, width="stretch",
+                          dl_name="목표 거래액 역산 — 레버별")
+                    st.caption("한 레버만 움직여 목표에 닿으려면 얼마가 필요한지예요. "
+                               "네 레버의 필요 변화율이 같은 건 거래액이 넷의 곱이라 그래요 "
+                               "— 어디를 움직이는 게 현실적인지로 고르면 돼요.")
+
+                    # 다른 레버를 되돌렸을 때 필요한 CTR — CTR 단독이 비현실적일 때의 대안
+                    if _tg_basis != "직접 입력" and _tg_ref is not None:
+                        _sc = []
+                        for _lab, _snd, _cr, _aov in (
+                                ("지금 그대로", _tg_cur["발송"], _tg_cur["주문CR"], _tg_cur["객단가"]),
+                                ("발송을 기준 수준으로", _tg_ref["발송"], _tg_cur["주문CR"], _tg_cur["객단가"]),
+                                ("주문CR을 기준 수준으로", _tg_cur["발송"], _tg_ref["주문CR"], _tg_cur["객단가"]),
+                                ("발송·주문CR 둘 다", _tg_ref["발송"], _tg_ref["주문CR"], _tg_cur["객단가"])):
+                            _dn = _snd * _cr * _aov
+                            _nc = (_tg_goal / _dn) if _dn else np.nan
+                            _sc.append({"같이 움직이는 것": _lab,
+                                        "필요 CTR": f"{_nc*100:.2f}%" if np.isfinite(_nc) else "–",
+                                        "지금 대비": (f"{(_nc/_tg_cur['CTR']-1)*100:+.1f}%"
+                                                  if np.isfinite(_nc) else "–"),
+                                        "달성 이력": ("–" if not _tg_hist or not np.isfinite(_nc)
+                                                  else ("있음" if _nc <= _tg_hist["최대"] else "없음"))})
+                        table(pd.DataFrame(_sc), hide_index=True, width="stretch",
+                              dl_name="목표 CTR 시나리오")
+                        st.caption("CTR 하나로는 무리일 때 어디를 같이 움직이면 되는지예요. "
+                                   "'달성 이력'은 최근 52주 주별 CTR이 그 값에 닿은 적이 "
+                                   "있는지예요.")
+
+                    # 판정
+                    if _tg_gap <= 0:
+                        _tg_msg = ("이미 목표를 넘었어요. CTR을 더 올릴 이유가 이 계산에는 없어요.",
+                                   "#367A4C")
+                    elif _tg_hist is None:
+                        _tg_msg = (f"목표 CTR은 <b>{_tg_need*100:.2f}%</b>예요. 주별 이력이 "
+                                   "8주 미만이라 달성 가능한 수준인지는 판단하지 못했어요.", "#A07010")
+                    elif _tg_need > _tg_hist["최대"]:
+                        _tg_msg = (f"목표 CTR <b>{_tg_need*100:.2f}%</b>는 최근 {_tg_hist['주수']}주 "
+                                   f"최고치(<b>{_tg_hist['최대']*100:.2f}%</b>)보다 높아요 — "
+                                   "<b>CTR만으로는 못 메워요.</b> 위 시나리오 표에서 발송량·주문CR을 "
+                                   "같이 움직이는 쪽을 보세요.", "#B03030")
+                    elif _tg_need > _tg_hist["상위10%"]:
+                        _tg_msg = (f"목표 CTR <b>{_tg_need*100:.2f}%</b>는 최근 {_tg_hist['주수']}주 "
+                                   f"중 <b>상위 10%</b>(≥{_tg_hist['상위10%']*100:.2f}%)에 드는 "
+                                   "수준이에요. 도달한 적은 있지만 매주 유지하기는 어려워요.", "#A07010")
+                    else:
+                        _tg_msg = (f"목표 CTR <b>{_tg_need*100:.2f}%</b>는 최근 "
+                                   f"{_tg_hist['주수']}주 중앙값(<b>{_tg_hist['중앙값']*100:.2f}%</b>) "
+                                   "부근이라 <b>충분히 노려볼 만한</b> 수준이에요.", "#367A4C")
+                    st.markdown(f'<div class="vg" style="border-left:4px solid {_tg_msg[1]}">'
+                                f'{_tg_msg[0]}</div>', unsafe_allow_html=True)
+                    st.caption(
+                        f"현재 {_tg_cur['범위']} {_tg_cur['건수']:,}건"
+                        + (f" · 기준 {_tg_ref['범위']} {_tg_ref['건수']:,}건" if _tg_ref else "")
+                        + " · 거래액 = 발송 × CTR × 주문CR × 객단가로 나눈 계산이에요. "
+                          "네 값이 서로 독립이라는 전제라, 실제로는 CTR을 올리면 유입 품질이 "
+                          "묽어져 주문CR이 같이 내려가기도 해요. 목표치는 상한이 아니라 "
+                          "출발점으로 보세요.")
         glossary()
 
     # ══════════════════════════════════════════════════════════════
