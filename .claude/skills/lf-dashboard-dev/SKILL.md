@@ -116,7 +116,7 @@ python tests/check_shadowing.py && python tests/test_plan_merge.py \
   && python tests/test_brand_classify.py && python tests/test_store_layer.py \
   && python tests/smoke_pages.py && python tests/test_filter_follows_upload.py \
   && python tests/test_send_volume_band.py && python tests/test_prio_reduction.py \
-  && python tests/smoke_weekly_report.py
+  && python tests/test_site_metrics.py && python tests/smoke_weekly_report.py
 ```
 바꾼 문구가 **로직에 쓰이지 않는지** 교차 검증한다(비교문·딕셔너리 키·인덱싱).
 페이지 분기 문자열·컬럼명·세션 키를 건드리면 앱이 조용히 망가진다.
@@ -203,7 +203,7 @@ python tests/check_shadowing.py && python tests/test_plan_merge.py \
   && python tests/test_brand_classify.py && python tests/test_store_layer.py \
   && python tests/smoke_pages.py && python tests/test_filter_follows_upload.py \
   && python tests/test_send_volume_band.py && python tests/test_prio_reduction.py \
-  && python tests/smoke_weekly_report.py
+  && python tests/test_site_metrics.py && python tests/smoke_weekly_report.py
 git add -A && git commit -m "..."
 git fetch origin main && git merge-base --is-ancestor origin/main HEAD && echo "main 포함 OK"
 git push -u origin "$(git branch --show-current)"
@@ -257,3 +257,5 @@ git push -u origin "$(git branch --show-current)"
 | 감축 후 특정 순위만 확 좋아짐 | 남은발송이 그 순위에만 몰려 있어 빼기만 해도 평균이 오름(구성 효과) | 양쪽에서 다 빼고 비교 · `test_prio_reduction.py` |
 | 우선순위 필터가 예외로 죽음 | 세션에 남은 옛 값('0')이 선택지 밖 | `guard_multi()` 를 위젯 직전에 |
 | 새 파생을 쓰는 화면만 통째로 빔 | `prepare_raw`가 `@st.cache_data`라 `_finalize` 변경을 모름 | `TAGSET_VER` 표식 올리기 + 캐시 밖 복구 (`prio_series()`) |
+| 사이트 UV/거래액이 서로 바뀜 | 두 리포트 구조가 같아 값으로 가름 — 오판 | 사이드바 '🌐 …← 파일명' 확인 · `site_metric_kind()` |
+| 사이트 값이 ±0.1 근처로 깔림 | `전주비` 블록까지 실측치로 읽음 | `기준` 블록만 · `test_site_metrics.py` |
