@@ -81,5 +81,8 @@ jobs:
       - name: 사이트 회원UV·거래액 검사
         run: python tests/test_site_metrics.py
 
+      - name: 목표 CTR 역산 검사
+        run: python tests/test_target_ctr.py
+
       - name: 주간보고 전 페이지 렌더 스모크
         run: python tests/smoke_weekly_report.py
