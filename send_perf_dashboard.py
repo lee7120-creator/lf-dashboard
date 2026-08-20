@@ -4216,10 +4216,13 @@ def main():
                 f'발송량으로 가중 평균한 값이에요 (비교 가능한 조합 {len(_sd)}개).<br>'
                 f'CTR 차이 <b>{_adj_ctr:+.2f}%p</b> · RPS 차이 <b>{_adj_rps:+,.0f}원</b> '
                 f'(단순 비교는 {_raw_ctr:+.2f}%p) — '
-                + ("단순 비교와 방향이 같아요." if _raw_ctr * _adj_ctr > 0 else
-                   "<b>단순 비교와 방향이 반대예요.</b> 층화 값을 믿으세요.")
-                + f' 두 값의 차이({_adj_ctr - _raw_ctr:+.2f}%p)가 클수록 '
-                '"어떤 건을 골랐는지"가 결과를 흔들고 있다는 뜻이에요.</div>',
+                + ("보정값을 못 구했어요(비교 가능한 조합의 발송이 0)." if not np.isfinite(_adj_ctr)
+                   else "단순 비교와 방향이 같아요." if _raw_ctr * _adj_ctr > 0
+                   else "차이가 거의 0이라 방향을 말하기 어려워요." if abs(_adj_ctr) < 1e-9
+                   else "<b>단순 비교와 방향이 반대예요.</b> 층화 값을 믿으세요.")
+                + (f' 두 값의 차이({_adj_ctr - _raw_ctr:+.2f}%p)가 클수록 '
+                   '"어떤 건을 골랐는지"가 결과를 흔들고 있다는 뜻이에요.'
+                   if np.isfinite(_adj_ctr) else "") + '</div>',
                 unsafe_allow_html=True)
             with st.expander(f"조합별 상세 ({len(_sd)}개)"):
                 table(_sd.drop(columns=["_w"]).sort_values("CTR 차이(%p)", ascending=False).style.format({
@@ -4767,7 +4770,8 @@ def main():
                      dl_name="주요 지표 현황")
         st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
-                   "전월비는 전월 동주(기준주의 정확히 4주 전 주)와 비교해요. "
+                   "전월비는 전월 동주(기준주 목요일의 한 달 전이 속한 주)와 비교해요 — "
+                   "보통 4주 전이지만 달에 따라 5주 전이 되기도 해요. "
                    "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
                    "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
         if _wk_site_rows:
@@ -7912,7 +7916,8 @@ def main():
                         st.markdown('<div class="appendix">인당발송을 1건 올리면 거래액이 하루 '
                                     f'<b>{won(_ob_fr["slope"])}원</b> 늘고 이탈이 '
                                     f'<b>{_ob_fc["slope"]:,.0f}명</b> 늘어요. 이탈 1명의 가치가 '
-                                    f'<b>{won(_ob_be)}원</b>보다 크면 손해, 작으면 이득이에요.</div>',
+                                    # 판단 기준선이라 won()의 '22만원' 반올림으로는 부족하다
+                                    f'<b>{_ob_be:,.0f}원</b>보다 크면 손해, 작으면 이득이에요.</div>',
                                     unsafe_allow_html=True)
                         st.caption("이탈 1명의 가치는 그 고객이 앞으로 낼 거래액(LTV)으로 보면 돼요. "
                                    "하루치 증분과 평생 가치를 견주는 셈이라 이 값은 상한선으로만 쓰세요.")
@@ -8148,8 +8153,10 @@ def main():
                                       help="사이드바 기간 필터와 별개예요. 전년 같은 기간을 "
                                            "같이 봐야 해서 여기서 따로 골라요.")
             with _tg_c[1]:
-                _tg_basis = st.selectbox("목표 기준", ["전년 같은 기간", "전월 같은 기간",
-                                                   "직접 입력"], key="p14_tgt_basis")
+                _tg_basis = st.selectbox("목표 기준", ["전년 같은 기간", "직전 같은 기간",
+                                                   "직접 입력"], key="p14_tgt_basis",
+                                         help="'직전 같은 기간'은 현재 구간 바로 앞의 같은 "
+                                              "길이 구간이에요. 창 길이만큼 밀어서 서로 안 겹쳐요.")
             _tg_n = int(re.search(r"\d+", _tg_wk).group())
             _tg_hi = _tg_all["dt"].max()
             _tg_lo = _tg_hi - pd.Timedelta(weeks=_tg_n) + pd.Timedelta(days=1)
@@ -8167,8 +8174,10 @@ def main():
                         "범위": f"{d0:%y/%m/%d}~{d1:%y/%m/%d}"}
 
             _tg_cur = _tg_agg(_tg_lo, _tg_hi)
-            # 시차: 전년은 364일(52주, 요일 보존) · 전월은 28일(4주)
-            _tg_off = pd.Timedelta(days=364) if _tg_basis.startswith("전년") else pd.Timedelta(days=28)
+            # 시차 — 전년은 364일(52주라 요일이 보존된다). '직전'은 창 길이만큼 민다:
+            # 28일 고정으로 두면 8주·13주 창에서 비교 구간이 현재 창과 겹쳐 버린다.
+            _tg_off = (pd.Timedelta(days=364) if _tg_basis.startswith("전년")
+                       else pd.Timedelta(weeks=_tg_n))
             _tg_ref = _tg_agg(_tg_lo - _tg_off, _tg_hi - _tg_off)
             with _tg_c[2]:
                 _tg_manual = st.number_input(
@@ -8184,8 +8193,8 @@ def main():
                         "구간을 바꿔 보세요.")
             else:
                 _tg_goal = (_tg_manual * 1e8) if _tg_basis == "직접 입력" else _tg_ref["거래액"]
-                if _tg_goal <= 0:
-                    st.info("목표 거래액이 0이에요. 값을 넣어 주세요.")
+                if _tg_goal <= 0 or not _tg_cur["거래액"]:
+                    st.info("목표 거래액 또는 현재 거래액이 0이에요. 구간·목표를 확인해 주세요.")
                 else:
                     # 나머지를 지금 수준으로 붙들었을 때 필요한 CTR
                     _tg_need = _tg_goal / (_tg_cur["발송"] * _tg_cur["주문CR"] * _tg_cur["객단가"])
@@ -9795,7 +9804,8 @@ def main():
                             f"발송 {_kt_ga['발송']/1e6:,.1f}백만", delta_color="off")
             _kt_k[1].metric("영업 세일즈 푸시", f"{_kt_gb['건수']:,}건",
                             f"발송 {_kt_gb['발송']/1e6:,.1f}백만", delta_color="off")
-            _kt_pick = [r for r in _kt_rows if r["지표"] == ("CTR" if _munit == "%" else "RPS")]
+            _KT_ROWNM = {"infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "aov": "객단가"}
+            _kt_pick = [r for r in _kt_rows if r["지표"] == _KT_ROWNM.get(_mcol, "RPS")]
             _kt_k[2].metric(f"{_kt_pick[0]['지표']} 차이" if _kt_pick else "차이",
                             _kt_pick[0]["차이"] if _kt_pick else "–",
                             help="컨틴이 영업 세일즈 푸시보다 얼마나 높은지예요.")
