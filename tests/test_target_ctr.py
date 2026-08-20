@@ -177,6 +177,37 @@ def t_scenario_table_offers_other_levers():
 
 
 @case
+def t_prior_window_does_not_overlap_current():
+    """'직전 같은 기간'은 현재 창과 겹치면 안 된다.
+
+    시차를 28일로 고정해 두면 8주·13주 창에서 비교 구간이 현재 창을 파고들어,
+    '지금'과 '직전'이 같은 발송을 나눠 갖게 된다.
+    """
+    at = _open(synth(drop=0.5))
+    sel = [s_ for s_ in at.selectbox if s_.label == "목표 기준"]
+    assert sel and "직전 같은 기간" in list(sel[0].options), \
+        f"직전 같은 기간 옵션이 없어요 — {sel[0].options if sel else None}"
+    sel[0].set_value("직전 같은 기간")
+    at.run()
+    assert not at.exception, at.exception[0].value
+    for _wk in ("최근 4주", "최근 8주", "최근 13주"):
+        _w = [s_ for s_ in at.selectbox if s_.label == "현재 구간"][0]
+        _w.set_value(_wk)
+        at.run()
+        assert not at.exception, f"{_wk}에서 실패: {at.exception[0].value}"
+        _cap = [c for c in _texts(at) if "현재 " in c and "기준 " in c and "~" in c]
+        assert _cap, f"{_wk}: 구간 캡션이 없어요"
+        _m = re.findall(r"(\d{2}/\d{2}/\d{2})~(\d{2}/\d{2}/\d{2})", _cap[0])
+        assert len(_m) >= 2, f"{_wk}: 구간을 못 읽었어요 — {_cap[0][:120]}"
+        _cur = [pd.Timestamp("20" + x.replace("/", "-")) for x in _m[0]]
+        _ref = [pd.Timestamp("20" + x.replace("/", "-")) for x in _m[1]]
+        assert _ref[1] < _cur[0], \
+            f"{_wk}: 직전 구간({_ref[0].date()}~{_ref[1].date()})이 현재({_cur[0].date()}~)와 겹쳐요"
+        assert (_cur[1] - _cur[0]).days == (_ref[1] - _ref[0]).days, \
+            f"{_wk}: 두 구간 길이가 달라요"
+
+
+@case
 def t_manual_target_switches_basis():
     """'직접 입력'을 고르면 그 금액을 목표로 쓴다."""
     at = _open(synth(drop=0.5))
