@@ -184,6 +184,45 @@ def t_registered_in_storage_and_backup():
 
 
 @case
+def t_backup_zip_contains_site():
+    """통합 백업 ZIP에 사이트 데이터가 실제로 담겨야 한다.
+
+    코드에 writestr이 있어도 세션 키를 잘못 읽으면 조용히 빠진다 — 버튼을 눌러
+    만들어진 ZIP을 열어서 확인한다.
+    """
+    import io as _io
+    import zipfile
+    site = _site_store(days=40)
+    at = _open("9. 데이터·다운로드", site=site)
+    btn = [b for b in at.button if "백업 파일 만들기" in b.label]
+    assert btn, f"백업 버튼이 없어요 — {[b.label for b in at.button]}"
+    btn[0].click()
+    at.run()
+    assert not at.exception, at.exception[0].value
+    try:                                              # AppTest 세션은 .get을 안 준다
+        _z = at.session_state["_bak_zip"]
+    except Exception as e:                            # noqa: BLE001
+        raise AssertionError(f"_bak_zip이 세션에 없어요 — {e}") from None
+    assert _z and _z[1], "ZIP이 만들어지지 않았어요"
+    names = zipfile.ZipFile(_io.BytesIO(_z[1])).namelist()
+    assert "site.csv" in names, f"site.csv가 빠졌어요 — {names}"
+    _back = S.finalize_site(pd.read_csv(
+        _io.BytesIO(zipfile.ZipFile(_io.BytesIO(_z[1])).read("site.csv")), dtype={"date": str}))
+    assert _back["date"].nunique() == site["date"].nunique(), \
+        f"백업된 일수가 달라요 — {_back['date'].nunique()} vs {site['date'].nunique()}"
+
+
+@case
+def t_backup_ui_mentions_site():
+    """안내 문구에도 사이트가 있어야 한다 — 빠진 줄 알고 따로 챙기게 된다."""
+    at = _open("9. 데이터·다운로드", site=_site_store(days=20))
+    txt = " ".join(_texts(at))
+    assert "사이트" in txt and "백업" in txt, f"사이트 언급이 없어요 — {txt[:300]}"
+    labels = [b.label for b in at.button] + [d.label for d in at.download_button]
+    assert any("사이트 백업" in x for x in labels), f"개별 백업 버튼이 없어요 — {labels}"
+
+
+@case
 def t_backup_csv_roundtrip():
     """백업 CSV로 나갔다 들어와도 값이 그대로여야 한다."""
     d = _site_store(days=30)
