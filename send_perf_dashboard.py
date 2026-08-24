@@ -3782,7 +3782,7 @@ def main():
         if _n_new and not _n_saved:
             st.warning("저장된 데이터가 0건이에요. 「💾 저장하기」를 눌러야 다음에도 유지돼요.")
 
-        # ── 통합 백업: 캠페인+MTD+기획전+앱푸시 데이터를 한 ZIP 파일로 ──
+        # ── 통합 백업: 캠페인+MTD+기획전+앱푸시+사이트 데이터를 한 ZIP 파일로 ──
         # ZIP 생성은 버튼 클릭 시에만 — expander가 접혀 있어도 매 rerun마다 전체 데이터를
         # CSV 직렬화+압축하던 것이 모든 페이지 상호작용을 느리게 만들던 문제 방지
         st.markdown("##### 📁 통합 백업 (단일 파일)")
@@ -3848,7 +3848,7 @@ def main():
                 "📥 통합 백업 (전체 ZIP)", _bak_cached[1],
                 file_name=f"lf_dashboard_backup_{today_kst():%Y%m%d}.zip", mime="application/zip",
                 width="stretch", key="bak_all")
-        st.caption("캠페인·MTD·기획전·앱푸시 동의 데이터를 한 번에 백업해요. 이 ZIP을 아래에 다시 올리면 "
+        st.caption("캠페인·MTD·기획전·앱푸시 동의·사이트(회원UV·거래액) 데이터를 한 번에 백업해요. 이 ZIP을 아래에 다시 올리면 "
                    "그대로 복원돼요.")
         _rest_all = st.file_uploader("통합 백업 복원하기 (ZIP/CSV)", type=["zip", "csv"], key="restore_all",
                                      help="통합 백업(ZIP) 또는 예전 캠페인 백업(CSV) 모두 올릴 수 있어요.")
@@ -3933,6 +3933,22 @@ def main():
                 st.session_state.pop("push_consent_hash", None)
                 st.cache_data.clear()
                 st.success("앱푸시 데이터를 영구히 지웠어요. 새로고침해 주세요.")
+
+            st.markdown("---")
+            _s_df = finalize_site(st.session_state.get("site_store_df"))
+            st.caption(f"사이트 회원UV·거래액 {len(_s_df):,}행 "
+                       f"({0 if not len(_s_df) else _s_df['date'].nunique():,}일치)")
+            if len(_s_df):
+                st.download_button(
+                    "📥 사이트 백업 (CSV)",
+                    _s_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="send_perf_site_backup.csv", mime="text/csv",
+                    width="stretch", key="site_bak")
+            if st.button("🧹 사이트 저장소 초기화", width="stretch", key="clear_site"):
+                storage_clear(BK, "site")
+                st.session_state.site_store_df = pd.DataFrame(columns=SITE_STORE_COLS)
+                st.cache_data.clear()
+                st.success("사이트 데이터를 영구히 지웠어요. 새로고침해 주세요.")
         st.markdown("---")
         st.caption(f"저장 위치: {BK['status']}")
         if BK["mode"] != "gsheets":
