@@ -72,6 +72,11 @@ python tests/check_shadowing.py && python tests/test_plan_merge.py \
 ```
 스모크는 페이지 목록을 앱에서 직접 읽고 하위탭까지 순회하므로, 새 탭은 **자동으로**
 커버된다. 따로 테스트를 추가할 필요 없다.
+
+**단, 스모크가 넣는 건 캠페인 데이터뿐이다.** 전사 MTD·앱푸시·사이트 데이터가 있어야
+열리는 탭은 스모크가 "데이터를 올려 주세요" 안내만 보고 OK를 찍는다 — 본문 계산은
+한 줄도 안 밟는다. 그런 탭은 세션에 합성 데이터를 넣는 전용 테스트를 같이 만들 것
+(`test_send_volume_band.py` · `test_inflow_funnel.py` · `test_site_metrics.py` 참고).
 **Done when:** 섀도잉 0건, 문구 조인 8건, 브랜드 28건, 스모크 전부 OK.
 
 > 데이터 파싱·조인(`parse_perf_bytes` · `_parse_plan_sheet` · `merge_perf_plan` ·

@@ -84,5 +84,8 @@ jobs:
       - name: 목표 CTR 역산 검사
         run: python tests/test_target_ctr.py
 
+      - name: 유입 퍼널(유니크유입 파생·단계 비율) 검사
+        run: python tests/test_inflow_funnel.py
+
       - name: 주간보고 전 페이지 렌더 스모크
         run: python tests/smoke_weekly_report.py

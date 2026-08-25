@@ -634,8 +634,13 @@ MTD_LABELS = {
     "avgOrderVal": "객단가", "unitPrice": "건단가", "mRevenue": "M당 거래액", "pointM": "적립M",
     "purchaseRate": "구매전환율(CR)", "rpc": "고객당 매출",
     "ctr_send": "유입률(발송당)",
+    "uniq_cr": "유입 대비 구매전환율", "rev_per_uniq": "유입 1명당 거래액",
+    "inflow_dup": "유입 1명당 방문 횟수",
 }
-MTD_DERIVED = ["purchaseRate", "rpc", "ctr_send"]
+# uniq_cr·rev_per_uniq·inflow_dup는 '유니크유입'을 분모로 쓰는 퍼널 지표다.
+# 기존 purchaseRate는 분모가 '발송 고객수'라 '보낸 사람 중 산 비율'이고,
+# uniq_cr은 '들어온 사람 중 산 비율'이라 답하는 질문이 다르다.
+MTD_DERIVED = ["purchaseRate", "rpc", "ctr_send", "uniq_cr", "rev_per_uniq", "inflow_dup"]
 MTD_STORE = "send_perf_mtd_store.csv"
 MTD_STORE_COLS = ["date"] + list(MTD_METRICS)
 
@@ -1154,6 +1159,11 @@ def compute_mtd(df):
     # 있도록 '발송 1건당' 유입률을 따로 만든다.
     _tsend = df["totalSend"].replace(0, np.nan) if "totalSend" in df else np.nan
     df["ctr_send"] = (df["totalInflow"] / _tsend) if "totalInflow" in df else np.nan
+    # 유니크유입 분모 퍼널 — 들어온 사람 기준 전환·객단가·중복 방문
+    _uq = df["uniqueInflow"].replace(0, np.nan) if "uniqueInflow" in df else np.nan
+    df["uniq_cr"] = (df["purchaseCust"] / _uq).clip(0, 1) if "purchaseCust" in df else np.nan
+    df["rev_per_uniq"] = (df["revenue"] / _uq) if "revenue" in df else np.nan
+    df["inflow_dup"] = (df["totalInflow"] / _uq) if "totalInflow" in df else np.nan
     df["t"] = np.arange(len(df))
     df["dow"] = df["date"].dt.dayofweek
     df["month"] = df["date"].dt.to_period("M").astype(str)
@@ -2759,8 +2769,12 @@ def main():
     @st.cache_data(show_spinner=False)
     def cached_classify(b): return classify_upload("", b)
 
+    # compute_mtd에 파생 칼럼을 더하면 이 표식도 같이 올릴 것 — 캐시 키는 래퍼 함수의
+    # 소스와 인자만 보고 compute_mtd 변경은 모른다 (prepare_raw의 TAGSET_VER와 같은 이유).
+    MTDSET_VER = "uniq1"
+
     @st.cache_data(show_spinner=False)
-    def cached_compute_mtd(mtd_df):
+    def cached_compute_mtd(mtd_df, ver=MTDSET_VER):
         """compute_mtd 캐시 — 어느 페이지에서든 매 rerun마다 groupby 4회+회귀 5회를
         다시 돌던 것을 데이터가 같으면 건너뛴다."""
         return compute_mtd(mtd_df)
@@ -2975,7 +2989,7 @@ def main():
             return "–"                                # 결측 버킷 라벨이 'nan%'로 노출되던 것 방지
         if pct:
             return f"{v:.2f}%"
-        if col in ("rps", "aov", "amt", "revenue", "avgOrderVal", "unitPrice"):
+        if col in ("rps", "aov", "amt", "revenue", "avgOrderVal", "unitPrice", "rev_per_uniq"):
             return won(v)
         return f"{v:,.1f}"
 
@@ -3721,8 +3735,8 @@ def main():
         "3. 캠페인 리더보드":    ["캠페인 리더보드"],
         "4. 성과 진단":          ["전환·AOV 진단", "발송유형·브랜드 랭킹", "BPU·우선순위 효율"],
         "5. 맥락·타이밍":        ["카테고리·시간대", "타이밍·발송슬롯", "전년 동요일 비교"],
-        "6. 효율·피로도":        ["전체 효율·추이", "피로도 시계열", "발송 빈도·한계수익",
-                                 "발송량 최적 구간", "요일 패턴"],
+        "6. 효율·피로도":        ["전체 효율·추이", "피로도 시계열", "유입 퍼널",
+                                 "발송 빈도·한계수익", "발송량 최적 구간", "요일 패턴"],
         "7. 기획전 비교분석":    ["기획전 비교분석"],
         "8. 액션":               ["다음주 발송 플레이북", "AI 처방·카피"],
         "9. 데이터·다운로드":    ["데이터·다운로드"],
@@ -3741,7 +3755,7 @@ def main():
     else:
         page = _subs[0]
     if _grp.startswith("6.") and mtd_data is None:
-        st.sidebar.info("피로도 하위탭(시계열·빈도·요일)은 전사 MTD 파일을 올리면 볼 수 있어요.")
+        st.sidebar.info("피로도 하위탭(시계열·퍼널·빈도·요일)은 전사 MTD 파일을 올리면 볼 수 있어요.")
     _model_keys = list(AI_MODELS.keys())
     _default_model = "Gemini 2.5 Flash (균형)"
     model_name = st.sidebar.selectbox(
@@ -3992,6 +4006,14 @@ def main():
             "**‘유입률(발송당)’**(= 총유입 ÷ 총발송)을 쓰세요. 단 피로도 페이지는 **전사 발송**, "
             "여기는 **CRM 발송**만이라 기준을 맞춰도 값 자체는 서로 달라요.\n"
             "- **주문전환율(CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀는지예요.\n"
+            "- **유니크 유입**: 들어온 사람 수예요(같은 사람이 여러 번 와도 1명). "
+            "**총유입**은 방문 횟수라 같은 사람이 3번 오면 3으로 세요.\n"
+            "- **유입 대비 구매전환율** = 구매 고객수 ÷ 유니크 유입. "
+            "'들어온 사람 중 산 비율'이에요. **구매전환율(CR)** 은 분모가 발송 고객수라 "
+            "'보낸 사람 중 산 비율'이고, 답하는 질문이 달라요.\n"
+            "- **유입 1명당 방문 횟수** = 총유입 ÷ 유니크 유입. 1에 가까우면 한 번 오고 말았다는 뜻이고, "
+            "커질수록 같은 사람이 여러 번 들어왔다는 뜻이에요.\n"
+            "- **유입 1명당 거래액** = 거래액 ÷ 유니크 유입. 들어온 사람 1명이 남긴 평균 매출이에요.\n"
             "- **RPS** = 거래액 ÷ 발송. 1건 보냈을 때 평균 매출이에요.\n"
             "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건에 평균 얼마를 썼는지예요.\n"
             "- **거래액**: 발송을 통해 발생한 주문 금액 합계예요.\n")
@@ -7055,7 +7077,8 @@ def main():
         # 인당 발송 기반 피로도 분석은 같은 그룹 하위탭으로 통합됨 (중복 차트 제거)
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.caption("🌡️ 인당 발송 건수 기반 피로도 분석은 상단 하위탭 "
-                   "**피로도 시계열 · 발송 빈도·한계수익 · 요일 패턴**에서 볼 수 있어요"
+                   "**피로도 시계열 · 유입 퍼널 · 발송 빈도·한계수익 · 요일 패턴**에서 "
+                   "볼 수 있어요"
                    + ("" if mtd_data is not None else " (전사 MTD 파일 업로드 필요)") + ".")
 
         glossary()
@@ -7431,18 +7454,26 @@ def main():
     # ══════════════════════════════════════════════════════════════
     # 발송피로도 (전사 MTD) — F1~F4
     # ══════════════════════════════════════════════════════════════
-    elif page in ("피로도 시계열", "발송 빈도·한계수익", "발송량 최적 구간", "요일 패턴"):
+    elif page in ("피로도 시계열", "유입 퍼널", "발송 빈도·한계수익",
+                  "발송량 최적 구간", "요일 패턴"):
         # CTR은 파일이 주는 값이 '유니크유입 ÷ 유니크발송고객수'(고객 1명당)다.
         # 캠페인 페이지 CTR(유입UV ÷ 발송건수)과 분모가 달라 이름에 기준을 박아 둔다.
         MTDOPT = {"CTR(고객당)": "ctr", "유입률(발송당)": "ctr_send",
                   "구매전환율(CR)": "purchaseRate", "발송건당거래액(RPS)": "rps",
                   "거래액": "revenue", "인당 발송 건수": "perSend", "객단가": "avgOrderVal",
+                  # 유니크유입 분모 퍼널 — '들어온 사람' 기준으로 보는 지표들
+                  "유니크 유입": "uniqueInflow", "유입 대비 구매전환율": "uniq_cr",
+                  "유입 1명당 거래액": "rev_per_uniq", "유입 1명당 방문 횟수": "inflow_dup",
+                  "유니크 발송 고객수": "customers", "구매 고객수": "purchaseCust",
                   "총거래액": "revenue_sum", "총유입": "totalInflow_sum",
                   "총발송 건수": "totalSend"}
-        MTD_PCT = {"ctr", "ctr_send", "purchaseRate"}
+        MTD_PCT = {"ctr", "ctr_send", "purchaseRate", "uniq_cr"}
         # ctr는 blue — 대시보드 전역에서 빨강=감소/나쁨(△·급락·이탈)이라 CTR 시리즈가
         # 빨강이면 '나쁜 지표'로 오독됨 (METRIC_OPTS의 CTR 색과도 통일)
         MCLR = {"ctr": PALETTE["blue"], "ctr_send": PALETTE["teal"],
+                "uniqueInflow": PALETTE["blue"], "uniq_cr": PALETTE["purple"],
+                "rev_per_uniq": PALETTE["green"], "inflow_dup": PALETTE["amber"],
+                "customers": PALETTE["slate"], "purchaseCust": PALETTE["purple"],
                 "purchaseRate": PALETTE["purple"], "rps": PALETTE["green"],
                 "revenue": PALETTE["blue"], "perSend": PALETTE["amber"], "avgOrderVal": PALETTE["teal"],
                 "revenue_sum": PALETTE["blue"], "totalInflow_sum": PALETTE["teal"]}
@@ -7450,8 +7481,9 @@ def main():
         def mfmt(col, v):
             if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
             if col in MTD_PCT: return f"{v*100:.2f}%"
-            if col in ("revenue",): return won(v)
+            if col in ("revenue", "rev_per_uniq"): return won(v)
             if col == "perSend": return f"{v:.2f}건"
+            if col == "inflow_dup": return f"{v:.2f}회"
             return f"{v:,.0f}"
 
         if mtd_data is None:
@@ -7562,12 +7594,15 @@ def main():
 
             # ── 비교할 두 지표 (막대 = 발송량 계열, 선 = 효율 계열) ──
             _bar_opts = [o for o in ("인당 발송 건수", "총발송 건수", "유입률(발송당)", "CTR(고객당)",
-                                     "총거래액", "총유입", "거래액", "객단가")
+                                     "총거래액", "총유입", "거래액", "객단가",
+                                     "유니크 유입", "유니크 발송 고객수")
                          if MTDOPT[o] in agg.columns]
             # 기본은 '유입률(발송당)' — 피로도는 발송 1건당 효율로 봐야 신호가 선명하다.
             # CTR(고객당)은 분모(유니크 고객)가 거의 안 움직여서 피로도를 과소평가한다.
             _line_opts = [o for o in ("유입률(발송당)", "CTR(고객당)", "구매전환율(CR)", "발송건당거래액(RPS)",
-                                      "거래액", "객단가", "총거래액", "총유입")
+                                      "거래액", "객단가", "총거래액", "총유입",
+                                      "유입 대비 구매전환율", "유입 1명당 거래액",
+                                      "유입 1명당 방문 횟수")
                           if MTDOPT[o] in agg.columns]
             _mc1, _mc2 = st.columns(2)
             guard_select("p_fat_bar", _bar_opts)
@@ -7747,13 +7782,291 @@ def main():
                         '· <b>유의성</b>: 그 추세가 우연인지 아닌지예요. ‘유의함’이면 우연이 아닌 일관된 흐름으로 봐도 돼요.</div>',
                         unsafe_allow_html=True)
 
+        # ── 유입 퍼널 ──
+        # MTD 파일엔 유니크유입·총유입·구매고객수가 다 들어 있는데 화면엔 CTR·RPS만 나왔다.
+        # '보낸 고객 중 몇 명이 들어왔고, 들어온 고객 중 몇 명이 샀나'를 단계로 끊어 보면
+        # 어디서 새는지가 드러난다 — 발송량을 늘릴 일인지 문구를 고칠 일인지가 여기서 갈린다.
+        elif page == "유입 퍼널":
+            st.title("유입 퍼널")
+            st.markdown("발송한 고객 → 들어온 고객 → 산 고객으로 좁아지는 단계를 끊어서 봐요. "
+                        "어느 단계에서 새는지 알면 어디를 손볼지가 정해져요.")
+            _FN_NEED = ["customers", "uniqueInflow", "purchaseCust"]
+            _fnd = (md.dropna(subset=_FN_NEED) if set(_FN_NEED) <= set(md.columns)
+                    else md.iloc[0:0])
+            if len(_fnd) < 2:
+                st.info("MTD 파일에 유니크 발송 고객수·유니크 유입·구매 고객수가 없어요. "
+                        "최신 양식으로 다시 올려 주세요.")
+                st.stop()
+
+            # ── 조회 기간 (기본: 전체) ──
+            _fn_lo, _fn_hi = _fnd["date"].min().date(), _fnd["date"].max().date()
+            _fc1, _fc2 = st.columns([2, 3])
+            with _fc1:
+                _fn_gran = st.radio("집계", ["일별", "주차별", "월별"], horizontal=True,
+                                    index=1, key="p_fnl_gran")
+            with _fc2:
+                if _fn_lo < _fn_hi:
+                    # key 위젯은 value= 가 최초 1회만 반영된다 — 새 파일로 범위가 넓어지면
+                    # 손 안 댄 필터는 새 범위로 따라가게, 직접 좁힌 건 경계 안으로만 맞춘다.
+                    _fn_span = (_fn_lo, _fn_hi)
+                    _fn_pv = st.session_state.get("_p_fnl_span")
+                    _fn_cv = st.session_state.get("p_fnl_range")
+                    if _fn_pv != _fn_span:
+                        if _fn_cv is None or (isinstance(_fn_cv, (tuple, list))
+                                              and tuple(_fn_cv) == _fn_pv):
+                            st.session_state["p_fnl_range"] = _fn_span
+                        elif isinstance(_fn_cv, (tuple, list)) and len(_fn_cv) == 2:
+                            st.session_state["p_fnl_range"] = tuple(
+                                min(max(d, _fn_lo), _fn_hi) for d in _fn_cv)
+                        st.session_state["_p_fnl_span"] = _fn_span
+                    _fn_kw = {} if "p_fnl_range" in st.session_state else {"value": _fn_span}
+                    _fn_rng = st.date_input("조회 기간", min_value=_fn_lo, max_value=_fn_hi,
+                                            key="p_fnl_range", help="기본은 전체 기간이에요.",
+                                            **_fn_kw)
+                else:
+                    _fn_rng = (_fn_lo, _fn_hi)
+                    st.caption(f"단일 일자: {_fn_lo}")
+
+            _f_lo, _f_hi = pd.Timestamp(_fn_lo), pd.Timestamp(_fn_hi)
+            if isinstance(_fn_rng, (tuple, list)) and len(_fn_rng) == 2:
+                _f_lo, _f_hi = pd.Timestamp(_fn_rng[0]), pd.Timestamp(_fn_rng[1])
+            else:
+                st.caption("종료일까지 골라야 기간이 적용돼요. 지금은 전체 기간이에요.")
+            _fsel = _fnd[(_fnd["date"] >= _f_lo) & (_fnd["date"] <= _f_hi)]
+            if len(_fsel) < 2:
+                st.info("선택한 기간에 데이터가 부족해요. 기간을 넓혀 주세요.")
+                st.stop()
+            if (_f_lo.date(), _f_hi.date()) != (_fn_lo, _fn_hi):
+                st.caption(f"{_f_lo:%Y-%m-%d} ~ {_f_hi:%Y-%m-%d} · {len(_fsel):,}일치로 "
+                           "좁혀서 보고 있어요.")
+
+            # 단계 비율은 '일별 비율의 평균'이 아니라 '기간 합계끼리의 비율'로 낸다.
+            # 발송량이 들쭉날쭉해서 일별 평균을 내면 소량 발송일이 과대 대표된다.
+            def _fn_sum(d, c):
+                # 전부 결측인 칼럼을 pandas는 합계 0으로 돌려준다 — 그대로 쓰면 '0회·0원'이
+                # 찍혀 데이터가 없는 건지 정말 0인 건지 구분이 안 된다. 없으면 결측으로 둔다.
+                if c not in d.columns:
+                    return np.nan
+                _vv = pd.to_numeric(d[c], errors="coerce")
+                return float(_vv.sum()) if _vv.notna().any() else np.nan
+
+            def _fn_div(a, b):
+                return (a / b) if (np.isfinite(a) and np.isfinite(b) and b) else np.nan
+
+            _t_cst = _fn_sum(_fsel, "customers")
+            _t_uvq = _fn_sum(_fsel, "uniqueInflow")
+            _t_pcs = _fn_sum(_fsel, "purchaseCust")
+            _t_tif = _fn_sum(_fsel, "totalInflow")
+            _t_rev = _fn_sum(_fsel, "revenue")
+            _fdays = max(len(_fsel), 1)
+            _r_uv = _fn_div(_t_uvq, _t_cst)      # 발송 고객 → 유입 고객
+            _r_by = _fn_div(_t_pcs, _t_uvq)      # 유입 고객 → 구매 고객
+            _r_all = _fn_div(_t_pcs, _t_cst)     # 발송 고객 → 구매 고객
+            _r_dup = _fn_div(_t_tif, _t_uvq)     # 유입 1명당 방문 횟수
+            _r_rpu = _fn_div(_t_rev, _t_uvq)     # 유입 1명당 거래액
+
+            def _fn_pc(v):
+                return f"{v*100:.2f}%" if np.isfinite(v) else "–"
+
+            def _fn_card(col, title, val, sub):
+                col.markdown(
+                    f'<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;'
+                    f'padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
+                    f'<div style="font-size:12px;color:#64748b">{esc(title)}</div>'
+                    f'<div style="font-size:20px;color:#1e293b;font-weight:600;'
+                    f'font-feature-settings:\'tnum\' 1">{esc(val)}</div>'
+                    f'<div style="font-size:12px;color:#94a3b8;margin-top:3px">{esc(sub)}</div>'
+                    '</div>', unsafe_allow_html=True)
+
+            _kc = st.columns(4)
+            _fn_card(_kc[0], "일평균 발송 고객(유니크)",
+                     f"{_t_cst/_fdays:,.0f}명" if np.isfinite(_t_cst) else "–",
+                     f"선택 기간 {_fdays:,}일")
+            _fn_card(_kc[1], "일평균 유니크 유입",
+                     f"{_t_uvq/_fdays:,.0f}명" if np.isfinite(_t_uvq) else "–",
+                     f"발송 고객의 {_fn_pc(_r_uv)}")
+            _fn_card(_kc[2], "일평균 구매 고객",
+                     f"{_t_pcs/_fdays:,.0f}명" if np.isfinite(_t_pcs) else "–",
+                     f"유입 고객의 {_fn_pc(_r_by)}")
+            _fn_card(_kc[3], "발송→구매 전환율", _fn_pc(_r_all),
+                     f"유입 1명당 {won(_r_rpu)}원" if np.isfinite(_r_rpu) else "거래액 없음")
+
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            _fig = go.Figure(go.Funnel(
+                y=["발송 고객(유니크)", "유입 고객(유니크)", "구매 고객"],
+                x=[_t_cst / _fdays, _t_uvq / _fdays, _t_pcs / _fdays],
+                textinfo="value+percent previous",
+                marker=dict(color=[PALETTE["slate"], PALETTE["blue"], PALETTE["purple"]])))
+            _fig.update_layout(**base_layout(h=320, title="하루 평균 퍼널 (선택 기간 합계 기준 비율)"))
+            st.plotly_chart(_fig, width="stretch")
+            st.markdown('<div class="appendix">막대 옆 %는 <b>바로 앞 단계 대비</b> 남은 비율이에요. '
+                        '전사 MTD 기준이라 CRM 발송만 보는 다른 페이지와 값이 달라요. '
+                        '비율은 일별 비율의 평균이 아니라 <b>기간 합계끼리 나눈 값</b>이라, '
+                        '기간을 잘라도 소량 발송일에 휘둘리지 않아요.</div>',
+                        unsafe_allow_html=True)
+
+            # ── 단계별 전환율 추이 ──
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 📉 단계별 전환율 추이")
+            _FN_G = {"일별": None, "주차별": "W", "월별": "M"}
+            _fsk = [c for c in ("customers", "uniqueInflow", "purchaseCust",
+                                "totalInflow", "revenue") if c in _fsel.columns]
+            if _FN_G[_fn_gran] is None:
+                _fg = _fsel.copy()
+                _fg["_x"] = _fg["date"].dt.strftime("%m/%d")
+            else:
+                _fper = _fsel["date"].dt.to_period(_FN_G[_fn_gran])
+                _fg = (_fsel.groupby(_fper, sort=True)
+                       .agg(**{c: pd.NamedAgg(c, "sum") for c in _fsk})
+                       .reset_index())
+                _fpc = _fg.columns[0]
+                _fg["_x"] = (_fg[_fpc].dt.start_time.dt.strftime("%y-%m/%d")
+                             if _fn_gran == "주차별" else _fg[_fpc].astype(str))
+
+            def _fn_ratio(num, den):
+                if num not in _fg.columns or den not in _fg.columns:
+                    return pd.Series(np.nan, index=_fg.index)
+                _nn = pd.to_numeric(_fg[num], errors="coerce")
+                _dd = pd.to_numeric(_fg[den], errors="coerce").replace(0, np.nan)
+                return _nn / _dd
+
+            _fg["_uvr"] = _fn_ratio("uniqueInflow", "customers")
+            _fg["_byr"] = _fn_ratio("purchaseCust", "uniqueInflow")
+            _fg["_alr"] = _fn_ratio("purchaseCust", "customers")
+            _fg["_dupr"] = _fn_ratio("totalInflow", "uniqueInflow")
+            _fg["_rpur"] = _fn_ratio("revenue", "uniqueInflow")
+
+            _figt = go.Figure()
+            for _fcol, _fnm, _fcl in (("_uvr", "발송→유입(고객당)", PALETTE["blue"]),
+                                      ("_byr", "유입→구매", PALETTE["purple"]),
+                                      ("_alr", "발송→구매", PALETTE["green"])):
+                _figt.add_trace(go.Scatter(
+                    x=_fg["_x"], y=_fg[_fcol] * 100, mode="lines+markers", name=_fnm,
+                    line=dict(color=_fcl, width=2), marker=dict(size=6),
+                    connectgaps=False))
+            _flay = base_layout(h=340, ysuffix="%", title=f"{_fn_gran} 단계별 전환율", hover="x")
+            _flay["showlegend"] = True
+            _flay["legend"] = legend_h()
+            _figt.update_layout(**_flay)
+            st.plotly_chart(_figt, width="stretch")
+            st.markdown('<div class="appendix">세 선이 같이 내려가면 발송량·피로도 쪽을, '
+                        '<b>유입→구매만</b> 내려가면 랜딩·오퍼 쪽을 먼저 보세요. '
+                        '<b>발송→유입만</b> 내려가면 문구·타겟 문제에 가까워요.</div>',
+                        unsafe_allow_html=True)
+
+            # ── 유입 품질 — 중복 방문·1명당 거래액 ──
+            if _fg["_dupr"].notna().any() or _fg["_rpur"].notna().any():
+                st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+                st.markdown("##### 💎 유입 품질 — 한 명이 몇 번 오고 얼마를 쓰나")
+                _figq = stacked_panels(
+                    _fg["_x"], _fg["_dupr"], "유입 1명당 방문 횟수",
+                    _fg["_rpur"], "유입 1명당 거래액",
+                    PALETTE["amber"], PALETTE["green"], h=400,
+                    bar_suffix="회", line_suffix="원",
+                    title="유입 품질 추이")
+                st.plotly_chart(_figq, width="stretch")
+                st.markdown('<div class="appendix">방문 횟수는 늘었는데 1명당 거래액이 제자리면 '
+                            '<b>같은 사람이 여러 번 들어온 것</b>에 가까워요 — 유입 수가 늘어난 것처럼 '
+                            '보여도 실제 매출로는 안 이어져요.</div>', unsafe_allow_html=True)
+
+            # ── 앞 구간과 비교 ──
+            # 창 앞에 데이터가 있으면 '직전 같은 기간'과, 없으면(기본값이 전체 기간이라
+            # 흔하다) 선택 구간을 반으로 잘라 전반↔후반으로 견준다. 무엇과 비교했는지는
+            # 캡션에 반드시 밝힌다 — 대체한 걸 모르면 숫자를 잘못 읽는다.
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 🔁 앞 구간과 비교")
+            _fwin = (_f_hi - _f_lo).days + 1
+            _fp_hi = _f_lo - pd.Timedelta(days=1)
+            _fp_lo = _fp_hi - pd.Timedelta(days=_fwin - 1)
+            _fprv = _fnd[(_fnd["date"] >= _fp_lo) & (_fnd["date"] <= _fp_hi)]
+            if len(_fprv) >= max(3, _fwin * 0.5):
+                _fa, _fb = _fprv, _fsel
+                _fla, _flb = "직전", "선택 기간"
+                _fnote = (f"직전 같은 기간: {_fp_lo:%Y-%m-%d} ~ {_fp_hi:%Y-%m-%d} "
+                          f"({len(_fprv):,}일). 창 길이만큼 뒤로 밀어서 겹치지 않게 잡았어요.")
+            else:
+                _fmid = _f_lo + pd.Timedelta(days=(_fwin // 2))
+                _fa = _fsel[_fsel["date"] < _fmid]
+                _fb = _fsel[_fsel["date"] >= _fmid]
+                _fla, _flb = "전반", "후반"
+                _fnote = (f"창 앞에 데이터가 없어 <b>선택 구간을 반으로 잘라</b> 비교했어요 — "
+                          f"전반 {_f_lo:%Y-%m-%d}~{(_fmid - pd.Timedelta(days=1)):%Y-%m-%d}"
+                          f"({len(_fa):,}일) ↔ 후반 {_fmid:%Y-%m-%d}~{_f_hi:%Y-%m-%d}"
+                          f"({len(_fb):,}일).")
+
+            if min(len(_fa), len(_fb)) < 3:
+                st.caption("비교할 만큼 날짜가 모아지지 않았어요. 기간을 넓혀 주세요.")
+            else:
+                def _fn_stat(d):
+                    """구간 하나의 퍼널 숫자 — 비율은 전부 합계끼리 나눈다."""
+                    _n = max(len(d), 1)
+                    _c = _fn_sum(d, "customers"); _u = _fn_sum(d, "uniqueInflow")
+                    _p = _fn_sum(d, "purchaseCust"); _i = _fn_sum(d, "totalInflow")
+                    _v = _fn_sum(d, "revenue")
+                    return dict(cst=_c / _n, uvq=_u / _n, pcs=_p / _n,
+                                r_uv=_fn_div(_u, _c), r_by=_fn_div(_p, _u),
+                                r_all=_fn_div(_p, _c), r_dup=_fn_div(_i, _u),
+                                r_rpu=_fn_div(_v, _u))
+
+                _sa, _sb = _fn_stat(_fa), _fn_stat(_fb)
+
+                def _fn_dl(c, p, pp=False):
+                    """비율은 %p, 나머지는 증감률. 감소는 사내 표기대로 △."""
+                    if not (np.isfinite(c) and np.isfinite(p)):
+                        return "–"
+                    if not pp and not p:
+                        return "–"
+                    _dv = (c - p) * 100 if pp else (c / p - 1) * 100
+                    _unit = "%p" if pp else "%"
+                    return (f"△{abs(_dv):.1f}{_unit}" if _dv < 0 else f"+{_dv:.1f}{_unit}")
+
+                def _fn_cnt(v):
+                    return f"{v:,.0f}명" if np.isfinite(v) else "–"
+
+                def _fn_row(name, key, fmt, pp=False):
+                    return {"단계": name, _fla: fmt(_sa[key]), _flb: fmt(_sb[key]),
+                            "변화": _fn_dl(_sb[key], _sa[key], pp=pp)}
+
+                _frows = [
+                    _fn_row("발송 고객(일평균)", "cst", _fn_cnt),
+                    _fn_row("유니크 유입(일평균)", "uvq", _fn_cnt),
+                    _fn_row("구매 고객(일평균)", "pcs", _fn_cnt),
+                    _fn_row("발송→유입(고객당)", "r_uv", _fn_pc, pp=True),
+                    _fn_row("유입→구매", "r_by", _fn_pc, pp=True),
+                    _fn_row("발송→구매", "r_all", _fn_pc, pp=True),
+                    _fn_row("유입 1명당 방문 횟수", "r_dup",
+                            lambda v: f"{v:.2f}회" if np.isfinite(v) else "–"),
+                    _fn_row("유입 1명당 거래액", "r_rpu",
+                            lambda v: f"{won(v)}원" if np.isfinite(v) else "–"),
+                ]
+                table(pd.DataFrame(_frows), hide_index=True, width="stretch",
+                      dl_name="유입 퍼널 구간 비교")
+                st.markdown(f'<div class="appendix">{_fnote}</div>', unsafe_allow_html=True)
+
+                # 어느 단계가 가장 크게 움직였나 — 두 단계 비율을 상대 변화로 견준다
+                _fmov = [(nm, (_sb[k] / _sa[k] - 1) * 100)
+                         for nm, k in (("발송→유입", "r_uv"), ("유입→구매", "r_by"))
+                         if np.isfinite(_sa[k]) and np.isfinite(_sb[k]) and _sa[k]]
+                if _fmov:
+                    _fnm, _fdv = max(_fmov, key=lambda t: abs(t[1]))
+                    _fdir = "떨어졌어요" if _fdv < 0 else "올랐어요"
+                    _fadv = ("문구·타겟" if _fnm == "발송→유입" else "랜딩·오퍼")
+                    st.markdown(
+                        f'<div class="appendix">가장 크게 움직인 단계는 <b>{esc(_fnm)}</b>예요 — '
+                        f'{esc(_fla)} 대비 <b>{abs(_fdv):.1f}%</b> {_fdir}. '
+                        + (f'여기가 병목이면 <b>{_fadv}</b> 쪽을 먼저 보세요.' if _fdv < 0 else
+                           f'{_fadv} 쪽에서 잘 먹힌 게 있는지 확인해 두면 다음에 재현할 수 있어요.')
+                        + '</div>', unsafe_allow_html=True)
+
         # ── 발송 빈도·한계수익 (구 F2+F3 통합) ──
         elif page == "발송 빈도·한계수익":
             st.title("발송 빈도 효율·한계수익")
             st.markdown("고객 한 명에게 몇 번 보냈을 때 효율이 어떻게 변하는지, 한 구간 더 늘리면 "
                         "얼마나 남는지 함께 봐요.")
             lab = st.selectbox("지표", ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)",
-                                      "발송건당거래액(RPS)", "거래액", "객단가"])
+                                      "발송건당거래액(RPS)", "거래액", "객단가",
+                                      "유입 대비 구매전환율", "유입 1명당 거래액",
+                                      "유입 1명당 방문 횟수"])
             mc = MTDOPT[lab]
             b = mtd_data["buckets"]
             if len(b):
@@ -7789,11 +8102,13 @@ def main():
             if len(q):
                 cc = st.columns(2)
                 with cc[0]:
-                    _l1o = ["발송건당거래액(RPS)", "CTR(고객당)", "유입률(발송당)", "거래액"]
+                    _l1o = ["발송건당거래액(RPS)", "CTR(고객당)", "유입률(발송당)", "거래액",
+                            "유입 1명당 거래액"]
                     guard_select("q_l", _l1o)
                     l1 = st.selectbox("막대 지표 (위)", _l1o, key="q_l")
                 with cc[1]:
-                    _l2o = ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)", "객단가"]
+                    _l2o = ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)", "객단가",
+                            "유입 대비 구매전환율"]
                     guard_select("q_r", _l2o)
                     l2 = st.selectbox("선 지표 (아래)", _l2o, key="q_r")
                 m1, m2 = MTDOPT[l1], MTDOPT[l2]
@@ -8011,7 +8326,8 @@ def main():
         else:
             st.title("요일 패턴")
             lab = st.selectbox("지표", ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)",
-                                      "발송건당거래액(RPS)", "거래액", "인당 발송 건수"])
+                                      "발송건당거래액(RPS)", "거래액", "인당 발송 건수",
+                                      "유입 대비 구매전환율", "유니크 유입"])
             mc = MTDOPT[lab]
             dm = mtd_data["dow_mean"]
             order = ["월", "화", "수", "목", "금", "토", "일"]
