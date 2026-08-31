@@ -290,7 +290,7 @@ def _parse_plan_sheet(rows, lookup):
 
 
 def parse_plan_bytes(file_bytes):
-    """기획 엑셀(통합본) → {(date, af): (title, body)} 사전.
+    """기획 엑셀(통합본) → {(date, af): (제목, 내용, 문구변경, 잔여모수)} 사전.
 
     165개 주차 시트를 순회하며, 'AF코드' 가 들어간 헤더 행을 만날 때마다
     컬럼 매핑(일자/AF코드/제목/내용)을 갱신해 하위 표가 여러 개여도 견고하게 파싱한다.
@@ -4934,9 +4934,15 @@ def main():
                 return mon, sun, None
             lo, hi = mon.strftime("%Y%m%d"), sun.strftime("%Y%m%d")
             seen, rows = set(), []
-            for (d, af), (title, body) in lk.items():
+            for (d, af), _tb in lk.items():
                 if not d or not (lo <= d <= hi):
                     continue
+                # lookup 값은 (제목, 내용, 문구변경, 잔여모수) 4-튜플 — 여기선 앞 둘만 쓴다.
+                # 2-튜플로 고정해 풀면 W·X열이 붙은 뒤부터 ValueError로 죽는다
+                # (merge_perf_plan과 같은 관용 처리).
+                _tb = tuple(_tb) if isinstance(_tb, (tuple, list)) else (_tb,)
+                title = _s(_tb[0]) if len(_tb) > 0 else ""
+                body = _s(_tb[1]) if len(_tb) > 1 else ""
                 key = (d, title.strip(), body.strip())
                 if key in seen:                          # 같은 문구가 여러 AF코드(세그먼트)로 중복 등록된 경우 1건만
                     continue

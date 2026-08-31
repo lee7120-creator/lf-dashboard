@@ -207,6 +207,47 @@ def t_end_to_end_upload_then_plan():
     assert sorted(int(h) for h in m["hour"]) == [800, 1000], list(m["hour"])
 
 
+@case
+def t_exec_note_reads_four_tuple_lookup():
+    """주간보고 「금주 집행 내용 요약」의 자동 생성이 4-튜플 lookup을 읽어야 한다.
+
+    lookup 값은 W·X열(문구변경·잔여모수)이 붙으면서 `(제목, 내용, 문구변경, 잔여모수)`
+    4-튜플이 됐는데, 이 버튼만 `(title, body)` 2-튜플로 고정해 풀고 있어 운영에서
+    ValueError로 죽었다. 세션에 lookup이 있어야만 밟는 경로라 스모크로는 안 잡힌다."""
+    from streamlit.testing.v1 import AppTest
+    sys.path.insert(0, str(ROOT / "tests"))
+    from smoke_pages import synth_store
+
+    t = S.today_kst()
+    mon = t - datetime.timedelta(days=t.weekday())
+    d = mon.strftime("%Y%m%d")
+    lookup = {}
+    S._parse_plan_sheet([["일자", "AF코드", "제목", "내용"],
+                         [d, "AP03", "제목A", "내용A"],
+                         [d, "AP04", "제목B", "내용B"]], lookup)
+    assert lookup and all(len(v) == 4 for v in lookup.values()), \
+        f"lookup 값이 4-튜플이 아니에요 — {list(lookup.values())[:2]}"
+
+    at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=300)
+    at.session_state["camp_store"] = synth_store(weeks=6)
+    at.session_state["plan_lookup_gs"] = lookup
+    at.run()
+    assert not at.exception, at.exception[0].value
+    at.sidebar.radio[0].set_value("0. 주간보고")
+    at.run()
+    assert not at.exception, at.exception[0].value
+
+    bkey = f"btn_r_exec_{d}"
+    btns = [b for b in at.button if b.proto.id.endswith(bkey) or bkey in str(b.proto.id)]
+    assert btns, f"'{bkey}' 자동 생성 버튼을 못 찾았어요"
+    btns[0].click()
+    at.run()
+    assert not at.exception, f"자동 생성에서 죽었어요: {at.exception[0].value}"
+    body = " ".join(str(e.value) for e in at.markdown)
+    assert "집행 예정" in body and "제목A" in body, \
+        f"이번 주 기획 문구가 안 채워졌어요 — {body[-400:]}"
+
+
 def main():
     fails = []
     for fn in CASES:
