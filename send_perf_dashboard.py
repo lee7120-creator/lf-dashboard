@@ -290,7 +290,7 @@ def _parse_plan_sheet(rows, lookup):
 
 
 def parse_plan_bytes(file_bytes):
-    """기획 엑셀(통합본) → {(date, af): (title, body)} 사전.
+    """기획 엑셀(통합본) → {(date, af): (제목, 내용, 문구변경, 잔여모수)} 사전.
 
     165개 주차 시트를 순회하며, 'AF코드' 가 들어간 헤더 행을 만날 때마다
     컬럼 매핑(일자/AF코드/제목/내용)을 갱신해 하위 표가 여러 개여도 견고하게 파싱한다.
@@ -4934,9 +4934,15 @@ def main():
                 return mon, sun, None
             lo, hi = mon.strftime("%Y%m%d"), sun.strftime("%Y%m%d")
             seen, rows = set(), []
-            for (d, af), (title, body) in lk.items():
+            for (d, af), _tb in lk.items():
                 if not d or not (lo <= d <= hi):
                     continue
+                # lookup 값은 (제목, 내용, 문구변경, 잔여모수) 4-튜플 — 여기선 앞 둘만 쓴다.
+                # 2-튜플로 고정해 풀면 W·X열이 붙은 뒤부터 ValueError로 죽는다
+                # (merge_perf_plan과 같은 관용 처리).
+                _tb = tuple(_tb) if isinstance(_tb, (tuple, list)) else (_tb,)
+                title = _s(_tb[0]) if len(_tb) > 0 else ""
+                body = _s(_tb[1]) if len(_tb) > 1 else ""
                 key = (d, title.strip(), body.strip())
                 if key in seen:                          # 같은 문구가 여러 AF코드(세그먼트)로 중복 등록된 경우 1건만
                     continue
@@ -5092,10 +5098,14 @@ def main():
                 with st.expander(f"🗂 {_md(ref_sel)} 당시의 '금주 집행 내용 요약' 보기"):
                     st.markdown(_note_render(_past_exec), unsafe_allow_html=True)
 
-        # ── 월 누계(MTD) — 기준주 일요일 마감 기준 ──
+        # ── 월 누계(MTD) — 기준주 마감일 기준 ──
+        # 마감일은 기준주 일요일이 아니라 **KPI 카드와 같은 동요일 누계**(_elapsed)다.
+        # 완결 주면 ref_ws+6 == ref_we라 기존 동작과 같지만, 부분 주에선 아직 오지 않은
+        # 일요일을 마감으로 쓰게 돼 월말 월요일(8/31 등)에 '당월'이 다음 달로 한 주 일찍
+        # 넘어간다 — 9/1~9/6 창에는 실적도 사이트 데이터도 없어 표 전체가 '–'로 비었다.
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📆 월 누계(MTD) — 전월·전년 같은 기간 대비")
-        ref_end = ref_we.date()
+        ref_end = (ref_ws + pd.Timedelta(days=_elapsed)).date()
         m_first = ref_end.replace(day=1)
 
         def _mtd_range(y, m, day):
@@ -5149,7 +5159,9 @@ def main():
                      hide_index=True, width="stretch", height=38 + 35 * len(rows),
                      column_config={"지표": st.column_config.Column(width="medium")},
                      dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
-        st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
+        _mtd_endlab = ("기준주 일요일" if _elapsed >= 6 else
+                       f"기준주 {['월','화','수','목','금','토','일'][_elapsed]}요일(실적이 있는 마지막 날)")
+        st.markdown(f'<div class="appendix">MTD는 <b>{_mtd_endlab}까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
                     + ('<br><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 실적과 분모가 '

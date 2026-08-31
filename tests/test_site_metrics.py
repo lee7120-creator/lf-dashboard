@@ -420,6 +420,46 @@ def t_weekly_mtd_value_is_daily_mean():
     assert abs(shown - want) < 0.15, f"화면 {shown} vs 계산 {want}"
 
 
+def _shift_to(df, col, end):
+    """날짜 칼럼('YYYYMMDD' 문자열)을 통째로 밀어 마지막 날짜를 end로 맞춘다."""
+    d = df.copy()
+    dt = pd.to_datetime(d[col], format="%Y%m%d")
+    d[col] = (dt + (pd.Timestamp(end) - dt.max())).dt.strftime("%Y%m%d")
+    return d
+
+
+@case
+def t_mtd_window_clamps_to_partial_week():
+    """부분 주에선 MTD 마감이 '아직 오지 않은 기준주 일요일'이 되면 안 된다.
+
+    실적 마지막 날이 월말 **월요일**이면 기준주는 그 주 월~일이라 일요일이 다음 달로
+    넘어간다. 그 일요일을 마감으로 쓰면 '당월 MTD'가 한 주 일찍 다음 달이 되고,
+    그 창엔 실적도 사이트 데이터도 없어 표 전체가 '–'로 빈다.
+    (2025-03-31은 월요일이자 3월 말일 — 달력과 무관하게 재현되도록 날짜를 고정한다)"""
+    _END = "2025-03-31"
+    camp = _shift_to(synth_store(weeks=12), "date", _END)
+    site = _shift_to(_site_store(days=200), "date", _END)
+    at = _open("0. 주간보고", site=site, camp=camp)
+    cols = []
+    for t in at.dataframe:
+        cols += [str(c) for c in getattr(t.value, "columns", [])
+                 if str(c).startswith("당월 MTD")]
+    assert cols, "당월 MTD 표를 못 찾았어요"
+    assert "(3/1~3/31)" in cols[0], \
+        f"부분 주 마감이 다음 달로 넘어갔어요 — {cols[0]} (기대: 3/1~3/31)"
+    # 창이 맞으면 사이트 행도 값이 차야 한다
+    for t in at.dataframe:
+        v = t.value
+        _cc = [c for c in getattr(v, "columns", []) if str(c).startswith("당월 MTD")]
+        if not _cc:
+            continue
+        hit = v[v["지표"].astype(str).str.startswith("앱푸시 회원UV")]
+        if len(hit):
+            got = str(hit.iloc[0][_cc[0]])
+            assert got != "–", "창은 맞는데 앱푸시 회원UV가 비었어요"
+            break
+
+
 def main():
     fails = []
     for fn in CASES:
