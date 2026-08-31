@@ -5098,10 +5098,14 @@ def main():
                 with st.expander(f"🗂 {_md(ref_sel)} 당시의 '금주 집행 내용 요약' 보기"):
                     st.markdown(_note_render(_past_exec), unsafe_allow_html=True)
 
-        # ── 월 누계(MTD) — 기준주 일요일 마감 기준 ──
+        # ── 월 누계(MTD) — 기준주 마감일 기준 ──
+        # 마감일은 기준주 일요일이 아니라 **KPI 카드와 같은 동요일 누계**(_elapsed)다.
+        # 완결 주면 ref_ws+6 == ref_we라 기존 동작과 같지만, 부분 주에선 아직 오지 않은
+        # 일요일을 마감으로 쓰게 돼 월말 월요일(8/31 등)에 '당월'이 다음 달로 한 주 일찍
+        # 넘어간다 — 9/1~9/6 창에는 실적도 사이트 데이터도 없어 표 전체가 '–'로 비었다.
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📆 월 누계(MTD) — 전월·전년 같은 기간 대비")
-        ref_end = ref_we.date()
+        ref_end = (ref_ws + pd.Timedelta(days=_elapsed)).date()
         m_first = ref_end.replace(day=1)
 
         def _mtd_range(y, m, day):
@@ -5155,7 +5159,9 @@ def main():
                      hide_index=True, width="stretch", height=38 + 35 * len(rows),
                      column_config={"지표": st.column_config.Column(width="medium")},
                      dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
-        st.markdown('<div class="appendix">MTD는 <b>기준주 일요일까지의 월 누계</b>예요. '
+        _mtd_endlab = ("기준주 일요일" if _elapsed >= 6 else
+                       f"기준주 {['월','화','수','목','금','토','일'][_elapsed]}요일(실적이 있는 마지막 날)")
+        st.markdown(f'<div class="appendix">MTD는 <b>{_mtd_endlab}까지의 월 누계</b>예요. '
                     '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                     '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
                     + ('<br><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 실적과 분모가 '
