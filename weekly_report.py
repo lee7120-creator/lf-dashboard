@@ -118,7 +118,8 @@ YEAR_PAL = ["slate", "blue", "red", "green", "purple", "amber", "teal"]
 # ══════════════════════════════════════════════════════
 METRICS7 = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가",
             "비회원트래픽", "가입자수", "가입율", "당일가입CR"]
-PCT_METRICS = {"가입율", "당일가입CR", "진입률", "CR", "거래액비중", "고객비중", "동의율", "유입율"}
+PCT_METRICS = {"가입율", "당일가입CR", "진입률", "CR", "거래액비중", "고객비중", "동의율", "유입율",
+               "상품CR"}
 # 마스터 파일 지표 → 보고서 지표 매핑
 MASTER_MAP = {"일평균거래액": "첫구매 거래액", "일평균고객수": "첫구매 고객수",
               "일평균객단가": "첫구매 객단가"}
@@ -137,6 +138,7 @@ METRIC_UNIT = {
     "앱푸시수신동의": ("명", 1), "앱푸시_동의자수": ("명", 1),
     "앱푸시_신규추가": ("명", 1), "앱푸시_이탈": ("명", 1),
     "앱푸시_유효회원": ("명", 1), "앱푸시_수신동의전체": ("명", 1),
+    "상품UV": ("명", 1), "상품CR": ("%", 1), "거래액비중": ("%", 1), "고객비중": ("%", 1),
 }
 
 def fmt_value(metric, v):
@@ -345,6 +347,148 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
             })
     return pd.DataFrame(records)
 
+# ══════════════════════════════════════════════════════
+# 조직 × 카테고리 실적 (MICRO 대시보드 export)
+# ══════════════════════════════════════════════════════
+# 마스터(전체관점)와 달리 세그먼트 축이 **둘**이다 — 구분06=조직(BPU), 구분07=카테고리.
+# 기존 store는 `segment` 한 칸뿐이라 여기에 밀어 넣으면 두 축이 뭉개진다. 그래서
+# 별도 store(`wr_orgcat_store.csv`)에 org/cat 두 칸으로 쌓는다.
+#
+# LFMS 포함여부(Y/N)는 헤더 2행에 실려 오는 **다른 모집단**이다. 키에 넣지 않으면
+# 같은 기간·같은 조직 값이 서로를 조용히 덮어쓴다 — 화면에서 필터로 고르게 둔다.
+ORGCAT_STORE = "wr_orgcat_store.csv"
+ORGCAT_KEY = ["gran", "metric", "org", "cat", "lfms", "year", "label", "close"]
+ORGCAT_COLS = ORGCAT_KEY + ["sortkey", "value"]
+# 마스터 파일과 같은 지표는 같은 이름으로 — fmt_value·PCT_METRICS를 그대로 태운다
+ORGCAT_MAP = {"일평균거래액": "첫구매 거래액", "일평균고객수": "첫구매 고객수",
+              "일평균객단가": "첫구매 객단가"}
+ORGCAT_TOTAL = "*TOTAL"
+
+
+def is_orgcat_grid(rows):
+    """구분06·구분07 헤더가 있으면 조직×카테고리 export."""
+    for r in rows[:8]:
+        cells = [_cell(c) for c in r]
+        if "구분06" in cells and "구분07" in cells:
+            return True
+    return False
+
+
+def parse_orgcat_grid(rows):
+    """조직×카테고리 그리드 → long DataFrame.
+
+    헤더 구성이 단위마다 다르다. 월·주는 `연도 / LFMS / 기간 / (구분+마감)` 4행이고,
+    일은 마감 행이 없어 `연도 / LFMS / (구분+기간)` 3행이다. 그래서 행 번호를 박지 않고
+    내용으로 찾는다 — 구분06이 있는 행, 연도가 있는 행, Y/N만 있는 행, 기간 라벨 행.
+    """
+    hdr = c_org = c_cat = None
+    for ri, r in enumerate(rows[:8]):
+        cells = [_cell(c) for c in r]
+        if "구분06" in cells and "구분07" in cells:
+            hdr, c_org, c_cat = ri, cells.index("구분06"), cells.index("구분07")
+            break
+    if hdr is None:
+        return pd.DataFrame()
+    ncols = max(len(r) for r in rows)
+
+    def cell(ri, ci):
+        return _cell(rows[ri][ci]) if ri is not None and ci < len(rows[ri]) else ""
+
+    year_row = lfms_row = period_row = close_row = None
+    for ri in range(min(hdr + 1, len(rows))):
+        cells = [_cell(c) for c in rows[ri]]
+        nz = [c for c in cells if c]
+        nY = sum(1 for c in cells if YEAR_RE.match(c))
+        nP = sum(1 for c in cells if PERIOD_RE.match(c))
+        nC = sum(1 for c in cells if "마감" in c)
+        if year_row is None and nY >= 1 and nP == 0: year_row = ri
+        if lfms_row is None and nz and all(c in ("Y", "N") for c in nz): lfms_row = ri
+        if period_row is None and nP >= 2: period_row = ri
+        if close_row is None and nC >= 2: close_row = ri
+    if period_row is None:
+        return pd.DataFrame()
+    data_start = max(r for r in (hdr, year_row, period_row, close_row)
+                     if r is not None) + 1
+
+    plabels = [_cell(c) for c in rows[period_row] if PERIOD_RE.match(_cell(c))]
+    if any("주차" in p for p in plabels):  gran = "주"
+    elif any("/" in p for p in plabels):   gran = "일"
+    else:                                   gran = "월"
+
+    # 연도·LFMS는 병합셀이라 왼쪽 값을 오른쪽으로 이어받는다 (한 파일에 2개년이 온다)
+    col_year, col_lfms, cur_y, cur_l = {}, {}, None, ""
+    for ci in range(ncols):
+        m = YEAR_RE.match(cell(year_row, ci)) if year_row is not None else None
+        if m: cur_y = int(m.group(1))
+        v = cell(lfms_row, ci) if lfms_row is not None else ""
+        if v in ("Y", "N"): cur_l = v
+        col_year[ci], col_lfms[ci] = cur_y, cur_l
+
+    # 기간 라벨이 빈 '일마감'(MTD) 칼럼은 직전 라벨을 이어받는다 (마스터 파서와 동일)
+    data_cols, col_label, last_lbl = [], {}, None
+    for ci in range(ncols):
+        lbl = cell(period_row, ci)
+        if PERIOD_RE.match(lbl) and col_year[ci]:
+            last_lbl = lbl; col_label[ci] = lbl; data_cols.append(ci)
+        elif (close_row is not None and "마감" in cell(close_row, ci)
+              and last_lbl and col_year[ci]):
+            col_label[ci] = last_lbl; data_cols.append(ci)
+
+    records, metric, org = [], None, None
+    for ri in range(data_start, len(rows)):
+        m0 = cell(ri, 0)
+        if m0 and m0 not in ("-", "–"):
+            metric = ORGCAT_MAP.get(m0, m0)
+        o = cell(ri, c_org)
+        if o and o not in ("-", "–"):
+            org = o                                   # 조직은 병합셀 — 아래로 이어받는다
+        cat = cell(ri, c_cat)
+        # 카테고리 '-'는 카테고리 구분이 없는 조직(SPACE-R 등)의 자리표시라 *TOTAL과 겹친다
+        if not metric or not org or not cat or cat in ("-", "–"):
+            continue
+        for ci in data_cols:
+            pp = period_parts(gran, col_year[ci], col_label[ci])
+            if pp is None: continue
+            label, sortkey = pp
+            close = cell(close_row, ci) if close_row is not None else ""
+            records.append({
+                "gran": gran, "metric": metric, "org": org, "cat": cat,
+                "lfms": col_lfms[ci] or "N", "year": col_year[ci],
+                "label": label, "sortkey": sortkey,
+                "close": "mtd" if "일마감" in close and gran != "일" else "final",
+                "value": _num(rows[ri][ci] if ci < len(rows[ri]) else None),
+            })
+    return pd.DataFrame(records)
+
+
+@st.cache_data(show_spinner=False)
+def parse_orgcat_file(name, data: bytes) -> pd.DataFrame:
+    """업로드 1건 → 조직×카테고리 long DF. 이 형식이 아니면 빈 DF.
+
+    라우팅·인식목록·누적 병합 세 군데서 같은 파일을 물어보므로 캐시해 둔다
+    (일별 파일이 250칼럼짜리라 매번 다시 읽으면 업로드가 눈에 띄게 느려진다)."""
+    # 백업 CSV 재업로드는 그대로 복원
+    if name.lower().endswith(".csv"):
+        head = data[:400].decode("utf-8", "ignore").splitlines()
+        if head and all(k in head[0] for k in ("org", "cat", "lfms")):
+            try:
+                d = pd.read_csv(io.BytesIO(data), encoding="utf-8-sig")
+                if set(ORGCAT_COLS) <= set(d.columns):
+                    return d[ORGCAT_COLS]
+            except Exception:
+                pass
+        return pd.DataFrame()
+    if not name.lower().endswith((".xlsx", ".xls")):
+        return pd.DataFrame()
+    try:
+        rows = read_grid(name, data)
+    except Exception:
+        return pd.DataFrame()
+    if not rows or not is_orgcat_grid(rows):
+        return pd.DataFrame()
+    return parse_orgcat_grid(rows)
+
+
 def _zip_entry_name(info):
     """zip 내 한글 파일명 복원 (UTF-8 플래그 없으면 cp437→cp949 재해석)"""
     if info.flag_bits & 0x800:
@@ -512,7 +656,10 @@ def looks_like_push_name(name: str) -> bool:
 def route_push(n, b):
     """엑셀 1건 → (push_df 또는 None, 일반_df 또는 None).
     이름 힌트가 있으면 PUSH 우선 시도, 없으면 일반 파싱 후 빈 결과면 내용 기반으로 PUSH 재시도.
-    → 파일명이 'PUSH'가 아니어도(예: 앱푸시수신동의현황.xlsx) 인식된다."""
+    → 파일명이 'PUSH'가 아니어도(예: 앱푸시수신동의현황.xlsx) 인식된다.
+    조직×카테고리 export는 combine_orgcat이 따로 받으므로 여기선 둘 다 None."""
+    if not parse_orgcat_file(n, b).empty:
+        return None, None
     is_xlsx = n.lower().endswith((".xlsx", ".xls"))
     if is_xlsx and looks_like_push_name(n):
         pf = parse_push_file(n, b)
@@ -601,6 +748,43 @@ def merge_store(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     return (pd.concat([old[STORE_COLS], new[STORE_COLS]], ignore_index=True)
             .drop_duplicates(subset=KEY_COLS, keep="last"))
 
+def load_orgcat_store() -> pd.DataFrame:
+    if os.path.exists(ORGCAT_STORE):
+        try:
+            d = pd.read_csv(ORGCAT_STORE, encoding="utf-8-sig")
+            if set(ORGCAT_COLS) <= set(d.columns):
+                return d[ORGCAT_COLS]
+        except Exception:
+            pass
+    return pd.DataFrame(columns=ORGCAT_COLS)
+
+
+def save_orgcat_store(df: pd.DataFrame):
+    df[ORGCAT_COLS].to_csv(ORGCAT_STORE, index=False, encoding="utf-8-sig")
+
+
+def merge_orgcat(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
+    """조직×카테고리 누적 병합 — 같은 (단위·지표·조직·카테고리·LFMS·기간) 키는 신규 우선"""
+    if old is None or old.empty: return new if new is not None else pd.DataFrame(columns=ORGCAT_COLS)
+    if new is None or new.empty: return old
+    return (pd.concat([old[ORGCAT_COLS], new[ORGCAT_COLS]], ignore_index=True)
+            .drop_duplicates(subset=ORGCAT_KEY, keep="last"))
+
+
+@st.cache_data(show_spinner=False)
+def combine_orgcat(file_tuples) -> pd.DataFrame:
+    """업로드 파일들 중 조직×카테고리 형식만 모아 하나로 — 같은 키는 마지막 파일 우선"""
+    frames = []
+    for n, b in file_tuples:
+        d = parse_orgcat_file(n, b)
+        if not d.empty:
+            frames.append(d)
+    if not frames:
+        return pd.DataFrame(columns=ORGCAT_COLS)
+    return (pd.concat(frames, ignore_index=True)
+            .drop_duplicates(subset=ORGCAT_KEY, keep="last"))
+
+
 def _period_set(d, cols):
     if d is None or d.empty: return set()
     return set(map(tuple, d[cols].drop_duplicates().values.tolist()))
@@ -623,6 +807,13 @@ def classify_uploads(file_tuples):
             head = b[:400].decode("utf-8", "ignore").splitlines()
             if head and all(k in head[0] for k in ("gran", "metric", "sortkey")):
                 is_backup = True
+        oc = parse_orgcat_file(n, b)
+        if not oc.empty:
+            _g = "".join(g for g in ("일", "주", "월") if g in set(oc["gran"]))
+            _lf = "/".join(sorted(set(oc["lfms"].astype(str))))
+            out.append((n, f"✅ 조직×카테고리 · {_g} · LFMS {_lf} · "
+                           f"조직 {oc['org'].nunique()}", len(oc)))
+            continue
         pf, d = route_push(n, b)  # combine_files와 동일한 라우팅 (한글명 PUSH 포함)
         if pf is not None:
             nseries = pf.groupby(["metric", "segment"]).ngroups
@@ -641,8 +832,8 @@ def classify_uploads(file_tuples):
             out.append((n, f"✅ {kind}", len(d)))
     return out
 
-def make_backup_zip(df, texts) -> bytes:
-    """누적 데이터 CSV + 보고란·메모 JSON + manifest를 한 ZIP으로 묶는다 (통합 백업)."""
+def make_backup_zip(df, texts, odf=None) -> bytes:
+    """누적 데이터 CSV + 조직×카테고리 CSV + 보고란·메모 JSON + manifest를 한 ZIP으로."""
     import zipfile
     buf = io.BytesIO()
     ts = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
@@ -651,11 +842,15 @@ def make_backup_zip(df, texts) -> bytes:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("wr_data_store.csv",
                     df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"))
+        if odf is not None and not odf.empty:
+            zf.writestr("wr_orgcat_store.csv",
+                        odf[ORGCAT_COLS].to_csv(index=False).encode("utf-8-sig"))
         zf.writestr("wr_insights.json",
                     json.dumps(texts, ensure_ascii=False, indent=2).encode("utf-8"))
         zf.writestr("manifest.txt",
                     (f"LF Mall 주간보고 통합 백업\n생성: {ts}\n"
                      f"누적 데이터: {len(df):,}행 · {df['metric'].nunique() if not df.empty else 0}지표 · {yrs}\n"
+                     f"조직×카테고리: {0 if odf is None else len(odf):,}행\n"
                      f"보고란·메모: {len(texts)}개 항목\n"
                      "복원: 사이드바 '백업 복원'에 이 ZIP을 그대로 올리세요.\n").encode("utf-8"))
     return buf.getvalue()
@@ -676,6 +871,11 @@ def restore_from_upload(upload):
     def _try_csv(b):
         nonlocal data_restored
         d = pd.read_csv(io.BytesIO(b), encoding="utf-8-sig")
+        # 조직×카테고리 백업이 먼저 — segment가 없어 STORE_COLS와 헷갈릴 일은 없다
+        if set(ORGCAT_COLS) <= set(d.columns):
+            save_orgcat_store(d[ORGCAT_COLS]); data_restored = True
+            msgs.append(f"조직×카테고리 {len(d):,}행")
+            return True
         if set(STORE_COLS) <= set(d.columns):
             save_store(d[STORE_COLS]); data_restored = True
             msgs.append(f"누적 데이터 {len(d):,}행")
@@ -1822,6 +2022,236 @@ def render_push_page(df, ref_year, chart_years):
 # ══════════════════════════════════════════════════════
 # 페이지 PDF 저장 (브라우저 인쇄 → PDF, 차트 포함)
 # ══════════════════════════════════════════════════════
+def guard_select(key, opts):
+    """옵션 목록이 바뀌면 세션에 남은 옛 선택값이 목록 밖이 된다 — 조용한 리셋·예외 방지."""
+    if key in st.session_state and st.session_state[key] not in opts:
+        st.session_state.pop(key, None)
+
+
+def guard_multi(key, opts):
+    """multiselect용 가드 — 사라진 값이 세션에 남으면 위젯이 예외로 죽는다."""
+    cur = st.session_state.get(key)
+    if isinstance(cur, (list, tuple)):
+        keep = [v for v in cur if v in opts]
+        if len(keep) != len(cur):
+            st.session_state[key] = keep
+
+
+def opick(odf, gran, metric, org, cat, lfms, year, label, prefer="final"):
+    """조직×카테고리 값 하나 — 마스터의 pick()과 같은 규칙(final 우선)."""
+    sub = odf[(odf["gran"] == gran) & (odf["metric"] == metric) &
+              (odf["org"] == org) & (odf["cat"] == cat) & (odf["lfms"] == lfms) &
+              (odf["year"] == year) & (odf["label"] == label)]
+    if sub.empty: return np.nan
+    order = ["final", "mtd"] if prefer == "final" else ["mtd", "final"]
+    for c in order:
+        v = sub[sub["close"] == c]["value"].dropna()
+        if len(v): return v.iloc[-1]
+    return np.nan
+
+
+def render_orgcat_page(odf):
+    """08. 조직·카테고리별 실적 — MICRO 대시보드 export(구분06×구분07) 전용 화면.
+
+    사이드바 기준 기간(월·주)에 기대지 않고 **자체 기간 선택**을 쓴다. 이 데이터는 일
+    단위까지 오고 커버리지도 마스터와 달라서, 사이드바 값을 그대로 쓰면 빈 화면이 되기
+    쉽다. 덕분에 마스터 데이터가 아직 없어도 이 화면만은 열린다.
+    """
+    st.markdown("## 조직·카테고리별 첫구매 실적")
+    if odf is None or odf.empty:
+        st.info("조직×카테고리 데이터가 없어요. MICRO 대시보드에서 받은 "
+                "**구분06(BPU) × 구분07(카테고리)** 엑셀을 사이드바에 올려 주세요.")
+        st.caption("일자별·주별·월별 파일을 따로 올리면 각각 누적돼요.")
+        return
+
+    # ── 필터: 집계 단위 · LFMS · 지표 ──
+    grans = [g for g in ("월", "주", "일") if (odf["gran"] == g).any()]
+    f1, f2, f3 = st.columns([1.2, 1, 1.6])
+    with f1:
+        guard_select("oc_gran", grans)
+        gran = st.radio("집계 단위", grans, horizontal=True, key="oc_gran")
+    # LFMS 선택지는 **고른 단위 안에서** 뽑는다. 단위마다 받아 온 export가 달라
+    # (예: 일별만 LFMS=Y) 전역 목록을 쓰면 '일'로 바꿨을 때 이전 선택 'N'이 남아
+    # 데이터가 있는데도 빈 화면이 된다.
+    lfmss = sorted(odf[odf["gran"] == gran]["lfms"].dropna().astype(str).unique())
+    with f2:
+        if len(lfmss) > 1:
+            # 같은 기간이라도 LFMS 포함 여부에 따라 모집단이 달라 값이 다르다
+            guard_select("oc_lfms", lfmss)
+            lfms = st.radio("LFMS 포함", lfmss, horizontal=True, key="oc_lfms",
+                            help="원본 헤더의 'LFMS 포함여부' 값이에요. 포함/미포함은 "
+                                 "모집단이 달라서 섞어 보면 안 돼요.")
+        else:
+            lfms = lfmss[0] if lfmss else "N"
+            st.caption(f"LFMS 포함여부 **{lfms}** 데이터만 있어요")
+    sub = odf[(odf["gran"] == gran) & (odf["lfms"] == lfms)]
+    if sub.empty:
+        st.info("고른 조건에 데이터가 없어요."); return
+    pref = list(ORGCAT_MAP.values()) + ["상품UV", "상품CR", "거래액비중", "고객비중"]
+    mets = [m for m in pref if (sub["metric"] == m).any()]
+    mets += [m for m in sub["metric"].unique() if m not in mets]
+    with f3:
+        guard_select("oc_met", mets)
+        met = st.selectbox("지표", mets, key="oc_met")
+
+    # ── 기준 기간: 이 데이터가 실제로 가진 구간에서 고른다 ──
+    labs = (sub[sub["value"].notna()][["year", "label", "sortkey"]]
+            .drop_duplicates().sort_values("sortkey"))
+    if labs.empty:
+        st.info("고른 조건에 값이 없어요."); return
+    opts = [(int(r["year"]), str(r["label"])) for _, r in labs.iterrows()][::-1]
+    # 진행 중인 기간은 '일마감'(mtd)만 온다 — 값이 다 일평균이라 완결 기간과 그대로 견줄 수는
+    # 있지만 며칠치 표본이라 크게 흔들린다. 어느 기간이 진행 중인지 라벨에 박아 둔다.
+    part = {(int(r["year"]), str(r["label"]))
+            for _, r in sub[sub["value"].notna()][["year", "label", "close"]]
+            .drop_duplicates().iterrows() if r["close"] == "mtd"}
+    part -= {(int(r["year"]), str(r["label"]))
+             for _, r in sub[(sub["close"] == "final") & sub["value"].notna()]
+             [["year", "label"]].drop_duplicates().iterrows()}
+    guard_select("oc_per", opts)
+    cy, clabel = st.selectbox("기준 기간", opts, key="oc_per",
+                              format_func=lambda p: f"{p[0]}년 {p[1]}"
+                              + (" · 진행 중" if p in part else ""))
+    py = cy - 1
+    has_prev = not sub[(sub["year"] == py) & (sub["label"] == clabel)].empty
+    ccol, pcol = f"{cy}년 {clabel}", f"{py}년 {clabel}"
+    st.caption(f"{ccol} · {met} · LFMS 포함여부 {lfms}"
+               + ("" if has_prev else f" · 전년({py}년) 같은 기간이 없어 전년비는 비어 있어요"))
+    if (cy, clabel) in part:
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.info(f"**{ccol}은 아직 진행 중이에요(일마감).** 값이 모두 일평균이라 완결 기간과 "
+                "견줄 수는 있지만, 며칠치라 크게 흔들려요. 추세 판단은 완결된 기간으로 하세요.")
+
+    def val(org, cat, year):
+        return opick(sub, gran, met, org, cat, lfms, year, clabel)
+
+    orgs_all = [o for o in sub["org"].unique() if o != ORGCAT_TOTAL]
+    unit, div = METRIC_UNIT.get(met, ("", 1))
+    is_pct = met in PCT_METRICS
+    xdiv = 0.01 if is_pct else div
+
+    def hbar(labels, values, color, title, h_pad=90):
+        fig = go.Figure(go.Bar(
+            x=[v / xdiv for v in values], y=list(labels), orientation="h",
+            marker_color=clr(color),
+            text=[fmt_value(met, v) for v in values], textposition="outside"))
+        lay = base_layout(max(240, 30 * len(labels) + h_pad),
+                          ysuffix="%" if is_pct else "", title=title)
+        lay["showlegend"] = False
+        lay["yaxis"]["autorange"] = "reversed"
+        fig.update_layout(**lay)
+        return fig
+
+    # ── ① 조직별 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader(f"① 조직별 — {met}")
+    rows = []
+    for org in [ORGCAT_TOTAL] + orgs_all:
+        c, p = val(org, ORGCAT_TOTAL, cy), val(org, ORGCAT_TOTAL, py)
+        if not np.isfinite(c) and not np.isfinite(p):
+            continue                              # 값이 통째로 없는 조직은 행을 만들지 않는다
+        rows.append({"조직": org, "_v": c if np.isfinite(c) else -np.inf,
+                     pcol: fmt_value(met, p), ccol: fmt_value(met, c),
+                     "전년비": fmt_delta(met, c, p) or "–"})
+    if not rows:
+        st.info("이 기간에 조직별 값이 없어요."); return
+    otbl = pd.DataFrame(rows)
+    head = otbl[otbl["조직"] == ORGCAT_TOTAL]
+    body = otbl[otbl["조직"] != ORGCAT_TOTAL].sort_values("_v", ascending=False)
+    wtable(style_delta_cols(pd.concat([head, body]).drop(columns="_v").set_index("조직")),
+           width="stretch", dl_name=f"조직별 {met}")
+    bar = body[np.isfinite(body["_v"])]
+    if len(bar):
+        st.plotly_chart(hbar(bar["조직"], bar["_v"], "blue",
+                             f"{ccol} 조직별 {met} ({'%' if is_pct else unit})"),
+                        width="stretch")
+
+    # ── ② 카테고리별 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader(f"② 카테고리별 — {met}")
+    cat_orgs = [o for o in orgs_all
+                if sub[(sub["org"] == o) & (sub["cat"] != ORGCAT_TOTAL)]["value"].notna().any()]
+    if not cat_orgs:
+        st.info("카테고리로 쪼개지는 조직이 없어요.")
+    else:
+        guard_select("oc_org", cat_orgs)
+        sel_org = st.selectbox("조직 선택", cat_orgs, key="oc_org")
+        crows = []
+        for cat in [c for c in sub[sub["org"] == sel_org]["cat"].unique() if c != ORGCAT_TOTAL]:
+            c, p = val(sel_org, cat, cy), val(sel_org, cat, py)
+            if not np.isfinite(c) and not np.isfinite(p):
+                continue
+            crows.append({"카테고리": cat, "_v": c if np.isfinite(c) else -np.inf,
+                          pcol: fmt_value(met, p), ccol: fmt_value(met, c),
+                          "전년비": fmt_delta(met, c, p) or "–"})
+        if not crows:
+            st.info(f"{sel_org}의 카테고리 값이 이 기간엔 없어요.")
+        else:
+            ctbl = pd.DataFrame(crows).sort_values("_v", ascending=False)
+            wtable(style_delta_cols(ctbl.drop(columns="_v").set_index("카테고리")),
+                   width="stretch", dl_name=f"{sel_org} 카테고리별 {met}")
+            cbar = ctbl[np.isfinite(ctbl["_v"])]
+            if len(cbar):
+                st.plotly_chart(hbar(cbar["카테고리"], cbar["_v"], "purple",
+                                     f"{sel_org} · {ccol} 카테고리별 {met}"),
+                                width="stretch")
+
+    # ── ③ 조직별 추이 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader(f"③ 조직별 추이 — {met}")
+    trend_opts = [ORGCAT_TOTAL] + orgs_all
+    guard_multi("oc_trend", trend_opts)
+    default = body["조직"].head(5).tolist() if len(body) else [ORGCAT_TOTAL]
+    sel = st.multiselect("조직 선택 (복수)", trend_opts, default=default, key="oc_trend")
+    tsub = sub[(sub["cat"] == ORGCAT_TOTAL) & (sub["metric"] == met) & (sub["org"].isin(sel))]
+    if not sel or tsub.empty:
+        st.info("추이를 그릴 조직을 골라 주세요.")
+    else:
+        order = tsub[["year", "label", "sortkey"]].drop_duplicates().sort_values("sortkey")
+        xlab = [f"{int(r['year'])} {r['label']}" for _, r in order.iterrows()]
+        # 구간이 너무 많으면(일별 2년치 244개) 축이 뭉개져 아무것도 못 읽는다
+        MAXP = {"일": 90, "주": 53, "월": 24}[gran]
+        keep = xlab[-MAXP:]
+        fig = go.Figure()
+        for i, org in enumerate(sel):
+            g = tsub[tsub["org"] == org].sort_values("sortkey")
+            m = {f"{int(r['year'])} {r['label']}": r["value"] for _, r in g.iterrows()}
+            ys = [m.get(k) for k in keep]
+            fig.add_trace(go.Scatter(
+                x=keep,
+                y=[(v / xdiv) if (v is not None and v == v) else None for v in ys],
+                mode="lines+markers", name=org, connectgaps=False,
+                line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=1.8),
+                marker=dict(size=4)))
+        fig.update_layout(**base_layout(
+            360, ysuffix="%" if is_pct else "",
+            title=f"{met} 조직별 {gran} 추이 ({'%' if is_pct else unit})"))
+        st.plotly_chart(fig, width="stretch")
+        if len(xlab) > MAXP:
+            st.caption(f"최근 {MAXP}개 구간만 그렸어요 (전체 {len(xlab)}개).")
+
+    # ── ④ 조직 × 카테고리 매트릭스 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader(f"④ 조직 × 카테고리 — {ccol}")
+    mt = sub[(sub["metric"] == met) & (sub["year"] == cy) & (sub["label"] == clabel) &
+             (sub["cat"] != ORGCAT_TOTAL) & (sub["org"] != ORGCAT_TOTAL) &
+             sub["value"].notna()]
+    if mt.empty:
+        st.info("이 기간엔 조직×카테고리 교차 값이 없어요.")
+    else:
+        pv = mt.pivot_table(index="org", columns="cat", values="value", aggfunc="last")
+        keep_o = [o for o in body["조직"] if o in pv.index]
+        if keep_o:
+            pv = pv.reindex(keep_o)
+        wtable(pv.map(lambda v: fmt_value(met, v) if v == v else ""),
+               width="stretch", dl_name=f"조직×카테고리 {met}")
+        st.caption("빈 칸은 그 조직에 해당 카테고리 실적이 없다는 뜻이에요.")
+
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.caption("MICRO 대시보드의 **구분06(BPU) × 구분07(카테고리)** export예요. "
+               "거래액·고객수·객단가는 **일평균**이고 비중·상품CR은 비율이에요. "
+               "`*TOTAL`은 하위 항목의 단순 합이 아니라 파일이 준 값을 그대로 써요.")
+
 def print_button(label="이 페이지 PDF 저장 / 인쇄"):
     # st.components.v1.html은 제거 예정(2026-06-01 이후) — 후속 API인 st.iframe 사용
     st.iframe(
@@ -1845,17 +2275,23 @@ def main():
             "원천 엑셀/CSV/ZIP 업로드 (복수 선택)",
             type=["xlsx", "xls", "csv", "zip"], accept_multiple_files=True, key="wr_up",
             help="주간 폴더를 zip으로 묶어 통째로 올려도 돼요. "
-                 "전체관점 마스터(일·주·월)와 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽)을 자동으로 인식해요.")
+                 "전체관점 마스터(일·주·월)와 지표별 파일(가입율·가입자수·당일가입 첫구매율·비회원 트래픽), "
+                 "MICRO 대시보드의 조직×카테고리(구분06×구분07) export를 자동으로 인식해요.")
         st.markdown("---")
         PAGES = ["01. 주간보고 요약", "02. 월별 추이", "03. 주차별 추이",
-                 "04. 채널별 실적", "05. 통합 데이터·다운로드", "06. 앱푸시 동의 현황", "07. 첫구매 고객 세그먼트 성과"]
+                 "04. 채널별 실적", "05. 통합 데이터·다운로드", "06. 앱푸시 동의 현황",
+                 "07. 첫구매 고객 세그먼트 성과", "08. 조직·카테고리별 실적"]
         page = st.radio("페이지", PAGES, key="wr_page")
 
     stored = load_store()
     expanded = expand_uploads(files) if files else []
     df_new = combine_files(tuple(expanded)) if expanded else pd.DataFrame()
+    # 조직×카테고리는 축이 둘이라 별도 store에 쌓는다 (같은 업로드에서 같이 갈라 담긴다)
+    oc_stored = load_orgcat_store()
+    oc_new = combine_orgcat(tuple(expanded)) if expanded else pd.DataFrame(columns=ORGCAT_COLS)
+    odf = merge_orgcat(oc_stored, oc_new)
 
-    has_any = not stored.empty or not df_new.empty
+    has_any = not stored.empty or not df_new.empty or not odf.empty
     if files and df_new.empty and stored.empty:
         st.error("올린 파일에서 데이터를 읽지 못했어요. 파일명 형식을 확인해 주세요.")
         st.stop()
@@ -1875,6 +2311,7 @@ def main():
 **인식되는 원천 파일**
 - **마스터**: `전체관점 - 일자별/주별/월별 실적 (기본)`
 - **지표별**: `월_가입율(일평균)`, `주_가입자수(일평균)`, `일_비회원 트래픽(일평균)`, `월_당일가입 첫구매율 (일평균)` …
+- **조직×카테고리**: MICRO 대시보드 export (헤더에 `구분06`·`구분07`) — 일·주·월 각각
 - **앱푸시**: 파일명에 `PUSH`/`앱푸시`/`수신동의` 포함 또는 헤더가 앱푸시 형식이면 자동 인식
 - 주간 폴더를 **zip으로 묶어 통째로** 올려도 돼요.
 """)
@@ -1883,7 +2320,7 @@ def main():
     # 누적 저장소와 병합 — 미리보기(저장 전까지 영구 반영 안 함)
     df = merge_store(stored, df_new)
 
-    has_new = not df_new.empty
+    has_new = not df_new.empty or not oc_new.empty
     sig = tuple(sorted((n, len(b)) for n, b in expanded))
     with st.sidebar:
         # 업로드한 파일이 각각 무엇으로 인식됐는지 (미인식 파일 가시화)
@@ -1906,16 +2343,26 @@ def main():
             if saved:
                 st.success("저장됨 ✓ (누적 반영 완료)")
             else:
-                st.warning(f"새 데이터 감지 — 추가 {added}기간 · 갱신(겹침) {updated}기간\n\n"
-                           "**저장**을 눌러야 누적에 반영돼요.")
+                _oc_note = (f"\n\n조직×카테고리 {len(oc_new):,}행도 함께 반영돼요."
+                            if not oc_new.empty else "")
+                st.warning(f"새 데이터 감지 — 추가 {added}기간 · 갱신(겹침) {updated}기간"
+                           + _oc_note + "\n\n**저장**을 눌러야 누적에 반영돼요.")
                 if st.button("💾 저장 (누적 반영)", key="wr_commit",
                              type="primary", width="stretch"):
                     if not df_new.empty: save_store(df)
+                    if not oc_new.empty: save_orgcat_store(odf)
                     st.session_state["wr_saved_sig"] = sig
                     st.rerun()
 
     if df.empty:
-        st.warning("첫구매(전체관점·지표별) 데이터가 없어요. 원천 파일을 올려 주세요.")
+        # 사이드바 기준 기간·차트 연도가 전부 마스터에서 나오므로 01~07은 열 수 없다.
+        # 08은 자체 기간 선택을 쓰니 조직×카테고리만 올린 상태에서도 보여 준다.
+        if page.startswith("08.") and not odf.empty:
+            render_orgcat_page(odf)
+            st.stop()
+        st.warning("첫구매(전체관점·지표별) 데이터가 없어요. 원천 파일을 올려 주세요."
+                   + (f" (조직×카테고리 {len(odf):,}행은 저장돼 있어요 — "
+                      "「08. 조직·카테고리별 실적」에서 볼 수 있어요)" if not odf.empty else ""))
         st.stop()
 
     # ── 인식 결과 + 필터
@@ -1971,12 +2418,13 @@ def main():
         saved_rows = len(load_store())
         pend = " · 저장 시 반영" if (has_new and not st.session_state.get("wr_saved_sig") == sig) else ""
         st.caption(f"누적 {saved_rows:,}행 저장됨 / 현재 보기 {len(df):,}행{pend} · "
+                   f"조직×카테고리 {len(odf):,}행 · "
                    f"메모 {len(st.session_state.wr_texts)}개")
 
         # 통합 백업 — 누적 데이터 + 메모를 한 ZIP으로 (하나만 받아도 전부 보존)
         st.download_button(
             "⬇ 통합 백업 (ZIP · 데이터+메모)",
-            make_backup_zip(df, st.session_state.wr_texts),
+            make_backup_zip(df, st.session_state.wr_texts, odf),
             f"주간보고백업_{today_kst():%Y%m%d}.zip", "application/zip",
             width="stretch", type="primary",
             help="누적 데이터 CSV와 보고란·메모 JSON을 한 파일로 백업해요. "
@@ -1990,6 +2438,11 @@ def main():
                                df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
                                f"wr_data_store_{today_kst():%Y%m%d}.csv", "text/csv",
                                width="stretch")
+            if not odf.empty:
+                st.download_button("⬇ 조직×카테고리 (CSV)",
+                                   odf[ORGCAT_COLS].to_csv(index=False).encode("utf-8-sig"),
+                                   f"wr_orgcat_store_{today_kst():%Y%m%d}.csv", "text/csv",
+                                   width="stretch")
             st.download_button("⬇ 보고란·메모 (JSON)",
                                json.dumps(st.session_state.wr_texts, ensure_ascii=False,
                                           indent=2).encode("utf-8"),
@@ -1998,11 +2451,12 @@ def main():
 
         # 초기화 — 2단계 확인 (실수 방지)
         if st.session_state.get("wr_confirm_clear"):
-            st.warning("정말 초기화할까요? 누적 데이터가 모두 지워지고 되돌릴 수 없어요. "
-                       "메모는 남아요. 초기화 전에 통합 백업을 받아두세요.")
+            st.warning("정말 초기화할까요? 누적 데이터와 조직×카테고리가 모두 지워지고 "
+                       "되돌릴 수 없어요. 메모는 남아요. 초기화 전에 통합 백업을 받아두세요.")
             cc1, cc2 = st.columns(2)
             if cc1.button("삭제 확인", key="wr_clear_yes", type="primary", width="stretch"):
                 if os.path.exists(DATA_STORE): os.remove(DATA_STORE)
+                if os.path.exists(ORGCAT_STORE): os.remove(ORGCAT_STORE)
                 st.cache_data.clear()
                 st.session_state["wr_confirm_clear"] = False
                 st.session_state.pop("wr_saved_sig", None)
@@ -2563,6 +3017,10 @@ def main():
             * **유효회원수**: 서비스에 정상적으로 가입해서 활동할 수 있는 전체 회원 수예요.
             * **DAU (Daily Active Users)**: 하루 동안 서비스에 한 번 이상 방문해서 활동한 사용자 수예요.
             """)
+
+    # ════════════ 08. 조직·카테고리별 실적 ════════════
+    elif page == "08. 조직·카테고리별 실적":
+        render_orgcat_page(odf)
 
 if st.runtime.exists():
     main()
