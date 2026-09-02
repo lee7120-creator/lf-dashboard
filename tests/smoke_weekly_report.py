@@ -147,11 +147,62 @@ def run_pages(store, tag):
     return fails
 
 
+def check_yoy_summary():
+    """실적 요약 표 — 컬럼 구성과 전월비(당월) 계산을 직접 확인한다.
+
+    렌더 스모크는 '표가 떴다'까지만 본다. 컬럼이 빠지거나 엉뚱한 두 값을 맞대도
+    화면은 멀쩡히 뜨므로 여기서 값으로 잡는다.
+    """
+    sys.path.insert(0, str(ROOT))
+    import weekly_report as W
+
+    # 7월 → 8월이 정확히 0.9배, 전년 대비 정확히 0.8배가 되게 깔아 둔다
+    rows = []
+    for y in (2025, 2026):
+        for m in (7, 8):
+            for met in METRICS:
+                base = 0.5 if met in ("가입율", "당일가입CR") else 1000.0
+                v = base * (1.0 if y == 2025 else 0.8) * (1.0 if m == 7 else 0.9)
+                for close in ("final", "mtd"):
+                    rows.append(dict(gran="월", metric=met, segment="*TOTAL", year=y,
+                                     label=W.month_label(m), close=close,
+                                     sortkey=y * 10000 + m * 100, value=v))
+    df = pd.DataFrame(rows)
+    tbl, (pm_y, pm_m) = W.yoy_summary_table(df, 2026, 8, METRICS)
+    fails = []
+    want = ["2025년 7월", "2026년 7월", "전년비(전월)",
+            "2025년 8월", "2026년 8월", "전년비(당월)", "전월비(당월)"]
+    if list(tbl.columns) != want:
+        print(f"  FAIL [요약표] 컬럼 구성 — {list(tbl.columns)}")
+        fails.append("요약표:컬럼")
+    elif (pm_y, pm_m) != (2026, 7):
+        print(f"  FAIL [요약표] 전월 라벨 — {(pm_y, pm_m)}")
+        fails.append("요약표:전월")
+    else:
+        # 전월비(당월)은 같은 해 8월 ↔ 7월. 0.9배로 깔았으니 △10.0%.
+        # (비율 지표는 %p라 0.4 - 0.5 = △0.10%p… 단위가 %면 △0.05%p)
+        got = str(tbl.loc["첫구매 고객수", "전월비(당월)"])
+        if got != "△10.0%":
+            print(f"  FAIL [요약표] 전월비(당월) 계산 — {got} (기대 △10.0%)")
+            fails.append("요약표:전월비")
+        # 전년비 칼럼이 전월비로 덮이지 않았는지도 같이 본다
+        gotyoy = str(tbl.loc["첫구매 고객수", "전년비(당월)"])
+        if gotyoy != "△20.0%":
+            print(f"  FAIL [요약표] 전년비(당월)가 바뀌었어요 — {gotyoy} (기대 △20.0%)")
+            fails.append("요약표:전년비")
+    if not fails:
+        print("  OK   [요약표] 컬럼 구성·전월비(당월) 계산")
+    return fails
+
+
 def main():
     if not APP.exists():
         print(f"앱 파일을 찾을 수 없어요: {APP}")
         return 1
     fails = []
+
+    print("── 실적 요약 표(전년비·전월비) ──")
+    fails += check_yoy_summary()
 
     print("── 5주차 포함 2개년 ──")
     fails += run_pages(synth_store(with_5th=True), "5주차")
