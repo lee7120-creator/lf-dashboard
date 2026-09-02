@@ -1087,11 +1087,17 @@ def yoy2_summary_table(df, wy, wlabel, metrics):
     return pd.DataFrame(rows).set_index("구분"), l1, l2, e1, e2
 
 def yoy_summary_table(df, ref_year, ref_month, metrics):
-    """참고본 '실적 요약' 표: 전월·당월 × (전년, 당년, 전년비)"""
+    """참고본 '실적 요약' 표: 전월·당월 × (전년, 당년, 전년비) + 당월의 전월비.
+
+    맨 끝 '전월비(당월)'은 같은 해 당월(MTD) ↔ 전월(월마감) 비교다. 당월은 아직
+    진행 중이라 누계로는 못 맞대지만, 이 표의 값이 전부 **일평균**이라 기간 길이가
+    달라도 그대로 견줄 수 있다.
+    """
     rows = []
     pm_y, pm_m = (ref_year, ref_month - 1) if ref_month > 1 else (ref_year - 1, 12)
     cols = [f"{pm_y-1}년 {pm_m}월", f"{pm_y}년 {pm_m}월", "전년비(전월)",
-            f"{ref_year-1}년 {ref_month}월", f"{ref_year}년 {ref_month}월", "전년비(당월)"]
+            f"{ref_year-1}년 {ref_month}월", f"{ref_year}년 {ref_month}월", "전년비(당월)",
+            "전월비(당월)"]
     for met in metrics:
         pm_prev = pick(df, "월", met, "*TOTAL", pm_y - 1, month_label(pm_m), "final")
         pm_cur  = pick(df, "월", met, "*TOTAL", pm_y,     month_label(pm_m), "final")
@@ -1103,6 +1109,7 @@ def yoy_summary_table(df, ref_year, ref_month, metrics):
             cols[2]: fmt_delta(met, pm_cur, pm_prev) or "–",
             cols[3]: fmt_value(met, cm_prev), cols[4]: fmt_value(met, cm_cur),
             cols[5]: fmt_delta(met, cm_cur, cm_prev) or "–",
+            cols[6]: fmt_delta(met, cm_cur, pm_cur) or "–",
         })
     return pd.DataFrame(rows).set_index("구분"), (pm_y, pm_m)
 
@@ -1240,7 +1247,7 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
         for j, cname in enumerate(tbl.columns):
             c = ws.cell(r + 1 + i, 2 + j, tbl.loc[met, cname])
             s = str(c.value)
-            if "전년비" in str(cname):
+            if "전년비" in str(cname) or "전월비" in str(cname):
                 if s.startswith("△"): c.font = red_font
                 elif s.startswith("+"): c.font = green_font
     r += len(tbl) + 3
@@ -2093,7 +2100,9 @@ def main():
         # 실적 요약 YoY 표
         st.subheader("실적 요약 (일평균 · 전년비)")
         tbl, (pm_y, pm_m) = yoy_summary_table(df, ref_year, ref_month, METRICS7)
-        st.caption(f"전월({pm_m}월)은 월마감, 당월({ref_month}월)은 일마감(MTD) 기준 동일기간 비교")
+        st.caption(f"전월({pm_m}월)은 월마감, 당월({ref_month}월)은 일마감(MTD) 기준 동일기간 비교. "
+                   f"맨 끝 전월비(당월)은 {ref_year}년 {ref_month}월 ↔ {pm_y}년 {pm_m}월이에요 — "
+                   "값이 일평균이라 기간 길이가 달라도 맞댈 수 있어요.")
         wtable(style_delta_cols(tbl), width="stretch", dl_name="실적 요약 (일평균 · 전년비)")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
