@@ -12,4 +12,6 @@ send_perf_promo_store.csv
 send_perf_push_store.csv
 send_perf_store.csv
 wr_data_store.csv
+wr_detail_store.csv.gz
 wr_member_store.csv
+wr_orgcat_store.csv

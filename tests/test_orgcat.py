@@ -484,7 +484,7 @@ def t_in_progress_period_is_flagged():
         pers = [s for s in at.selectbox if s.label == "기준 기간"]
         assert pers, "기준 기간 셀렉트가 없어요"
         shown = [str(o) for o in pers[0].options]   # AppTest는 이미 포맷된 문자열을 준다
-        assert any("진행 중" in x for x in shown), f"진행 중 표기가 없어요 — {shown[:4]}"
+        assert any("부분 기간" in x for x in shown), f"부분 기간 표기가 없어요 — {shown[:4]}"
         txt = " ".join(_texts(at))
         assert "진행 중이에요" in txt, f"진행 중 안내가 없어요 — {txt[:400]}"
 
