@@ -35,14 +35,63 @@ METS = ["일평균거래액", "거래액비중", "일평균고객수", "고객�
         "일평균객단가", "상품UV", "상품CR"]
 
 
-def _v(met, org, cat, per):
-    """지표·조직·카테고리·기간으로 결정되는 재현 가능한 값 (비율은 0~1)."""
-    base = (abs(hash((org, cat))) % 90 + 10) * (per + 1)
-    if met in ("거래액비중", "고객비중", "상품CR"):
-        return round((base % 80 + 5) / 1000, 6)
-    if met == "일평균거래액":
-        return float(base * 1_000_000)
-    return float(base * 7)
+def _leaf(org, cat, per):
+    """말단(조직×카테고리) 한 칸의 유입·전환·객단가 — 재현 가능하게 만든다."""
+    h = abs(hash((org, cat))) % 90 + 10
+    uv = float(h * 12 + per * 3)
+    cr = round(0.04 + (h % 17) / 300, 6)
+    aov = float(70_000 + (h % 23) * 4_000 + per * 250)
+    return uv, cr, aov
+
+
+def _cell(uv, cr, aov):
+    return dict(uv=uv, cr=cr, aov=aov, cust=uv * cr, rev=uv * cr * aov)
+
+
+def _roll(kids):
+    """상위 레벨 = 하위 합. 단, **거래액만 정확히 가산**이고 고객수·상품UV는 유니크라
+    조금 덜 합쳐진다(실파일에서 조직 합이 전체보다 고객수 +2.4%·UV +33% 많았다).
+    객단가·CR은 합이 아니라 합계끼리 나눠 다시 만든다 — 그래야 퍼널 항등식이 유지된다."""
+    rev = sum(k["rev"] for k in kids)
+    cust = sum(k["cust"] for k in kids) * 0.976
+    uv = sum(k["uv"] for k in kids) * 0.75
+    return dict(uv=uv, cr=(cust / uv if uv else np.nan), aov=(rev / cust if cust else np.nan),
+                cust=cust, rev=rev)
+
+
+def _grid_values(years, periods, plabel):
+    """(연도, 기간라벨) → {(org, cat): cell}. 실파일과 같은 항등식을 만족시킨다.
+
+    · 거래액 = 상품UV × 상품CR × 객단가 (모든 레벨)
+    · 조직 합 = 전체 (거래액만 정확)
+    """
+    out = {}
+    for y in years:
+        for i in range(periods):
+            key = (y, plabel(i))
+            per = i + (y - min(years)) * 100
+            cells = {}
+            for org in ORGS:
+                if org == "*TOTAL":
+                    continue
+                leaves = [c for c in CATS[org] if c not in ("*TOTAL", "-")]
+                for cat in leaves:
+                    cells[(org, cat)] = _cell(*_leaf(org, cat, per))
+                kids = [cells[(org, c)] for c in leaves]
+                cells[(org, "*TOTAL")] = (_roll(kids) if kids
+                                          else _cell(*_leaf(org, "*TOTAL", per)))
+            cells[("*TOTAL", "*TOTAL")] = _roll(
+                [cells[(o, "*TOTAL")] for o in ORGS if o != "*TOTAL"])
+            gr, gc = cells[("*TOTAL", "*TOTAL")]["rev"], cells[("*TOTAL", "*TOTAL")]["cust"]
+            for k, c in cells.items():
+                c["rev_share"] = c["rev"] / gr if gr else np.nan
+                c["cust_share"] = c["cust"] / gc if gc else np.nan
+            out[key] = cells
+    return out
+
+
+_MET_KEY = {"일평균거래액": "rev", "거래액비중": "rev_share", "일평균고객수": "cust",
+            "고객비중": "cust_share", "일평균객단가": "aov", "상품UV": "uv", "상품CR": "cr"}
 
 
 def synth_grid(gran="월", years=(2025,), lfms="N", periods=3, mtd_last=False):
@@ -56,6 +105,7 @@ def synth_grid(gran="월", years=(2025,), lfms="N", periods=3, mtd_last=False):
         if gran == "주": return f"{(i//5)+1:02d}월 {(i%5)+1}주차"
         return f"{(i//28)+1}/{(i%28)+1}"
 
+    VALS = _grid_values(years, periods, plabel)
     cols = []                                   # (year, label, close)
     for y in years:
         for i in range(periods):
@@ -90,9 +140,8 @@ def synth_grid(gran="월", years=(2025,), lfms="N", periods=3, mtd_last=False):
                 last_lbl = None
                 for j, (y, lb, cl) in enumerate(cols):
                     if lb: last_lbl = lb
-                    per = [p for p in range(periods)
-                           if plabel(p) == last_lbl][0] if last_lbl else 0
-                    r[7 + j] = None if cat == "-" else _v(met, org, cat, per + y * 100)
+                    cell = VALS.get((y, last_lbl), {}).get((org, cat))
+                    r[7 + j] = None if (cat == "-" or cell is None) else cell[_MET_KEY[met]]
                 rows.append(r)
                 first_of_metric = first_of_org = False
     return rows
@@ -290,6 +339,14 @@ def _run(page="08. 조직·카테고리별 실적", orgcat=None, master=True):
         os.chdir(cwd); shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _plain(at):
+    """조사 검사는 **강조**·<태그>를 걷어낸 평문으로 해야 한다.
+    마크다운 원문은 '**객단가**이'라 '객단가이'로는 절대 안 걸린다."""
+    import re as _re
+    return _re.sub(r"\s+", " ",
+                   _re.sub(r"[*_`]", "", _re.sub(r"<[^>]+>", " ", " ".join(_texts(at))))).strip()
+
+
 def _texts(at):
     out = []
     for coll in (at.markdown, at.caption, at.info, at.warning, at.success, at.subheader):
@@ -301,9 +358,9 @@ def _texts(at):
 def t_page_is_in_menu_and_renders():
     with _run(orgcat=synth_orgcat_df(years=(2025, 2026))) as at:
         txt = " ".join(_texts(at))
-        for need in ("① 조직별", "② 카테고리별", "③ 조직별 추이", "④ 조직 × 카테고리"):
+        for need in ("① 어디가 움직였나", "② 왜 그랬나", "③ 추이", "④ 한눈에"):
             assert need in txt, f"{need} 블록이 없어요"
-        assert len(at.dataframe) >= 3, f"표가 모자라요 — {len(at.dataframe)}개"
+        assert len(at.dataframe) >= 2, f"표가 모자라요 — {len(at.dataframe)}개"
 
 
 @case
@@ -319,7 +376,7 @@ def t_page_opens_without_master_data():
     """조직×카테고리만 올린 상태에서도 이 화면은 열려야 한다 (자체 기간 선택이라)."""
     with _run(orgcat=synth_orgcat_df(), master=False) as at:
         txt = " ".join(_texts(at))
-        assert "① 조직별" in txt, f"마스터 없이 안 열려요 — {txt[:400]}"
+        assert "① 어디가 움직였나" in txt, f"마스터 없이 안 열려요 — {txt[:400]}"
 
 
 @case
@@ -328,9 +385,8 @@ def t_table_value_matches_source():
     d = synth_orgcat_df(years=(2025, 2026))
     with _run(orgcat=d) as at:
         tbls = [t for t in at.dataframe
-                if "2026년 3월" in [str(c) for c in
-                                   getattr(getattr(t.value, "data", t.value), "columns", [])]]
-        assert tbls, "기준 기간 칼럼을 가진 표를 못 찾았어요"
+                if "조직" == getattr(getattr(t.value, "data", t.value), "index", pd.Index([])).name]
+        assert tbls, "조직별 표를 못 찾았어요"
         v = getattr(tbls[0].value, "data", tbls[0].value)
         got = str(v.loc["e-영업1", "2026년 3월"])
         want = W.fmt_value("첫구매 거래액",
@@ -352,7 +408,7 @@ def t_lfms_options_follow_granularity():
         g[0].set_value("일"); at.run()
         assert not at.exception, at.exception[0].value
         txt = " ".join(_texts(at))
-        assert "① 조직별" in txt, f"'일'로 바꾸니 빈 화면이 됐어요 — {txt[:400]}"
+        assert "① 어디가 움직였나" in txt, f"'일'로 바꾸니 빈 화면이 됐어요 — {txt[:400]}"
         assert "고른 조건에 데이터가 없어요" not in txt, "LFMS 선택이 단위를 따라가지 않았어요"
 
 
@@ -376,12 +432,174 @@ def t_in_progress_period_is_flagged():
 def t_metric_switch_keeps_rendering():
     """지표를 바꿔도(비율 지표 포함) 정상 렌더돼야 한다."""
     with _run(orgcat=synth_orgcat_df(years=(2025, 2026))) as at:
-        sels = [s for s in at.selectbox if s.label == "지표"]
-        assert sels, f"지표 셀렉트가 없어요 — {[s.label for s in at.selectbox]}"
+        sels = [s for s in at.selectbox if s.label == "진단 지표"]
+        assert sels, f"진단 지표 셀렉트가 없어요 — {[s.label for s in at.selectbox]}"
         for opt in list(sels[0].options):
-            tgt = [s for s in at.selectbox if s.label == "지표"][0]
+            tgt = [s for s in at.selectbox if s.label == "진단 지표"][0]
             tgt.set_value(opt); at.run()
             assert not at.exception, f"지표={opt}에서 실패: {at.exception[0].value}"
+
+
+@case
+def t_factor_split_is_exact_and_order_free():
+    """유입·전환·객단가 기여액을 더하면 실제 증감과 정확히 같아야 한다 (LMDI)."""
+    d = synth_orgcat_df(years=(2025, 2026))
+
+    def g(o, c, y, m):
+        return W.opick(d, "월", m, o, c, "N", y, "1월")
+
+    for o, c in [("*TOTAL", "*TOTAL"), ("e-영업1", "*TOTAL"), ("e-영업1", "골프")]:
+        p = tuple(g(o, c, 2025, m) for m, _ in W.ORGCAT_FACTORS)
+        q = tuple(g(o, c, 2026, m) for m, _ in W.ORGCAT_FACTORS)
+        got = W.factor_split(p, q)
+        assert got, f"{o}/{c} 분해 실패"
+        parts, dv = got
+        act = g(o, c, 2026, "첫구매 거래액") - g(o, c, 2025, "첫구매 거래액")
+        assert abs(sum(parts) - act) < 1.0, \
+            f"{o}/{c}: 합 {sum(parts):,.2f} vs 실제 {act:,.2f}"
+        assert abs(dv - act) < 1.0, f"{o}/{c}: 총증감 {dv:,.2f} vs {act:,.2f}"
+
+
+@case
+def t_factor_split_refuses_nonpositive():
+    """0·음수·결측이 섞이면 로그가 정의되지 않는다 — 숫자를 지어내지 말고 None."""
+    ok = (100.0, 0.05, 90_000.0)
+    assert W.factor_split(ok, ok) is not None
+    for bad in [(0.0, 0.05, 90_000.0), (100.0, -0.01, 90_000.0),
+                (100.0, 0.05, float("nan")), (None, 0.05, 90_000.0)]:
+        assert W.factor_split(bad, ok) is None, f"{bad}에서 None이 아니에요"
+        assert W.factor_split(ok, bad) is None, f"{bad}에서 None이 아니에요"
+
+
+@case
+def t_only_additive_metric_gets_contribution():
+    """거래액만 조직 합이 전체와 같다 — 유니크 지표에 기여도를 붙이면 거짓말이 된다."""
+    assert W.ORGCAT_ADDITIVE == {"첫구매 거래액"}, W.ORGCAT_ADDITIVE
+    with _run(orgcat=synth_orgcat_df(years=(2025, 2026))) as at:
+        def _cols():
+            for t in at.dataframe:
+                v = getattr(t.value, "data", t.value)
+                if getattr(getattr(v, "index", None), "name", "") == "조직":
+                    return [str(c) for c in v.columns]
+            return []
+        assert "기여도" in _cols(), f"거래액인데 기여도 칼럼이 없어요 — {_cols()}"
+        tgt = [s for s in at.selectbox if s.label == "진단 지표"][0]
+        tgt.set_value("상품UV"); at.run()
+        assert not at.exception, at.exception[0].value
+        assert "기여도" not in _cols(), f"유니크 지표에 기여도가 붙었어요 — {_cols()}"
+        assert any("유니크 값이라" in str(c.value) for c in at.caption), \
+            "왜 기여도가 없는지 설명이 없어요"
+
+
+@case
+def t_contributions_sum_to_total_yoy():
+    """기여도(%p)를 다 더하면 전체 전년비와 같아야 한다 (분모가 전년 전체라서)."""
+    d = synth_orgcat_df(years=(2025, 2026))
+
+    def g(o, y):
+        return W.opick(d, "월", "첫구매 거래액", o, "*TOTAL", "N", y, "1월")
+
+    tp, tc = g("*TOTAL", 2025), g("*TOTAL", 2026)
+    orgs = [o for o in sorted(set(d["org"])) if o != "*TOTAL"]
+    share = sum((g(o, 2026) - g(o, 2025)) / tp * 100
+                for o in orgs
+                if np.isfinite(g(o, 2026)) and np.isfinite(g(o, 2025)))
+    assert abs(share - (tc / tp - 1) * 100) < 0.01, \
+        f"기여도 합 {share:.3f}%p vs 전체 전년비 {(tc/tp-1)*100:.3f}%"
+
+
+@case
+def t_diagnosis_summary_names_the_driver():
+    """요약 문장이 '어디가·왜'를 짚어야 한다 — 표만 있으면 원인을 못 읽는다."""
+    with _run(orgcat=synth_orgcat_df(years=(2025, 2026))) as at:
+        txt = " ".join(_texts(at))
+        assert "가장 크게" in txt, f"최대 기여 대상 문장이 없어요 — {txt[:500]}"
+        assert any(o in txt for o in ("e-영업1", "e-영업2", "SPACE-R")), "조직 이름이 없어요"
+        assert "거래액 변화를 쪼개면" in txt and "유입" in txt, "요인 분해 문장이 없어요"
+
+
+@case
+def t_drilldown_switches_level_to_categories():
+    """조직을 고르면 ①이 그 조직의 **카테고리별**로 바뀌어야 한다."""
+    with _run(orgcat=synth_orgcat_df(years=(2025, 2026))) as at:
+        def _idx_name():
+            for t in at.dataframe:
+                v = getattr(t.value, "data", t.value)
+                nm = getattr(getattr(v, "index", None), "name", "")
+                if nm in ("조직", "카테고리"):
+                    return nm, list(v.index)
+            return None, []
+        assert _idx_name()[0] == "조직", f"기본이 조직별이 아니에요 — {_idx_name()}"
+        o = [s for s in at.selectbox if s.label == "① 조직 파고들기"][0]
+        assert "e-영업1" in o.options, f"조직 선택지가 없어요 — {list(o.options)}"
+        o.set_value("e-영업1"); at.run()
+        assert not at.exception, at.exception[0].value
+        nm, idx = _idx_name()
+        assert nm == "카테고리", f"카테고리 레벨로 안 내려갔어요 — {nm}"
+        assert "골프" in idx, f"e-영업1의 카테고리가 아니에요 — {idx}"
+        assert "e-영업1" in " ".join(_texts(at)), "브레드크럼에 조직이 안 보여요"
+        c = [s for s in at.selectbox if s.label == "② 카테고리 파고들기"][0]
+        assert "골프" in c.options, f"카테고리 선택지가 안 열렸어요 — {list(c.options)}"
+        c.set_value("골프"); at.run()
+        assert not at.exception, at.exception[0].value
+        assert "② 왜 그랬나" in " ".join(_texts(at)), "말단에서 요인 분해가 없어요"
+
+
+def hand_frame(spec):
+    """(org, cat, year) → (UV, CR, AOV) 명세로 long 프레임을 직접 만든다.
+
+    합성 그리드는 세 요인이 같이 움직여서 '객단가가 1위'인 상황이 안 나온다 —
+    조사처럼 특정 분기에서만 드러나는 버그를 잡으려면 값을 손으로 박아야 한다.
+    """
+    rec = []
+    for (org, cat, year), (uv, cr, aov) in spec.items():
+        vals = {"상품UV": uv, "상품CR": cr, "첫구매 객단가": aov,
+                "첫구매 고객수": uv * cr, "첫구매 거래액": uv * cr * aov}
+        for met, v in vals.items():
+            rec.append(dict(gran="월", metric=met, org=org, cat=cat, lfms="N",
+                            year=year, label="1월", close="final",
+                            sortkey=year * 10000 + 100, value=float(v)))
+    return pd.DataFrame(rec)[W.ORGCAT_COLS]
+
+
+@case
+def t_josa_matches_final_consonant():
+    """'객단가이 가장'·'조직는' 같은 문장이 나오면 안 된다 (발송성과에서 겪은 버그)."""
+    for w, eun, i_ga in [("조직", "은", "이"), ("카테고리", "는", "가"),
+                         ("유입", "은", "이"), ("전환", "은", "이"),
+                         ("객단가", "는", "가"), ("슈즈", "는", "가"),
+                         ("e-영업1", "은", "이"), ("SPACE-R", "은", "이")]:
+        assert W.josa(w) == eun, f"{w}+{W.josa(w)} (기대 {eun})"
+        assert W.josa(w, "이가") == i_ga, f"{w}+{W.josa(w, '이가')} (기대 {i_ga})"
+
+    # 객단가만 움직여 '객단가가 가장 크게 움직였어요'가 실제로 렌더되는 데이터
+    spec = {}
+    for org in ("*TOTAL", "e-영업1", "e-영업2"):
+        base = 1000.0 if org == "*TOTAL" else 500.0
+        spec[(org, "*TOTAL", 2025)] = (base, 0.10, 100_000.0)
+        spec[(org, "*TOTAL", 2026)] = (base, 0.10, 150_000.0)
+    BAD = ("조직는", "카테고리은", "객단가이", "유입가", "전환가")
+    with _run(orgcat=hand_frame(spec)) as at:
+        txt = _plain(at)
+        assert "객단가가 가장 크게" in txt, f"객단가 주범 문장이 안 나왔어요 — {txt[:500]}"
+        for bad in BAD:
+            assert bad not in txt, f"조사가 틀렸어요 — '{bad}'"
+    # 조직·카테고리 레벨 문장도 함께 (기본 합성 데이터: 유입·전환이 주범)
+    with _run(orgcat=synth_orgcat_df(years=(2025, 2026))) as at:
+        for bad in BAD:
+            assert bad not in _plain(at), f"조사가 틀렸어요 — '{bad}'"
+        [s for s in at.selectbox if s.label == "① 조직 파고들기"][0].set_value("e-영업1")
+        at.run()
+        assert not at.exception, at.exception[0].value
+        txt = _plain(at)
+        for bad in BAD:
+            assert bad not in txt, f"조직 레벨에서 조사가 틀렸어요 — '{bad}'"
+
+
+@case
+def t_org_names_are_escaped():
+    """조직·카테고리 이름은 업로드 파일에서 온다 — &·< 가 태그로 새면 안 된다."""
+    assert W.esc("A&B <b>") == "A&amp;B &lt;b&gt;", W.esc("A&B <b>")
 
 
 def main():
