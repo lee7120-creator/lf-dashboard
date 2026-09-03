@@ -381,12 +381,36 @@ def parse_file(name, data: bytes) -> pd.DataFrame:
 # LFMS 포함여부(Y/N)는 헤더 2행에 실려 오는 **다른 모집단**이다. 키에 넣지 않으면
 # 같은 기간·같은 조직 값이 서로를 조용히 덮어쓴다 — 화면에서 필터로 고르게 둔다.
 ORGCAT_STORE = "wr_orgcat_store.csv"
-ORGCAT_KEY = ["gran", "metric", "org", "cat", "lfms", "year", "label", "close"]
+# 실제 뎁스는 **영업조직 > 카테고리 > 브랜드 > 상품** 네 단계고, export의 구분06~09가
+# 차례로 대응한다. 브랜드·상품은 아직 값이 안 들어와 전부 '-'로 오지만, 컬럼은 미리
+# 잡아 둔다 — 값이 들어오는 날 파서·화면이 알아서 그 단계를 열게.
+# 컬럼명 `prod`는 DataFrame.prod(곱) 메서드와 겹쳐 `d.prod`가 조용히 메서드를 준다 — item으로.
+ORGCAT_LEVELS = [("org", "조직", "구분06"), ("cat", "카테고리", "구분07"),
+                 ("brand", "브랜드", "구분08"), ("item", "상품", "구분09")]
+ORGCAT_LV = [c for c, _, _ in ORGCAT_LEVELS]
+ORGCAT_KEY = ["gran", "metric"] + ORGCAT_LV + ["lfms", "year", "label", "close"]
 ORGCAT_COLS = ORGCAT_KEY + ["sortkey", "value"]
 # 마스터 파일과 같은 지표는 같은 이름으로 — fmt_value·PCT_METRICS를 그대로 태운다
 ORGCAT_MAP = {"일평균거래액": "첫구매 거래액", "일평균고객수": "첫구매 고객수",
               "일평균객단가": "첫구매 객단가"}
 ORGCAT_TOTAL = "*TOTAL"
+# 그 레벨이 아예 없음(원본 '-')은 빈 문자열로 둔다. `*TOTAL`(그 레벨의 합계)과 다르다.
+ORGCAT_NONE = ""
+
+
+def orgcat_fill(d):
+    """저장소·백업에서 읽은 프레임을 현재 스키마로 맞춘다.
+
+    레벨이 2단(org·cat)뿐이던 시절의 CSV도 그대로 복원돼야 한다 — 없는 레벨은 빈 칸으로
+    채운다. CSV는 빈 칸을 NaN으로 돌려주므로 **문자열로 되돌리는 게 필수**다.
+    안 그러면 키 비교가 전부 어긋나 병합이 조용히 중복을 만든다.
+    """
+    d = d.copy()
+    for col in ORGCAT_LV:
+        d[col] = (d[col] if col in d.columns else ORGCAT_NONE)
+        d[col] = d[col].fillna(ORGCAT_NONE).astype(str).replace(
+            {"nan": ORGCAT_NONE, "-": ORGCAT_NONE, "–": ORGCAT_NONE})
+    return d[[c for c in ORGCAT_COLS if c in d.columns]]
 
 
 def is_orgcat_grid(rows):
@@ -399,17 +423,18 @@ def is_orgcat_grid(rows):
 
 
 def parse_orgcat_grid(rows):
-    """조직×카테고리 그리드 → long DataFrame.
+    """조직×카테고리(구분06~09) 그리드 → long DataFrame.
 
     헤더 구성이 단위마다 다르다. 월·주는 `연도 / LFMS / 기간 / (구분+마감)` 4행이고,
     일은 마감 행이 없어 `연도 / LFMS / (구분+기간)` 3행이다. 그래서 행 번호를 박지 않고
     내용으로 찾는다 — 구분06이 있는 행, 연도가 있는 행, Y/N만 있는 행, 기간 라벨 행.
     """
-    hdr = c_org = c_cat = None
+    hdr, lv_at = None, {}
     for ri, r in enumerate(rows[:8]):
         cells = [_cell(c) for c in r]
         if "구분06" in cells and "구분07" in cells:
-            hdr, c_org, c_cat = ri, cells.index("구분06"), cells.index("구분07")
+            hdr = ri
+            lv_at = {col: cells.index(h) for col, _lb, h in ORGCAT_LEVELS if h in cells}
             break
     if hdr is None:
         return pd.DataFrame()
@@ -458,31 +483,42 @@ def parse_orgcat_grid(rows):
               and last_lbl and col_year[ci]):
             col_label[ci] = last_lbl; data_cols.append(ci)
 
-    records, metric, org = [], None, None
+    lv_cols = [c for c in ORGCAT_LV if c in lv_at]
+    records, metric = [], None
+    cur = {c: ORGCAT_NONE for c in ORGCAT_LV}
     for ri in range(data_start, len(rows)):
         m0 = cell(ri, 0)
         if m0 and m0 not in ("-", "–"):
             metric = ORGCAT_MAP.get(m0, m0)
-        o = cell(ri, c_org)
-        if o and o not in ("-", "–"):
-            org = o                                   # 조직은 병합셀 — 아래로 이어받는다
-        cat = cell(ri, c_cat)
-        # 카테고리 '-'는 카테고리 구분이 없는 조직(SPACE-R 등)의 자리표시라 *TOTAL과 겹친다
-        if not metric or not org or not cat or cat in ("-", "–"):
+        # 상위 레벨은 병합셀이라 아래로 이어받는다. 어떤 레벨에 값이 새로 찍히면
+        # 그 아래 레벨은 초기화해야 한다 — 안 그러면 앞 조직의 카테고리가 따라붙는다.
+        for i, col in enumerate(lv_cols):
+            v = cell(ri, lv_at[col])
+            if v in ("-", "–"):
+                cur[col] = ORGCAT_NONE
+                for deeper in lv_cols[i + 1:]:
+                    cur[deeper] = ORGCAT_NONE
+            elif v:
+                cur[col] = v
+                for deeper in lv_cols[i + 1:]:
+                    cur[deeper] = ORGCAT_NONE
+        # 카테고리가 없는 행(원본 '-')은 조직 합계와 값이 겹치는 자리표시라 버린다
+        if not metric or not cur["org"] or not cur["cat"]:
             continue
         for ci in data_cols:
             pp = period_parts(gran, col_year[ci], col_label[ci])
             if pp is None: continue
             label, sortkey = pp
             close = cell(close_row, ci) if close_row is not None else ""
-            records.append({
-                "gran": gran, "metric": metric, "org": org, "cat": cat,
+            rec = {"gran": gran, "metric": metric}
+            rec.update({c: cur[c] for c in ORGCAT_LV})
+            rec.update({
                 "lfms": col_lfms[ci] or "N", "year": col_year[ci],
                 "label": label, "sortkey": sortkey,
                 "close": "mtd" if "일마감" in close and gran != "일" else "final",
-                "value": _num(rows[ri][ci] if ci < len(rows[ri]) else None),
-            })
-    return pd.DataFrame(records)
+                "value": _num(rows[ri][ci] if ci < len(rows[ri]) else None)})
+            records.append(rec)
+    return pd.DataFrame(records, columns=ORGCAT_COLS) if records else pd.DataFrame()
 
 
 @st.cache_data(show_spinner=False)
@@ -497,8 +533,8 @@ def parse_orgcat_file(name, data: bytes) -> pd.DataFrame:
         if head and all(k in head[0] for k in ("org", "cat", "lfms")):
             try:
                 d = pd.read_csv(io.BytesIO(data), encoding="utf-8-sig")
-                if set(ORGCAT_COLS) <= set(d.columns):
-                    return d[ORGCAT_COLS]
+                if _is_orgcat_csv(d.columns):
+                    return orgcat_fill(d)
             except Exception:
                 pass
         return pd.DataFrame()
@@ -772,19 +808,25 @@ def merge_store(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     return (pd.concat([old[STORE_COLS], new[STORE_COLS]], ignore_index=True)
             .drop_duplicates(subset=KEY_COLS, keep="last"))
 
+def _is_orgcat_csv(cols):
+    """조직×카테고리 저장소 CSV인가 — 브랜드·상품 레벨이 없던 옛 백업도 인정한다."""
+    need = {"gran", "metric", "org", "cat", "lfms", "year", "label", "close", "value"}
+    return need <= set(cols)
+
+
 def load_orgcat_store() -> pd.DataFrame:
     if os.path.exists(ORGCAT_STORE):
         try:
             d = pd.read_csv(ORGCAT_STORE, encoding="utf-8-sig")
-            if set(ORGCAT_COLS) <= set(d.columns):
-                return d[ORGCAT_COLS]
+            if _is_orgcat_csv(d.columns):
+                return orgcat_fill(d)
         except Exception:
             pass
     return pd.DataFrame(columns=ORGCAT_COLS)
 
 
 def save_orgcat_store(df: pd.DataFrame):
-    df[ORGCAT_COLS].to_csv(ORGCAT_STORE, index=False, encoding="utf-8-sig")
+    orgcat_fill(df)[ORGCAT_COLS].to_csv(ORGCAT_STORE, index=False, encoding="utf-8-sig")
 
 
 def merge_orgcat(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
@@ -835,8 +877,9 @@ def classify_uploads(file_tuples):
         if not oc.empty:
             _g = "".join(g for g in ("일", "주", "월") if g in set(oc["gran"]))
             _lf = "/".join(sorted(set(oc["lfms"].astype(str))))
-            out.append((n, f"✅ 조직×카테고리 · {_g} · LFMS {_lf} · "
-                           f"조직 {oc['org'].nunique()}", len(oc)))
+            _lv = " > ".join(lb for c, lb, _h in ORGCAT_LEVELS
+                             if (oc[c].astype(str) != ORGCAT_NONE).any())
+            out.append((n, f"✅ 조직×카테고리 · {_g} · LFMS {_lf} · {_lv}", len(oc)))
             continue
         pf, d = route_push(n, b)  # combine_files와 동일한 라우팅 (한글명 PUSH 포함)
         if pf is not None:
@@ -896,8 +939,8 @@ def restore_from_upload(upload):
         nonlocal data_restored
         d = pd.read_csv(io.BytesIO(b), encoding="utf-8-sig")
         # 조직×카테고리 백업이 먼저 — segment가 없어 STORE_COLS와 헷갈릴 일은 없다
-        if set(ORGCAT_COLS) <= set(d.columns):
-            save_orgcat_store(d[ORGCAT_COLS]); data_restored = True
+        if _is_orgcat_csv(d.columns) and "segment" not in d.columns:
+            save_orgcat_store(orgcat_fill(d)); data_restored = True
             msgs.append(f"조직×카테고리 {len(d):,}행")
             return True
         if set(STORE_COLS) <= set(d.columns):
@@ -2061,24 +2104,108 @@ def guard_multi(key, opts):
             st.session_state[key] = keep
 
 
-def opick(odf, gran, metric, org, cat, lfms, year, label, prefer="final"):
-    """조직×카테고리 값 하나 — 마스터의 pick()과 같은 규칙(final 우선)."""
-    sub = odf[(odf["gran"] == gran) & (odf["metric"] == metric) &
-              (odf["org"] == org) & (odf["cat"] == cat) & (odf["lfms"] == lfms) &
-              (odf["year"] == year) & (odf["label"] == label)]
-    if sub.empty: return np.nan
-    order = ["final", "mtd"] if prefer == "final" else ["mtd", "final"]
-    for c in order:
-        v = sub[sub["close"] == c]["value"].dropna()
-        if len(v): return v.iloc[-1]
+# 조직·카테고리 목록엔 실적이 사실상 없는 행이 섞여 온다 — 미매칭·기타·라움워치·리빙사업부·
+# PROJECT-C·e-Corner·SPACE-R. 실파일 전 기간을 다 더해도 수천 원이라, 살아 있는 조직(15~33%)과
+# 수만 배 차이다. 표·차트·히트맵 자리만 차지하면서 아무것도 말해 주지 않는다.
+# 이름으로 지우면 새 조직이 생길 때마다 또 손대야 하니 **비중으로** 거른다.
+ORGCAT_MIN_SHARE = 0.001        # 전 기간 거래액이 부모의 0.1% 미만이면 숨김
+
+
+def orgcat_depth(sub):
+    """이 데이터가 실제로 가진 뎁스 — 값이 하나라도 있는 레벨까지.
+
+    브랜드·상품 칸은 아직 '-'로만 와서 지금은 2단이다. 값이 들어오는 날 자동으로
+    3·4단이 열리도록 **데이터를 보고** 정한다(코드를 안 고쳐도 되게).
+    """
+    n = 0
+    for col, _lb, _h in ORGCAT_LEVELS:
+        if col in sub.columns and (sub[col].astype(str) != ORGCAT_NONE).any():
+            n += 1
+        else:
+            break
+    return max(n, 1)
+
+
+def orgcat_node(sub, path, depth=None):
+    """path(선택한 값들)가 가리키는 **합계 행**만 남긴 마스크.
+
+    선택한 레벨은 그 값으로, 그 아래 레벨은 `*TOTAL`(그 레벨의 합계) 또는 빈 칸
+    (레벨 자체가 없음)이어야 한다. 이 두 가지를 구분 못 하면 카테고리 합계 대신
+    브랜드 한 줄이 잡혀 값이 통째로 틀어진다.
+    """
+    m = pd.Series(True, index=sub.index)
+    for i, (col, _lb, _h) in enumerate(ORGCAT_LEVELS):
+        if col not in sub.columns:
+            continue
+        v = sub[col].astype(str)
+        m &= (v == path[i]) if i < len(path) else v.isin([ORGCAT_TOTAL, ORGCAT_NONE])
+    return m
+
+
+def orgcat_children(sub, path):
+    """path 바로 아래 단계의 항목들 (합계·빈 칸 제외). 더 들어갈 데가 없으면 빈 리스트."""
+    d = len(path)
+    if d >= len(ORGCAT_LEVELS):
+        return []
+    col = ORGCAT_LEVELS[d][0]
+    if col not in sub.columns:
+        return []
+    m = pd.Series(True, index=sub.index)
+    for i, (c, _lb, _h) in enumerate(ORGCAT_LEVELS):
+        if c not in sub.columns:
+            continue
+        v = sub[c].astype(str)
+        if i < d:
+            m &= (v == path[i])
+        elif i == d:
+            m &= ~v.isin([ORGCAT_TOTAL, ORGCAT_NONE])
+        else:
+            m &= v.isin([ORGCAT_TOTAL, ORGCAT_NONE])
+    return list(dict.fromkeys(sub.loc[m, col].astype(str)))
+
+
+def orgcat_live(sub, path=()):
+    """실적이 사실상 없는 자식을 걸러 낸 목록 → (보일 것, 숨긴 것).
+
+    판단은 **적재된 전 기간**의 거래액 합으로 한다 — 고른 기간으로 재면 달마다 목록이
+    바뀌어 파고들기 선택이 튀고, 한두 달 쉰 항목이 통째로 사라진다.
+    """
+    kids = orgcat_children(sub, path)
+    if not kids:
+        return [], []
+    rev = sub[sub["metric"] == "첫구매 거래액"]
+    parent = float(rev.loc[orgcat_node(rev, path), "value"].sum())
+    col = ORGCAT_LEVELS[len(path)][0]
+    live, hidden = [], []
+    for k in kids:
+        kid_rev = float(rev.loc[orgcat_node(rev, tuple(path) + (k,)), "value"].sum())
+        base = abs(parent) if (np.isfinite(parent) and parent) else 1.0
+        (live if abs(kid_rev) / base >= ORGCAT_MIN_SHARE else hidden).append(k)
+    if not live:                      # 전부 잘리면 거르지 않는다 (빈 화면보다 낫다)
+        return kids, []
+    return live, hidden
+
+
+def opick(sub, path, metric, year, label, prefer="final"):
+    """path가 가리키는 노드의 값 하나 — 마스터의 pick()과 같은 규칙(final 우선)."""
+    r = sub[(sub["metric"] == metric) & (sub["year"] == year) & (sub["label"] == label)]
+    if r.empty:
+        return np.nan
+    r = r[orgcat_node(r, path)]
+    if r.empty:
+        return np.nan
+    for c in (["final", "mtd"] if prefer == "final" else ["mtd", "final"]):
+        v = r[r["close"] == c]["value"].dropna()
+        if len(v):
+            return v.iloc[-1]
     return np.nan
 
 
-# 조직·카테고리를 더하면 전체가 되는 지표는 **거래액 하나뿐**이다. 실파일 검증에서
-# 조직 합이 전체와 오차 0.00%로 일치했다. 고객수(+2.4%)·상품UV(+33%)는 유니크 값이라
-# 같은 사람이 여러 조직에 잡혀 합이 전체를 넘는다 — 기여도 분해를 하면 안 된다.
+# 상위와 합이 맞는 지표는 **거래액 하나뿐**이다. 실파일 검증에서 조직 합이 전체와
+# 오차 0.00%로 일치했다. 고객수(+2.4%)·상품UV(+33%)는 유니크 값이라 같은 사람이 여러
+# 조직에 잡혀 합이 상위를 넘는다 — 기여도 분해를 하면 안 된다.
 ORGCAT_ADDITIVE = {"첫구매 거래액"}
-# 거래액 = 상품UV × 상품CR × 객단가 (실파일에서 모든 조직·카테고리에 오차 0.000%로 성립)
+# 거래액 = 상품UV × 상품CR × 객단가 (실파일에서 모든 레벨에 오차 0.000%로 성립)
 ORGCAT_FACTORS = [("상품UV", "유입"), ("상품CR", "전환"), ("첫구매 객단가", "객단가")]
 
 
@@ -2111,7 +2238,10 @@ def _won_m(v, digits=1):
 
 
 def render_orgcat_page(odf):
-    """08. 조직·카테고리별 실적 — '어디가 원인인지' 파고드는 진단 화면.
+    """08. 조직·카테고리별 실적 — 개괄에서 이상한 데를 찾아 그 자리에서 파고드는 화면.
+
+    뎁스는 **영업조직 > 카테고리 > 브랜드 > 상품**(구분06~09)이고, 실제로 값이 들어온
+    레벨까지만 열린다. 브랜드·상품 칸이 채워지는 날 코드를 안 고쳐도 3·4단이 생긴다.
 
     사이드바 기준 기간(월·주)에 기대지 않고 **자체 기간 선택**을 쓴다. 이 데이터는 일
     단위까지 오고 커버리지도 마스터와 달라서, 사이드바 값을 그대로 쓰면 빈 화면이 되기
@@ -2121,7 +2251,8 @@ def render_orgcat_page(odf):
     if odf is None or odf.empty:
         st.info("조직×카테고리 데이터가 없어요. MICRO 대시보드에서 받은 "
                 "**구분06(BPU) × 구분07(카테고리)** 엑셀을 사이드바에 올려 주세요.")
-        st.caption("일자별·주별·월별 파일을 따로 올리면 각각 누적돼요.")
+        st.caption("일자별·주별·월별 파일을 따로 올리면 각각 누적돼요. "
+                   "브랜드(구분08)·상품(구분09)까지 담긴 파일을 올리면 그 단계도 열려요.")
         return
 
     # ── 필터: 집계 단위 · LFMS · 지표 ──
@@ -2180,70 +2311,76 @@ def render_orgcat_page(odf):
     if not has_prev:
         st.warning(f"전년({py}년) 같은 기간 데이터가 없어 전년비·기여도는 비어 있어요.")
 
-    def V(org, cat, year, metric=None):
-        return opick(sub, gran, metric or met, org, cat, lfms, year, clabel)
-
-    orgs_all = [o for o in sub["org"].unique() if o != ORGCAT_TOTAL]
     unit, div = METRIC_UNIT.get(met, ("", 1))
     is_pct = met in PCT_METRICS
     xdiv = 0.01 if is_pct else div
     additive = met in ORGCAT_ADDITIVE
+    depth = orgcat_depth(sub)
+    LV = ORGCAT_LEVELS[:depth]
 
-    # ── 파고들기 ──
+    def V(path, year, metric=None):
+        return opick(sub, tuple(path), metric or met, year, clabel)
+
+    # ── 파고들기 — 레벨마다 셀렉트 하나. 위를 '전체'로 되돌리면 아래는 같이 닫힌다 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    d1, d2 = st.columns(2)
-    org_opts = ["전체"] + [o for o in orgs_all
-                          if np.isfinite(V(o, ORGCAT_TOTAL, cy)) or
-                          np.isfinite(V(o, ORGCAT_TOTAL, py))]
-    with d1:
-        guard_select("oc_dorg", org_opts)
-        sel_org = st.selectbox("① 조직 파고들기", org_opts, key="oc_dorg")
-    tgt_org = ORGCAT_TOTAL if sel_org == "전체" else sel_org
-    cats_of = [c for c in sub[sub["org"] == tgt_org]["cat"].unique() if c != ORGCAT_TOTAL]
-    cat_opts = ["전체"] + (cats_of if sel_org != "전체" else [])
-    with d2:
-        guard_select("oc_dcat", cat_opts)
-        sel_cat = st.selectbox("② 카테고리 파고들기", cat_opts, key="oc_dcat",
-                               disabled=(sel_org == "전체"),
-                               help="조직을 먼저 고르면 카테고리까지 들어갈 수 있어요.")
-    tgt_cat = ORGCAT_TOTAL if sel_cat == "전체" else sel_cat
-    crumb = " › ".join(["전체"] + ([sel_org] if sel_org != "전체" else [])
-                       + ([sel_cat] if sel_cat != "전체" else []))
+    show_all = st.checkbox("실적 없는 항목도 보기", key="oc_showall",
+                           help="미매칭·기타처럼 전 기간 거래액이 상위의 0.1%에 못 미치는 "
+                                "항목이에요. 기본은 숨겨서 표와 차트를 비워 둬요.")
+    path, hidden_here, dcols = [], [], st.columns(max(len(LV), 1))
+    for d, (col, lb, _h) in enumerate(LV):
+        live, hid = orgcat_live(sub, tuple(path))
+        kids = (orgcat_children(sub, tuple(path)) if show_all else live)
+        if not kids:
+            break
+        key = f"oc_lv{d}"
+        guard_select(key, ["전체"] + kids)
+        with dcols[d]:
+            pick_v = st.selectbox(f"{d + 1}. {lb}", ["전체"] + kids, key=key,
+                                  help=("여기서 고르면 한 단계 더 들어가요."
+                                        if d + 1 < len(LV) else "마지막 단계예요."))
+        if d == 0:
+            hidden_here = hid
+        if pick_v == "전체":
+            break
+        path.append(pick_v)
+    if len(LV) < len(ORGCAT_LEVELS):
+        st.caption("브랜드·상품(구분08·09)은 아직 값이 안 들어와 단계가 안 열려요. "
+                   "그 칸이 채워진 파일을 올리면 자동으로 생겨요.")
+    if hidden_here and not show_all:
+        st.caption(f"실적이 거의 없는 {LV[0][1]} {len(hidden_here)}곳은 숨겼어요 — "
+                   + ", ".join(esc(str(o)) for o in hidden_here[:6])
+                   + (" 외" if len(hidden_here) > 6 else "") + ".")
+
+    crumb = " › ".join(["전체"] + [str(p) for p in path])
     st.caption(f"보는 곳: **{esc(crumb)}** · {ccol} · {met} · LFMS {lfms}")
 
-    # ── 진단 요약 ──
-    tot_p = V(ORGCAT_TOTAL, ORGCAT_TOTAL, py)   # 히트맵 기여도의 분모
-    cur_c, cur_p = V(tgt_org, tgt_cat, cy), V(tgt_org, tgt_cat, py)
+    # 지금 노드와 한 단계 아래
+    cur_c, cur_p = V(path, cy), V(path, py)
+    kid_live, kid_hidden = orgcat_live(sub, tuple(path))
+    kid_names = (orgcat_children(sub, tuple(path)) if show_all else kid_live)
+    kid_lbl = LV[len(path)][1] if len(path) < len(LV) else None
 
-    def _kids(org, cat_mode):
-        """지금 레벨의 한 단계 아래 목록 — 전체면 조직, 조직이면 그 조직의 카테고리."""
-        if cat_mode:
-            return [(c, org, c) for c in cats_of]
-        return [(o, o, ORGCAT_TOTAL) for o in orgs_all]
-
-    drill_cat = (sel_org != "전체" and sel_cat == "전체")
-    kids = _kids(tgt_org, drill_cat) if (sel_org == "전체" or drill_cat) else []
-    kid_lbl = "카테고리" if drill_cat else "조직"
-
-    rows, base = [], (cur_p if np.isfinite(cur_p) and cur_p else np.nan)
-    for name, o, c in kids:
-        vc, vp = V(o, c, cy), V(o, c, py)
+    rows = []
+    for name in kid_names:
+        kp = tuple(path) + (name,)
+        vc, vp = V(kp, cy), V(kp, py)
         if not np.isfinite(vc) and not np.isfinite(vp):
             continue
-        d = (vc - vp) if (np.isfinite(vc) and np.isfinite(vp)) else np.nan
-        rows.append({"_n": name, "_o": o, "_c": c, "_vc": vc, "_vp": vp, "_d": d,
-                     "_share": (d / base * 100) if (additive and np.isfinite(d)
-                                                    and np.isfinite(base) and base) else np.nan})
+        d_ = (vc - vp) if (np.isfinite(vc) and np.isfinite(vp)) else np.nan
+        rows.append({"_n": name, "_p": kp, "_vc": vc, "_vp": vp, "_d": d_,
+                     "_share": (d_ / cur_p * 100)
+                     if (additive and np.isfinite(d_) and np.isfinite(cur_p) and cur_p)
+                     else np.nan})
     kid = pd.DataFrame(rows)
 
+    # ── 진단 요약 ──
     _msg = []
     if np.isfinite(cur_c):
         _delta = f" · 전년비 {fmt_delta(met, cur_c, cur_p) or '–'}" if np.isfinite(cur_p) else ""
-        _amt = (f" ({_won_m(cur_c - cur_p)})"
-                if additive and np.isfinite(cur_p) else "")
+        _amt = f" ({_won_m(cur_c - cur_p)})" if additive and np.isfinite(cur_p) else ""
         _msg.append(f"**{esc(crumb)}**의 {ccol} {met}은 **{fmt_value(met, cur_c)}**"
                     f"{_delta}{_amt}이에요.")
-    if len(kid) and kid["_d"].notna().any():
+    if len(kid) and kid["_d"].notna().any() and kid_lbl:
         _w = kid.reindex(kid["_d"].abs().sort_values(ascending=False).index).iloc[0]
         _dir = "끌어내린" if _w["_d"] < 0 else "끌어올린"
         # 전체 변화 대비 몫. 서로 상쇄되는 구간이면 100%를 넘는 게 정상이지만,
@@ -2257,15 +2394,13 @@ def render_orgcat_page(odf):
         _msg.append(f"가장 크게 {_dir} {kid_lbl}{josa(kid_lbl)} **{esc(str(_w['_n']))}**"
                     + (f" ({_won_m(_w['_d'])}{_sh})" if additive else
                        f" ({fmt_delta(met, _w['_vc'], _w['_vp']) or '–'})") + "예요.")
-    # 요인 분해 한 줄 (거래액 기준 — 지표와 무관하게 '왜'를 말해 준다)
-    fp = tuple(V(tgt_org, tgt_cat, py, m) for m, _ in ORGCAT_FACTORS)
-    fc = tuple(V(tgt_org, tgt_cat, cy, m) for m, _ in ORGCAT_FACTORS)
+    fp = tuple(V(path, py, m) for m, _ in ORGCAT_FACTORS)
+    fc = tuple(V(path, cy, m) for m, _ in ORGCAT_FACTORS)
     fs = factor_split(fp, fc)
     if fs:
         parts, _tot = fs
-        _top = max(range(3), key=lambda i: abs(parts[i]))
-        _nm = ORGCAT_FACTORS[_top][1]
-        _msg.append(f"거래액 변화를 쪼개면 "
+        _nm = ORGCAT_FACTORS[max(range(3), key=lambda i: abs(parts[i]))][1]
+        _msg.append("거래액 변화를 쪼개면 "
                     + " · ".join(f"{lb} {_won_m(parts[i])}"
                                  for i, (_, lb) in enumerate(ORGCAT_FACTORS))
                     + f" — **{_nm}**{josa(_nm, '이가')} 가장 크게 움직였어요.")
@@ -2273,11 +2408,13 @@ def render_orgcat_page(odf):
         st.markdown('<div class="vg">📌 ' + "<br>".join(_msg) + '</div>',
                     unsafe_allow_html=True)
 
-    # ── ① 기여도 ──
+    # ── ① 어디가 움직였나 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader(f"① 어디가 움직였나 — {kid_lbl}별")
-    if not len(kid):
-        st.info("한 단계 더 들어갈 대상이 없어요. 위에서 조직을 '전체'로 바꿔 보세요.")
+    st.subheader(f"① 어디가 움직였나" + (f" — {kid_lbl}별" if kid_lbl else ""))
+    if not kid_lbl:
+        st.info("더 들어갈 단계가 없어요. 위에서 한 단계 위를 '전체'로 바꾸면 돌아가요.")
+    elif not len(kid):
+        st.info(f"이 기간에 {kid_lbl} 값이 없어요.")
     else:
         show = kid.reindex(
             (kid["_d"].abs() if additive else kid["_vc"]).sort_values(ascending=False).index)
@@ -2288,32 +2425,35 @@ def render_orgcat_page(odf):
                     "전년비": fmt_delta(met, r["_vc"], r["_vp"]) or "–"}
             if additive:
                 item["증감액"] = _won_m(r["_d"]) if np.isfinite(r["_d"]) else "–"
-                item["기여도"] = (f"{r['_share']:+.1f}%p"
-                                if np.isfinite(r["_share"]) else "–")
+                item["기여도"] = f"{r['_share']:+.1f}%p" if np.isfinite(r["_share"]) else "–"
             # 같은 줄에서 원인 축까지 보이게 — 유입·전환·객단가 전년비를 붙인다
             for mkey, lb in ORGCAT_FACTORS:
-                item[f"{lb} 전년비"] = fmt_delta(mkey, V(r["_o"], r["_c"], cy, mkey),
-                                               V(r["_o"], r["_c"], py, mkey)) or "–"
+                item[f"{lb} 전년비"] = fmt_delta(mkey, V(r["_p"], cy, mkey),
+                                               V(r["_p"], py, mkey)) or "–"
             trow.append(item)
         wtable(style_delta_cols(pd.DataFrame(trow).set_index(kid_lbl)),
-               width="stretch", dl_name=f"{kid_lbl}별 {met}")
+               width="stretch", dl_name=f"{crumb} {kid_lbl}별 {met}")
         if additive:
-            st.caption(f"**기여도**는 그 {kid_lbl}의 증감액을 **{pcol} 전체**로 나눈 값이에요. "
-                       f"다 더하면 전체 전년비와 같아요. 정렬은 증감액이 큰 순이에요.")
+            _hid_n = 0 if show_all else len(kid_hidden)
+            st.caption(f"**기여도**는 그 {kid_lbl}의 증감액을 **{pcol} {crumb}**로 나눈 값이에요. "
+                       + (f"숨긴 {_hid_n}곳까지 더해야 정확히 맞아요(합쳐도 0.1% 미만). "
+                          if _hid_n else "다 더하면 위 전년비와 같아요. ")
+                       + "정렬은 증감액이 큰 순이에요."
+                       + f" 더 들어가려면 위 **{len(path) + 1}. {kid_lbl}**에서 고르세요.")
         else:
-            st.caption(f"{met}은 유니크 값이라 {kid_lbl} 합이 전체와 달라요 — 기여도 분해는 "
+            st.caption(f"{met}은 유니크 값이라 {kid_lbl} 합이 상위와 달라요 — 기여도 분해는 "
                        "거래액에서만 나와요. 정렬은 값이 큰 순이에요.")
 
-        # 워터폴 — 전년 전체에서 시작해 각 항목 증감을 쌓아 당년 전체로 닫는다
         if additive and np.isfinite(cur_p) and show["_d"].notna().any():
-            # 상위 8개만 막대로 세우고 나머지(0원짜리 조직 등)는 '기타'로 합친다.
-            # 다 세우면 눈금이 뭉개져 정작 큰 항목이 안 읽힌다.
+            # 상위 8개만 막대로 세우고 나머지는 '기타'로 합친다. 다 세우면 눈금이 뭉개져
+            # 정작 큰 항목이 안 읽힌다.
             TOPN = 8
             wall = show[show["_d"].notna()]
             ws, rest = wall.head(TOPN), wall.iloc[TOPN:]
-            resid = (cur_c - cur_p) - ws["_d"].sum()      # 나머지 + 합계 불일치
+            resid = (cur_c - cur_p) - ws["_d"].sum()      # 나머지 + 숨긴 항목 + 합계 불일치
             _extra = abs(resid) > 5e4
-            _rlab = f"기타 {len(rest)}곳" if len(rest) else "기타·미분류"
+            _rlab = f"기타 {len(rest) + (0 if show_all else len(kid_hidden))}곳" \
+                if (len(rest) or kid_hidden) else "기타·미분류"
             names = [pcol] + [str(x) for x in ws["_n"]] + ([_rlab] if _extra else []) + [ccol]
             meas = (["absolute"] + ["relative"] * len(ws)
                     + (["relative"] if _extra else []) + ["total"])
@@ -2328,21 +2468,21 @@ def render_orgcat_page(odf):
                 increasing=dict(marker=dict(color=clr("green"))),
                 decreasing=dict(marker=dict(color=clr("red"))),
                 totals=dict(marker=dict(color=clr("slate")))))
-            lay = base_layout(380, title=f"{kid_lbl}별 증감 분해 (백만원)")
+            lay = base_layout(380, title=f"{crumb} · {kid_lbl}별 증감 분해 (백만원)")
             lay["showlegend"] = False
             figw.update_layout(**lay)
             st.plotly_chart(figw, width="stretch")
 
     # ── ② 왜 — 유입 × 전환 × 객단가 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader(f"② 왜 그랬나 — 유입·전환·객단가 (거래액 기준)")
+    st.subheader("② 왜 그랬나 — 유입·전환·객단가 (거래액 기준)")
     if not fs:
         st.info("이 대상은 전년 값이 없거나 0이라 요인 분해를 할 수 없어요.")
     else:
         parts, tot_d = fs
         frow = []
         for i, (mkey, lb) in enumerate(ORGCAT_FACTORS):
-            vp_, vc_ = V(tgt_org, tgt_cat, py, mkey), V(tgt_org, tgt_cat, cy, mkey)
+            vp_, vc_ = V(path, py, mkey), V(path, cy, mkey)
             frow.append({"요인": lb, "지표": mkey,
                          pcol: fmt_value(mkey, vp_), ccol: fmt_value(mkey, vc_),
                          "전년비": fmt_delta(mkey, vc_, vp_) or "–",
@@ -2375,7 +2515,8 @@ def render_orgcat_page(odf):
     # ── ③ 추이 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader(f"③ 추이 — {crumb}")
-    tsub = sub[(sub["metric"] == met) & (sub["org"] == tgt_org) & (sub["cat"] == tgt_cat)]
+    tsub = sub[(sub["metric"] == met)]
+    tsub = tsub[orgcat_node(tsub, tuple(path))]
     if tsub.empty:
         st.info("추이를 그릴 값이 없어요.")
     else:
@@ -2387,9 +2528,9 @@ def render_orgcat_page(odf):
         figt = go.Figure()
         for yr, color in ((py, "slate"), (cy, "blue")):
             g = tsub[tsub["year"] == yr]
-            m = {str(r["label"]): r["value"] for _, r in g.iterrows()}
+            mp = {str(r["label"]): r["value"] for _, r in g.iterrows()}
             figt.add_trace(go.Scatter(
-                x=xs, y=[(m[k] / xdiv) if (k in m and m[k] == m[k]) else None for k in xs],
+                x=xs, y=[(mp[k] / xdiv) if (k in mp and mp[k] == mp[k]) else None for k in xs],
                 mode="lines+markers", name=f"{yr}년", connectgaps=False,
                 line=dict(color=clr(color), width=2 if yr == cy else 1.5,
                           dash=None if yr == cy else "dot"),
@@ -2399,51 +2540,60 @@ def render_orgcat_page(odf):
             title=f"{met} · {cy}년 vs {py}년 ({'%' if is_pct else unit})"))
         st.plotly_chart(figt, width="stretch")
 
-    # ── ④ 히트맵 ──
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("④ 한눈에 — 조직 × 카테고리")
-    hm = sub[(sub["metric"] == met) & (sub["cat"] != ORGCAT_TOTAL) &
-             (sub["org"] != ORGCAT_TOTAL) & sub["value"].notna() &
-             (sub["label"] == clabel) & (sub["year"].isin([cy, py]))]
-    if hm.empty:
-        st.info("이 기간엔 조직×카테고리 교차 값이 없어요.")
-    else:
-        cur_p_ = hm[hm["year"] == cy].pivot_table(index="org", columns="cat",
-                                                  values="value", aggfunc="last")
-        prv_p_ = hm[hm["year"] == py].pivot_table(index="org", columns="cat",
-                                                  values="value", aggfunc="last")
-        prv_p_ = prv_p_.reindex(index=cur_p_.index, columns=cur_p_.columns)
-        if additive and np.isfinite(tot_p) and tot_p:
-            z = (cur_p_ - prv_p_) / tot_p * 100
-            zttl, zsuf = "기여도(%p) — 전체 전년 대비", "%p"
+    # ── ④ 한눈에 — 지금 단계 × 그 아래 단계 ──
+    gd = len(path) + 1
+    if kid_lbl and gd < len(LV) and len(kid):
+        gcol, glbl = LV[gd][0], LV[gd][1]
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader(f"④ 한눈에 — {kid_lbl} × {glbl}")
+        cells = []
+        for _, r in kid.iterrows():
+            gl, _gh = orgcat_live(sub, r["_p"])
+            for g_ in (orgcat_children(sub, r["_p"]) if show_all else gl):
+                gp = tuple(r["_p"]) + (g_,)
+                cells.append({"r": r["_n"], "c": g_,
+                              "vc": V(gp, cy), "vp": V(gp, py)})
+        cdf = pd.DataFrame(cells)
+        if cdf.empty or not cdf["vc"].notna().any():
+            st.info("이 기간엔 교차 값이 없어요.")
         else:
-            z = (cur_p_ / prv_p_ - 1) * 100 if not is_pct else (cur_p_ - prv_p_) * 100
-            zttl, zsuf = ("전년비(%)" if not is_pct else "전년비(%p)"), ("%" if not is_pct else "%p")
-        lim = float(np.nanmax(np.abs(z.values))) if np.isfinite(z.values).any() else 1.0
-        figh = go.Figure(go.Heatmap(
-            z=z.values, x=[str(c) for c in z.columns], y=[str(i) for i in z.index],
-            zmid=0, zmin=-lim, zmax=lim,
-            colorscale=[[0, clr("red")], [0.5, "#ffffff"], [1, clr("green")]],
-            text=[[("" if not np.isfinite(v) else f"{v:+.1f}") for v in row]
-                  for row in z.values],
-            texttemplate="%{text}", textfont=dict(size=10),
-            hovertemplate="%{y} · %{x}<br>" + zttl + ": %{z:+.2f}" + zsuf + "<extra></extra>",
-            colorbar=dict(title=dict(text=zsuf, side="right"), thickness=10)))
-        lay = base_layout(max(260, 30 * len(z.index) + 120), title=f"{ccol} · {zttl}")
-        lay["showlegend"] = False
-        lay["yaxis"]["autorange"] = "reversed"
-        figh.update_layout(**lay)
-        st.plotly_chart(figh, width="stretch")
-        st.caption(("빨간 칸이 전체를 끌어내린 곳이에요. 숫자를 다 더하면 전체 전년비가 돼요."
-                    if additive and np.isfinite(tot_p) and tot_p else
-                    "빈 칸은 그 조직에 해당 카테고리 실적이 없다는 뜻이에요.")
-                   + " 위 파고들기에서 조직·카테고리를 고르면 그 칸의 원인이 ②에 나와요.")
+            if additive and np.isfinite(cur_p) and cur_p:
+                cdf["z"] = (cdf["vc"] - cdf["vp"]) / cur_p * 100
+                zttl, zsuf = f"기여도(%p) — {crumb} 전년 대비", "%p"
+            elif is_pct:
+                cdf["z"] = (cdf["vc"] - cdf["vp"]) * 100
+                zttl, zsuf = "전년비(%p)", "%p"
+            else:
+                cdf["z"] = (cdf["vc"] / cdf["vp"] - 1) * 100
+                zttl, zsuf = "전년비(%)", "%"
+            z = cdf.pivot_table(index="r", columns="c", values="z", aggfunc="last")
+            z = z.reindex([n for n in show["_n"] if n in z.index])
+            lim = float(np.nanmax(np.abs(z.values))) if np.isfinite(z.values).any() else 1.0
+            figh = go.Figure(go.Heatmap(
+                z=z.values, x=[str(c) for c in z.columns], y=[str(i) for i in z.index],
+                zmid=0, zmin=-lim, zmax=lim,
+                colorscale=[[0, clr("red")], [0.5, "#ffffff"], [1, clr("green")]],
+                text=[[("" if not np.isfinite(v) else f"{v:+.1f}") for v in row]
+                      for row in z.values],
+                texttemplate="%{text}", textfont=dict(size=10),
+                hovertemplate="%{y} · %{x}<br>" + zttl + ": %{z:+.2f}" + zsuf
+                              + "<extra></extra>",
+                colorbar=dict(title=dict(text=zsuf, side="right"), thickness=10)))
+            lay = base_layout(max(260, 30 * len(z.index) + 120), title=f"{ccol} · {zttl}")
+            lay["showlegend"] = False
+            lay["yaxis"]["autorange"] = "reversed"
+            figh.update_layout(**lay)
+            st.plotly_chart(figh, width="stretch")
+            st.caption(("빨간 칸이 상위를 끌어내린 곳이에요. " if additive else "")
+                       + f"칸을 짚었으면 위 **{gd}. {kid_lbl}** 에서 그 이름을 골라 "
+                         "한 단계 더 들어가세요.")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.caption("MICRO 대시보드의 **구분06(BPU) × 구분07(카테고리)** export예요. "
+    st.caption("MICRO 대시보드의 **구분06~09**(조직 > 카테고리 > 브랜드 > 상품) export예요. "
                "거래액·고객수·객단가는 **일평균**이고 비중·상품CR은 비율이에요. "
                "`*TOTAL`은 하위 항목의 단순 합이 아니라 파일이 준 값을 그대로 써요 — "
-               "거래액만 합이 전체와 일치하고, 고객수·상품UV는 유니크 값이라 조금 넘어요.")
+               "거래액만 합이 상위와 일치하고, 고객수·상품UV는 유니크 값이라 조금 넘어요.")
+
 
 def print_button(label="이 페이지 PDF 저장 / 인쇄"):
     # st.components.v1.html은 제거 예정(2026-06-01 이후) — 후속 API인 st.iframe 사용
