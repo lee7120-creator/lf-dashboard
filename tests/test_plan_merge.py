@@ -248,6 +248,51 @@ def t_exec_note_reads_four_tuple_lookup():
         f"이번 주 기획 문구가 안 채워졌어요 — {body[-400:]}"
 
 
+@case
+def t_af_code_with_letters_survives_parsing():
+    """AF코드 접두어와 숫자 사이에 영문이 끼는 코드(`APZ04`)가 실백업에 있다.
+
+    `^(AP|PB)\\d+$`로 박아 두면 그 행이 **파싱 단계에서 조용히 사라진다** — 실백업
+    2025-09-01 주에서 6건·유입UV 27,475(그 주의 4.8%)가 이렇게 빠졌고, 화면엔 '전년 UV가
+    좀 적네'로만 보여 원인이 안 드러났다. 잡행(합계·헤더)은 그대로 걸러져야 한다."""
+    d = "20250904"
+    perf = S.parse_perf_bytes(perf_xlsx([
+        row(d, "AP59", uv=9562),
+        row(d, "APZ04", uv=9684),          # ← 영문이 낀 실제 발송
+        row(d, "PBX07", uv=100),
+        row(d, "합계", uv=999999),          # ← 잡행은 계속 버려야 한다
+    ]))
+    got = set(perf["af"])
+    assert {"AP59", "APZ04", "PBX07"} <= got, f"영문 낀 코드가 빠졌어요 — {sorted(got)}"
+    assert "합계" not in got, f"잡행이 들어왔어요 — {sorted(got)}"
+    assert perf["uv"].sum() == 9562 + 9684 + 100, perf["uv"].sum()
+    for junk in ("AP", "PB", "1234", "AP-01", "AF123", "APZ"):
+        assert not S.AF_RE.match(junk), f"{junk}가 AF코드로 통과했어요"
+
+
+@case
+def t_rejected_af_codes_are_reported():
+    """버린 행을 세어 두지 않으면 새 코드 체계가 들어와도 조용히 사라진다.
+
+    화면(업로드 인식 로그)이 읽는 건 `df.attrs['af_rejected']`다. attrs는 pickle을 타서
+    `st.cache_data`를 거쳐도 살아남지만, 이후 merge·concat에서는 사라진다."""
+    d = "20250904"
+    perf = S.parse_perf_bytes(perf_xlsx([
+        row(d, "AP59", uv=9562),
+        row(d, "ZZ01", uv=7777),           # ← 지금 규칙으로도 못 읽는 코드
+        row(d, "합계", uv=0),
+    ]))
+    rej = perf.attrs.get("af_rejected")
+    assert isinstance(rej, dict), f"버린 행 정보가 없어요 — {rej!r}"
+    assert "ZZ01" in rej, f"못 읽은 코드가 안 담겼어요 — {rej}"
+    assert rej["ZZ01"] == (1, 7777), f"건수·UV가 안 맞아요 — {rej['ZZ01']}"
+    # UV가 0인 잡행은 화면에 안 띄운다(호출부가 v[1] > 0으로 거른다) — 담기기는 해야 한다
+    assert rej.get("합계", (0, 0))[1] == 0, rej
+    import pickle
+    assert pickle.loads(pickle.dumps(perf)).attrs.get("af_rejected") == rej, \
+        "attrs가 pickle(st.cache_data)을 못 넘어가요"
+
+
 def main():
     fails = []
     for fn in CASES:
