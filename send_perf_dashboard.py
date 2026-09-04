@@ -45,7 +45,11 @@ except Exception:
 # 1. 순수 데이터 로직 (Streamlit 비의존)
 # ══════════════════════════════════════════════════════════════════════
 
-AF_RE   = re.compile(r'^(AP|PB)\d+$', re.I)          # PUSH AF코드 형식
+# PUSH AF코드 형식. **접두어와 숫자 사이에 영문이 낄 수 있다** — 실백업에 `APZ04`·`APZ09`
+# 같은 코드가 실제 발송으로 들어 있다. `^(AP|PB)\d+$`로 박아 두면 이 행들이 파싱 단계에서
+# 조용히 사라진다(2025-09-01 주 6건·유입UV 27,475 = 그 주의 4.8%). 증상이 '숫자가 좀 적네'로만
+# 보여서 원인이 안 드러나므로, 못 읽은 코드는 아래 af_rejected로 화면에 띄운다.
+AF_RE   = re.compile(r'^(AP|PB)[A-Z]*\d+$', re.I)
 WEEK_RE = re.compile(r'\d{1,2}\s*월\s*\d\s*주차')    # 기획 주차 시트명
 
 # 실적 '소재별 실적(당주)' 시트 컬럼 → 표준 키
@@ -157,12 +161,19 @@ def parse_perf_bytes(file_bytes):
                 idx["날짜"] = idx[h]
                 break
     recs = []
+    # AF코드 형식에 안 맞아 버린 행 — 헤더·합계 같은 잡행이 대부분이지만, 새 코드 체계가
+    # 들어오면 여기로 조용히 흘러가 유입UV가 통째로 빠진다. 세서 호출부에 넘긴다.
+    rejected = {}
     for r in rows[1:]:
         afi = idx.get("AF코드")
         if afi is None or afi >= len(r) or r[afi] is None:
             continue
         af = str(r[afi]).strip().upper()             # 대문자 정규화 — 실적↔기획 대소문자
         if not AF_RE.match(af):                        # 불일치로 인한 미매칭·저장소 중복 방지
+            _ui = idx.get("UV")
+            _uv = r[_ui] if (_ui is not None and _ui < len(r)) else None
+            _cnt, _sum = rejected.get(af, (0, 0.0))
+            rejected[af] = (_cnt + 1, _sum + (float(_uv) if isinstance(_uv, (int, float)) else 0.0))
             continue
         rec = {}
         for kcol, key in PERF_COLMAP.items():
@@ -171,7 +182,11 @@ def parse_perf_bytes(file_bytes):
         rec["af"] = af
         rec["date"] = _norm_date(rec.get("date"))
         recs.append(rec)
-    return _finalize(pd.DataFrame(recs))
+    out = _finalize(pd.DataFrame(recs))
+    # attrs는 pickle을 타므로 st.cache_data를 거쳐도 살아남는다. 다만 이후 merge·concat에서
+    # 사라지니 호출부(cached_perf 직후)에서 바로 읽어야 한다.
+    out.attrs["af_rejected"] = rejected
+    return out
 
 
 def _finalize(df):
@@ -3281,6 +3296,19 @@ def main():
                         parse_log.append(f"· {nm}"); continue
                     try:
                         pdf = cached_perf(b)
+                        # AF코드 형식에 안 맞아 파서가 버린 행 — 대부분 잡행이지만 새 코드
+                        # 체계(APZ04 등)가 들어오면 여기로 흘러가 유입UV가 통째로 빠진다.
+                        # 조용히 지나가지 않게 인식 로그에 코드까지 찍는다.
+                        _rej = pdf.attrs.get("af_rejected") or {}
+                        _rej_uv = {k: v for k, v in _rej.items() if v[1] > 0}
+                        if _rej_uv:
+                            _top = sorted(_rej_uv.items(), key=lambda kv: -kv[1][1])[:5]
+                            parse_log.append(
+                                "   ⚠ AF코드 형식이 아니라 뺀 발송 "
+                                f"{sum(v[0] for v in _rej_uv.values())}건 · 유입UV "
+                                f"{sum(v[1] for v in _rej_uv.values()):,.0f} — "
+                                + ", ".join(f"{k}({v[1]:,.0f})" for k, v in _top)
+                                + (" 외" if len(_rej_uv) > 5 else ""))
                         mdf = merge_perf_plan(pdf, plan_lookup, keep_unmatched=True)
                         frames.append(mdf[[c for c in STORE_COLS if c in mdf]])
                         mr = mdf["matched"].mean() * 100 if len(mdf) else 0
