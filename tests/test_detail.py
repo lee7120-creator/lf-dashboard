@@ -155,6 +155,32 @@ def t_numbers_keep_sign_and_commas():
 
 
 @case
+def t_money_formats_are_read():
+    """수기 export라 같은 금액이 `153,000`·`₩153,000`·`153,000원`·`(63,818)`로 섞여 온다.
+    못 읽으면 NaN이 되어 합계에서 그냥 빠지고, 증상은 '금액이 좀 적네'로만 보인다."""
+    # (입력, 기대값) — None이면 못 읽어야 하는 값
+    OK = [("153,000", 153000.0), ("-63,818", -63818.0), ("0", 0.0), ("153000", 153000.0),
+          ("₩153,000", 153000.0), ("(63,818)", -63818.0), ("153,000원", 153000.0),
+          ("₩ 153,000 원", 153000.0), ("$1,234.5", 1234.5), (" 153,000 ", 153000.0),
+          ("1.53E+05", 153000.0), ("153,000.5", 153000.5), ("(1,234.5)", -1234.5)]
+    # 숫자 아닌 글자를 싹 지우는 식으로 고치면 아래가 조용히 숫자로 둔갑한다
+    NG = ["-", "", "nan", "합계", "3건", "2025년", "천원", "(주)", "N/A", "–"]
+    for v, want in OK:
+        got = W._num(v)
+        assert got == got and abs(got - want) < 1e-9, f"{v!r} → {got} (기대 {want})"
+    for v in NG:
+        got = W._num(v)
+        assert got != got, f"{v!r}가 숫자 {got}로 읽혔어요"
+    # 비율 지표(%)는 그대로 비율로
+    assert abs(W._num("12%") - 0.12) < 1e-12 and abs(W._num("(12%)") + 0.12) < 1e-12
+    # 원장 한 줄로도 확인 — 회계식 음수가 반품으로 들어온다
+    d = W.parse_detail_grid([list(HDR),
+        ["20250101", "o", "광고", "c", "b", "x", "i", "₩153,000", "1"],
+        ["20250101", "o", "광고", "c", "b", "y", "j", "(63,818)", "-1"]])
+    assert list(d["rev"]) == [153000.0, -63818.0], list(d["rev"])
+
+
+@case
 def t_date_forms_and_junk_rows():
     """YYYYMMDD·YYYY-MM-DD·엑셀 날짜셀을 다 읽고, 날짜가 아닌 줄(합계행 등)은 버린다."""
     rows = [list(HDR),
@@ -166,6 +192,42 @@ def t_date_forms_and_junk_rows():
     d = W.parse_detail_grid(rows)
     assert list(d["date"]) == ["2025-01-01", "2025-01-02", "2025-01-03"], list(d["date"])
     assert d["rev"].sum() == 300, d["rev"].sum()
+
+
+@case
+def t_excel_serial_dates_are_read():
+    """xlsx의 날짜 칸이 날짜서식이 아니라 **숫자**로 오는 export가 있다. 일련번호를 못 읽으면
+    원장 전 행이 통째로 버려지고, 증상은 '원장이 안 올라가요'로만 보인다."""
+    assert W._detail_date(45658) == datetime.date(2025, 1, 1), W._detail_date(45658)
+    assert W._detail_date(45658.0) == datetime.date(2025, 1, 1)
+    assert W._detail_date("45658") == datetime.date(2025, 1, 1)
+    # YYYYMMDD와 헷갈리면 안 된다 — 범위가 안 겹친다
+    assert W._detail_date(20250101) == datetime.date(2025, 1, 1)
+    assert W._detail_date(12345) is None and W._detail_date(99999) is None
+    rows = [list(HDR)] + [[45657 + i, "e-영업1", "광고", "가방", "닥스", "C1", "가방",
+                           "1,000", "1"] for i in range(3)]
+    d = W.parse_detail_grid(rows)
+    assert list(d["date"]) == ["2024-12-31", "2025-01-01", "2025-01-02"], list(d["date"])
+
+
+@case
+def t_unreadable_dates_are_counted_not_swallowed():
+    """날짜를 못 읽어 버린 줄은 **세어서 화면에 띄운다** — 조용히 사라지면 원인이 안 드러난다.
+    맨 아래 합계행은 원래 날짜가 없으니 세지 않는다(매번 ⚠가 뜨면 경고를 무시하게 된다)."""
+    rows = [list(HDR),
+            ["20250101", "o", "광고", "c", "b", "x", "i", "1,000", "1"],
+            ["2025년 1월 3일", "o", "광고", "c", "b", "x", "i", "999", "1"],   # 못 읽는 형식
+            ["합계", "", "", "", "", "", "", "1,000,000", "9"]]                # 요약행
+    d = W.parse_detail_grid(rows)
+    assert len(d) == 1, len(d)
+    assert d.attrs.get("date_dropped") == ["2025년 1월 3일"], d.attrs.get("date_dropped")
+    # 인식 목록에 경고가 붙어야 한다
+    got = W.classify_uploads((("원장.tsv", as_tsv(rows)),))
+    assert "날짜를 못 읽어 뺀 줄" in got[0][1], got
+    # 한 줄도 못 읽으면 '왜 비었는지'를 말해 줘야 한다
+    only_bad = [list(HDR), ["2025년 1월 3일", "o", "광고", "c", "b", "x", "i", "999", "1"]]
+    got2 = W.classify_uploads((("원장2.tsv", as_tsv(only_bad)),))
+    assert "날짜를 하나도 못 읽었어요" in got2[0][1], got2
 
 
 @case

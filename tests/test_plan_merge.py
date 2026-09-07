@@ -293,6 +293,37 @@ def t_rejected_af_codes_are_reported():
         "attrs가 pickle(st.cache_data)을 못 넘어가요"
 
 
+@case
+def t_rejected_af_codes_reach_the_sidebar():
+    """버린 코드를 접힌 「파싱 로그」에만 두면 실적이 사라진 걸 아무도 모른다 —
+    유입UV가 붙은 발송이 빠진 거라 사이드바 경고로 띄워야 한다."""
+    src = (ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8")
+    assert "af_rejected_msgs" in src, "버린 코드를 모아 두는 곳이 없어요"
+    i_add = src.index("af_rejected_msgs.append")
+    i_warn = src.rindex("af_rejected_msgs")
+    assert "st.sidebar.warning" in src[i_warn - 400:i_warn + 400], \
+        "버린 코드가 사이드바 경고로 안 떠요 (접힌 로그에만 있으면 못 본다)"
+    assert i_warn > i_add, "경고를 채우기 전에 그리고 있어요"
+
+
+@case
+def t_promo_money_formats_are_read():
+    """기획전 시트도 수기라 금액 표기가 섞인다 — 주간보고 `_num`과 같은 규칙이어야 한다
+    (두 앱에 파서가 따로 있어 한쪽만 고치면 조용히 갈린다)."""
+    # (입력, 기대값) — None이면 못 읽어야 하는 값
+    OK = [("153,000", 153000.0), ("-63,818", -63818.0), ("0", 0.0), ("153000", 153000.0),
+          ("₩153,000", 153000.0), ("(63,818)", -63818.0), ("153,000원", 153000.0),
+          ("₩ 153,000 원", 153000.0), ("$1,234.5", 1234.5), (" 153,000 ", 153000.0),
+          ("1.53E+05", 153000.0), ("153,000.5", 153000.5), ("(1,234.5)", -1234.5)]
+    # 숫자 아닌 글자를 싹 지우는 식으로 고치면 아래가 조용히 숫자로 둔갑한다
+    NG = ["-", "", "nan", "합계", "3건", "2025년", "천원", "(주)", "N/A", "–"]
+    for v, want in OK:
+        got = S._promo_num(v)
+        assert got is not None and abs(got - want) < 1e-9, f"{v!r} → {got} (기대 {want})"
+    for v in NG:
+        assert S._promo_num(v) is None, f"{v!r}가 숫자 {S._promo_num(v)}로 읽혔어요"
+
+
 def main():
     fails = []
     for fn in CASES:

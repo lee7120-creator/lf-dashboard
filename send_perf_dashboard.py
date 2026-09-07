@@ -776,16 +776,38 @@ def norm_promo(v):
     return s
 
 
+# 금액 칸에 붙어 오는 표기. **명시한 것만** 떼어 낸다 — 숫자 아닌 글자를 싹 지우면
+# '3건'·'2025년' 같은 라벨이 조용히 숫자로 둔갑한다.
+_CUR_MARKS = ("₩", "$", "€", "£", "¥", "KRW", "USD", "원")
+_NUM_EMPTY = ("", "-", "–", "—", "nan", "none")
+
+
 def _promo_num(v):
+    """기획전 시트 셀 → float. 콤마·통화기호·회계식 음수 `(1,234)`를 읽는다.
+
+    수기 시트라 같은 금액이 `153,000` · `₩153,000` · `153,000원` · `(63,818)`로 섞여 온다.
+    못 읽으면 None이 되고 합계에서 그냥 빠져서, 증상이 '금액이 좀 적네'로만 보인다.
+    (주간보고 `_num`과 같은 규칙 — 두 앱에 파서가 따로 있다.)"""
     if v is None:
         return None
     s = str(v).replace(",", "").strip()
-    if s in ("", "-", "nan", "None"):
+    if s.lower() in _NUM_EMPTY:
+        return None
+    neg = s.startswith("(") and s.endswith(")")      # 회계식 음수
+    if neg:
+        s = s[1:-1].strip()
+    for m in _CUR_MARKS:
+        if s.startswith(m):
+            s = s[len(m):].strip()
+        if s.endswith(m):
+            s = s[:-len(m)].strip()
+    if s.lower() in _NUM_EMPTY:
         return None
     try:
-        return float(s)
+        f = float(s)
     except Exception:
         return None
+    return -f if neg else f
 
 
 def parse_promo_bytes(file_bytes):
@@ -3240,6 +3262,7 @@ def main():
         st.session_state.camp_store = storage_load(BK, "campaign")
     stored = st.session_state.camp_store
     parse_log = []
+    af_rejected_msgs = []          # AF코드 형식이 아니라 빠진 발송 (사이드바 경고로 띄운다)
     new_raw = None
 
     if perf_files:
@@ -3303,12 +3326,15 @@ def main():
                         _rej_uv = {k: v for k, v in _rej.items() if v[1] > 0}
                         if _rej_uv:
                             _top = sorted(_rej_uv.items(), key=lambda kv: -kv[1][1])[:5]
-                            parse_log.append(
-                                "   ⚠ AF코드 형식이 아니라 뺀 발송 "
-                                f"{sum(v[0] for v in _rej_uv.values())}건 · 유입UV "
-                                f"{sum(v[1] for v in _rej_uv.values()):,.0f} — "
-                                + ", ".join(f"{k}({v[1]:,.0f})" for k, v in _top)
-                                + (" 외" if len(_rej_uv) > 5 else ""))
+                            _msg = ("AF코드 형식이 아니라 뺀 발송 "
+                                    f"{sum(v[0] for v in _rej_uv.values())}건 · 유입UV "
+                                    f"{sum(v[1] for v in _rej_uv.values()):,.0f} — "
+                                    + ", ".join(f"{k}({v[1]:,.0f})" for k, v in _top)
+                                    + (" 외" if len(_rej_uv) > 5 else ""))
+                            parse_log.append("   ⚠ " + _msg)
+                            # 접힌 「파싱 로그」에만 두면 실적이 사라진 걸 아무도 모른다.
+                            # 유입UV가 붙은 발송이 빠진 거라 눈에 보이는 자리에 띄운다.
+                            af_rejected_msgs.append(f"`{nm[:22]}` — {_msg}")
                         mdf = merge_perf_plan(pdf, plan_lookup, keep_unmatched=True)
                         frames.append(mdf[[c for c in STORE_COLS if c in mdf]])
                         mr = mdf["matched"].mean() * 100 if len(mdf) else 0
@@ -3813,6 +3839,10 @@ def main():
             st.sidebar.warning(f"⚠️ 최신 주 매칭률 {_lw['matched'].mean()*100:.0f}% — "
                                "기획 시트 적재·형식(날짜/AF코드)을 확인해 주세요. "
                                "상세는 「9. 데이터·다운로드」의 매칭 품질 참고.")
+    if af_rejected_msgs:
+        st.sidebar.warning("⚠️ 실적에 **AF코드 형식이 아닌 발송**이 있어 빼고 읽었어요.\n\n"
+                           + "\n\n".join(af_rejected_msgs)
+                           + "\n\n정상 발송이면 알려 주세요 — 코드 규칙을 넓혀야 해요.")
     if parse_log:
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))
