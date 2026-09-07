@@ -9,6 +9,7 @@ week_like()의 라벨 파싱 크래시(앱 초기 렌더부터 다운)를 아무
 로컬 실행:
     python tests/smoke_weekly_report.py
 """
+import json
 import os
 import pathlib
 import shutil
@@ -195,6 +196,107 @@ def check_yoy_summary():
     return fails
 
 
+def check_push_year_picker():
+    """「타겟팅 가능 모수 — 연중 추이」의 연도 선택.
+
+    연도가 쌓이면 선이 4~5개가 되어 최근 흐름이 안 읽힌다. 기본은 최근 2개년이고,
+    고른 연도만 그려야 한다. **색은 연도에 고정**이라 한 해를 빼도 남은 선의 색이
+    바뀌면 안 된다 — 눈이 흔들려 비교가 안 된다.
+    """
+    from streamlit.testing.v1 import AppTest
+    sys.path.insert(0, str(ROOT))
+    import weekly_report as W
+
+    # 2023~2026 네 해치 일별 잔고 (기존/신규/Total)
+    rows = []
+    for y in (2023, 2024, 2025, 2026):
+        for mo in range(1, 7):
+            for dd in (1, 15):
+                for seg, base in (("*TOTAL", 700_000), ("기존", 500_000), ("신규", 200_000)):
+                    rows.append(dict(gran="일", metric="앱푸시_동의자수", segment=seg,
+                                     year=y, label=f"{mo}/{dd}", close="final",
+                                     sortkey=y * 10000 + mo * 100 + dd,
+                                     value=float(base + (y - 2023) * 10_000 + mo * 300)))
+    df = pd.concat([synth_store(), pd.DataFrame(rows)], ignore_index=True)[STORE_COLS]
+
+    tmp = tempfile.mkdtemp()
+    app = os.path.join(tmp, "weekly_report.py")
+    shutil.copy(APP, app)
+    for extra in ("table_export.py",):
+        if (ROOT / extra).exists():
+            shutil.copy(ROOT / extra, os.path.join(tmp, extra))
+    df.to_csv(os.path.join(tmp, "wr_data_store.csv"), index=False, encoding="utf-8-sig")
+    cwd = os.getcwd(); os.chdir(tmp)
+    fails = []
+    try:
+        at = AppTest.from_file(app, default_timeout=TIMEOUT)
+        at.run()
+        r = ([x for x in at.radio if x.label == "페이지"] or
+             [x for x in at.sidebar.radio if x.label == "페이지"])[0]
+        r.set_value("06. 앱푸시 동의 현황"); at.run()
+        if at.exception:
+            print(f"  FAIL [연도선택] 페이지가 죽었어요 — {at.exception[0].value}")
+            return ["연도선택:렌더"]
+        box = [m for m in at.multiselect if m.label == "비교 연도"]
+        if not box:
+            print(f"  FAIL [연도선택] 위젯이 없어요 — {[m.label for m in at.multiselect]}")
+            return ["연도선택:위젯"]
+        if sorted(box[0].value) != [2025, 2026]:
+            print(f"  FAIL [연도선택] 기본이 최근 2개년이 아니에요 — {box[0].value}")
+            fails.append("연도선택:기본")
+        # AppTest의 options는 format_func를 거친 **문자열**을 준다 (value는 원값)
+        if sorted(str(o) for o in box[0].options) != ["2023년", "2024년", "2025년", "2026년"]:
+            print(f"  FAIL [연도선택] 선택지 — {list(box[0].options)}")
+            fails.append("연도선택:옵션")
+
+        def _colors():
+            """지금 그려진 (연도 → 선 색) — 첫 연중추이 차트 기준.
+
+            AppTest는 plotly 요소에 `.value`를 안 준다(세션에 없는 키를 찾다 KeyError).
+            proto의 `spec`이 figure JSON 통째라 거기서 읽는다."""
+            for el in at.get("plotly_chart"):
+                try:
+                    fig = json.loads(el.proto.spec)
+                except Exception:                     # noqa: BLE001
+                    continue
+                tr = fig.get("data", [])
+                nm = {t.get("name") for t in tr}
+                if nm and nm <= {"2023", "2024", "2025", "2026"}:
+                    return {t["name"]: (t.get("line") or {}).get("color") for t in tr}
+            return {}
+
+        c_all = _colors()
+        if set(c_all) != {"2025", "2026"}:
+            print(f"  FAIL [연도선택] 기본에서 그려진 연도 — {sorted(c_all)}")
+            fails.append("연도선택:기본렌더")
+        box[0].set_value([2023, 2025, 2026]); at.run()
+        if at.exception:
+            print(f"  FAIL [연도선택] 연도를 바꾸자 죽었어요 — {at.exception[0].value}")
+            return fails + ["연도선택:변경"]
+        c_3 = _colors()
+        if set(c_3) != {"2023", "2025", "2026"}:
+            print(f"  FAIL [연도선택] 고른 연도만 그려야 해요 — {sorted(c_3)}")
+            fails.append("연도선택:반영")
+        for y in ("2025", "2026"):
+            if y in c_all and y in c_3 and c_all[y] != c_3[y]:
+                print(f"  FAIL [연도선택] {y}년 색이 바뀌었어요 — {c_all[y]} → {c_3[y]}")
+                fails.append("연도선택:색고정")
+        # 하나도 안 고르면 빈 차트 대신 왜 비었는지 말해야 한다
+        box2 = [m for m in at.multiselect if m.label == "비교 연도"][0]
+        box2.set_value([]); at.run()
+        if at.exception:
+            print(f"  FAIL [연도선택] 빈 선택에서 죽었어요 — {at.exception[0].value}")
+            fails.append("연도선택:빈선택")
+        elif not any("연도를 하나 이상" in str(e.value) for e in at.info):
+            print("  FAIL [연도선택] 빈 선택인데 안내가 없어요")
+            fails.append("연도선택:빈안내")
+    finally:
+        os.chdir(cwd); shutil.rmtree(tmp, ignore_errors=True)
+    if not fails:
+        print("  OK   연도 선택 (기본 최근 2개년 · 색 고정 · 빈 선택 안내)")
+    return fails
+
+
 def main():
     if not APP.exists():
         print(f"앱 파일을 찾을 수 없어요: {APP}")
@@ -203,6 +305,9 @@ def main():
 
     print("── 실적 요약 표(전년비·전월비) ──")
     fails += check_yoy_summary()
+
+    print("── 앱푸시 연중 추이 연도 선택 ──")
+    fails += check_push_year_picker()
 
     print("── 5주차 포함 2개년 ──")
     fails += run_pages(synth_store(with_5th=True), "5주차")

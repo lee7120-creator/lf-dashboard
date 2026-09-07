@@ -2253,18 +2253,32 @@ def render_push_page(df, ref_year, chart_years):
         # 각 연도를 같은 X축(연중 위치)에 겹치려면 공통 연도로 정규화 (2000=윤년이라 2/29 안전)
         byr["mdt"] = byr["dt"].apply(lambda d: d.replace(year=2000))
         yrs_b = sorted(byr["year"].dropna().unique().astype(int))
+        # 연도가 쌓일수록 선이 4~5개가 되어 최근 흐름이 안 읽힌다. 기본은 **최근 2개년**
+        # (제목 그대로 전년 비교)이고, 과거는 필요할 때 켜서 본다.
+        _ydef = yrs_b[-2:]
+        guard_multi("push_yoy_years", yrs_b)
+        _ykw = {} if "push_yoy_years" in st.session_state else {"default": _ydef}
+        sel_yrs = sorted(st.multiselect(
+            "비교 연도", yrs_b, key="push_yoy_years", format_func=lambda y: f"{y}년",
+            help="겹쳐 볼 연도를 골라요. 색은 연도에 고정이라 연도를 빼도 남은 선의 색은 "
+                 "안 바뀌어요.", **_ykw))
+        # 색은 **연도에 고정**한다(전체 목록 기준). 선택한 것만으로 색을 매기면 한 해를
+        # 뺄 때마다 남은 선의 색이 바뀌어 눈이 흔들린다.
+        _ycolor = {y: YEAR_PAL[i % len(YEAR_PAL)] for i, y in enumerate(yrs_b)}
         SEG_LABEL = {"*TOTAL": "Total", "기존": "기존", "신규": "신규"}
-        for seg in ["*TOTAL", "기존", "신규"]:
+        if not sel_yrs:
+            st.info("비교할 연도를 하나 이상 골라 주세요.")
+        for seg in (["*TOTAL", "기존", "신규"] if sel_yrs else []):
             sb = byr[byr["segment"] == seg]
             if sb.empty: continue
             figy = go.Figure()
-            for i, yr in enumerate(yrs_b):
+            for yr in sel_yrs:
                 s = (sb[sb["year"] == yr].sort_values("mdt")
                      .set_index("mdt")["value"].dropna())
                 if s.empty: continue
                 figy.add_trace(go.Scatter(
                     x=s.index, y=s.values, mode="lines", name=str(yr),
-                    line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
+                    line=dict(color=clr(_ycolor[yr]), width=2),
                     hovertemplate="%{x|%m/%d}<br>" + str(yr) + " %{y:,.0f}명<extra></extra>"))
             lyy = base_layout(260, title=f"{SEG_LABEL[seg]} — 타겟팅 가능 (명)")
             lyy["xaxis"]["tickformat"] = "%m월"
@@ -2272,11 +2286,12 @@ def render_push_page(df, ref_year, chart_years):
             figy.update_layout(**lyy)
             st.plotly_chart(figy, width="stretch")
 
-            # 증가속도 분석 코멘트 (실제 날짜 인덱스로 계산 — 정규화된 mdt 아님)
+            # 증가속도 코멘트는 **화면에 그린 연도**를 따라간다 — 안 보이는 해와 비교한
+            # 문장이 붙으면 차트와 말이 어긋난다. (실제 날짜 인덱스로 계산 — mdt 아님)
             _ser = lambda y: (sb[sb["year"] == y].sort_values("dt")
                               .set_index("dt")["value"]) if y in yrs_b else None
-            note = growth_pace_note(_ser(yrs_b[-1]),
-                                    _ser(yrs_b[-2]) if len(yrs_b) >= 2 else None)
+            note = growth_pace_note(_ser(sel_yrs[-1]),
+                                    _ser(sel_yrs[-2]) if len(sel_yrs) >= 2 else None)
             if note:
                 st.markdown(
                     "<div style='font-size:12px;color:#64748b;margin:-6px 0 16px 2px'>"
