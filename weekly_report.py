@@ -5,7 +5,7 @@
 """
 
 import datetime
-import io, itertools, json, os, re
+import gzip, io, itertools, json, os, re
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -1238,6 +1238,48 @@ def restore_widget(key, label="백업 복원 (ZIP / CSV / JSON)"):
         except Exception as e:
             st.error(f"복원 실패: {e}")
 
+def lazy_download(key, label, filename, mime, sig=None, **kw):
+    """누를 때 만들어서 받는 다운로드 버튼.
+
+    `st.download_button`은 data를 **미리** 받아야 해서, 큰 프레임의 직렬화 결과를 그대로
+    넘기면 백업을 안 받는 리런에서도 매번 CSV를 다시 찍고 그 바이트를 브라우저로 보낸다.
+    실측 120만 행 원장에서 통합 ZIP 5.6초 + 개별 CSV 3.4초(122MB)라, 페이지를 바꾸거나
+    필터를 만질 때마다 9초씩 그냥 버리고 있었다.
+
+    그래서 두 단계로 나눈다 — 평범한 버튼을 먼저 보여 주고, 누르면 그때 만들어 진짜
+    다운로드 버튼으로 바꾼다. 만든 바이트는 `sig`가 같은 동안만 세션에 들고 있다가
+    데이터가 바뀌면 버린다(옛 백업을 받게 두면 안 된다).
+
+    반환값은 `make()`를 받아 실제 버튼을 그리는 함수, 아직 안 눌렀으면 None."""
+    flag = f"_lazydl_{key}"
+    cur = st.session_state.get(flag)
+    if not (isinstance(cur, tuple) and cur[0] == sig):
+        st.session_state.pop(flag, None)
+        if st.button(label, key=f"{flag}_go", width="stretch", **kw):
+            st.session_state[flag] = (sig, None)
+            st.rerun()
+        return None
+
+    def _render(make):
+        _s, data = st.session_state[flag]
+        if data is None:
+            try:
+                with st.spinner("백업 파일을 만드는 중이에요…"):
+                    data = make()
+            except Exception as e:                            # noqa: BLE001
+                st.session_state.pop(flag, None)
+                st.error(f"백업 파일을 만들지 못했어요 — {e}")
+                return
+            st.session_state[flag] = (_s, data)
+        st.download_button(f"{label} · 받기 ({len(data) / 1e6:,.1f}MB)", data, filename, mime,
+                           key=f"{flag}_dl", width="stretch", **kw)
+        if st.button("✕ 닫기", key=f"{flag}_x", width="stretch",
+                     help="만들어 둔 백업 파일을 메모리에서 비워요."):
+            st.session_state.pop(flag, None); st.rerun()
+
+    return _render
+
+
 def source_upload_widget(key):
     """빈 상태 메인용 원천 업로더 — 인식되면 즉시 저장 후 rerun (첫 업로드는 누적할 게 없음)."""
     mfiles = st.file_uploader("엑셀 / CSV / ZIP (복수 선택)",
@@ -2371,6 +2413,102 @@ def orgcat_depth(sub):
     return max(n, 1)
 
 
+
+class OrgcatView:
+    """`sub` 한 벌을 **한 번만** 훑어 만든 조회 인덱스.
+
+    화면은 노드마다 `opick`을 부르는데, 그때마다 프레임 전체를 다시 훑으면 브랜드 300개 ×
+    지표 3종 × 2개년 = 1,800번 풀스캔이 된다. 실측(원장 120만 행, 브랜드 단계)에서 조회에만
+    3.9초, 마스크(`orgcat_node`)에 1.6초가 더 들었다. 값 조회는 딕셔너리 하나로 끝내고,
+    자식 목록과 전 기간 거래액 합계도 같은 한 번의 순회에서 같이 만든다.
+
+    노드 판정 규칙은 `orgcat_node`와 같다 — 앞쪽 레벨은 실제 값, 그 뒤는 전부 `*TOTAL`
+    (그 레벨의 합계) 또는 빈 칸(레벨 자체가 없음). 중간이 비었는데 더 깊은 레벨에 값이
+    있는 행은 성한 노드가 아니라 버린다.
+    """
+
+    __slots__ = ("_final", "_mtd", "_kids", "_rev", "depth")
+
+    def __init__(self, sub):
+        self._final, self._mtd, self._kids, self._rev = {}, {}, {}, {}
+        self.depth = 0
+        lv = [c for c in ORGCAT_LV if c in getattr(sub, "columns", ())]
+        if sub is None or not len(sub) or not lv:
+            return
+        cols = [sub[c].astype(str).to_numpy() for c in lv]
+        real = np.stack([~np.isin(v, (ORGCAT_TOTAL, ORGCAT_NONE)) for v in cols], axis=1)
+        # 앞에서부터 연속으로 값이 있는 개수 = 그 행의 뎁스. 그 뒤에도 값이 있으면
+        # (중간이 빈 행) 노드로 안 친다 — 합계 자리와 겹쳐 값이 틀어진다.
+        lead = np.cumprod(real, axis=1).sum(axis=1)
+        ok = lead == real.sum(axis=1)
+        self.depth = int(lead.max()) if len(lead) else 0
+        met = sub["metric"].astype(str).to_numpy()
+        yr = pd.to_numeric(sub["year"], errors="coerce").to_numpy()
+        lab = sub["label"].astype(str).to_numpy()
+        cl = (sub["close"].astype(str).to_numpy() if "close" in sub.columns
+              else np.full(len(sub), "final"))
+        val = pd.to_numeric(sub["value"], errors="coerce").to_numpy(dtype=float)
+        for i in range(len(sub)):
+            if not ok[i]:
+                continue
+            node = tuple(c[i] for c in cols[:lead[i]])
+            if node:                                  # 부모 → 자식 목록 (첫 등장 순서 유지)
+                self._kids.setdefault(node[:-1], {})[node[-1]] = None
+            v = val[i]
+            if v != v:
+                continue
+            if met[i] == "첫구매 거래액":              # 전 기간 합 — 실적 없는 항목 숨김 판정용
+                self._rev[node] = self._rev.get(node, 0.0) + v
+            y = yr[i]
+            k = (met[i], (int(y) if y == y else None), lab[i], node)
+            (self._final if cl[i] == "final" else self._mtd)[k] = v   # 같은 키는 뒤 행 우선
+
+    def get(self, path, metric, year, label, prefer="final"):
+        y = pd.to_numeric(pd.Series([year]), errors="coerce").iloc[0]
+        k = (str(metric), (int(y) if y == y else None), str(label), tuple(path))
+        a, b = ((self._final, self._mtd) if prefer == "final"
+                else (self._mtd, self._final))
+        v = a.get(k, b.get(k))
+        return np.nan if v is None else v
+
+    def children(self, path):
+        return list(self._kids.get(tuple(path), ()))
+
+    def live(self, path=()):
+        """실적이 사실상 없는 자식을 걸러 낸 목록 → (보일 것, 숨긴 것).
+
+        판단은 **적재된 전 기간**의 거래액 합으로 한다 — 고른 기간으로 재면 달마다 목록이
+        바뀌어 파고들기 선택이 튀고, 한두 달 쉰 항목이 통째로 사라진다."""
+        path = tuple(path)
+        kids = self.children(path)
+        if not kids:
+            return [], []
+        parent = self._rev.get(path, 0.0)
+        base = abs(parent) if (np.isfinite(parent) and parent) else 1.0
+        live, hidden = [], []
+        for k in kids:
+            kid = self._rev.get(path + (k,), 0.0)
+            (live if abs(kid) / base >= ORGCAT_MIN_SHARE else hidden).append(k)
+        if not live:                  # 전부 잘리면 거르지 않는다 (빈 화면보다 낫다)
+            return kids, []
+        return live, hidden
+
+
+# 같은 프레임으로 연달아 물어보는 경우(낱개 헬퍼를 루프에서 부르는 코드)를 위한 1칸 메모.
+# `is`로만 맞춰 보므로 다른 데이터를 잘못 돌려줄 일이 없다 — 프레임을 붙들고 있어서
+# id가 재활용될 수도 없다. 붙들리는 건 한 벌뿐이라 메모리도 걱정 없다.
+_OCVIEW_LAST = [None, None]
+
+
+def orgcat_view(sub):
+    """`sub`의 조회 인덱스. 화면은 이걸 **한 번 만들어 재사용**할 것."""
+    if _OCVIEW_LAST[0] is sub:
+        return _OCVIEW_LAST[1]
+    v = OrgcatView(sub)
+    _OCVIEW_LAST[0], _OCVIEW_LAST[1] = sub, v
+    return v
+
+
 def orgcat_node(sub, path, depth=None):
     """path(선택한 값들)가 가리키는 **합계 행**만 남긴 마스크.
 
@@ -2387,63 +2525,21 @@ def orgcat_node(sub, path, depth=None):
     return m
 
 
+# 아래 셋은 **낱개 조회용 얇은 껍데기**다 — 구현은 OrgcatView 하나뿐이라 조용히 갈릴 일이
+# 없다. 화면은 뷰를 직접 한 번 만들어 재사용할 것(노드마다 부르면 매번 다시 인덱싱한다).
 def orgcat_children(sub, path):
     """path 바로 아래 단계의 항목들 (합계·빈 칸 제외). 더 들어갈 데가 없으면 빈 리스트."""
-    d = len(path)
-    if d >= len(ORGCAT_LEVELS):
-        return []
-    col = ORGCAT_LEVELS[d][0]
-    if col not in sub.columns:
-        return []
-    m = pd.Series(True, index=sub.index)
-    for i, (c, _lb, _h) in enumerate(ORGCAT_LEVELS):
-        if c not in sub.columns:
-            continue
-        v = sub[c].astype(str)
-        if i < d:
-            m &= (v == path[i])
-        elif i == d:
-            m &= ~v.isin([ORGCAT_TOTAL, ORGCAT_NONE])
-        else:
-            m &= v.isin([ORGCAT_TOTAL, ORGCAT_NONE])
-    return list(dict.fromkeys(sub.loc[m, col].astype(str)))
+    return orgcat_view(sub).children(path)
 
 
 def orgcat_live(sub, path=()):
-    """실적이 사실상 없는 자식을 걸러 낸 목록 → (보일 것, 숨긴 것).
-
-    판단은 **적재된 전 기간**의 거래액 합으로 한다 — 고른 기간으로 재면 달마다 목록이
-    바뀌어 파고들기 선택이 튀고, 한두 달 쉰 항목이 통째로 사라진다.
-    """
-    kids = orgcat_children(sub, path)
-    if not kids:
-        return [], []
-    rev = sub[sub["metric"] == "첫구매 거래액"]
-    parent = float(rev.loc[orgcat_node(rev, path), "value"].sum())
-    col = ORGCAT_LEVELS[len(path)][0]
-    live, hidden = [], []
-    for k in kids:
-        kid_rev = float(rev.loc[orgcat_node(rev, tuple(path) + (k,)), "value"].sum())
-        base = abs(parent) if (np.isfinite(parent) and parent) else 1.0
-        (live if abs(kid_rev) / base >= ORGCAT_MIN_SHARE else hidden).append(k)
-    if not live:                      # 전부 잘리면 거르지 않는다 (빈 화면보다 낫다)
-        return kids, []
-    return live, hidden
+    """실적이 사실상 없는 자식을 걸러 낸 목록 → (보일 것, 숨긴 것)."""
+    return orgcat_view(sub).live(path)
 
 
 def opick(sub, path, metric, year, label, prefer="final"):
     """path가 가리키는 노드의 값 하나 — 마스터의 pick()과 같은 규칙(final 우선)."""
-    r = sub[(sub["metric"] == metric) & (sub["year"] == year) & (sub["label"] == label)]
-    if r.empty:
-        return np.nan
-    r = r[orgcat_node(r, path)]
-    if r.empty:
-        return np.nan
-    for c in (["final", "mtd"] if prefer == "final" else ["mtd", "final"]):
-        v = r[r["close"] == c]["value"].dropna()
-        if len(v):
-            return v.iloc[-1]
-    return np.nan
+    return orgcat_view(sub).get(path, metric, year, label, prefer)
 
 
 # 상위와 합이 맞는 지표는 **거래액 하나뿐**이다. 실파일 검증에서 조직 합이 전체와
@@ -2489,25 +2585,23 @@ def _won_m(v, digits=1):
 
 
 # ── 결제 원장 → 화면이 그대로 읽는 조직×카테고리 큐브 ──────────────────
-def detail_stamp(ddf, gran):
-    """원장 + 기간 칼럼(year·label·sortkey) + 그 기간의 일수(nd)·완결여부(close).
+@st.cache_data(show_spinner=False)
+def detail_periods(dates, gran):
+    """고유 일자 → (year, label, sortkey, nd, close) 표. 기간 규칙은 여기 한 곳뿐이다.
 
-    값은 화면에 **일평균**으로 낸다. 합계로 내면 진행 중인 달(3일치)이 전년 같은 달(30일치)과
-    맞붙어 △90% 가짜 급락이 뜬다. 나눌 일수는 **적재된 날짜 범위와 겹치는 달력 일수**다 —
-    매출이 0인 날은 원장에 줄 자체가 없어서, 줄이 있는 날만 세면 일평균이 부풀려진다.
+    원장 전체에 `pd.to_datetime`을 거는 대신 **고유 일자만** 계산한다(2년치라 700개 남짓).
+    120만 행에 그대로 걸면 그것만 0.9초라 리런마다 그 값을 다시 낸다.
 
-    주차는 **목요일이 속한 달의 몇 번째 주**다(ISO와 같은 규칙). 월요일로 달을 정하면
-    한 주가 두 달에 걸릴 때 어느 달에 넣을지가 흔들린다.
+    나눌 일수(`nd`)는 **적재 범위와 겹치는 달력 일수**다 — 매출이 0인 날은 원장에 줄 자체가
+    없어서, 줄이 있는 날만 세면 일평균이 부풀려진다. 주차는 **목요일이 속한 달의 몇 번째
+    주**(ISO와 같은 규칙) — 월요일로 정하면 한 주가 두 달에 걸릴 때 어느 달인지 흔들린다.
     """
-    d = ddf.copy()
-    dt = pd.to_datetime(d["date"], errors="coerce")
+    u = pd.Index(pd.Series(dates, dtype="object").dropna().astype(str).unique())
+    dt = pd.to_datetime(pd.Series(u.values), errors="coerce")
     keep = dt.notna()
-    d, dt = d[keep].reset_index(drop=True), dt[keep].reset_index(drop=True)
-    if d.empty:
-        for c, tp in (("year", "int64"), ("label", "object"), ("sortkey", "int64"),
-                      ("nd", "int64"), ("close", "object")):
-            d[c] = pd.Series(dtype=tp)
-        return d
+    u, dt = u[keep.values], dt[keep].reset_index(drop=True)
+    if not len(u):
+        return pd.DataFrame(columns=["date", "year", "label", "sortkey", "nd", "close"])
     per = dt.dt.to_period({"월": "M", "주": "W-SUN"}.get(gran, "D"))
     ps, pe = per.dt.start_time.dt.normalize(), per.dt.end_time.dt.normalize()
     if gran == "월":
@@ -2525,16 +2619,51 @@ def detail_stamp(ddf, gran):
         sk = yy * 10000 + mm * 100 + dd
     lo, hi = dt.min().normalize(), dt.max().normalize()
     cs, ce = ps.clip(lower=lo), pe.clip(upper=hi)
-    d["year"] = yy.astype(int).values
-    d["label"] = lab.values
-    d["sortkey"] = sk.astype(int).values
-    d["nd"] = ((ce - cs).dt.days + 1).clip(lower=1).values
-    d["close"] = np.where((ps >= lo) & (pe <= hi), "final", "mtd")
+    return pd.DataFrame({
+        "date": u.values, "year": yy.astype(int).values, "label": lab.values,
+        "sortkey": sk.astype(int).values,
+        "nd": ((ce - cs).dt.days + 1).clip(lower=1).values,
+        "close": np.where((ps >= lo) & (pe <= hi), "final", "mtd")})
+
+
+def detail_stamp(ddf, gran):
+    """원장 + 기간 칼럼(year·label·sortkey) + 그 기간의 일수(nd)·완결여부(close).
+
+    값은 화면에 **일평균**으로 낸다. 합계로 내면 진행 중인 달(3일치)이 전년 같은 달(30일치)과
+    맞붙어 △90% 가짜 급락이 뜬다. 나눌 일수는 **적재된 날짜 범위와 겹치는 달력 일수**다 —
+    매출이 0인 날은 원장에 줄 자체가 없어서, 줄이 있는 날만 세면 일평균이 부풀려진다.
+
+    주차는 **목요일이 속한 달의 몇 번째 주**다(ISO와 같은 규칙). 월요일로 달을 정하면
+    한 주가 두 달에 걸릴 때 어느 달에 넣을지가 흔들린다.
+    """
+    per = detail_periods(ddf["date"] if len(ddf) else pd.Series([], dtype="object"), gran)
+    if per.empty:
+        d = ddf.iloc[0:0].copy()
+        for c, tp in (("year", "int64"), ("label", "object"), ("sortkey", "int64"),
+                      ("nd", "int64"), ("close", "object")):
+            d[c] = pd.Series(dtype=tp)
+        return d
+    # 일자 → 기간표 행번호를 Categorical 코드로 한 번에 얻는다. dict.map을 칼럼마다
+    # 돌리면 120만 행 × 5회라 그것만 0.8초다 (코드 색인은 배열 인덱싱이라 사실상 공짜).
+    # `detail_fill`이 date를 이미 문자열로 맞춰 두므로 astype(str)은 120만 행짜리
+    # 통째 복사만 하고 끝난다 — object dtype이면 그대로 쓴다.
+    _dt = ddf["date"] if ddf["date"].dtype == object else ddf["date"].astype(str)
+    code = pd.Categorical(_dt, categories=pd.Index(per["date"])).codes
+    ok = code >= 0
+    d = (ddf if ok.all() else ddf[ok]).reset_index(drop=True)
+    cc = code if ok.all() else code[ok]
+    for c in ("year", "label", "sortkey", "nd", "close"):
+        d[c] = per[c].to_numpy()[cc]
     return d
 
 
+@st.cache_data(show_spinner=False)
 def detail_level(sdf, gran, axis, restrict, depth):
-    """원장 → 특정 뎁스 한 겹의 ORGCAT_COLS 행들. `restrict`로 그 위 경로에 가둔다."""
+    """원장 → 특정 뎁스 한 겹의 ORGCAT_COLS 행들. `restrict`로 그 위 경로에 가둔다.
+
+    한 겹마다 원장 전체(수십~수백만 행)를 groupby하므로 **리런을 넘겨 캐시한다**.
+    돌려주는 건 수천 행짜리라 캐시에 얹어도 가볍다. 캐시 키에 들어가는 `sdf` 해시는
+    120만 행에서도 0.04초라, 다시 group by 하는 것보다 훨씬 싸다."""
     d = sdf if axis == DETAIL_ALL else sdf[sdf["ch"] == axis]
     for i, v in enumerate(restrict):
         d = d[d[DETAIL_LV[i]] == v]
@@ -2711,10 +2840,12 @@ def render_orgcat_page(odf, ddf=None):
     additive = met in ORGCAT_ADDITIVE
     LV = ORGCAT_LEVELS[:DEPTH]
     FACTORS = DETAIL_FACTORS if detail else ORGCAT_FACTORS
-    sub = base
+    # `sub`이 바뀔 때마다 인덱스를 **한 번만** 다시 만든다. 노드마다 프레임을 훑으면
+    # 브랜드 300개 × 지표 3종 × 2개년이 그대로 풀스캔 횟수가 된다(실측 5.5초).
+    sub, view = base, orgcat_view(base)
 
     def V(path, year, metric=None):
-        return opick(sub, tuple(path), metric or met, year, clabel)
+        return view.get(tuple(path), metric or met, year, clabel)
 
     # ── 파고들기 — 레벨마다 셀렉트 하나. 위를 '전체'로 되돌리면 아래는 같이 닫힌다 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -2724,8 +2855,9 @@ def render_orgcat_page(odf, ddf=None):
     path, hidden_here, dcols = [], [], st.columns(max(len(LV), 1))
     for d, (col, lb, _h) in enumerate(LV):
         sub = cube(tuple(path))          # 원장 소스는 경로가 깊어질 때마다 그 아래를 만든다
-        live, hid = orgcat_live(sub, tuple(path))
-        kids = (orgcat_children(sub, tuple(path)) if show_all else live)
+        view = orgcat_view(sub)
+        live, hid = view.live(path)
+        kids = (view.children(path) if show_all else live)
         if not kids:
             break
         key = f"oc_lv{d}"
@@ -2740,6 +2872,7 @@ def render_orgcat_page(odf, ddf=None):
             break
         path.append(pick_v)
     sub = cube(tuple(path))
+    view = orgcat_view(sub)
     if len(LV) < len(ORGCAT_LEVELS):
         st.caption("브랜드·상품(구분08·09)은 이 원천에 값이 없어 단계가 안 열려요. "
                    "**브랜드·상품 원장**을 올리면 네 단계로 파고들 수 있어요.")
@@ -2754,8 +2887,8 @@ def render_orgcat_page(odf, ddf=None):
 
     # 지금 노드와 한 단계 아래
     cur_c, cur_p = V(path, cy), V(path, py)
-    kid_live, kid_hidden = orgcat_live(sub, tuple(path))
-    kid_names = (orgcat_children(sub, tuple(path)) if show_all else kid_live)
+    kid_live, kid_hidden = view.live(path)
+    kid_names = (view.children(path) if show_all else kid_live)
     kid_lbl = LV[len(path)][1] if len(path) < len(LV) else None
 
     rows = []
@@ -2963,8 +3096,8 @@ def render_orgcat_page(odf, ddf=None):
         HMAX = 12
         cells = []
         for _, r in show.head(HMAX).iterrows():
-            gl, _gh = orgcat_live(sub, r["_p"])
-            for g_ in (orgcat_children(sub, r["_p"]) if show_all else gl):
+            gl, _gh = view.live(r["_p"])
+            for g_ in (view.children(r["_p"]) if show_all else gl):
                 gp = tuple(r["_p"]) + (g_,)
                 cells.append({"r": r["_n"], "c": g_,
                               "vc": V(gp, cy), "vp": V(gp, py)})
@@ -3205,38 +3338,48 @@ def main():
                    + (f"원장 {len(ddf):,}행 · " if not ddf.empty else "")
                    + f"메모 {len(st.session_state.wr_texts)}개")
 
-        # 통합 백업 — 누적 데이터 + 메모를 한 ZIP으로 (하나만 받아도 전부 보존)
-        st.download_button(
-            "⬇ 통합 백업 (ZIP · 데이터+메모)",
-            make_backup_zip(df, st.session_state.wr_texts, odf, ddf),
-            f"주간보고백업_{today_kst():%Y%m%d}.zip", "application/zip",
-            width="stretch", type="primary",
-            help="누적 데이터 CSV와 보고란·메모 JSON을 한 파일로 백업해요. "
-                 "재배포로 초기화돼도 이 ZIP을 '백업 복원'에 올리면 그대로 되살아나요.")
+        # 백업 파일은 **누를 때 만든다.** `st.download_button`은 data를 미리 받아야 해서,
+        # 여기에 직렬화 결과를 그대로 넘기면 **매 리런마다** 원장 전체를 CSV로 찍고
+        # 그 바이트를 브라우저로 보낸다. 실측 120만 행 원장에서 통합 ZIP 5.6초 +
+        # 개별 CSV 3.4초(122MB)라, 백업을 안 받는 리런까지 9초씩 손해 보고 있었다.
+        # 페이지·필터를 만질 때마다 내는 비용이라 08번만이 아니라 화면 전체가 느렸다.
+        _bksig = (len(df), len(odf), len(ddf), len(st.session_state.wr_texts), sig)
+        _bk = lazy_download("wr_bk_all", "⬇ 통합 백업 (ZIP · 데이터+메모)",
+                            f"주간보고백업_{today_kst():%Y%m%d}.zip", "application/zip",
+                            sig=_bksig, type="primary",
+                            help="누적 데이터 CSV와 보고란·메모 JSON을 한 파일로 백업해요. "
+                                 "재배포로 초기화돼도 이 ZIP을 '백업 복원'에 올리면 그대로 "
+                                 "되살아나요. 파일은 누른 뒤에 만들어요.")
+        if _bk:
+            _bk(lambda: make_backup_zip(df, st.session_state.wr_texts, odf, ddf))
 
         # 통합 복원 — zip/csv/json 자동 인식
         restore_widget("wr_restore")
 
         with st.expander("개별 백업 (데이터만 / 메모만)"):
-            st.download_button("⬇ 누적 데이터 (CSV)",
-                               df[STORE_COLS].to_csv(index=False).encode("utf-8-sig"),
-                               f"wr_data_store_{today_kst():%Y%m%d}.csv", "text/csv",
-                               width="stretch")
-            if not odf.empty:
-                st.download_button("⬇ 조직×카테고리 (CSV)",
-                                   odf[ORGCAT_COLS].to_csv(index=False).encode("utf-8-sig"),
-                                   f"wr_orgcat_store_{today_kst():%Y%m%d}.csv", "text/csv",
-                                   width="stretch")
-            if not ddf.empty:
-                st.download_button("⬇ 브랜드·상품 원장 (CSV)",
-                                   ddf[DETAIL_COLS].to_csv(index=False).encode("utf-8-sig"),
-                                   f"wr_detail_store_{today_kst():%Y%m%d}.csv", "text/csv",
-                                   width="stretch")
-            st.download_button("⬇ 보고란·메모 (JSON)",
-                               json.dumps(st.session_state.wr_texts, ensure_ascii=False,
-                                          indent=2).encode("utf-8"),
-                               f"wr_insights_{today_kst():%Y%m%d}.json", "application/json",
-                               width="stretch")
+            _d = today_kst()
+            for _key, _lab, _fn, _mime, _make in (
+                ("data", "⬇ 누적 데이터 (CSV)", f"wr_data_store_{_d:%Y%m%d}.csv", "text/csv",
+                 lambda: df[STORE_COLS].to_csv(index=False).encode("utf-8-sig")),
+                ("orgcat", "⬇ 조직×카테고리 (CSV)", f"wr_orgcat_store_{_d:%Y%m%d}.csv", "text/csv",
+                 (lambda: odf[ORGCAT_COLS].to_csv(index=False).encode("utf-8-sig"))
+                 if not odf.empty else None),
+                # 원장은 gzip으로 준다 — 평문 CSV는 실측 122MB, gzip은 14MB다.
+                # 복원(`_try_csv`)이 매직바이트로 gzip을 알아보므로 그대로 다시 올리면 된다.
+                ("detail", "⬇ 브랜드·상품 원장 (CSV.GZ)",
+                 f"wr_detail_store_{_d:%Y%m%d}.csv.gz", "application/gzip",
+                 (lambda: gzip.compress(
+                     ddf[DETAIL_COLS].to_csv(index=False).encode("utf-8-sig")))
+                 if not ddf.empty else None),
+                ("memo", "⬇ 보고란·메모 (JSON)", f"wr_insights_{_d:%Y%m%d}.json", "application/json",
+                 lambda: json.dumps(st.session_state.wr_texts, ensure_ascii=False,
+                                    indent=2).encode("utf-8")),
+            ):
+                if _make is None:
+                    continue
+                _go = lazy_download(f"wr_bk_{_key}", _lab, _fn, _mime, sig=_bksig)
+                if _go:
+                    _go(_make)
 
         # 초기화 — 2단계 확인 (실수 방지)
         if st.session_state.get("wr_confirm_clear"):
