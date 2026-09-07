@@ -596,8 +596,9 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   들어 있다. `AF_RE`를 `^(AP|PB)\d+$`로 박으면 그 행이 **파싱 단계에서 조용히 사라진다**
   (2025-09-01 주 6건·유입UV 27,475 = 그 주의 4.8%). 증상이 '전년 UV가 좀 적네'로만 보여
   원인이 안 드러난다. 지금은 `^(AP|PB)[A-Z]*\d+$`이고, **그래도 못 읽은 코드는
-  `df.attrs["af_rejected"]`에 담아 업로드 인식 로그에 코드·UV까지 찍는다** — 규칙을 또
-  손볼 일이 생겨도 조용히 사라지지 않게. `attrs`는 pickle을 타서 `st.cache_data`를 거쳐도
+  `df.attrs["af_rejected"]`에 담아 **사이드바 경고**로 코드·UV까지 띄운다** — 규칙을 또
+  손볼 일이 생겨도 조용히 사라지지 않게. 접힌 「파싱 로그」에만 두면 실적이 빠진 걸
+  아무도 안 본다 (`t_rejected_af_codes_reach_the_sidebar`). `attrs`는 pickle을 타서 `st.cache_data`를 거쳐도
   살아남지만 merge·concat에서 사라지니 **`cached_perf` 직후에 읽을 것**
   (`test_plan_merge.py`의 `t_af_code_with_letters_survives_parsing`·
   `t_rejected_af_codes_are_reported`).
@@ -841,6 +842,15 @@ MICRO export는 구분08·09(브랜드·상품)가 늘 비어 온다. 브랜드�
   예외 없이 풀려서 줄바꿈이 사라진 한 줄이 되고, 증상은 그냥 **'미인식'** 으로만 보인다.
   BOM이나 NUL 바이트가 있을 때만 UTF-16이다 (`t_utf8_file_is_not_read_as_utf16`).
   탭만 끊는 `read_grid`와 달리 원장은 콤마 CSV로도 와서 `_detail_rows`가 둘 다 받는다.
+- **날짜는 엑셀 일련번호로도 온다**(`45658` = 2025-01-01). xlsx의 날짜 칸이 날짜서식이
+  아니면 openpyxl이 숫자를 그대로 주는데, 이걸 못 읽으면 **원장 전 행이 통째로 버려지고**
+  증상은 '원장이 안 올라가요'로만 보인다. `_detail_date`가 YYYYMMDD·`YYYY-MM-DD`·날짜셀·
+  일련번호를 다 받는다(범위가 안 겹쳐 서로 헷갈리지 않는다).
+  **그래도 못 읽은 줄은 `df.attrs["date_dropped"]`에 세어 인식 목록에 띄운다** — 한 줄도
+  못 읽었으면 '왜 비었는지'까지 말한다. 맨 아래 합계행(`_SUMMARY_ROW`)은 원래 날짜가
+  없으니 안 센다. 매 업로드마다 ⚠가 뜨면 정작 진짜 문제를 무시하게 된다
+  (`test_detail.py`의 `t_excel_serial_dates_are_read`·
+  `t_unreadable_dates_are_counted_not_swallowed`).
 - 헤더 표기가 흔들려 **조각 부분 일치**로 찾는다(`결제`+`일자`, `AF`, `카테고리`, `브랜드`…).
   한 칼럼이 두 자리를 겸하지 않게 이미 잡힌 열은 건너뛴다 — `DETAIL_HDR` 순서가 곧 우선순위다.
 - **상품코드는 안 쌓는다.** 화면 뎁스가 상품'명'까지라 축이 아니고, 같은 이름이 색상별로 갈린

@@ -169,6 +169,42 @@ def t_date_forms_and_junk_rows():
 
 
 @case
+def t_excel_serial_dates_are_read():
+    """xlsx의 날짜 칸이 날짜서식이 아니라 **숫자**로 오는 export가 있다. 일련번호를 못 읽으면
+    원장 전 행이 통째로 버려지고, 증상은 '원장이 안 올라가요'로만 보인다."""
+    assert W._detail_date(45658) == datetime.date(2025, 1, 1), W._detail_date(45658)
+    assert W._detail_date(45658.0) == datetime.date(2025, 1, 1)
+    assert W._detail_date("45658") == datetime.date(2025, 1, 1)
+    # YYYYMMDD와 헷갈리면 안 된다 — 범위가 안 겹친다
+    assert W._detail_date(20250101) == datetime.date(2025, 1, 1)
+    assert W._detail_date(12345) is None and W._detail_date(99999) is None
+    rows = [list(HDR)] + [[45657 + i, "e-영업1", "광고", "가방", "닥스", "C1", "가방",
+                           "1,000", "1"] for i in range(3)]
+    d = W.parse_detail_grid(rows)
+    assert list(d["date"]) == ["2024-12-31", "2025-01-01", "2025-01-02"], list(d["date"])
+
+
+@case
+def t_unreadable_dates_are_counted_not_swallowed():
+    """날짜를 못 읽어 버린 줄은 **세어서 화면에 띄운다** — 조용히 사라지면 원인이 안 드러난다.
+    맨 아래 합계행은 원래 날짜가 없으니 세지 않는다(매번 ⚠가 뜨면 경고를 무시하게 된다)."""
+    rows = [list(HDR),
+            ["20250101", "o", "광고", "c", "b", "x", "i", "1,000", "1"],
+            ["2025년 1월 3일", "o", "광고", "c", "b", "x", "i", "999", "1"],   # 못 읽는 형식
+            ["합계", "", "", "", "", "", "", "1,000,000", "9"]]                # 요약행
+    d = W.parse_detail_grid(rows)
+    assert len(d) == 1, len(d)
+    assert d.attrs.get("date_dropped") == ["2025년 1월 3일"], d.attrs.get("date_dropped")
+    # 인식 목록에 경고가 붙어야 한다
+    got = W.classify_uploads((("원장.tsv", as_tsv(rows)),))
+    assert "날짜를 못 읽어 뺀 줄" in got[0][1], got
+    # 한 줄도 못 읽으면 '왜 비었는지'를 말해 줘야 한다
+    only_bad = [list(HDR), ["2025년 1월 3일", "o", "광고", "c", "b", "x", "i", "999", "1"]]
+    got2 = W.classify_uploads((("원장2.tsv", as_tsv(only_bad)),))
+    assert "날짜를 하나도 못 읽었어요" in got2[0][1], got2
+
+
+@case
 def t_blank_level_becomes_its_own_node():
     """빈 브랜드 칸을 지우면 그 매출이 조용히 사라지고, 상위에 흡수시키면 하위 합이 안 맞는다."""
     rows = [list(HDR),

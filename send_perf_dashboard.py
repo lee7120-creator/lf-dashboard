@@ -3240,6 +3240,7 @@ def main():
         st.session_state.camp_store = storage_load(BK, "campaign")
     stored = st.session_state.camp_store
     parse_log = []
+    af_rejected_msgs = []          # AF코드 형식이 아니라 빠진 발송 (사이드바 경고로 띄운다)
     new_raw = None
 
     if perf_files:
@@ -3303,12 +3304,15 @@ def main():
                         _rej_uv = {k: v for k, v in _rej.items() if v[1] > 0}
                         if _rej_uv:
                             _top = sorted(_rej_uv.items(), key=lambda kv: -kv[1][1])[:5]
-                            parse_log.append(
-                                "   ⚠ AF코드 형식이 아니라 뺀 발송 "
-                                f"{sum(v[0] for v in _rej_uv.values())}건 · 유입UV "
-                                f"{sum(v[1] for v in _rej_uv.values()):,.0f} — "
-                                + ", ".join(f"{k}({v[1]:,.0f})" for k, v in _top)
-                                + (" 외" if len(_rej_uv) > 5 else ""))
+                            _msg = ("AF코드 형식이 아니라 뺀 발송 "
+                                    f"{sum(v[0] for v in _rej_uv.values())}건 · 유입UV "
+                                    f"{sum(v[1] for v in _rej_uv.values()):,.0f} — "
+                                    + ", ".join(f"{k}({v[1]:,.0f})" for k, v in _top)
+                                    + (" 외" if len(_rej_uv) > 5 else ""))
+                            parse_log.append("   ⚠ " + _msg)
+                            # 접힌 「파싱 로그」에만 두면 실적이 사라진 걸 아무도 모른다.
+                            # 유입UV가 붙은 발송이 빠진 거라 눈에 보이는 자리에 띄운다.
+                            af_rejected_msgs.append(f"`{nm[:22]}` — {_msg}")
                         mdf = merge_perf_plan(pdf, plan_lookup, keep_unmatched=True)
                         frames.append(mdf[[c for c in STORE_COLS if c in mdf]])
                         mr = mdf["matched"].mean() * 100 if len(mdf) else 0
@@ -3813,6 +3817,10 @@ def main():
             st.sidebar.warning(f"⚠️ 최신 주 매칭률 {_lw['matched'].mean()*100:.0f}% — "
                                "기획 시트 적재·형식(날짜/AF코드)을 확인해 주세요. "
                                "상세는 「9. 데이터·다운로드」의 매칭 품질 참고.")
+    if af_rejected_msgs:
+        st.sidebar.warning("⚠️ 실적에 **AF코드 형식이 아닌 발송**이 있어 빼고 읽었어요.\n\n"
+                           + "\n\n".join(af_rejected_msgs)
+                           + "\n\n정상 발송이면 알려 주세요 — 코드 규칙을 넓혀야 해요.")
     if parse_log:
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))

@@ -622,8 +622,21 @@ def is_detail_grid(rows):
     return False
 
 
+# 엑셀 날짜 일련번호(1900 날짜체계, 1900년 윤년 버그 때문에 기준이 1899-12-30)의 실용 범위.
+# YYYYMMDD(2000_0101 이상)와 겹치지 않아 서로 헷갈릴 일이 없다.
+_XL_EPOCH = datetime.date(1899, 12, 30)
+_XL_MIN, _XL_MAX = 20000, 60000          # 1954-10 ~ 2064-03
+# 맨 아래 요약행은 원래 날짜가 없다 — 이것까지 경고에 세면 매 업로드마다 ⚠가 떠서
+# 정작 진짜 문제(날짜 형식을 못 읽음)를 무시하게 된다.
+_SUMMARY_ROW = ("합계", "총계", "소계", "계", "total", "sum", "전체")
+
+
 def _detail_date(v):
-    """20250101 · 2025-01-01 · 엑셀 날짜셀 → date. 못 읽으면 None(그 줄은 버린다)."""
+    """20250101 · 2025-01-01 · 엑셀 날짜셀 · 엑셀 일련번호 → date. 못 읽으면 None.
+
+    **일련번호(45658 같은 숫자)를 빠뜨리면 안 된다.** xlsx의 날짜 칸이 날짜서식이 아니라
+    숫자로 오는 export가 있는데, 그러면 `openpyxl`이 숫자를 그대로 돌려줘서 원장 전 행이
+    통째로 버려진다. 증상이 '원장이 안 올라가요'로만 보여 원인이 안 드러난다."""
     if v is None:
         return None
     if isinstance(v, datetime.datetime):
@@ -634,12 +647,18 @@ def _detail_date(v):
     if s.endswith(".0"):
         s = s[:-2]
     m = _DATE8_RE.match(s)
-    if not m:
+    if m:
+        try:
+            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    try:                                  # 엑셀 일련번호
+        n = int(float(s))
+    except (TypeError, ValueError):
         return None
-    try:
-        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    except ValueError:
-        return None
+    if _XL_MIN <= n <= _XL_MAX:
+        return _XL_EPOCH + datetime.timedelta(days=n)
+    return None
 
 
 def parse_detail_grid(rows):
@@ -653,7 +672,7 @@ def parse_detail_grid(rows):
             break
     if at is None:
         return pd.DataFrame(columns=DETAIL_COLS)
-    recs = []
+    recs, dropped = [], []
     for r in rows[hdr + 1:]:
         def g(k):
             ci = at[k]
@@ -665,6 +684,12 @@ def parse_detail_grid(rows):
 
         d = _detail_date(raw("date"))
         if d is None:
+            # 합계·머리말이면 정상이지만, 못 읽는 날짜 형식이면 매출이 통째로 사라진다.
+            # 금액이 붙어 있는 줄만 센다 — 그런 줄이 버려졌으면 알려야 한다.
+            _lab = _cell(raw("date"))[:20]
+            if (_num(raw("rev")) == _num(raw("rev"))
+                    and _lab.strip().lower() not in _SUMMARY_ROW):
+                dropped.append(_lab)
             continue
         # 빈 칸은 자기 노드로 남긴다 — 지워 버리면 그 매출이 조용히 사라지고,
         # 상위 합계에 흡수시키면 하위 합이 상위와 안 맞는다.
@@ -674,12 +699,16 @@ def parse_detail_grid(rows):
                      "item": g("item") or DETAIL_NA,
                      "rev": _num(raw("rev")), "cust": _num(raw("cust"))})
     if not recs:
-        return pd.DataFrame(columns=DETAIL_COLS)
+        out = pd.DataFrame(columns=DETAIL_COLS)
+        out.attrs["date_dropped"] = dropped
+        return out
     d = pd.DataFrame(recs, columns=DETAIL_COLS)
     # 같은 키가 여러 줄로 오면(상품코드 색상 분리 등) 합친다 — 상품코드는 안 쌓는다.
     # 화면 뎁스가 상품'명'까지라 코드는 축이 아니고, 원장 크기만 15%쯤 키운다.
-    return (d.groupby(DETAIL_KEY, as_index=False, sort=False)[["rev", "cust"]]
-            .sum()[DETAIL_COLS])
+    out = (d.groupby(DETAIL_KEY, as_index=False, sort=False)[["rev", "cust"]]
+           .sum()[DETAIL_COLS])
+    out.attrs["date_dropped"] = dropped
+    return out
 
 
 def detail_fill(d):
@@ -1105,11 +1134,19 @@ def classify_uploads(file_tuples):
             out.append((n, f"✅ 조직×카테고리 · {_g} · LFMS {_lf} · {_lv}", len(oc)))
             continue
         dt = parse_detail_file(n, b)
+        _drop = dt.attrs.get("date_dropped") or []
         if not dt.empty:
             _d0, _d1 = str(dt["date"].min())[:10], str(dt["date"].max())[:10]
+            _warn = (f" · ⚠ 날짜를 못 읽어 뺀 줄 {len(_drop):,}건"
+                     f"({', '.join(dict.fromkeys(_drop))[:40]})" if _drop else "")
             out.append((n, f"✅ 브랜드·상품 원장 · {_d0}~{_d1} · "
-                           f"브랜드 {dt['brand'].nunique():,} · 상품 {dt['item'].nunique():,}",
-                        len(dt)))
+                           f"브랜드 {dt['brand'].nunique():,} · 상품 {dt['item'].nunique():,}"
+                           + _warn, len(dt)))
+            continue
+        if _drop:
+            # 헤더는 원장인데 한 줄도 못 읽었다 — 날짜 형식이 원인이다.
+            out.append((n, f"❌ 브랜드·상품 원장인데 날짜를 하나도 못 읽었어요 "
+                           f"({len(_drop):,}줄, 예: {', '.join(dict.fromkeys(_drop))[:30]})", 0))
             continue
         pf, d = route_push(n, b)  # combine_files와 동일한 라우팅 (한글명 PUSH 포함)
         if pf is not None:

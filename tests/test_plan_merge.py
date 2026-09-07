@@ -293,6 +293,19 @@ def t_rejected_af_codes_are_reported():
         "attrs가 pickle(st.cache_data)을 못 넘어가요"
 
 
+@case
+def t_rejected_af_codes_reach_the_sidebar():
+    """버린 코드를 접힌 「파싱 로그」에만 두면 실적이 사라진 걸 아무도 모른다 —
+    유입UV가 붙은 발송이 빠진 거라 사이드바 경고로 띄워야 한다."""
+    src = (ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8")
+    assert "af_rejected_msgs" in src, "버린 코드를 모아 두는 곳이 없어요"
+    i_add = src.index("af_rejected_msgs.append")
+    i_warn = src.rindex("af_rejected_msgs")
+    assert "st.sidebar.warning" in src[i_warn - 400:i_warn + 400], \
+        "버린 코드가 사이드바 경고로 안 떠요 (접힌 로그에만 있으면 못 본다)"
+    assert i_warn > i_add, "경고를 채우기 전에 그리고 있어요"
+
+
 def main():
     fails = []
     for fn in CASES:
