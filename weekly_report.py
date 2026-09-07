@@ -258,16 +258,32 @@ def read_grid(name, data: bytes):
 def _cell(v):
     return "" if v is None else str(v).strip()
 
+# 금액 칸에 붙어 오는 표기. **명시한 것만** 떼어 낸다 — 숫자 아닌 글자를 싹 지우면
+# '3건'·'2025년' 같은 라벨이 조용히 숫자로 둔갑한다.
+_CUR_MARKS = ("₩", "$", "€", "£", "¥", "KRW", "USD", "원")
+_NUM_EMPTY = ("", "-", "–", "—", "nan", "None")
+
+
 def _num(v):
-    """셀 값 → float (콤마·% 처리, %는 비율로 변환)"""
+    """셀 값 → float. 콤마·통화기호·회계식 음수 `(1,234)`·`%`를 읽는다(%는 비율로).
+
+    수기 export라 같은 금액이 `153,000` · `₩153,000` · `153,000원` · `(63,818)`로 섞여 온다.
+    못 읽으면 NaN이 되고 합계에서 그냥 빠져서, 증상이 '금액이 좀 적네'로만 보인다."""
     if v is None: return np.nan
     if isinstance(v, (int, float)): return float(v)
     s = str(v).strip().replace(",", "")
-    if s in ("", "-", "–"): return np.nan
+    if s.lower() in _NUM_EMPTY: return np.nan
+    neg = s.startswith("(") and s.endswith(")")      # 회계식 음수
+    if neg: s = s[1:-1].strip()
+    for m in _CUR_MARKS:
+        if s.startswith(m): s = s[len(m):].strip()
+        if s.endswith(m): s = s[:-len(m)].strip()
+    if s.lower() in _NUM_EMPTY: return np.nan
     pct = s.endswith("%")
-    if pct: s = s[:-1]
+    if pct: s = s[:-1].strip()
     try: f = float(s)
     except ValueError: return np.nan
+    if neg: f = -f
     return f / 100 if pct else f
 
 def period_parts(gran, year, plabel):

@@ -776,16 +776,38 @@ def norm_promo(v):
     return s
 
 
+# 금액 칸에 붙어 오는 표기. **명시한 것만** 떼어 낸다 — 숫자 아닌 글자를 싹 지우면
+# '3건'·'2025년' 같은 라벨이 조용히 숫자로 둔갑한다.
+_CUR_MARKS = ("₩", "$", "€", "£", "¥", "KRW", "USD", "원")
+_NUM_EMPTY = ("", "-", "–", "—", "nan", "none")
+
+
 def _promo_num(v):
+    """기획전 시트 셀 → float. 콤마·통화기호·회계식 음수 `(1,234)`를 읽는다.
+
+    수기 시트라 같은 금액이 `153,000` · `₩153,000` · `153,000원` · `(63,818)`로 섞여 온다.
+    못 읽으면 None이 되고 합계에서 그냥 빠져서, 증상이 '금액이 좀 적네'로만 보인다.
+    (주간보고 `_num`과 같은 규칙 — 두 앱에 파서가 따로 있다.)"""
     if v is None:
         return None
     s = str(v).replace(",", "").strip()
-    if s in ("", "-", "nan", "None"):
+    if s.lower() in _NUM_EMPTY:
+        return None
+    neg = s.startswith("(") and s.endswith(")")      # 회계식 음수
+    if neg:
+        s = s[1:-1].strip()
+    for m in _CUR_MARKS:
+        if s.startswith(m):
+            s = s[len(m):].strip()
+        if s.endswith(m):
+            s = s[:-len(m)].strip()
+    if s.lower() in _NUM_EMPTY:
         return None
     try:
-        return float(s)
+        f = float(s)
     except Exception:
         return None
+    return -f if neg else f
 
 
 def parse_promo_bytes(file_bytes):
