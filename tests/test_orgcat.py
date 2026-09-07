@@ -773,6 +773,222 @@ def t_old_two_level_backup_still_restores():
     assert set(W.orgcat_fill(nanned)["brand"]) == {""}
 
 
+# ── 조회 인덱스(OrgcatView) ────────────────────────────────────────
+# 아래 셋은 **최적화 전 풀스캔 구현 그대로**다. 인덱스가 이것과 한 건이라도 다르면
+# 화면 숫자가 조용히 틀어지므로, 기준 구현으로 남겨 전수 대조한다.
+def _scan_node(sub, path):
+    m = pd.Series(True, index=sub.index)
+    for i, (col, _lb, _h) in enumerate(W.ORGCAT_LEVELS):
+        if col not in sub.columns:
+            continue
+        v = sub[col].astype(str)
+        m &= (v == path[i]) if i < len(path) else v.isin([W.ORGCAT_TOTAL, W.ORGCAT_NONE])
+    return m
+
+
+def _scan_children(sub, path):
+    d = len(path)
+    if d >= len(W.ORGCAT_LEVELS) or W.ORGCAT_LEVELS[d][0] not in sub.columns:
+        return []
+    col = W.ORGCAT_LEVELS[d][0]
+    m = pd.Series(True, index=sub.index)
+    for i, (c, _lb, _h) in enumerate(W.ORGCAT_LEVELS):
+        if c not in sub.columns:
+            continue
+        v = sub[c].astype(str)
+        if i < d:
+            m &= (v == path[i])
+        elif i == d:
+            m &= ~v.isin([W.ORGCAT_TOTAL, W.ORGCAT_NONE])
+        else:
+            m &= v.isin([W.ORGCAT_TOTAL, W.ORGCAT_NONE])
+    return list(dict.fromkeys(sub.loc[m, col].astype(str)))
+
+
+def _scan_live(sub, path=()):
+    kids = _scan_children(sub, path)
+    if not kids:
+        return [], []
+    rev = sub[sub["metric"] == "첫구매 거래액"]
+    parent = float(rev.loc[_scan_node(rev, path), "value"].sum())
+    live, hidden = [], []
+    for k in kids:
+        kr = float(rev.loc[_scan_node(rev, tuple(path) + (k,)), "value"].sum())
+        base = abs(parent) if (np.isfinite(parent) and parent) else 1.0
+        (live if abs(kr) / base >= W.ORGCAT_MIN_SHARE else hidden).append(k)
+    return (kids, []) if not live else (live, hidden)
+
+
+def _scan_pick(sub, path, metric, year, label, prefer="final"):
+    r = sub[(sub["metric"] == metric) & (sub["year"] == year) & (sub["label"] == label)]
+    if r.empty:
+        return np.nan
+    r = r[_scan_node(r, path)]
+    if r.empty:
+        return np.nan
+    for c in (["final", "mtd"] if prefer == "final" else ["mtd", "final"]):
+        v = r[r["close"] == c]["value"].dropna()
+        if len(v):
+            return v.iloc[-1]
+    return np.nan
+
+
+def _same(a, b):
+    if isinstance(a, float) and isinstance(b, float):
+        return (np.isnan(a) and np.isnan(b)) or abs(a - b) < 1e-9
+    return a == b
+
+
+def _adversarial():
+    """인덱스가 조용히 틀릴 수 있는 모양만 모아 놓은 프레임.
+
+    합성 그리드는 너무 순해서(final·mtd 값이 같고, 중복도 공백 레벨도 없다) 규칙을
+    깨뜨려도 값이 안 변한다. 실제로 아래 넷을 심었을 때 그리드만으로는 하나도 안 잡혔다.
+      ① 같은 노드·기간에 final과 mtd가 **다른 값**   → final 우선 규칙
+      ② 같은 키가 두 줄, 값이 다름                    → 뒤 행 우선 규칙
+      ③ 중간 레벨이 비었는데 더 깊은 레벨에 값        → 노드로 치면 안 됨(합계와 겹침)
+      ④ 기간이 여럿                                   → 전 기간 합(숨김 판정)
+    """
+    T, N = W.ORGCAT_TOTAL, W.ORGCAT_NONE
+    R = []
+
+    def add(node, met, y, lab, close, val):
+        R.append(dict(zip(W.ORGCAT_LV, list(node) + [T] * (4 - len(node))),
+                      gran="월", metric=met, lfms="N", year=y, label=lab,
+                      sortkey=y * 10000 + int(lab[:-1]) * 100, close=close, value=val))
+
+    for y in (2025, 2026):
+        for per in (1, 2, 3):
+            lab = f"{per}월"
+            add((), "첫구매 거래액", y, lab, "final", 1_000_000.0 + per)
+            for oi, org in enumerate(("큰조직", "작은조직", "빈조직")):
+                # 작은조직은 기간 하나만 보면 문턱 아래, 다 더하면 위 — 합산이 필요하다
+                v = (900_000.0 + per) if oi == 0 else (400.0 if oi == 1 else 0.0)
+                add((org,), "첫구매 거래액", y, lab, "final", v)
+                add((org,), "첫구매 객단가", y, lab, "final", 50_000.0 + oi)
+                # ① final과 mtd가 다른 값 (마지막 기간)
+                if per == 3:
+                    add((org,), "첫구매 거래액", y, lab, "mtd", v * 0.5)
+                for c in ("가", "나"):
+                    add((org, c), "첫구매 거래액", y, lab, "final", v / 2)
+    # ④ 마지막 기간에만 값이 있는 자식 — **전 기간 합**으로 재야 문턱 아래로 떨어진다.
+    #    한 기간만 보면(합산을 빼먹으면) 문턱 위로 올라와 숨김 판정이 뒤집힌다.
+    add(("큰조직", "막판만"), "첫구매 거래액", 2026, "3월", "final", 5_000.0)
+    # ② 같은 키 두 줄 — 뒤 행이 이겨야 한다
+    add(("큰조직",), "첫구매 고객수", 2026, "1월", "final", 111.0)
+    add(("큰조직",), "첫구매 고객수", 2026, "1월", "final", 222.0)
+    # ③ 중간이 빈 행 — 어떤 경로로도 잡히면 안 된다
+    R.append(dict(zip(W.ORGCAT_LV, ["큰조직", N, "유령브랜드", T]),
+                  gran="월", metric="첫구매 거래액", lfms="N", year=2026, label="1월",
+                  sortkey=20260100, close="final", value=777_777.0))
+    # 값이 비어 있는 행 — final이 NaN이면 mtd로 내려가야 한다
+    add(("큰조직", "다"), "첫구매 거래액", 2026, "1월", "final", float("nan"))
+    add(("큰조직", "다"), "첫구매 거래액", 2026, "1월", "mtd", 33.0)
+    return pd.DataFrame(R, columns=W.ORGCAT_COLS)
+
+
+@case
+def t_view_matches_the_scan():
+    """인덱스가 예전 풀스캔과 **한 건도 다르지 않아야** 한다.
+
+    화면은 노드마다 프레임을 훑는 대신 한 번 만든 인덱스를 쓴다(브랜드 단계에서 실측
+    5.5초 → 0.01초). 빨라진 대신 값이 조용히 갈리면 화면 숫자가 전부 틀어지므로,
+    잡음 조직·빈 레벨·mtd가 섞인 합성본으로 전수 대조한다."""
+    import itertools
+    checked = 0
+    frames = [synth_orgcat_df(years=(2025, 2026), depth=d, mtd_last=m, periods=3)
+              [lambda x: (x["gran"] == "월") & (x["lfms"] == "N")]
+              for d, m in ((2, False), (4, False), (4, True))] + [_adversarial()]
+    for depth, sub in enumerate(frames):
+        v = W.OrgcatView(sub)
+        paths = [()]
+        for o in _scan_children(sub, ()):
+            paths.append((o,))
+            for c in _scan_children(sub, (o,))[:2]:
+                paths.append((o, c))
+                paths += [(o, c, b) for b in _scan_children(sub, (o, c))][:2]
+        mets = sorted(set(sub["metric"]))
+        yrs = sorted({int(x) for x in sub["year"].dropna().unique()})
+        labs = sorted(set(sub["label"].astype(str)))
+        for p in paths:
+            assert _scan_children(sub, p) == v.children(p), f"[d{depth}] children {p}"
+            assert _scan_live(sub, p) == v.live(p), f"[d{depth}] live {p}"
+            for m, y, l, pf in itertools.product(mets, yrs, labs, ("final", "mtd")):
+                a, b = _scan_pick(sub, p, m, y, l, pf), v.get(p, m, y, l, pf)
+                assert _same(a, b), f"[d{depth}] {p} {m} {y} {l} {pf}: 예전 {a} vs 새 {b}"
+                checked += 1
+    assert checked > 2000, f"대조가 너무 적어요 — {checked}건"
+
+
+@case
+def t_view_survives_degenerate_frames():
+    """빈 프레임·레벨 칼럼이 없는 프레임에서도 죽지 않아야 한다(사이드바 렌더 경로)."""
+    for sub in (pd.DataFrame(columns=W.ORGCAT_COLS),
+                pd.DataFrame({"metric": ["x"], "year": [2025], "label": ["1월"],
+                              "close": ["final"], "value": [1.0]})):
+        v = W.OrgcatView(sub)
+        assert v.children(()) == [] and v.live(()) == ([], [])
+        v.get((), "x", 2025, "1월")            # 예외만 안 나면 된다
+
+
+@case
+def t_lookup_does_not_rescan_the_frame():
+    """노드마다 풀스캔으로 되돌아가면 브랜드 단계에서 화면이 수십 초로 늘어난다.
+
+    시간을 재는 대신 **스캔이면 절대 못 맞추는 양**을 던진다 — 2만 행 프레임에 조회
+    4천 번. 인덱스면 0.1초 남짓이고, 스캔이면 분 단위가 된다."""
+    import time
+    # 실운영 규모(브랜드 수백 개)로 넓은 프레임을 직접 만든다 — 합성 그리드는 작아서
+    # 스캔으로도 통과해 버린다.
+    T, N = W.ORGCAT_TOTAL, W.ORGCAT_NONE
+    rows = []
+    for y in (2025, 2026):
+        for per in range(1, 13):
+            for oi in range(5):
+                org = f"e-영업{oi + 1}"
+                nodes = [(org, T, T, T)]
+                for ci in range(8):
+                    cat = f"카테고리{ci}"
+                    nodes.append((org, cat, T, T))
+                    nodes += [(org, cat, f"{cat}브랜드{b:02d}", T) for b in range(20)]
+                for met in ("첫구매 거래액", "첫구매 고객수", "첫구매 객단가"):
+                    for j, nd in enumerate(nodes):
+                        rows.append(dict(zip(W.ORGCAT_LV, nd), gran="월", metric=met,
+                                         lfms="N", year=y, label=f"{per}월",
+                                         sortkey=y * 10000 + per * 100, close="final",
+                                         value=float((j + 1) * 1000 + per)))
+    sub = pd.DataFrame(rows, columns=W.ORGCAT_COLS)
+    assert len(sub) > 50_000, f"부하가 너무 작아요 — {len(sub)}행"
+    kids = W.orgcat_children(sub, ("e-영업1", "카테고리0"))
+    assert len(kids) == 20, kids
+    t0 = time.perf_counter()
+    for _ in range(200):
+        for k in kids:
+            W.opick(sub, ("e-영업1", "카테고리0", k), "첫구매 거래액", 2026, "1월")
+    dt = time.perf_counter() - t0
+    assert dt < 5.0, (f"조회가 너무 느려요 — {len(sub):,}행에서 4,000번에 {dt:.1f}초. "
+                      "노드마다 프레임을 다시 훑고 있어요(인덱스가 안 걸렸어요).")
+
+
+@case
+def t_backup_is_built_only_when_asked():
+    """`st.download_button`은 data를 미리 받으므로, 직렬화 결과를 그대로 넘기면
+    백업을 안 받는 리런에서도 매번 원장 전체를 CSV로 찍는다(실측 리런당 9초).
+    그래서 먼저 평범한 버튼을 보여 주고, 누른 뒤에야 진짜 다운로드 버튼이 떠야 한다."""
+    with _run(orgcat=synth_orgcat_df(years=(2025, 2026))) as at:
+        _lab = "⬇ 통합 백업 (ZIP · 데이터+메모)"
+        btn = [b for b in at.sidebar.button if b.label == _lab]
+        assert btn, f"백업 버튼이 없어요 — {[b.label for b in at.sidebar.button]}"
+        assert not [d for d in at.sidebar.download_button if "통합 백업" in str(d.label)], \
+            "누르기도 전에 백업 파일을 만들었어요"
+        btn[0].click(); at.run()
+        assert not at.exception, at.exception[0].value
+        got = [d for d in at.sidebar.download_button if "통합 백업" in str(d.label)]
+        assert got, ("누른 뒤에도 다운로드 버튼이 없어요 — "
+                     f"{[str(d.label) for d in at.sidebar.download_button]}")
+        assert "받기" in str(got[0].label), str(got[0].label)
+
+
 def main():
     fails = []
     for fn in CASES:
