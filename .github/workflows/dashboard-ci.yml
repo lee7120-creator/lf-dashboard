@@ -87,6 +87,9 @@ jobs:
       - name: 유입 퍼널(유니크유입 파생·단계 비율) 검사
         run: python tests/test_inflow_funnel.py
 
+      - name: 첫구매 퍼널별 상세 실적(비율 출처·채널 분해) 검사
+        run: python tests/test_funnel_page.py
+
       - name: 조직×카테고리(구분06×구분07) 검사
         run: python tests/test_orgcat.py
 

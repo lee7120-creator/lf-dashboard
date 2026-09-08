@@ -368,7 +368,7 @@ def t_store_csv_roundtrip():
 
 # ── 화면 ────────────────────────────────────────────────────────────
 @contextlib.contextmanager
-def _run(page="08. 조직·카테고리별 실적", orgcat=None, master=True):
+def _run(page="09. 조직·카테고리별 실적", orgcat=None, master=True):
     """페이지를 연 AppTest를 넘겨준다. 블록 안에서 at.run()을 더 불러도 되도록
     (위젯을 바꿔 다시 그리는 테스트가 있다) 임시 앱 디렉터리를 블록이 끝날 때 치운다."""
     from streamlit.testing.v1 import AppTest
