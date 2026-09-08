@@ -233,7 +233,7 @@ def check_push_year_picker():
         at.run()
         r = ([x for x in at.radio if x.label == "페이지"] or
              [x for x in at.sidebar.radio if x.label == "페이지"])[0]
-        r.set_value("06. 앱푸시 동의 현황"); at.run()
+        r.set_value("07. 앱푸시 동의 현황"); at.run()
         if at.exception:
             print(f"  FAIL [연도선택] 페이지가 죽었어요 — {at.exception[0].value}")
             return ["연도선택:렌더"]

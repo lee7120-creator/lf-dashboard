@@ -529,7 +529,7 @@ def t_factor_split_refuses_nonpositive():
 
 # ── 화면 ────────────────────────────────────────────────────────────
 @contextlib.contextmanager
-def _run(page="08. 조직·카테고리별 실적", detail=None, orgcat=None, master=True):
+def _run(page="09. 조직·카테고리별 실적", detail=None, orgcat=None, master=True):
     from streamlit.testing.v1 import AppTest
     tmp = tempfile.mkdtemp()
     app = os.path.join(tmp, "weekly_report.py")
