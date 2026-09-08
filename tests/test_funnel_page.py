@@ -524,11 +524,17 @@ def t_values_are_daily_means_not_sums():
     """다른 값이 전부 일평균이라 합계로 내면 비율이 통째로 틀어진다."""
     d = W.parse_appinstall_file("일별.csv", appinstall_csv())
     week = [r for r in _AI_DAILY if r[0].startswith("8월 2") and int(r[0][3:-1]) >= 24]
-    want = np.mean([r[1] for r in week] + [2456])          # 8/24~8/30
+    want = np.mean([r[1] for r in week] + [2456])          # 8/24~8/30 전체 설치
     got = d[(d["gran"] == "주") & (d["label"] == "08월 4주차")
-            & (d["metric"] == "앱설치")]["value"]
+            & (d["metric"] == "앱_전체설치")]["value"]
     assert len(got) == 1 and abs(float(got.iloc[0]) - want) < 1e-6, (got.tolist(), want)
     assert abs(float(got.iloc[0]) * 7 - _AI_WEEK_MON_SUN) < 1e-6, float(got.iloc[0]) * 7
+    # `앱설치`는 **신규 설치** 칸이다 — 전체 설치를 집으면 재설치가 섞여 값이 커진다
+    nw = np.mean([r[2] for r in week] + [1549])
+    gn = d[(d["gran"] == "주") & (d["label"] == "08월 4주차")
+           & (d["metric"] == "앱설치")]["value"]
+    assert len(gn) == 1 and abs(float(gn.iloc[0]) - nw) < 1e-6, (gn.tolist(), nw)
+    assert float(gn.iloc[0]) < float(got.iloc[0]), "신규 < 전체 여야 해요"
 
 
 @case
@@ -601,9 +607,10 @@ def t_appinstall_reaches_the_funnel_page():
     # 앱설치는 **실제 달력 주**라 마스터 합성본의 `09월 4주차`(9/21~)와 안 겹친다 —
     # 월 비교로 본다(9월 = 9/1~9/5, 값이 모든 날 같아 일평균은 그대로 3,000).
     at = _open(store=store, mode="월누적(MTD) — 전년 동월")
-    assert _kpi(at, "앱설치") == "3,000명", _kpi(at, "앱설치")
+    # synth: 전체 3,000 = 신규 2,200 + 재설치 800 → 카드는 **신규**를 보여야 한다
+    assert _kpi(at, "앱설치") == "2,200명", _kpi(at, "앱설치")
     fr = [f for f in _frames(at) if f.index.name == "비율"][0]
-    assert fr.loc["가입자 대비 앱설치율", "2026년"] != "–", fr.to_dict()
+    assert fr.loc["가입자 대비 앱 신규설치율", "2026년"] != "–", fr.to_dict()
     assert any("앱설치 상세" in str(e.label) for e in at.expander), \
         [str(e.label) for e in at.expander]
 
