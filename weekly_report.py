@@ -139,7 +139,9 @@ METRIC_UNIT = {
     "첫구매 거래액": ("백만원", 1e6), "첫구매 고객수": ("명", 1),
     "첫구매 객단가": ("원", 1), "비회원트래픽": ("명", 1),
     "가입자수": ("명", 1), "가입율": ("%", 1), "당일가입CR": ("%", 1),
-    "앱설치": ("명", 1),
+    "앱설치": ("명", 1), "앱_신규설치": ("명", 1), "앱_재설치": ("명", 1),
+    "앱_스토어방문": ("명", 1), "앱_삭제": ("명", 1),
+    "앱_Push활성기기": ("명", 1), "앱_순증설치": ("명", 1),
     "앱푸시수신동의": ("명", 1), "앱푸시_동의자수": ("명", 1),
     "앱푸시_신규추가": ("명", 1), "앱푸시_이탈": ("명", 1),
     "앱푸시_유효회원": ("명", 1), "앱푸시_수신동의전체": ("명", 1),
@@ -933,6 +935,187 @@ def looks_like_push_name(name: str) -> bool:
     up = name.upper()
     return "PUSH" in up or any(h in name for h in ("앱푸시", "푸시", "수신동의"))
 
+# ══════════════════════════════════════════════════════
+# 앱설치 원천 (LFmall 앱 대시보드 export — Daily · Weekly · Monthly)
+# ══════════════════════════════════════════════════════
+# 「02. 첫구매 퍼널별 상세 실적」 하단 앱 블록이 기다리던 원천이다. 같은 대시보드에서
+# 세 벌이 따로 떨어지는데, **일별 하나만 쌓는다.** 나머지 둘은 인식만 하고 버린다.
+#
+#   · Daily   `9월 5일,710,394,316,1080,,547529`  ← 연도가 없다
+#   · Weekly  `~ 26.09.05,5337,...`               ← 주가 **일~토**다
+#   · Monthly `2026. 08,19509,0,19509`            ← 칼럼이 다르다(전체/Android/iOS)
+#
+# **주간 파일을 같이 쌓으면 안 된다.** 이 export의 주는 일~토인데 보고서의 주는 월~일이라
+# 창이 하루씩 어긋난다. 그런데 목요일로 라벨을 매기면 **같은 라벨**(`08월 4주차`)이 나와서,
+# 저장하면 일별에서 만든 값을 조용히 덮어쓴다. 실파일로 대조해 보면 주간 파일의
+# `~26.08.29`(8/23~8/29 합 22,788)와 보고서의 08월 4주차(8/24~8/30 합 22,382)가 다른 창이다.
+#
+# **월간 파일도 안 쌓는다.** 커버리지가 일별보다 좁고(6개월 vs 189일), 실파일에서
+# **최신 달이 깨져 온다** — 2026-08이 파일 19,509(Android 0)인데 일별 합은 92,696이다.
+# 그 값이 일별에서 만든 월 값을 덮어쓰면 그 달이 통째로 틀어진다.
+#
+# 값은 전부 **일평균**으로 낸다 — 같은 화면의 가입자수·앱푸시 수신동의가 일평균이라
+# 합계로 섞으면 비율이 통째로 틀어진다. 주·월로 묶는 규칙은 원장과 같은
+# `detail_periods()`를 쓴다(주차 = 목요일이 속한 달의 몇 번째 주).
+APPINSTALL_MAP = [("전체설치", "앱설치"), ("신규설치", "앱_신규설치"),
+                  ("재설치", "앱_재설치"), ("스토어방문", "앱_스토어방문"),
+                  ("삭제", "앱_삭제"), ("push활성기기", "앱_Push활성기기")]
+APPINSTALL_METS = [m for _h, m in APPINSTALL_MAP]
+# 이 둘이 한 행에 같이 있어야 일별·주간 export로 본다 — 다른 원천과 겹치지 않는 조합이다
+APPINSTALL_NEED = {"전체설치", "신규설치"}
+# 월간 export는 칼럼이 통째로 다르다 (전체 설치 (전체)/(Android)/(iOS))
+APPINSTALL_MON_NEED = {"전체설치(전체)", "전체설치(android)"}
+
+_AI_DAY_RE = re.compile(r"^(\d{1,2})\s*월\s*(\d{1,2})\s*일$")        # 9월 5일
+_AI_WEEK_RE = re.compile(r"^~?\s*(\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})\.?$")   # ~ 26.09.05
+_AI_MON_RE = re.compile(r"^(20\d{2})\s*\.\s*(\d{1,2})\.?$")          # 2026. 08
+
+
+def _ai_key(v):
+    """헤더 비교용 정규화 — `Push 활성 기기` → `push활성기기`."""
+    return _cell(v).replace(" ", "").replace("_", "").lower()
+
+
+def appinstall_kind(rows):
+    """이 그리드가 앱설치 export면 '일'·'주'·'월', 아니면 None.
+
+    단위는 헤더가 아니라 **날짜 칸 모양**이 정한다 — 일별과 주간은 헤더가 똑같다.
+    """
+    hdr = None
+    for ri, r in enumerate(rows[:8]):
+        keys = {_ai_key(c) for c in r}
+        if APPINSTALL_MON_NEED <= keys:
+            return "월", ri
+        if APPINSTALL_NEED <= keys:
+            hdr = ri
+            break
+    if hdr is None:
+        return None, None
+    for r in rows[hdr + 1:]:
+        d = _cell(r[0] if len(r) else "")
+        if not d:
+            continue
+        if _AI_DAY_RE.match(d):
+            return "일", hdr
+        if _AI_WEEK_RE.match(d):
+            return "주", hdr
+        if _AI_MON_RE.match(d):
+            return "월", hdr
+        # 헤더는 앱설치인데 날짜 칸 모양을 모른다. None으로 흘리면 '미인식'으로만 보여
+        # 원인이 안 드러나니, 그 사실을 들고 나가 인식 목록에서 말하게 한다.
+        return "?", hdr
+    return None, None
+
+
+def is_appinstall_grid(rows):
+    return appinstall_kind(rows)[0] is not None
+
+
+def _ai_days(labels, today=None):
+    """`9월 5일` 목록 → 날짜 목록. 연도가 없어서 **오늘을 기준으로 거꾸로 채운다.**
+
+    export가 늘 '최근 N일'이라 가장 최근 행이 오늘 이전의 그 월·일이다. 거기서부터
+    거슬러 올라가며 달이 커지면(=한 해 넘어감) 연도를 하나 뺀다. 읽은 범위는 인식 목록에
+    찍어 두니, 옛 파일을 올려 연도가 어긋나면 눈으로 바로 잡힌다.
+    """
+    md = []
+    for s in labels:
+        m = _AI_DAY_RE.match(str(s).strip())
+        md.append((int(m.group(1)), int(m.group(2))) if m else None)
+    real = [x for x in md if x]
+    if not real:
+        return [None] * len(md)
+    # 파일이 내림차순인지 오름차순인지 — 이웃끼리 비교해서 많은 쪽으로 정한다.
+    # (연말을 넘는 한 쌍은 반대로 세지만 소수라 결론이 안 바뀐다)
+    desc = sum(1 for a, b in zip(real, real[1:]) if b < a) >= len(real) / 2
+    order = list(range(len(md))) if desc else list(range(len(md)))[::-1]
+    today = today or today_kst()
+    out, year, prev = [None] * len(md), None, None
+    for i in order:
+        if md[i] is None:
+            continue
+        mo, dd = md[i]
+        if year is None:                       # 가장 최근 행 — 오늘 이전이 되게 연도를 고른다
+            year = today.year if (mo, dd) <= (today.month, today.day) else today.year - 1
+        elif mo > prev:                        # 거슬러 올라가다 달이 커졌다 = 해를 넘었다
+            year -= 1
+        prev = mo
+        try:
+            out[i] = datetime.date(year, mo, dd)
+        except ValueError:                     # 2/29 — 그 해에 없는 날
+            out[i] = None
+    return out
+
+
+def parse_appinstall_grid(rows):
+    """앱설치 그리드 → 일·주·월 long DF (값은 일평균). 일별 파일만 값을 낸다."""
+    kind, hdr = appinstall_kind(rows)
+    empty = pd.DataFrame(columns=STORE_COLS)
+    if kind is None:
+        return empty
+    empty.attrs["appinstall_kind"] = kind
+    if kind != "일":
+        # 주간·월간은 인식만 한다. 왜 안 쌓는지는 위 주석과 인식 목록에 적혀 있다.
+        # 날짜 모양을 모르는 파일('?')은 어떤 값이 들어 있었는지 같이 들고 나간다.
+        if kind == "?":
+            empty.attrs["date_sample"] = list(dict.fromkeys(
+                _cell(r[0]) for r in rows[hdr + 1:] if len(r) and _cell(r[0])))[:3]
+        return empty
+    hkeys = [_ai_key(c) for c in rows[hdr]]
+    col = {}
+    for h, met in APPINSTALL_MAP:        # 앞 항목이 우선 — 한 칸이 두 지표를 겸하지 않게
+        if h in hkeys:
+            col.setdefault(hkeys.index(h), met)
+    body = [r for r in rows[hdr + 1:] if any(_cell(c) for c in r)]
+    if not body or not col:
+        return empty
+    days = _ai_days([_cell(r[0]) if len(r) else "" for r in body])
+    recs, dropped = [], 0
+    for r, d in zip(body, days):
+        if d is None:
+            dropped += 1
+            continue
+        rec = {"date": d.isoformat()}
+        for ci, met in col.items():
+            rec[met] = _num(r[ci]) if ci < len(r) else np.nan
+        recs.append(rec)
+    if not recs:
+        empty.attrs["date_dropped"] = dropped
+        return empty
+    base = pd.DataFrame(recs).drop_duplicates(subset=["date"], keep="last")
+    mets = [m for m in col.values() if base[m].notna().any()]
+    frames = []
+    for gran in ("일", "주", "월"):
+        per = detail_periods(base["date"], gran)
+        if per.empty or not mets:
+            continue
+        m = base.merge(per[["date", "year", "label", "sortkey", "close"]], on="date")
+        # 빈 칸은 NaN으로 두고 평균에서 빠지게 한다 — 0으로 채우면 없는 날을 '0건'으로
+        # 읽어 일평균이 내려간다 (실파일에서 8/31 이후 삭제 칸이 통째로 비어 온다).
+        g = m.groupby(["year", "label", "sortkey", "close"], as_index=False)[mets].mean()
+        long = g.melt(id_vars=["year", "label", "sortkey", "close"], value_vars=mets,
+                      var_name="metric", value_name="value")
+        long["gran"], long["segment"] = gran, "*TOTAL"
+        frames.append(long.dropna(subset=["value"]))
+    out = (pd.concat(frames, ignore_index=True)[STORE_COLS] if frames else empty.copy())
+    out.attrs["appinstall_kind"] = "일"
+    out.attrs["date_dropped"] = dropped
+    out.attrs["date_range"] = (base["date"].min(), base["date"].max())
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def parse_appinstall_file(name, data: bytes) -> pd.DataFrame:
+    """라우팅·인식목록·누적 병합 세 군데서 같은 파일을 물어보므로 캐시해 둔다."""
+    try:
+        rows = _detail_rows(name, data)      # 원장처럼 콤마 CSV로 온다
+    except Exception:                        # noqa: BLE001
+        return pd.DataFrame(columns=STORE_COLS)
+    if not rows:
+        return pd.DataFrame(columns=STORE_COLS)
+    return parse_appinstall_grid(rows)
+
+
 def route_push(n, b):
     """엑셀 1건 → (push_df 또는 None, 일반_df 또는 None).
     이름 힌트가 있으면 PUSH 우선 시도, 없으면 일반 파싱 후 빈 결과면 내용 기반으로 PUSH 재시도.
@@ -942,6 +1125,11 @@ def route_push(n, b):
     if not parse_orgcat_file(n, b).empty:
         return None, None
     if not parse_detail_file(n, b).empty:
+        return None, None
+    ai = parse_appinstall_file(n, b)      # 앱설치는 마스터와 같은 store에 쌓인다
+    if not ai.empty:
+        return None, ai
+    if ai.attrs.get("appinstall_kind"):   # 앱설치인데 안 쌓는 단위 — 마스터로 흘리지 않는다
         return None, None
     is_xlsx = n.lower().endswith((".xlsx", ".xls"))
     if is_xlsx and looks_like_push_name(n):
@@ -1168,6 +1356,30 @@ def classify_uploads(file_tuples):
             # 헤더는 원장인데 한 줄도 못 읽었다 — 날짜 형식이 원인이다.
             out.append((n, f"❌ 브랜드·상품 원장인데 날짜를 하나도 못 읽었어요 "
                            f"({len(_drop):,}줄, 예: {', '.join(dict.fromkeys(_drop))[:30]})", 0))
+            continue
+        ai = parse_appinstall_file(n, b)
+        _aikind = ai.attrs.get("appinstall_kind")
+        _aidrop = int(ai.attrs.get("date_dropped") or 0)
+        if not ai.empty:
+            _d0, _d1 = ai.attrs.get("date_range", ("?", "?"))
+            # 지표마다 결측이 달라(삭제 칸이 며칠 비어 온다) 행 수를 나누면 하루씩 어긋난다
+            _nd = ai[ai["gran"] == "일"]["label"].nunique()
+            _warn = f" · ⚠ 날짜를 못 읽어 뺀 줄 {_aidrop:,}건" if _aidrop else ""
+            out.append((n, f"✅ 앱설치 원천(일별) · {_d0}~{_d1} · {_nd:,}일 · "
+                           f"{ai['metric'].nunique()}지표" + _warn, len(ai)))
+            continue
+        if _aikind in ("주", "월"):
+            # 인식은 했지만 안 쌓는다. 왜인지 말해 주지 않으면 '올렸는데 왜 안 보이지'가 된다.
+            _why = ("주 경계가 일~토라 보고서의 월~일과 어긋나요"
+                    if _aikind == "주" else "커버리지가 좁고 최신 달이 깨져 와요")
+            out.append((n, f"➖ 앱설치({_aikind}간) — 저장 안 함 ({_why}). "
+                           "일별 파일이 주·월을 만들어요", 0))
+            continue
+        if _aikind:
+            # 헤더는 앱설치인데 값이 안 나왔다 — 날짜 칸이 원인이다.
+            _ex = ", ".join(ai.attrs.get("date_sample") or [])
+            out.append((n, "❌ 앱설치 원천인데 날짜 칸을 못 읽었어요"
+                           + (f" (예: {_ex[:40]})" if _ex else f" ({_aidrop:,}줄)"), 0))
             continue
         pf, d = route_push(n, b)  # combine_files와 동일한 라우팅 (한글명 PUSH 포함)
         if pf is not None:
@@ -2810,6 +3022,10 @@ FUNNEL_DERIVED = {"가입율": ("가입자수", "비회원트래픽"),
 FUNNEL_FILE_FIRST = {"첫구매 객단가"}
 # 하단 앱 블록 — 앱설치는 아직 원천이 안 올라와서, 없으면 '–'로 비우고 왜인지 밝힌다
 APP_STEPS = ["가입자수", "앱설치", "앱푸시수신동의"]
+# 앱설치 원천이 같이 주는 나머지 칸 — 카드 세 장 아래 접이식으로만 보여 준다.
+# 스토어 방문 → 설치 → 삭제까지가 한 흐름이라 같이 봐야 '설치가 준 건지 삭제가 는 건지'가 갈린다.
+APP_EXTRA = ["앱_신규설치", "앱_재설치", "앱_삭제", "앱_순증설치",
+             "앱_스토어방문", "앱_Push활성기기"]
 
 
 def funnel_val(g, met, seg="*TOTAL"):
@@ -3210,11 +3426,27 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close):
                       "전년비": (fmt_delta("동의율", rc, rp) or "–")})
     wtable(style_delta_cols(pd.DataFrame(rrows).set_index("비율")), width="stretch",
            dl_name="신규회원 앱 수신동의")
+    # 원천이 같이 준 나머지 칸 — 접이식으로만 (카드를 아홉 장 세우면 퍼널이 안 읽힌다)
+    extra = [(m, _one(m, cy, "mtd"), _one(m, py, prv_close)) for m in APP_EXTRA]
+    extra = [(m, c, pv) for m, c, pv in extra if not (pd.isna(c) and pd.isna(pv))]
+    if extra:
+        with st.expander(f"앱설치 상세 — 스토어 방문 · 신규/재설치 · 삭제 ({len(extra)}개)"):
+            wtable(style_delta_cols(pd.DataFrame(
+                [{"지표": m.replace("앱_", ""), f"{py}년": fmt_value(m, pv),
+                  f"{cy}년": fmt_value(m, c), "전년비": fmt_delta(m, c, pv) or "–"}
+                 for m, c, pv in extra]).set_index("지표")),
+                width="stretch", dl_name="앱설치 상세")
+            st.caption("값은 모두 **일평균**이에요. 순증설치 = 전체설치 − 삭제고, "
+                       "Push 활성 기기는 그날의 잔고예요(합이 아니라 수준).")
+
     notes = []
     if pd.isna(cur["앱설치"]):
         notes.append("**앱설치** 원천이 아직 안 올라와서 두 줄이 비어 있어요. "
-                     "파일명에 `앱설치`가 들어간 지표별 파일(예: `월_앱설치(일평균)`)을 "
+                     "Daily 통계 플랫폼 export(`전체 설치`·`신규 설치` 칸이 있는 파일)를 "
                      "올리면 채워져요.")
+    elif pd.isna(prv["앱설치"]):
+        notes.append("**앱설치는 전년 데이터가 없어** 전년비가 비어 있어요. "
+                     "원천이 올해분부터 쌓이기 시작했어요.")
     if approx:
         notes.append("앱푸시 수신동의는 원천이 **일별로만** 와서 주 단위는 "
                      "`(일-1)//7+1` 규칙으로 묶은 근사값이에요. 마스터 주차와 경계가 "
@@ -3735,6 +3967,8 @@ def main():
 - **조직×카테고리**: MICRO 대시보드 export (헤더에 `구분06`·`구분07`) — 일·주·월 각각
 - **브랜드·상품 원장**: 헤더에 `결제_일자`·`BPU`·`대카테고리명`·`ADMIN브랜드명`·`상품명`·`거래액` — 브랜드·상품까지 파고들 수 있어요
 - **앱푸시**: 파일명에 `PUSH`/`앱푸시`/`수신동의` 포함 또는 헤더가 앱푸시 형식이면 자동 인식
+- **앱설치**: 앱 대시보드 export — **일별 파일**만 쌓아요 (`날짜,전체 설치,신규 설치,…`).
+  주간·월간 파일은 인식은 하지만 저장하지 않아요 (주 경계가 달라요)
 - 주간 폴더를 **zip으로 묶어 통째로** 올려도 돼요.
 """)
         st.stop()

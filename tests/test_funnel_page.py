@@ -9,6 +9,7 @@
 로컬 실행:
     python tests/test_funnel_page.py
 """
+import datetime
 import os
 import pathlib
 import re
@@ -422,6 +423,197 @@ def t_app_install_file_is_recognized():
         assert (kind, met) == ("metric", "앱설치"), f"{nm} → {(kind, gran, met)}"
     assert W.METRIC_UNIT["앱설치"] == ("명", 1)
 
+
+# ══════════════════════════════════════════════════════
+# 앱설치 원천 (LFmall 앱 대시보드 export)
+# ══════════════════════════════════════════════════════
+# 실파일에서 그대로 뽑은 조각이다. 같은 대시보드가 세 벌을 따로 떨어뜨리는데 **모양이
+# 다 다르다** — 일별은 연도가 없고, 주간은 주가 일~토고, 월간은 칼럼이 통째로 다르다.
+_AI_HDR = "날짜,전체 설치,신규 설치,재설치,스토어 방문,삭제,Push 활성 기기"
+# (표시날짜, 전체, 신규, 재설치, 스토어, 삭제, Push활성) — 실파일 값 그대로
+_AI_DAILY = [
+    ("9월 5일", 710, 394, 316, 1080, "", 547529),
+    ("9월 4일", 615, 339, 276, 1027, "", 547371),
+    ("9월 3일", 721, 397, 324, 1241, "", 547413),
+    ("9월 2일", 815, 439, 376, 1311, "", 547491),
+    ("9월 1일", 3269, 2147, 1122, 4410, "", 1124697),
+    ("8월 31일", 819, 447, 372, 1442, "", 546997),
+    ("8월 30일", 2456, 1549, 907, 3105, 1685, 1122732),
+    ("8월 29일", 3024, 2171, 853, 3005, 1532, 1122054),
+    ("8월 28일", 3256, 2369, 887, 2724, 1669, 1121375),
+    ("8월 27일", 5073, 3705, 1368, 4859, 1927, 1120345),
+    ("8월 26일", 2811, 2076, 735, 2315, 1346, 1121447),
+    ("8월 25일", 2846, 2000, 846, 2858, 1500, 1121494),
+    ("8월 24일", 2916, 2036, 880, 2864, 1677, 1121088),
+    ("8월 23일", 2862, 1910, 952, 2854, 1697, 1120921),
+    ("3월 31일", 2171, 1231, 940, 2615, 1303, 1123067),
+    ("3월 30일", 1952, 1234, 718, 2521, 1136, 1123613),
+    ("3월 1일", 2229, 1232, 997, 2347, 1386, 1113894),
+]
+# 주간 파일 — 주가 **일~토**다. `~ 26.08.29`는 8/23~8/29(합 22,788)이고
+# 보고서의 「08월 4주차」는 8/24~8/30(합 22,382)이라 **다른 창**이다.
+_AI_WEEKLY = "\n".join([_AI_HDR,
+                        "~ 26.09.05,5337,2895,2442,8719,,547274",
+                        "~ 26.08.29,22788,16267,6521,21479,11348,1121246",
+                        "~ 26.08.22,20169,13729,6440,19524,11044,1119307"])
+# 월간 파일 — 칼럼이 다르고, 실파일에서 최신 달이 Android 0으로 깨져 온다
+# (2026-08: 파일 19,509 vs 일별 합 92,696).
+_AI_MONTHLY = "\n".join(["날짜,전체 설치 (전체),전체 설치 (Android),전체 설치 (iOS)",
+                         "2026. 08,19509,0,19509",
+                         "2026. 07,84071,65137,18934",
+                         "2026. 06,69744,57794,11950"])
+_AI_WEEK_SUN_SAT = 22788        # 주간 파일이 준 8/23~8/29
+_AI_WEEK_MON_SUN = 22382        # 보고서 규칙의 08월 4주차 (8/24~8/30)
+
+
+def appinstall_csv(rows=None, hdr=_AI_HDR):
+    out = [hdr]
+    for r in (rows or _AI_DAILY):
+        out.append(",".join("" if x == "" else str(x) for x in r))
+    return "\n".join(out).encode("utf-8")
+
+
+def synth_appinstall_store(per_day=3000, days=250):
+    """기간을 안 가리게 **모든 날 같은 값**으로 깐다 — 어느 주·달을 골라도 일평균이 같다."""
+    rows, d = [], datetime.date(2026, 9, 5)
+    for _ in range(days):
+        rows.append((f"{d.month}월 {d.day}일", per_day, per_day - 800, 800,
+                     per_day + 200, 1000, 1_100_000))
+        d -= datetime.timedelta(days=1)
+    return W.parse_appinstall_file("일별.csv", appinstall_csv(rows))
+
+
+@case
+def t_appinstall_daily_is_recognized():
+    d = W.parse_appinstall_file("일별.csv", appinstall_csv())
+    assert d.attrs.get("appinstall_kind") == "일", d.attrs
+    assert set(d["gran"]) == {"일", "주", "월"}, set(d["gran"])
+    assert "앱설치" in set(d["metric"]), sorted(set(d["metric"]))
+    assert set(d.columns) == set(W.STORE_COLS), list(d.columns)
+    assert d.attrs["date_range"] == ("2026-03-01", "2026-09-05"), d.attrs["date_range"]
+
+
+@case
+def t_daily_year_is_inferred_backwards():
+    """일별 파일엔 **연도가 없다.** 최근 행을 오늘 기준으로 잡고 거슬러 올라간다."""
+    got = W._ai_days(["1월 3일", "1월 1일", "12월 31일", "12월 28일"],
+                     today=datetime.date(2026, 1, 5))
+    assert got == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 1),
+                   datetime.date(2025, 12, 31), datetime.date(2025, 12, 28)], got
+    # 오름차순으로 와도 같은 답이 나와야 한다
+    assert W._ai_days(["12월 28일", "12월 31일", "1월 1일", "1월 3일"],
+                      today=datetime.date(2026, 1, 5)) == got[::-1]
+    # 아직 안 온 날짜면 작년으로 — 12월 파일을 1월에 받는 경우
+    assert W._ai_days(["12월 20일"], today=datetime.date(2026, 1, 5)) == \
+        [datetime.date(2025, 12, 20)]
+
+
+@case
+def t_week_labels_follow_the_report_rule():
+    """주차는 목요일이 속한 달 기준이라 달을 넘나든다 — 마스터와 같은 규칙이어야 조인된다."""
+    d = W.parse_appinstall_file("일별.csv", appinstall_csv())
+    wk = set(d[d["gran"] == "주"]["label"])
+    assert "09월 1주차" in wk, wk          # 8/31(월) → 목요일 9/3 → 9월 1주차
+    assert "04월 1주차" in wk, wk          # 3/30(월) → 목요일 4/2 → 4월 1주차
+    mo = set(d[d["gran"] == "월"]["label"])
+    assert "3월" in mo and "4월" not in mo, mo    # 달은 달력 기준 (3/30·31은 3월)
+
+
+@case
+def t_values_are_daily_means_not_sums():
+    """다른 값이 전부 일평균이라 합계로 내면 비율이 통째로 틀어진다."""
+    d = W.parse_appinstall_file("일별.csv", appinstall_csv())
+    week = [r for r in _AI_DAILY if r[0].startswith("8월 2") and int(r[0][3:-1]) >= 24]
+    want = np.mean([r[1] for r in week] + [2456])          # 8/24~8/30
+    got = d[(d["gran"] == "주") & (d["label"] == "08월 4주차")
+            & (d["metric"] == "앱설치")]["value"]
+    assert len(got) == 1 and abs(float(got.iloc[0]) - want) < 1e-6, (got.tolist(), want)
+    assert abs(float(got.iloc[0]) * 7 - _AI_WEEK_MON_SUN) < 1e-6, float(got.iloc[0]) * 7
+
+
+@case
+def t_blank_deletes_stay_empty_not_zero():
+    """8/31부터 `삭제` 칸이 통째로 비어 온다 — 0으로 채우면 삭제가 없었던 게 된다."""
+    d = W.parse_appinstall_file("일별.csv", appinstall_csv())
+    wk = d[(d["gran"] == "주") & (d["label"] == "09월 1주차")]
+    assert "앱설치" in set(wk["metric"]), set(wk["metric"])
+    assert "앱_삭제" not in set(wk["metric"]), "빈 삭제가 값으로 들어왔어요"
+    aug = d[(d["gran"] == "주") & (d["label"] == "08월 4주차") & (d["metric"] == "앱_삭제")]
+    assert len(aug) == 1, "값이 있는 주는 그대로 있어야 해요"
+
+
+@case
+def t_weekly_file_is_recognized_but_not_stored():
+    """주간 export는 주가 **일~토**라 보고서의 월~일과 다른 창이다.
+
+    그런데 목요일로 라벨을 매기면 **같은 라벨**이 나와서, 저장하면 일별에서 만든 값을
+    조용히 덮어쓴다. 두 값이 실제로 다르다는 걸 같이 박아 둔다.
+    """
+    assert _AI_WEEK_SUN_SAT != _AI_WEEK_MON_SUN, "전제가 깨졌어요"
+    d = W.parse_appinstall_file("주간.csv", _AI_WEEKLY.encode("utf-8"))
+    assert d.empty, "주간 파일이 저장됐어요 — 일별 값을 덮어써요"
+    assert d.attrs.get("appinstall_kind") == "주", d.attrs
+    cls = W.classify_uploads((("주간.csv", _AI_WEEKLY.encode("utf-8")),))
+    assert any("앱설치(주간)" in c[1] and "저장 안 함" in c[1] for c in cls), cls
+
+
+@case
+def t_monthly_file_is_recognized_but_not_stored():
+    """월간 export는 칼럼이 다르고 최신 달이 깨져 온다(Android 0)."""
+    d = W.parse_appinstall_file("월간.csv", _AI_MONTHLY.encode("utf-8"))
+    assert d.empty and d.attrs.get("appinstall_kind") == "월", d.attrs
+    cls = W.classify_uploads((("월간.csv", _AI_MONTHLY.encode("utf-8")),))
+    assert any("앱설치(월간)" in c[1] and "저장 안 함" in c[1] for c in cls), cls
+
+
+@case
+def t_master_parser_does_not_swallow_them():
+    """세 파일 다 마스터·앱푸시 파서로 새면 안 된다."""
+    pf, d = W.route_push("일별.csv", appinstall_csv())
+    assert pf is None and d is not None and not d.empty, (pf, d)
+    assert set(d["metric"]) <= set(W.APPINSTALL_METS), sorted(set(d["metric"]))
+    for nm, raw in (("주간.csv", _AI_WEEKLY), ("월간.csv", _AI_MONTHLY)):
+        pf, d = W.route_push(nm, raw.encode("utf-8"))
+        assert pf is None and d is None, f"{nm} → {(pf, d)}"
+
+
+@case
+def t_unreadable_dates_are_counted_not_swallowed():
+    """날짜를 하나도 못 읽으면 '왜 비었는지'까지 말해야 한다."""
+    bad = appinstall_csv([("알수없음",) + r[1:] for r in _AI_DAILY])
+    d = W.parse_appinstall_file("깨진일별.csv", bad)
+    assert d.empty, "못 읽는 날짜인데 값이 나왔어요"
+    cls = W.classify_uploads((("깨진일별.csv", bad),))
+    assert any("앱설치" in c[1] and "못 읽었" in c[1] for c in cls), cls
+
+
+@case
+def t_recognized_list_names_the_range():
+    """읽은 범위를 찍어 둬야 연도를 잘못 잡은 걸 눈으로 잡는다."""
+    cls = W.classify_uploads((("일별.csv", appinstall_csv()),))
+    assert any("✅ 앱설치 원천(일별)" in c[1] and "2026-03-01~2026-09-05" in c[1]
+               for c in cls), cls
+
+
+@case
+def t_appinstall_reaches_the_funnel_page():
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    # 앱설치는 **실제 달력 주**라 마스터 합성본의 `09월 4주차`(9/21~)와 안 겹친다 —
+    # 월 비교로 본다(9월 = 9/1~9/5, 값이 모든 날 같아 일평균은 그대로 3,000).
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    assert _kpi(at, "앱설치") == "3,000명", _kpi(at, "앱설치")
+    fr = [f for f in _frames(at) if f.index.name == "비율"][0]
+    assert fr.loc["가입자 대비 앱설치율", "2026년"] != "–", fr.to_dict()
+    assert any("앱설치 상세" in str(e.label) for e in at.expander), \
+        [str(e.label) for e in at.expander]
+
+
+@case
+def t_prior_year_absence_is_explained():
+    """전년이 없으면 빈 칸만 두지 말고 왜 비었는지 말해야 한다 (실제로 전년이 없다)."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    assert any("전년 데이터가 없어" in t for t in _texts(at)), "전년 부재 안내가 없어요"
 
 def main():
     fails, cwd = [], os.getcwd()
