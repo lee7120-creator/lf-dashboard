@@ -120,6 +120,10 @@ METRICS7 = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가",
             "비회원트래픽", "가입자수", "가입율", "당일가입CR"]
 PCT_METRICS = {"가입율", "당일가입CR", "진입률", "CR", "거래액비중", "고객비중", "동의율", "유입율",
                "상품CR"}
+# 추이 차트 6종 — 「01 요약」 하단과 「03 월별 추이」가 같은 목록을 본다. 결과(거래액·고객수·
+# 객단가)만 보면 '왜 빠졌는지'가 안 갈려서 앞단(트래픽·가입자수·가입율)을 같이 세운다.
+TREND_CHARTS = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가",
+                "비회원트래픽", "가입자수", "가입율"]
 # 마스터 파일 지표 → 보고서 지표 매핑
 MASTER_MAP = {"일평균거래액": "첫구매 거래액", "일평균고객수": "첫구매 고객수",
               "일평균객단가": "첫구매 객단가"}
@@ -3046,6 +3050,11 @@ def detail_provider(sdf, gran, axis):
 FUNNEL_STEPS = ["비회원트래픽", "가입율", "가입자수", "당일가입CR",
                 "첫구매 고객수", "첫구매 객단가", "첫구매 거래액"]
 FUNNEL_TAIL = ["첫구매 고객수", "첫구매 객단가", "첫구매 거래액"]
+# ④에서 고를 수 있는 지표 — 거래액이 왜 빠졌는지는 `거래액 = 상품UV × 상품CR × 객단가`
+# 세 요인을 다 봐야 갈린다(원본에서 오차 0.000%로 성립하는 항등식이다).
+FUNNEL_OC_METS = FUNNEL_TAIL + ["상품UV", "상품CR"]
+# 조직을 가로질러 합칠 수 있는 지표 — 나머지는 합·파생 어느 쪽도 성립하지 않는다
+FUNNEL_ROLLUP_METS = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]
 # 채널 합 ≈ 전체가 성립하는 가산 지표 — 기여도 분해는 여기서만 성립한다
 FUNNEL_ADDITIVE = ["비회원트래픽", "가입자수", "첫구매 고객수", "첫구매 거래액"]
 # 비율 칸을 두 카운트로 만들 때의 (분자, 분모)
@@ -3090,15 +3099,18 @@ def push_period_avg(pdf, year, label):
 
     달은 라벨에서 그대로 읽어 정확하지만, **주는 원천에 주차가 없다**. `(일-1)//7+1`로
     나누는데 마스터의 주차와 경계가 어긋날 수 있어, 근사라는 사실을 같이 돌려준다.
+
+    돌려주는 건 `(값, 근사여부, 며칠치)`. 며칠치는 화면이 '이게 몇 날 평균인지'를 밝히는
+    데 쓴다 — 안 밝히면 3일치와 30일치가 같은 얼굴로 나란히 선다.
     """
     m = re.match(r"(\d{1,2})\s*월(?:\s*(\d)\s*주차)?", str(label or ""))
     if not m:
-        return np.nan, False
+        return np.nan, False, 0
     d = pdf[(pdf["metric"] == "앱푸시수신동의") & (pdf["gran"] == "일")
             & (pdf["segment"] == "*TOTAL") & (pdf["year"] == year)]
     d = d[d["label"].astype(str).str.contains("/", na=False)]
     if d.empty:
-        return np.nan, False
+        return np.nan, False, 0
     d = mask_push_spikes(d.copy())
     parts = d["label"].astype(str).str.split("/")
     mo = pd.to_numeric(parts.str[0], errors="coerce")
@@ -3109,7 +3121,7 @@ def push_period_avg(pdf, year, label):
         sel &= ((dy - 1) // 7 + 1) == int(m.group(2))
         approx = True
     v = pd.to_numeric(d.loc[sel.fillna(False), "value"], errors="coerce").dropna()
-    return (float(v.mean()) if len(v) else np.nan), approx
+    return (float(v.mean()) if len(v) else np.nan), approx, len(v)
 
 
 def _fn_pill(met, cur, prv, tag):
@@ -3175,8 +3187,8 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
 
     st.caption(f"{period_lbl} vs {base_lbl} · 값은 모두 **일평균**이에요.")
 
-    # ── ① 퍼널 개요 (합계) ──────────────────────────────
-    st.subheader("① 퍼널 개요 — 전체 합계")
+    # ── ① 전체 퍼널 ────────────────────────────────────
+    st.subheader("① 전체 퍼널")
     trf_c, trf_p = vcur("비회원트래픽"), vprv("비회원트래픽")
     jn_c, jn_p = vcur("가입자수"), vprv("가입자수")
     if pd.isna(trf_c) and pd.isna(jn_c):
@@ -3220,9 +3232,10 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
                    "첫구매율`이 오른쪽 첫구매 고객수와 안 맞아요. 마지막 칸은 과거 가입자까지 "
                    "포함한 **전체 첫구매**거든요.")
 
-    # ── ② 채널별 상세 ──────────────────────────────────
+    # ── ② 채널별 퍼널 ──────────────────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("② 채널별 상세 — 어느 채널이 어느 단계에서 빠지나")
+    st.subheader("② 채널별 퍼널")
+    st.caption("어느 채널이 **어느 단계에서** 빠지는지 한 표로 훑어요.")
     chans = [c for c in CHANNELS
              if not df[(df["gran"] == gran) & (df["segment"] == c)
                        & (df["label"] == clabel)].empty]
@@ -3245,27 +3258,64 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
                    "**당일가입 첫구매율은 채널별 파일 값**이라 원천에 없으면 '–'로 비어요. "
                    "비율 지표는 채널 합이 전체와 다른 게 정상이에요.")
 
-    # ── ③ 단계 파고들기 — 채널 기여 분해 ────────────────
+    # ── ③ 채널별 증감 ──────────────────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("③ 단계 파고들기 — 채널 기여 분해")
-    # 채널 합 ≈ TOTAL 이 성립하는 가산 지표만 (객단가·가입율·CR은 비율이라 분해 무의미)
-    avail_dec = [m for m in FUNNEL_ADDITIVE
-                 if not df[(df["metric"] == m) & df["segment"].isin(CHANNELS)].empty]
+    st.subheader("③ 채널별 증감")
+    # 지표는 **일곱 단계 전부** 고를 수 있다. 다만 그리는 그림이 갈린다 —
+    # 가산 지표(발송·고객수·거래액)는 부분의 합이 전체라 워터폴이 성립하지만,
+    # 비율·평균(가입율·당일가입CR·객단가)은 채널 합 ≠ 전체라 워터폴이 거짓말이 된다.
+    # 그래서 비율은 **채널마다 얼마나 움직였는지**를 나란히 세운다.
+    def _has_ch(m):
+        return any(not pd.isna(vcur(m, c)) or not pd.isna(vprv(m, c)) for c in CHANNELS)
+
+    avail_dec = [m for m in FUNNEL_STEPS if _has_ch(m)]
     if not avail_dec:
         st.info("채널별로 나눠 볼 지표 데이터가 없어요.")
     else:
         guard_select("wr_decomp_met", avail_dec)
-        dec_met = st.selectbox("분해할 단계", avail_dec, key="wr_decomp_met",
-                               help="고른 단계의 전년비 증감을 채널별로 나눠 봐요. "
-                                    "채널 합이 전체와 맞는 가산 지표만 골라요.")
-        # 거래액만 만원(더 잘게), 나머지 카운트는 명 그대로
-        div, unit = (1e4, "만원") if dec_met == "첫구매 거래액" else (1, "명")
-        st.caption(f"{period_lbl} {base_lbl} 대비 «{dec_met}» 증감 분해 "
-                   f"(일평균·{unit}) · 세로축은 변동 구간만 확대 표시")
-        base_t, cur_t = gprv(dec_met), gcur(dec_met)
-        if pd.isna(base_t) or pd.isna(cur_t):
-            st.info("이 기간엔 채널 데이터가 없어요.")
+        dec_met = st.selectbox("지표", avail_dec, key="wr_decomp_met",
+                               help="고른 지표가 전년 대비 얼마나 움직였는지 채널별로 봐요.")
+        if dec_met not in FUNNEL_ADDITIVE:
+            _pct = dec_met in PCT_METRICS
+            _suf, _fmt = ("%p", "{:+.2f}") if _pct else ("원", "{:+,.0f}")
+            _lab, _dlt, _rows = [], [], []
+            for chn in CHANNELS:
+                cv, pv = vcur(dec_met, chn), vprv(dec_met, chn)
+                if pd.isna(cv) and pd.isna(pv):
+                    continue
+                d = ((cv - pv) * (100 if _pct else 1)
+                     if not (pd.isna(cv) or pd.isna(pv)) else np.nan)
+                _lab.append(chn); _dlt.append(d)
+                _rows.append({"채널": chn, f"{py}년": fmt_value(dec_met, pv),
+                              f"{cy}년": fmt_value(dec_met, cv),
+                              "전년비": fmt_delta(dec_met, cv, pv) or "–"})
+            if not _lab:
+                st.info(f"이 기간은 «{dec_met}» 채널별 데이터가 없어요. 전체 값만 있어요.")
+            else:
+                st.caption(f"{period_lbl} {base_lbl} 대비 «{dec_met}» 채널별 변화 "
+                           f"({_suf}) · **비율·평균 지표라 채널을 더해도 전체가 안 돼요** — "
+                           "합이 아니라 '어느 채널이 움직였나'로 읽으세요.")
+                _fig_r = go.Figure(go.Bar(
+                    x=_lab, y=_dlt, marker_color=[clr("red") if (d == d and d < 0)
+                                                  else clr("green") for d in _dlt],
+                    text=[("–" if d != d else _fmt.format(d)) for d in _dlt],
+                    textposition="outside", cliponaxis=False))
+                _ly_r = base_layout(320, title=f"«{dec_met}» 채널별 전년비 변화 ({_suf})")
+                _ly_r["showlegend"] = False
+                _fig_r.update_layout(**_ly_r)
+                st.plotly_chart(_fig_r, width="stretch")
+                wtable(style_delta_cols(pd.DataFrame(_rows).set_index("채널")),
+                       width="stretch", dl_name=f"채널별 {dec_met} ({period_lbl})")
+            base_t = cur_t = np.nan          # 아래 워터폴 경로는 타지 않는다
         else:
+            # 거래액만 만원(더 잘게), 나머지 카운트는 명 그대로
+            div, unit = (1e4, "만원") if dec_met == "첫구매 거래액" else (1, "명")
+            st.caption(f"{period_lbl} {base_lbl} 대비 «{dec_met}» 증감 분해 "
+                       f"(일평균·{unit}) · 세로축은 변동 구간만 확대 표시")
+            base_t, cur_t = gprv(dec_met), gcur(dec_met)
+        if dec_met in FUNNEL_ADDITIVE and (pd.isna(base_t) or pd.isna(cur_t)):
+            st.info("이 기간엔 채널 데이터가 없어요.")
+        elif dec_met in FUNNEL_ADDITIVE:
             labels, deltas = [], []
             for chn in CHANNELS:
                 pv, cv = gprv(dec_met, chn), gcur(dec_met, chn)
@@ -3311,7 +3361,7 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
                 fig_w.update_layout(**lyw)
                 st.plotly_chart(fig_w, width="stretch")
 
-            # 산출식 (접이식 첨부)
+            # 산출식 (접이식 첨부) — 워터폴을 그린 경우에만
             with st.expander("📐 산출식 · 계산 방법", expanded=False):
                 st.markdown(f"""
 **비교 기준**: {period_lbl} vs {base_lbl} · 값은 모두 **일평균**, 단위 **{unit}**
@@ -3332,15 +3382,16 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
 채널 합 ≠ 전체** 라 분해가 성립하지 않아 뺐어요.
 """)
 
-    # ── ④ 첫구매 3지표 — 조직 > 카테고리 ────────────────
+    # ── ④ 조직·카테고리별 첫구매 ────────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("④ 첫구매 실적 — 조직 > 카테고리")
+    st.subheader("④ 조직·카테고리별 첫구매")
     _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_close)
 
-    # ── ⑤ 신규회원 앱 수신동의 ──────────────────────────
+    # ── ⑤ 신규회원 앱 설치·수신동의 ─────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("⑤ 신규회원 앱 수신동의")
-    _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close)
+    st.subheader("⑤ 신규회원 앱 설치·수신동의")
+    _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
+                       period_lbl, base_lbl)
 
 
 def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_close):
@@ -3370,7 +3421,7 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
             lf = lfmss[0] if lfmss else "N"
             st.caption(f"LFMS 포함: **{esc(lf)}**")
     base = base[base["lfms"] == lf]
-    mets = [m for m in FUNNEL_TAIL if (base["metric"] == m).any()]
+    mets = [m for m in FUNNEL_OC_METS if (base["metric"] == m).any()]
     if base.empty or not mets:
         st.info("고른 조건에 첫구매 지표가 없어요.")
         return
@@ -3388,52 +3439,268 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
     if not orgs:
         st.info("조직 항목이 없어요.")
         return
-    guard_select("wr_fn_org", ["전체"] + orgs)
-    org = st.selectbox("1. 조직", ["전체"] + orgs, key="wr_fn_org",
-                       help="조직을 고르면 그 아래 카테고리로 한 단계 더 들어가요.")
-    path = [] if org == "전체" else [org]
-    kids = view.live(tuple(path))[0]
-    lv_lbl = "조직" if not path else "카테고리"
-    if not kids:
-        st.info(f"«{esc(org)}» 아래에 볼 카테고리가 없어요.")
-        return
-
     # 상위와 합이 맞는 지표는 거래액 하나뿐이다 — 나머지는 유니크 값이라 비중을 붙이면
     # 거짓말이 된다(같은 사람이 여러 조직에 잡혀 합이 전체를 넘는다).
     additive = met in ORGCAT_ADDITIVE
-    tot_c = view.get(tuple(path), met, cy, clabel, "mtd")
-    rows = []
-    for k in kids:
-        kc = view.get(tuple(path + [k]), met, cy, clabel, "mtd")
-        kp = view.get(tuple(path + [k]), met, py, clabel, prv_close)
-        row = {lv_lbl: k, f"{py}년": fmt_value(met, kp), f"{cy}년": fmt_value(met, kc),
-               "전년비": fmt_delta(met, kc, kp) or "–"}
-        if additive:
-            row["비중"] = ("–" if (pd.isna(kc) or pd.isna(tot_c) or not tot_c)
-                          else f"{kc / tot_c * 100:.1f}%")
-        rows.append(row)
-    tbl = pd.DataFrame(rows).set_index(lv_lbl)
-    crumb = " › ".join(["전체"] + [str(p) for p in path])
-    st.caption(f"보는 곳: **{esc(crumb)}** · {period_lbl} vs {base_lbl} · {esc(met)}"
+    org_tbl = _funnel_level_table(view, [], orgs, "조직", met, cy, py, clabel, prv_close,
+                                  view.get((), met, cy, clabel, "mtd") if additive else None)
+    st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)}"
                + ("" if additive else f" · «{esc(met)}»는 하위 합이 상위와 안 맞는 지표라 "
                                       "비중 칸을 뺐어요"))
+    # 셀렉트박스 대신 **행을 눌러** 내려간다 — 조직을 고르고 다시 표를 보는 왕복이 없어진다
+    ev = wtable(style_delta_cols(org_tbl), width="stretch", key="wr_fn_orgsel",
+                on_select="rerun", selection_mode="single-row",
+                dl_name=f"조직별 {met} ({period_lbl})")
+    st.caption("조직 한 줄을 **누르면** 아래에 그 조직의 카테고리가 열려요.")
+
+    picked = None
+    _sel = getattr(getattr(ev, "selection", None), "rows", None)
+    if _sel is None and isinstance(ev, dict):        # 구버전 Streamlit은 dict로 준다
+        _sel = (ev.get("selection") or {}).get("rows")
+    if _sel:
+        _names = list(org_tbl.index)
+        if 0 <= _sel[0] < len(_names):
+            picked = _names[_sel[0]]
+
+    path, node_lbl = [], "전체"
+    if picked:
+        path, node_lbl = [picked], picked
+        _kids = view.live((picked,))[0]
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown(f"###### {esc(picked)} — 카테고리별")
+        if not _kids:
+            st.info(f"«{esc(picked)}» 아래에 볼 카테고리가 없어요.")
+        else:
+            _sub_tot = view.get((picked,), met, cy, clabel, "mtd")
+            # 조직마다 위젯 키를 갈라 둔다 — 같은 키를 쓰면 조직을 바꿔도 옛 행 번호가
+            # 남아 엉뚱한 카테고리가 열린다
+            ev2 = wtable(style_delta_cols(_funnel_level_table(
+                view, [picked], _kids, "카테고리", met, cy, py, clabel, prv_close,
+                _sub_tot if additive else None)), width="stretch",
+                key=f"wr_fn_catsel_{picked}", on_select="rerun",
+                selection_mode="single-row",
+                dl_name=f"{picked} 카테고리별 {met} ({period_lbl})")
+            st.caption("카테고리 한 줄을 **누르면** 아래 요인 분해가 그 카테고리로 바뀌어요.")
+            _s2 = getattr(getattr(ev2, "selection", None), "rows", None)
+            if _s2 is None and isinstance(ev2, dict):
+                _s2 = (ev2.get("selection") or {}).get("rows")
+            if _s2 and 0 <= _s2[0] < len(_kids):
+                path, node_lbl = [picked, _kids[_s2[0]]], f"{picked} › {_kids[_s2[0]]}"
+
+    _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
+                         period_lbl, base_lbl)
+    _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, prv_close)
+
+
+def _funnel_level_table(view, path, kids, lv_lbl, met, cy, py, clabel, prv_close, tot=None):
+    """한 레벨의 표 — 행=자식, 열=전년·올해·전년비(+비중). `tot`을 주면 비중을 붙인다.
+
+    비중은 **하위 합이 상위와 맞는 지표에만** 붙인다(거래액). 고객수는 유니크 값이라
+    같은 사람이 여러 곳에 잡혀 합이 상위를 넘는다 — 붙이면 거짓말이 된다.
+    """
+    rows = []
+    for k in kids:
+        kc = view.get(tuple(list(path) + [k]), met, cy, clabel, "mtd")
+        kp = view.get(tuple(list(path) + [k]), met, py, clabel, prv_close)
+        row = {lv_lbl: k, f"{py}년": fmt_value(met, kp), f"{cy}년": fmt_value(met, kc),
+               "전년비": fmt_delta(met, kc, kp) or "–"}
+        if tot is not None:
+            row["비중"] = ("–" if (pd.isna(kc) or pd.isna(tot) or not tot)
+                          else f"{kc / tot * 100:.1f}%")
+        rows.append(row)
+    return pd.DataFrame(rows).set_index(lv_lbl)
+
+
+def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
+                         period_lbl, base_lbl):
+    """어디에서 빠졌는지 — `거래액 = 상품UV × 상품CR × 객단가`를 요인별로 쪼갠다.
+
+    원본에서 이 항등식이 오차 0.000%로 성립해서(모든 조직·카테고리) '왜'의 축이 된다.
+    LMDI(로그평균 디비지아)라 세 기여액의 합이 실제 증감과 원 단위까지 같고, 어느 요인을
+    먼저 대입하느냐로 답이 달라지지 않는다.
+
+    **0·음수·결측이 하나라도 있으면 로그가 정의되지 않는다** — 그럴 땐 숫자를 지어내지 말고
+    왜 못 쪼갰는지 말한다.
+    """
+    prev = [view.get(tuple(path), f, py, clabel, prv_close) for f, _ in ORGCAT_FACTORS]
+    cur = [view.get(tuple(path), f, cy, clabel, "mtd") for f, _ in ORGCAT_FACTORS]
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.markdown(f"###### 어디에서 빠졌나 — {esc(node_lbl)}")
+    rows = []
+    for (f, nick), pv, cv in zip(ORGCAT_FACTORS, prev, cur):
+        rows.append({"요인": f"{nick} ({f})", f"{py}년": fmt_value(f, pv),
+                     f"{cy}년": fmt_value(f, cv), "전년비": fmt_delta(f, cv, pv) or "–"})
+    split = factor_split(prev, cur)
+    if split is None:
+        st.caption(f"{period_lbl} vs {base_lbl} · 세 요인 중 하나라도 값이 없거나 0 이하라 "
+                   "기여액은 못 쪼갰어요. 증감률만 보세요.")
+    else:
+        parts, total = split
+        for r, part in zip(rows, parts):
+            r["기여액"] = f"{part / 1e6:+,.1f}백만원"
+        _rv_p = view.get(tuple(path), "첫구매 거래액", py, clabel, prv_close)
+        _rv_c = view.get(tuple(path), "첫구매 거래액", cy, clabel, "mtd")
+        rows.append({"요인": "합계 (거래액 증감)", f"{py}년": fmt_value("첫구매 거래액", _rv_p),
+                     f"{cy}년": fmt_value("첫구매 거래액", _rv_c),
+                     "전년비": fmt_delta("첫구매 거래액", _rv_c, _rv_p) or "–",
+                     "기여액": f"{total / 1e6:+,.1f}백만원"})
+        _worst = min(zip(ORGCAT_FACTORS, parts), key=lambda x: x[1])
+        st.caption(f"{period_lbl} vs {base_lbl} · 거래액 증감을 세 요인으로 쪼갰어요 "
+                   f"(합이 실제 증감과 원 단위까지 같아요). 가장 많이 끌어내린 건 "
+                   f"**{_worst[0][1]}**({_worst[0][0]}) 이에요.")
+    wtable(style_delta_cols(pd.DataFrame(rows).set_index("요인")), width="stretch",
+           dl_name=f"요인 분해 {node_lbl} ({period_lbl})")
+
+
+def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, prv_close):
+    """조직을 가로질러 카테고리를 모은 표 — '어느 조직 것이든 이 카테고리가 빠졌나'.
+
+    위 표는 조직을 골라야 카테고리가 보인다. 같은 카테고리를 여러 조직이 나눠 갖고 있어서
+    '가방이 빠졌나'를 보려면 조직을 하나씩 다 들어가 봐야 한다. 그래서 조직 선택과 상관없이
+    늘 전체를 보여 준다.
+
+    **합칠 수 있는 건 거래액뿐이다.** 고객수는 유니크 값이라 같은 사람이 여러 조직에 잡혀
+    합이 전체를 조금 넘고(실파일 +2.4%), 객단가는 애초에 더할 수 없어 `거래액 합 ÷ 고객수
+    합`으로 다시 만든다 — 분모가 부풀려진 만큼 살짝 낮게 나온다. 지어내지 않고 **그렇게
+    만들었다고 화면에 밝힌다**.
+
+    거래액·고객수 두 축만 모으면 세 지표가 다 나온다 — 지표마다 따로 훑지 않는다.
+    """
+    if met not in FUNNEL_ROLLUP_METS:
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.caption(f"«{esc(met)}»는 조직을 가로질러 **합칠 수 없는 지표**라 카테고리 합산 표를 "
+                   "안 만들었어요. 상품UV는 같은 사람이 여러 조직에 잡혀 합이 전체를 크게 "
+                   "넘고(실파일 +33%), 상품CR은 분자가 따로 없어 다시 만들 수가 없어요. "
+                   "지표를 거래액·고객수·객단가로 바꾸면 나와요.")
+        return
+    acc = {}
+    for _org in orgs:
+        for _cat in view.live((_org,))[0]:
+            e = acc.setdefault(_cat, {"n": 0, "rev": [np.nan, np.nan],
+                                      "cust": [np.nan, np.nan]})
+            e["n"] += 1
+            for i, (yr, cl) in enumerate(((cy, "mtd"), (py, prv_close))):
+                for k, mname in (("rev", "첫구매 거래액"), ("cust", "첫구매 고객수")):
+                    v = view.get((_org, _cat), mname, yr, clabel, cl)
+                    if not pd.isna(v):
+                        e[k][i] = v if pd.isna(e[k][i]) else e[k][i] + v
+    if not acc:
+        return
+
+    def _val(e, i):
+        if met == "첫구매 객단가":
+            r, c = e["rev"][i], e["cust"][i]
+            return r / c if not (pd.isna(r) or pd.isna(c) or not c) else np.nan
+        return e["cust" if met == "첫구매 고객수" else "rev"][i]
+
+    additive = met in ORGCAT_ADDITIVE
+    tot_c = sum(v for v in (_val(e, 0) for e in acc.values()) if not pd.isna(v))
+    rows = []
+    for _cat, e in acc.items():
+        kc, kp = _val(e, 0), _val(e, 1)
+        row = {"카테고리": _cat, "조직 수": e["n"],
+               f"{py}년": fmt_value(met, kp), f"{cy}년": fmt_value(met, kc),
+               "전년비": fmt_delta(met, kc, kp) or "–",
+               "_sort": -kc if not pd.isna(kc) else 1}
+        if additive:
+            row["비중"] = ("–" if (pd.isna(kc) or not tot_c)
+                          else f"{kc / tot_c * 100:.1f}%")
+        rows.append(row)
+    tbl = (pd.DataFrame(rows).sort_values("_sort")
+           .drop(columns=["_sort"]).set_index("카테고리"))
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.markdown("###### 카테고리별 (조직 합산)")
+    _why = {"첫구매 거래액": "조직 합이 전체와 맞는 지표라 그대로 더했어요.",
+            "첫구매 고객수": "같은 고객이 여러 조직에 잡혀 **합이 전체를 조금 넘어요** — "
+                          "순위·전년비로 읽고 절대값은 위 표를 보세요.",
+            "첫구매 객단가": "더할 수 없는 지표라 **거래액 합 ÷ 고객수 합**으로 다시 "
+                          "만들었어요. 고객수가 조금 부풀려져 있어 실제보다 살짝 낮아요."}
+    st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)} · 「조직 수」는 그 카테고리를 "
+               f"가진 조직 수예요. {_why.get(met, '')}")
     wtable(style_delta_cols(tbl), width="stretch",
-           dl_name=f"{lv_lbl}별 {met} ({period_lbl})")
+           dl_name=f"카테고리 전체 {met} ({period_lbl})")
+
+def _funnel_app_one(df, gran, met, year, label, close):
+    """앱 블록의 값 하나. 앱푸시 수신동의만 원천이 일별이라 그 기간 일평균으로 묶는다."""
+    v = pick(df, gran, met, "*TOTAL", year, label, close)
+    if met == "앱푸시수신동의" and pd.isna(v):
+        v = push_period_avg(df, year, label)[0]
+    return v
 
 
-def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close):
-    """⑤ 신규 가입자가 앱까지 오는지 — 앱설치·앱푸시 수신동의."""
+# 최근 몇 개 기간을 나란히 — 카드 한 장으로는 '이번이 낮은 건지 원래 그런 건지'를 못 본다.
+# 단위는 화면 위 비교 기준(주간/월누적)을 그대로 따라간다.
+APP_TREND_N = {"주": 8, "월": 6}
+
+
+def _funnel_app_trend(df, gran, cy, clabel):
+    """⑤ 최근 기간 추이 — 위 비교 기준과 같은 단위(주/월)로 최근 N개를 나란히 놓는다."""
+    src = df[(df["metric"] == "앱설치") & (df["gran"] == gran)
+             & (df["segment"] == "*TOTAL") & df["value"].notna()]
+    if src.empty:
+        return
+    per = (src[["year", "label", "sortkey"]].drop_duplicates()
+           .sort_values("sortkey").tail(APP_TREND_N.get(gran, 6)))
+    _here = ((per["year"] == cy) & (per["label"].astype(str) == str(clabel))).any()
+    if not _here:
+        _pp = period_parts(gran, cy, str(clabel))
+        if _pp:
+            per = pd.concat([per, pd.DataFrame([{"year": cy, "label": _pp[0],
+                                                 "sortkey": _pp[1]}])], ignore_index=True)
+            per = per.sort_values("sortkey")
+    rows = []
+    for _, r in per.iterrows():
+        y, lb = int(r["year"]), str(r["label"])
+        got = {m: _funnel_app_one(df, gran, m, y, lb, "mtd") for m in APP_STEPS}
+        jn, ins, ag = got["가입자수"], got["앱설치"], got["앱푸시수신동의"]
+        rows.append({
+            "기간": f"{y}년 {lb}" + (" ◀" if (y == cy and lb == str(clabel)) else ""),
+            "가입자수": fmt_value("가입자수", jn),
+            "앱 신규설치": fmt_value("앱설치", ins),
+            "앱푸시 수신동의": fmt_value("앱푸시수신동의", ag),
+            "가입자 대비 설치율": ("–" if (pd.isna(ins) or pd.isna(jn) or not jn)
+                              else f"{ins / jn * 100:.2f}%"),
+            "신규회원 수신동의율": ("–" if (pd.isna(ag) or pd.isna(jn) or not jn)
+                              else f"{ag / jn * 100:.2f}%"),
+        })
+    if not rows:
+        return
+    with st.expander(f"최근 {gran} 추이 ({len(rows)}개 기간)", expanded=True):
+        wtable(pd.DataFrame(rows).set_index("기간"), width="stretch",
+               dl_name=f"앱 설치·수신동의 최근 {gran} 추이")
+        st.caption("`◀` 가 위 카드와 같은 기간이에요. 값은 모두 **일평균**이라 기간 길이가 "
+                   "달라도 그대로 견줄 수 있어요.")
+
+
+def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
+                       period_lbl="", base_lbl=""):
+    """⑤ 신규 가입자가 앱까지 오는지 — 앱설치·앱푸시 수신동의.
+
+    **어느 기간 값인지 여기서 다시 말한다.** 위에서 한참 내려온 자리라 상단 캡션이 안
+    보이고, 이 블록만 원천이 달라 커버리지도 다르다(앱설치는 3월부터, 앱푸시는 일별 집계).
+    기간을 안 밝히면 빈 칸이 '데이터가 없는 건지 기간이 안 맞는 건지' 안 갈린다.
+    """
     def _one(met, year, close):
-        v = pick(df, gran, met, "*TOTAL", year, clabel, close)
-        if met == "앱푸시수신동의" and pd.isna(v):
-            v, _ap = push_period_avg(df, year, clabel)
-        return v
+        return _funnel_app_one(df, gran, met, year, clabel, close)
 
+    if period_lbl:
+        st.caption(f"기준: **{period_lbl}** vs {base_lbl} · 값은 모두 **일평균**이에요.")
     cur = {m: _one(m, cy, "mtd") for m in APP_STEPS}
     prv = {m: _one(m, py, prv_close) for m in APP_STEPS}
-    _, approx = push_period_avg(df, cy, clabel)
+    _, approx, n_push = push_period_avg(df, cy, clabel)
+    # '원천이 아예 없다'와 '이 기간에만 없다'는 다른 문제다 — 뒤엣것은 커버리지 이야기라
+    # 어디까지 들어왔는지 같이 말해 줘야 '업로드가 실패했나'로 안 읽힌다.
+    _cv = df[(df["metric"] == "앱설치") & (df["gran"] == gran)
+             & (df["segment"] == "*TOTAL") & df["value"].notna()]
+    if pd.isna(cur["앱설치"]) and not _cv.empty:
+        _last = _cv.sort_values("sortkey").iloc[-1]
+        st.warning(f"**{period_lbl or clabel}에는 앱 데이터가 없어요.** 앱 원천은 "
+                   f"**{int(_last['year'])}년 {_last['label']}**까지 들어와 있어요 — "
+                   "마스터(가입자수·거래액)보다 며칠 늦게 끝나요. 아래 추이에서 "
+                   "값이 있는 기간을 보세요.")
     if all(pd.isna(v) for v in cur.values()):
         st.info("가입자수·앱설치·앱푸시 수신동의 데이터가 모두 없어요.")
+        _funnel_app_trend(df, gran, cy, clabel)
         return
     cells = []
     for m in APP_STEPS:
@@ -3466,7 +3733,7 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close):
     extra = [(m, _one(m, cy, "mtd"), _one(m, py, prv_close)) for m in APP_EXTRA]
     extra = [(m, c, pv) for m, c, pv in extra if not (pd.isna(c) and pd.isna(pv))]
     if extra:
-        with st.expander(f"앱설치 상세 — 스토어 방문 · 신규/재설치 · 삭제 ({len(extra)}개)"):
+        with st.expander(f"앱설치 상세 ({len(extra)}개 지표)"):
             wtable(style_delta_cols(pd.DataFrame(
                 [{"지표": m.replace("앱_", ""), f"{py}년": fmt_value(m, pv),
                   f"{cy}년": fmt_value(m, c), "전년비": fmt_delta(m, c, pv) or "–"}
@@ -3475,8 +3742,21 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close):
             st.caption("값은 모두 **일평균**이에요. 전체설치 = 신규설치 + 재설치고, "
                        "Push 활성 기기는 그날의 잔고예요(합이 아니라 수준).")
 
+    _funnel_app_trend(df, gran, cy, clabel)
+
     notes = []
-    if pd.isna(cur["앱설치"]):
+    # 어느 날까지 들어와 있는지 — 기간은 맞는데 원천이 아직 안 닿았을 수 있다
+    _cov = df[(df["metric"] == "앱설치") & (df["gran"] == "일")
+              & (df["segment"] == "*TOTAL") & df["value"].notna()]
+    if not _cov.empty:
+        _cs = _cov.sort_values("sortkey")
+        _c0, _c1 = _cs.iloc[0], _cs.iloc[-1]
+        notes.append(f"앱설치 원천은 **{int(_c0['year'])}/{_c0['label']} ~ "
+                     f"{int(_c1['year'])}/{_c1['label']}** 까지 들어와 있어요 "
+                     f"(총 {_cov['label'].nunique():,}일).")
+    if n_push:
+        notes.append(f"앱푸시 수신동의는 이 기간 **{n_push}일치**를 일평균으로 묶은 값이에요.")
+    if pd.isna(cur["앱설치"]) and _cv.empty:
         notes.append("**앱설치** 원천이 아직 안 올라와서 두 줄이 비어 있어요. "
                      "Daily 통계 플랫폼 export(`전체 설치`·`신규 설치` 칸이 있는 파일)를 "
                      "올리면 채워져요.")
@@ -4298,11 +4578,11 @@ def main():
 
         # 핵심 차트 (주차별 YoY 3종)
         st.subheader("주차별 추이 — 전년 비교")
-        c1, c2, c3 = st.columns(3)
-        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
-            with col:
-                st.plotly_chart(yoy_chart(df, "주", met, chart_years, h=280),
-                                width="stretch")
+        for _mrow in (TREND_CHARTS[:3], TREND_CHARTS[3:]):
+            for _col, _met in zip(st.columns(3), _mrow):
+                with _col:
+                    st.plotly_chart(yoy_chart(df, "주", _met, chart_years, h=280),
+                                    width="stretch")
 
     # ════════════ 02. 첫구매 퍼널별 상세 실적 ════════════
     elif page == "02. 첫구매 퍼널별 상세 실적":
@@ -4313,16 +4593,11 @@ def main():
     elif page == "03. 월별 추이":
         st.markdown("## 월별 추이")
         st.subheader("월별 추이 차트 — 전년 비교")
-        c1, c2, c3 = st.columns(3)
-        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
-            with col:
-                st.plotly_chart(yoy_chart(df, "월", met, chart_years, h=280),
-                                width="stretch")
-        c4, c5, c6 = st.columns(3)
-        for col, met in zip((c4, c5, c6), ["비회원트래픽", "가입자수", "가입율"]):
-            with col:
-                st.plotly_chart(yoy_chart(df, "월", met, chart_years, h=280),
-                                width="stretch")
+        for _mrow in (TREND_CHARTS[:3], TREND_CHARTS[3:]):
+            for _col, _met in zip(st.columns(3), _mrow):
+                with _col:
+                    st.plotly_chart(yoy_chart(df, "월", _met, chart_years, h=280),
+                                    width="stretch")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("월별 추이표 (일평균)")
