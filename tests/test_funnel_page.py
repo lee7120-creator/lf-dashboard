@@ -473,12 +473,19 @@ def appinstall_csv(rows=None, hdr=_AI_HDR):
     return "\n".join(out).encode("utf-8")
 
 
-def synth_appinstall_store(per_day=3000, days=250):
-    """기간을 안 가리게 **모든 날 같은 값**으로 깐다 — 어느 주·달을 골라도 일평균이 같다."""
+def synth_appinstall_store(per_day=3000, days=250, broken_tail=0):
+    """기간을 안 가리게 **모든 날 같은 값**으로 깐다 — 어느 주·달을 골라도 일평균이 같다.
+
+    `broken_tail`이 있으면 마지막 N일의 기기 수를 반토막 낸다 (실파일의 한쪽 플랫폼
+    누락과 같은 모양).
+    """
     rows, d = [], datetime.date(2026, 9, 5)
-    for _ in range(days):
-        rows.append((f"{d.month}월 {d.day}일", per_day, per_day - 800, 800,
-                     per_day + 200, 1000, 1_100_000))
+    for i in range(days):
+        bad = i < broken_tail
+        rows.append((f"{d.month}월 {d.day}일",
+                     per_day // 4 if bad else per_day,
+                     (per_day - 800) // 4 if bad else per_day - 800, 800,
+                     per_day + 200, 1000, 500_000 if bad else 1_100_000))
         d -= datetime.timedelta(days=1)
     return W.parse_appinstall_file("일별.csv", appinstall_csv(rows))
 
@@ -577,7 +584,8 @@ def t_master_parser_does_not_swallow_them():
     """세 파일 다 마스터·앱푸시 파서로 새면 안 된다."""
     pf, d = W.route_push("일별.csv", appinstall_csv())
     assert pf is None and d is not None and not d.empty, (pf, d)
-    assert set(d["metric"]) <= set(W.APPINSTALL_METS), sorted(set(d["metric"]))
+    assert set(d["metric"]) <= set(W.APPINSTALL_METS) | {W.APPINSTALL_FLAG}, \
+        sorted(set(d["metric"]))
     for nm, raw in (("주간.csv", _AI_WEEKLY), ("월간.csv", _AI_MONTHLY)):
         pf, d = W.route_push(nm, raw.encode("utf-8"))
         assert pf is None and d is None, f"{nm} → {(pf, d)}"
@@ -621,6 +629,62 @@ def t_prior_year_absence_is_explained():
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
     at = _open(store=store, mode="월누적(MTD) — 전년 동월")
     assert any("전년 데이터가 없어" in t for t in _texts(at)), "전년 부재 안내가 없어요"
+
+@case
+def t_broken_collection_days_are_flagged():
+    """`Push 활성 기기`는 그날의 **잔고**라 하루 만에 반토막 났다가 돌아올 수 없다.
+
+    실파일에서 8/31·9/2~9/5가 그렇게 온다(한쪽 플랫폼 누락). 잔고가 정상인 9/1은
+    같은 구간에 있어도 잡히면 안 된다 — 잡히면 멀쩡한 날까지 의심하게 된다.
+    """
+    d = W.parse_appinstall_file("일별.csv", appinstall_csv())
+    bad = d.attrs.get("level_drop") or []
+    assert bad == ["2026-08-31", "2026-09-02", "2026-09-03",
+                   "2026-09-04", "2026-09-05"], bad
+    day = d[(d["gran"] == "일") & (d["metric"] == W.APPINSTALL_FLAG)]
+    assert set(day["label"]) == {"8/31", "9/2", "9/3", "9/4", "9/5"}, set(day["label"])
+    assert "9/1" not in set(day["label"]), "잔고가 정상인 9/1이 잡혔어요"
+    wk = d[(d["gran"] == "주") & (d["metric"] == W.APPINSTALL_FLAG)]
+    assert dict(zip(wk["label"], wk["value"])) == {"09월 1주차": 5.0}, wk.to_dict("records")
+    # 이상 없는 기간엔 아예 안 생긴다 (0으로 깔면 '표시'가 아니라 소음이 된다)
+    assert "03월 2주차" not in set(wk["label"]), set(wk["label"])
+
+
+@case
+def t_broken_days_are_not_corrected():
+    """표시만 한다 — 값을 지우거나 고치면 원천과 화면이 갈린다."""
+    d = W.parse_appinstall_file("일별.csv", appinstall_csv())
+    raw = {r[0]: r[2] for r in _AI_DAILY}          # 신규 설치 칸
+    for lab, key in (("9/2", "9월 2일"), ("8/31", "8월 31일")):
+        v = d[(d["gran"] == "일") & (d["label"] == lab) & (d["metric"] == "앱설치")]["value"]
+        assert len(v) == 1 and float(v.iloc[0]) == raw[key], (lab, v.tolist(), raw[key])
+
+
+@case
+def t_broken_days_warn_on_screen():
+    """숫자를 보는 자리에서 말해야 한다 — 인식 목록은 업로드 때 한 번 스쳐 간다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000, broken_tail=3)],
+                      ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    warn = [str(w.value) for w in at.warning]
+    assert any("절반 이하로 찍힌 날이 3일" in w for w in warn), warn
+    assert any("값은 원천 그대로 두었어요" in w for w in warn), warn
+
+
+@case
+def t_clean_data_does_not_warn():
+    """멀쩡한 데이터에 경고가 뜨면 정작 진짜 문제를 무시하게 된다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    assert not any("절반 이하" in str(w.value) for w in at.warning), \
+        [str(w.value) for w in at.warning]
+
+
+@case
+def t_recognized_list_mentions_broken_days():
+    cls = W.classify_uploads((("일별.csv", appinstall_csv()),))
+    assert any("기기 수가 절반 이하인 날 5일" in c[1] and "08-31" in c[1] for c in cls), cls
+
 
 def main():
     fails, cwd = [], os.getcwd()

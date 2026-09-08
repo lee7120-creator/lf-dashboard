@@ -968,6 +968,15 @@ APPINSTALL_NEED = {"전체설치", "신규설치"}
 # 월간 export는 칼럼이 통째로 다르다 (전체 설치 (전체)/(Android)/(iOS))
 APPINSTALL_MON_NEED = {"전체설치(전체)", "전체설치(android)"}
 
+# 수집이 끊긴 날 판정 — `Push 활성 기기`는 그날의 **잔고**라 하루 만에 반토막 났다가
+# 다음 날 돌아올 수 없다. 실파일에서 8/31·9/2~9/5가 112만 → 54.7만으로 떨어지는데
+# (월간 파일의 8월 Android 0과 같은 증상), 한쪽 플랫폼이 빠진 export다.
+# **고치지 않고 표시만 한다** — 어느 날이 그런지 말해 주면 사람이 판단할 수 있고,
+# 지어내는 것보다 낫다. 기준은 **적재 전체의 중앙값**이다. 6개월 동안 111만~112만으로
+# 1%밖에 안 움직이는 잔고라 안정적이고, 이상한 날이 며칠 더 쌓여도 흔들리지 않는다.
+APPINSTALL_LEVEL_DROP = 0.7
+APPINSTALL_FLAG = "앱_기기수이상일"
+
 _AI_DAY_RE = re.compile(r"^(\d{1,2})\s*월\s*(\d{1,2})\s*일$")        # 9월 5일
 _AI_WEEK_RE = re.compile(r"^~?\s*(\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})\.?$")   # ~ 26.09.05
 _AI_MON_RE = re.compile(r"^(20\d{2})\s*\.\s*(\d{1,2})\.?$")          # 2026. 08
@@ -1086,6 +1095,15 @@ def parse_appinstall_grid(rows):
         return empty
     base = pd.DataFrame(recs).drop_duplicates(subset=["date"], keep="last")
     mets = [m for m in col.values() if base[m].notna().any()]
+    # 수집이 끊긴 날 표시 — 값은 그대로 두고 '며칠이 그랬는지'만 따로 쌓는다
+    drop_days = []
+    if "앱_Push활성기기" in base:
+        _lv = pd.to_numeric(base["앱_Push활성기기"], errors="coerce")
+        _med = _lv.median()
+        if _med == _med and _med > 0:
+            _bad = _lv < _med * APPINSTALL_LEVEL_DROP
+            base[APPINSTALL_FLAG] = _bad.astype(float)
+            drop_days = sorted(base.loc[_bad.fillna(False), "date"])
     frames = []
     for gran in ("일", "주", "월"):
         per = detail_periods(base["date"], gran)
@@ -1094,15 +1112,24 @@ def parse_appinstall_grid(rows):
         m = base.merge(per[["date", "year", "label", "sortkey", "close"]], on="date")
         # 빈 칸은 NaN으로 두고 평균에서 빠지게 한다 — 0으로 채우면 없는 날을 '0건'으로
         # 읽어 일평균이 내려간다 (실파일에서 8/31 이후 삭제 칸이 통째로 비어 온다).
-        g = m.groupby(["year", "label", "sortkey", "close"], as_index=False)[mets].mean()
-        long = g.melt(id_vars=["year", "label", "sortkey", "close"], value_vars=mets,
+        _keys = ["year", "label", "sortkey", "close"]
+        g = m.groupby(_keys, as_index=False)[mets].mean()
+        _vals = list(mets)
+        if APPINSTALL_FLAG in m:
+            # 이건 평균이 아니라 **개수**다 — 그 기간에 며칠이 그랬는지를 세야 한다
+            g = g.merge(m.groupby(_keys, as_index=False)[[APPINSTALL_FLAG]].sum(), on=_keys)
+            _vals.append(APPINSTALL_FLAG)
+        long = g.melt(id_vars=_keys, value_vars=_vals,
                       var_name="metric", value_name="value")
+        # 이상 없는 기간까지 0으로 쌓지는 않는다 (없으면 없는 것)
+        long = long[(long["metric"] != APPINSTALL_FLAG) | (long["value"] > 0)]
         long["gran"], long["segment"] = gran, "*TOTAL"
         frames.append(long.dropna(subset=["value"]))
     out = (pd.concat(frames, ignore_index=True)[STORE_COLS] if frames else empty.copy())
     out.attrs["appinstall_kind"] = "일"
     out.attrs["date_dropped"] = dropped
     out.attrs["date_range"] = (base["date"].min(), base["date"].max())
+    out.attrs["level_drop"] = drop_days
     return out
 
 
@@ -1367,8 +1394,13 @@ def classify_uploads(file_tuples):
             # 지표마다 결측이 달라(삭제 칸이 며칠 비어 온다) 행 수를 나누면 하루씩 어긋난다
             _nd = ai[ai["gran"] == "일"]["label"].nunique()
             _warn = f" · ⚠ 날짜를 못 읽어 뺀 줄 {_aidrop:,}건" if _aidrop else ""
+            _bad = ai.attrs.get("level_drop") or []
+            if _bad:
+                _warn += (f" · ⚠ 기기 수가 절반 이하인 날 {len(_bad)}일"
+                          f"({', '.join(str(x)[5:] for x in _bad[:4])}"
+                          + (" 외" if len(_bad) > 4 else "") + ") — 한쪽 플랫폼 누락 의심")
             out.append((n, f"✅ 앱설치 원천(일별) · {_d0}~{_d1} · {_nd:,}일 · "
-                           f"{ai['metric'].nunique()}지표" + _warn, len(ai)))
+                           f"{ai['metric'].nunique() - (1 if _bad else 0)}지표" + _warn, len(ai)))
             continue
         if _aikind in ("주", "월"):
             # 인식은 했지만 안 쌓는다. 왜인지 말해 주지 않으면 '올렸는데 왜 안 보이지'가 된다.
@@ -3457,6 +3489,12 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close):
                      "하루 이틀 어긋날 수 있어요.")
     for n in notes:
         st.caption(n)
+    _bad = pick(df, gran, APPINSTALL_FLAG, "*TOTAL", cy, clabel, "mtd")
+    if not pd.isna(_bad) and _bad > 0:
+        st.warning(f"⚠️ 이 기간에 **앱 기기 수가 절반 이하로 찍힌 날이 {int(_bad)}일** 있어요. "
+                   "한쪽 플랫폼(Android)이 빠진 export로 보여요 — 그 날들 때문에 앱설치 "
+                   "일평균이 실제보다 낮게 나와요. **값은 원천 그대로 두었어요**. "
+                   "원천을 다시 받아 보시고, 같은 증상이면 그 날 수치는 빼고 읽으세요.")
 
 
 def render_orgcat_page(odf, ddf=None):
