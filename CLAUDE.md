@@ -513,6 +513,15 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   (`top center` / `bottom center` / `top right` / `bottom left` 순환 + `cliponaxis=False`).
   나머지 값은 통합 툴팁(`hover="x"`)과 아래 표가 이미 담당한다.
 
+- **집계 기준이 섞인 지표 목록은 이름에 기준을 박는다** — `거래액 (일평균)` · `거래액 (기간 합계)`.
+  `compute_mtd`는 같은 값을 두 벌 만든다(`revenue`=일평균, `revenue_sum`=기간 합계). 예전엔
+  화면 이름이 `거래액`·`총거래액`이라 '총'이 기간 합계라는 걸 아무도 몰랐고, 실제로 「6. 효율·피로도
+  › 피로도 시계열」에서 막대(`총발송 건수`=일평균 250만)와 옆 차트의 주간 합계(1,750만)를
+  맞대고 "왜 이렇게 차이 나냐"는 질문이 나왔다. 데이터는 맞았고 이름만 틀렸다.
+  선택지 라벨은 **`(label, column)` 쌍의 지역 목록**으로 두고 `MTDOPT`를 재사용하지 말 것 —
+  그건 발송 빈도·5분위·요일 패턴 세 화면이 같이 쓰는 목록이라 여기서 고치면 거기까지 흔든다
+  (`test_send_volume_band.py`의 `t_fatigue_labels_state_their_aggregation`).
+
 ### 페이지 작성 규칙
 - 모든 페이지 하단에 **`glossary()`** 호출 (용어 주석 접이식). 새 용어를 쓰면 glossary()에 항목 추가.
 - 문구 표+원문 보기는 `render_messages(df, mcol, key)` 재사용 — 행클릭(on_select) 연동 포함.

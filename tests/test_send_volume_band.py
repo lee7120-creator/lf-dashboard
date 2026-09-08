@@ -62,6 +62,26 @@ def synth_push(mtd, churn_slope=0.0, seed=5):
         added=added, removed=removed, diff=added - removed, is_outlier=False))
 
 
+def _open_named(tab, camp=None, mtd=None, push=None):
+    """「6. 효율·피로도」의 하위탭 하나를 연다."""
+    at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    at.session_state["camp_store"] = synth_store(weeks=10) if camp is None else camp
+    if mtd is not None:
+        at.session_state["mtd_store_df"] = mtd
+    if push is not None:
+        at.session_state["push_consent_df"] = push
+    at.run()
+    assert not at.exception, at.exception[0].value
+    at.sidebar.radio[0].set_value("6. 효율·피로도")
+    at.run()
+    subs = [r for r in at.radio if r.label != "페이지"]
+    assert subs and tab in subs[0].options, f"{tab} 탭이 없어요 — {subs[0].options if subs else None}"
+    subs[0].set_value(tab)
+    at.run()
+    assert not at.exception, at.exception[0].value
+    return at
+
+
 def _open_tab(camp=None, mtd=None, push=None):
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
     at.session_state["camp_store"] = synth_store(weeks=10) if camp is None else camp
@@ -237,6 +257,61 @@ def t_norm_stype_groups_contingency():
     assert S.norm_stype("우수발송 3") == "우수발송"
     assert S.norm_stype("우수발송 3", group=False) == "우수발송 3"
     assert S.norm_stype("") is None and S.norm_stype(np.nan) is None
+
+
+# ── 「피로도 시계열」 지표 이름 ───────────────────────────────────────
+# 같은 목록에 '하루 평균'과 '기간 합계'가 섞여 있는데, 예전 이름은 `총`을 두 뜻으로 썼다 —
+# `총발송 건수`의 총은 '전사'(값은 일평균)고 `총거래액`·`총유입`의 총은 '기간 합계'였다.
+# 그래서 막대(일평균 250만)와 선(월 합계 290만)이 나란히 서면 "발송이 유입보다 적네"로
+# 읽혔다. 실제로 사용자가 '이거 잘못된 거 아니냐'고 물어본 화면이다.
+FAT_TAB = "피로도 시계열"
+_AMBIGUOUS = ("총발송 건수", "총거래액", "총유입")
+
+
+def _fat_sels(at):
+    bar = [x for x in at.selectbox if x.label == "기준 지표(좌·막대)"]
+    line = [x for x in at.selectbox if x.label == "효율 지표(우·선)"]
+    assert bar and line, [x.label for x in at.selectbox]
+    return bar[0], line[0]
+
+
+@case
+def t_fatigue_labels_state_their_aggregation():
+    """금액·건수 지표는 이름만으로 일평균인지 합계인지 알 수 있어야 한다."""
+    at = _open_named(FAT_TAB, mtd=synth_mtd())
+    bar, line = _fat_sels(at)
+    opts = list(bar.options) + list(line.options)
+    for bad in _AMBIGUOUS:
+        assert bad not in opts, f"«{bad}»는 집계 기준이 안 적힌 이름이에요 — {opts}"
+    for want in ("발송 건수 (일평균)", "발송 건수 (기간 합계)",
+                 "거래액 (일평균)", "거래액 (기간 합계)",
+                 "총유입 (일평균)", "총유입 (기간 합계)"):
+        assert want in opts, f"«{want}»가 없어요 — {opts}"
+
+
+@case
+def t_fatigue_period_sum_is_selectable():
+    """`totalSend_sum`은 진작 계산돼 있었는데 고를 방법이 없었다."""
+    at = _open_named(FAT_TAB, mtd=synth_mtd())
+    bar, _ = _fat_sels(at)
+    bar.set_value("발송 건수 (기간 합계)")
+    at.run()
+    assert not at.exception, at.exception[0].value
+    assert at.get("plotly_chart"), "합계 지표를 골랐는데 차트가 안 그려져요"
+
+
+@case
+def t_fatigue_daily_mean_and_period_sum_differ():
+    """둘이 같은 값이면 라벨만 바뀐 셈이다 — 실제로 다른 칼럼을 봐야 한다."""
+    agg = S.compute_mtd(synth_mtd(days=200))["monthly"]
+    for c in ("totalSend", "totalSend_sum", "n"):
+        assert c in agg.columns, f"«{c}» 칼럼이 없어요 — {list(agg.columns)}"
+    full = agg[agg["n"] >= 28]
+    assert not full.empty, "온전한 달이 없어요"
+    r = full.iloc[0]
+    assert abs(r["totalSend_sum"] - r["totalSend"] * r["n"]) < 1.0, \
+        (r["totalSend_sum"], r["totalSend"], r["n"])
+    assert r["totalSend_sum"] > r["totalSend"] * 20, "합계가 일평균과 사실상 같아요"
 
 
 def main():
