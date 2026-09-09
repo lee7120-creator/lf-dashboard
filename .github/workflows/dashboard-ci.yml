@@ -29,7 +29,10 @@ concurrency:                      # 같은 PR에 연달아 푸시하면 이전 �
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 검사 단계만 19분 33초까지 늘었다(2026-09-09, f2b5760). 20분이면 마지막
+    # 주간보고 스모크가 성공 메시지를 찍은 직후 벽에 잘려 '취소'로 끝난다 —
+    # 전부 통과했는데 빨간불로 보여서 원인이 안 드러난다. 여유를 두고 40분.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
