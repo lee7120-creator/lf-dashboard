@@ -3053,8 +3053,12 @@ FUNNEL_TAIL = ["첫구매 고객수", "첫구매 객단가", "첫구매 거래�
 # ④에서 고를 수 있는 지표 — 거래액이 왜 빠졌는지는 `거래액 = 상품UV × 상품CR × 객단가`
 # 세 요인을 다 봐야 갈린다(원본에서 오차 0.000%로 성립하는 항등식이다).
 FUNNEL_OC_METS = FUNNEL_TAIL + ["상품UV", "상품CR"]
-# 조직을 가로질러 합칠 수 있는 지표 — 나머지는 합·파생 어느 쪽도 성립하지 않는다
-FUNNEL_ROLLUP_METS = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]
+# 조직을 가로질러 모을 수 있는 지표. 그냥 더해도 되는 건 거래액 하나뿐이고
+# 나머지는 **다시 만든다** — 객단가 = 거래액 합 ÷ 고객수 합,
+# 상품CR = 고객수 합 ÷ 상품UV 합(`거래액 = 상품UV × 상품CR × 객단가`와
+# `거래액 = 고객수 × 객단가`에서 나오는 항등식이다).
+FUNNEL_ROLLUP_METS = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가",
+                      "상품UV", "상품CR"]
 # 채널 합 ≈ 전체가 성립하는 가산 지표 — 기여도 분해는 여기서만 성립한다
 FUNNEL_ADDITIVE = ["비회원트래픽", "가입자수", "첫구매 고객수", "첫구매 거래액"]
 # 비율 칸을 두 카운트로 만들 때의 (분자, 분모)
@@ -3449,18 +3453,14 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
                                       "비중 칸을 뺐어요"))
     # 셀렉트박스 대신 **행을 눌러** 내려간다 — 조직을 고르고 다시 표를 보는 왕복이 없어진다
     ev = wtable(style_delta_cols(org_tbl), width="stretch", key="wr_fn_orgsel",
-                on_select="rerun", selection_mode="single-row",
+                on_select="rerun", selection_mode="single-cell", hide_index=True,
                 dl_name=f"조직별 {met} ({period_lbl})")
-    st.caption("조직 한 줄을 **누르면** 아래에 그 조직의 카테고리가 열려요.")
+    st.caption("조직 한 줄에서 **아무 칸이나 누르면** 아래에 그 조직의 카테고리가 열려요.")
 
     picked = None
-    _sel = getattr(getattr(ev, "selection", None), "rows", None)
-    if _sel is None and isinstance(ev, dict):        # 구버전 Streamlit은 dict로 준다
-        _sel = (ev.get("selection") or {}).get("rows")
-    if _sel:
-        _names = list(org_tbl.index)
-        if 0 <= _sel[0] < len(_names):
-            picked = _names[_sel[0]]
+    _i = _picked_row(ev, len(org_tbl))
+    if _i is not None:
+        picked = org_tbl["조직"].iloc[_i]
 
     path, node_lbl = [], "전체"
     if picked:
@@ -3478,14 +3478,13 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
                 view, [picked], _kids, "카테고리", met, cy, py, clabel, prv_close,
                 _sub_tot if additive else None)), width="stretch",
                 key=f"wr_fn_catsel_{picked}", on_select="rerun",
-                selection_mode="single-row",
+                selection_mode="single-cell", hide_index=True,
                 dl_name=f"{picked} 카테고리별 {met} ({period_lbl})")
-            st.caption("카테고리 한 줄을 **누르면** 아래 요인 분해가 그 카테고리로 바뀌어요.")
-            _s2 = getattr(getattr(ev2, "selection", None), "rows", None)
-            if _s2 is None and isinstance(ev2, dict):
-                _s2 = (ev2.get("selection") or {}).get("rows")
-            if _s2 and 0 <= _s2[0] < len(_kids):
-                path, node_lbl = [picked, _kids[_s2[0]]], f"{picked} › {_kids[_s2[0]]}"
+            st.caption("카테고리 한 줄에서 **아무 칸이나 누르면** 아래 요인 분해가 "
+                       "그 카테고리로 바뀌어요.")
+            _i2 = _picked_row(ev2, len(_kids))
+            if _i2 is not None:
+                path, node_lbl = [picked, _kids[_i2]], f"{picked} › {_kids[_i2]}"
 
     _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
                          period_lbl, base_lbl)
@@ -3508,7 +3507,39 @@ def _funnel_level_table(view, path, kids, lv_lbl, met, cy, py, clabel, prv_close
             row["비중"] = ("–" if (pd.isna(kc) or pd.isna(tot) or not tot)
                           else f"{kc / tot * 100:.1f}%")
         rows.append(row)
-    return pd.DataFrame(rows).set_index(lv_lbl)
+    return pd.DataFrame(rows)
+
+
+def _picked_row(ev, n):
+    """표에서 **행을 눌러** 고른 행 번호. 없으면 None.
+
+    Streamlit의 행 선택(`single-row`)은 화면에 **체크박스 열**로 나온다 — 행을 눌러도
+    안 잡히고 체크박스를 정확히 찍어야 한다. 그래서 셀 선택(`single-cell`)을 쓴다.
+    아무 칸이나 누르면 `(행 번호, 칼럼명)`이 오니 그게 곧 행 클릭이다.
+    **인덱스 칸은 안 돌려주므로** 이름은 일반 칼럼이어야 한다(`hide_index=True`).
+    옛 세션에 남은 `rows` 선택도 같이 받아 준다.
+    """
+    sel = None
+    for _get in (lambda: ev["selection"], lambda: getattr(ev, "selection", None)):
+        try:
+            sel = _get()
+        except Exception:                                 # noqa: BLE001
+            sel = None
+        if sel:
+            break
+    if not sel:
+        return None
+
+    def _f(k):
+        try:
+            v = sel[k]
+        except Exception:                                 # noqa: BLE001
+            v = getattr(sel, k, None)
+        return v or []
+
+    cells, rows = _f("cells"), _f("rows")
+    idx = cells[0][0] if cells else (rows[0] if rows else None)
+    return idx if idx is not None and 0 <= idx < n else None
 
 
 def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
@@ -3568,19 +3599,18 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
     """
     if met not in FUNNEL_ROLLUP_METS:
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.caption(f"«{esc(met)}»는 조직을 가로질러 **합칠 수 없는 지표**라 카테고리 합산 표를 "
-                   "안 만들었어요. 상품UV는 같은 사람이 여러 조직에 잡혀 합이 전체를 크게 "
-                   "넘고(실파일 +33%), 상품CR은 분자가 따로 없어 다시 만들 수가 없어요. "
-                   "지표를 거래액·고객수·객단가로 바꾸면 나와요.")
+        st.caption(f"«{esc(met)}»는 조직을 가로질러 **모을 수 없는 지표**라 카테고리 합산 "
+                   "표를 안 만들었어요.")
         return
     acc = {}
     for _org in orgs:
         for _cat in view.live((_org,))[0]:
-            e = acc.setdefault(_cat, {"n": 0, "rev": [np.nan, np.nan],
-                                      "cust": [np.nan, np.nan]})
-            e["n"] += 1
+            e = acc.setdefault(_cat, {"rev": [np.nan, np.nan],
+                                      "cust": [np.nan, np.nan],
+                                      "uv": [np.nan, np.nan]})
             for i, (yr, cl) in enumerate(((cy, "mtd"), (py, prv_close))):
-                for k, mname in (("rev", "첫구매 거래액"), ("cust", "첫구매 고객수")):
+                for k, mname in (("rev", "첫구매 거래액"), ("cust", "첫구매 고객수"),
+                                 ("uv", "상품UV")):
                     v = view.get((_org, _cat), mname, yr, clabel, cl)
                     if not pd.isna(v):
                         e[k][i] = v if pd.isna(e[k][i]) else e[k][i] + v
@@ -3591,14 +3621,18 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
         if met == "첫구매 객단가":
             r, c = e["rev"][i], e["cust"][i]
             return r / c if not (pd.isna(r) or pd.isna(c) or not c) else np.nan
-        return e["cust" if met == "첫구매 고객수" else "rev"][i]
+        if met == "상품CR":
+            # 항등식으로 되만든다 — 중복이 분자·분모에 같이 들어가 상당 부분 상쇄된다
+            c, u = e["cust"][i], e["uv"][i]
+            return c / u if not (pd.isna(c) or pd.isna(u) or not u) else np.nan
+        return e[{"첫구매 고객수": "cust", "상품UV": "uv"}.get(met, "rev")][i]
 
     additive = met in ORGCAT_ADDITIVE
     tot_c = sum(v for v in (_val(e, 0) for e in acc.values()) if not pd.isna(v))
     rows = []
     for _cat, e in acc.items():
         kc, kp = _val(e, 0), _val(e, 1)
-        row = {"카테고리": _cat, "조직 수": e["n"],
+        row = {"카테고리": _cat,
                f"{py}년": fmt_value(met, kp), f"{cy}년": fmt_value(met, kc),
                "전년비": fmt_delta(met, kc, kp) or "–",
                "_sort": -kc if not pd.isna(kc) else 1}
@@ -3614,9 +3648,13 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
             "첫구매 고객수": "같은 고객이 여러 조직에 잡혀 **합이 전체를 조금 넘어요** — "
                           "순위·전년비로 읽고 절대값은 위 표를 보세요.",
             "첫구매 객단가": "더할 수 없는 지표라 **거래액 합 ÷ 고객수 합**으로 다시 "
-                          "만들었어요. 고객수가 조금 부풀려져 있어 실제보다 살짝 낮아요."}
-    st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)} · 「조직 수」는 그 카테고리를 "
-               f"가진 조직 수예요. {_why.get(met, '')}")
+                          "만들었어요. 고객수가 조금 부풀려져 있어 실제보다 살짝 낮아요.",
+            "상품UV": "같은 사람이 여러 조직에 잡혀 **합이 전체를 크게 넘어요**(실파일 +33%) — "
+                    "절대값 말고 **어느 카테고리가 큰지·전년 대비 어떤지**로 읽으세요.",
+            "상품CR": "더할 수 없는 지표라 **고객수 합 ÷ 상품UV 합**으로 다시 만들었어요 "
+                    "(`거래액 = 상품UV × 상품CR × 객단가`에서 나오는 항등식이에요). "
+                    "중복이 분자·분모에 같이 들어가 상품UV 단독보다는 왜곡이 작아요."}
+    st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)} · {_why.get(met, '')}")
     wtable(style_delta_cols(tbl), width="stretch",
            dl_name=f"카테고리 전체 {met} ({period_lbl})")
 
@@ -3730,17 +3768,51 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
     wtable(style_delta_cols(pd.DataFrame(rrows).set_index("비율")), width="stretch",
            dl_name="신규회원 앱 수신동의")
     # 원천이 같이 준 나머지 칸 — 접이식으로만 (카드를 아홉 장 세우면 퍼널이 안 읽힌다)
-    extra = [(m, _one(m, cy, "mtd"), _one(m, py, prv_close)) for m in APP_EXTRA]
+    # 신규설치는 위 카드에도 있지만 여기 같이 둔다 — `전체설치 = 신규 + 재설치`가
+    # 한 표에서 닫혀야 구성비가 읽힌다.
+    extra = [(m, _one(m, cy, "mtd"), _one(m, py, prv_close))
+             for m in ["앱설치"] + APP_EXTRA]
     extra = [(m, c, pv) for m, c, pv in extra if not (pd.isna(c) and pd.isna(pv))]
     if extra:
+        # 이 원천은 2026-03부터 쌓여서 전년이 **한 칸도 없다**. 그 상태로 두면
+        # 전년·전년비 두 열이 통째로 '–'로 남아 자리만 먹는다 — 빼고 대신 같은 기간
+        # 안에서 읽히는 구성비를 넣는다. 전년이 쌓이는 해가 오면 자동으로 되돌아온다.
+        _has_prev = any(not pd.isna(pv) for _, _, pv in extra)
+        _cvs = {m: c for m, c, _ in extra}
+        _base = _cvs.get("앱_전체설치")
+
+        def _share(m, c):
+            """전체설치를 분모로 한 비중. 스토어방문만 뒤집어 설치 전환율로 읽는다."""
+            if m == "앱_스토어방문":
+                return ("–" if pd.isna(_base) or pd.isna(c) or not c
+                        else f"설치 전환 {_base / c * 100:.1f}%")
+            # 전체설치는 자기 자신이 분모고, Push 활성 기기는 잔고라 비중이 없다
+            if m in ("앱_전체설치", "앱_Push활성기기"):
+                return "–"
+            if pd.isna(_base) or pd.isna(c) or not _base:
+                return "–"
+            return f"{c / _base * 100:.1f}%"
+
+        _rows = []
+        for m, c, pv in extra:
+            r = {"지표": "신규설치" if m == "앱설치" else m.replace("앱_", "")}
+            if _has_prev:
+                r[f"{py}년"] = fmt_value(m, pv)
+            r[f"{cy}년"] = fmt_value(m, c)
+            if _has_prev:
+                r["전년비"] = fmt_delta(m, c, pv) or "–"
+            r["전체설치 대비"] = _share(m, c)
+            _rows.append(r)
         with st.expander(f"앱설치 상세 ({len(extra)}개 지표)"):
-            wtable(style_delta_cols(pd.DataFrame(
-                [{"지표": m.replace("앱_", ""), f"{py}년": fmt_value(m, pv),
-                  f"{cy}년": fmt_value(m, c), "전년비": fmt_delta(m, c, pv) or "–"}
-                 for m, c, pv in extra]).set_index("지표")),
-                width="stretch", dl_name="앱설치 상세")
-            st.caption("값은 모두 **일평균**이에요. 전체설치 = 신규설치 + 재설치고, "
-                       "Push 활성 기기는 그날의 잔고예요(합이 아니라 수준).")
+            wtable(style_delta_cols(pd.DataFrame(_rows).set_index("지표")),
+                   width="stretch", dl_name="앱설치 상세")
+            _cap = ("값은 모두 **일평균**이에요. 전체설치 = 신규설치 + 재설치고, "
+                    "Push 활성 기기는 그날의 잔고예요(합이 아니라 수준).")
+            if not _has_prev:
+                _cap += (" 이 원천은 **올해분부터** 쌓여서 전년 칸이 통째로 비어요 — "
+                         "대신 전체설치 대비 비중을 넣었어요. 스토어방문 줄만 "
+                         "**설치 전환율**(전체설치 ÷ 스토어방문)이에요.")
+            st.caption(_cap)
 
     _funnel_app_trend(df, gran, cy, clabel)
 
