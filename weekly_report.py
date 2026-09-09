@@ -1612,21 +1612,27 @@ def source_upload_widget(key):
 _WTBL_SEQ = itertools.count(1)
 
 
-def wtable(data, *args, dl=True, dl_name=None, **kw):
-    """st.dataframe 과 같게 쓰되, 아래에 엑셀 다운로드 버튼을 붙인다."""
+def wtable(data, *args, dl=True, dl_name=None, dl_data=None, **kw):
+    """st.dataframe 과 같게 쓰되, 아래에 엑셀 다운로드 버튼을 붙인다.
+
+    `dl_data`를 주면 **내려받기만** 그 객체로 만든다. Styler 배경색은 엑셀까지
+    따라가므로(`table_export`), 선택 하이라이트 같은 화면 전용 서식을 파일에
+    싣지 않으려면 색을 안 입힌 쪽을 여기로 넘긴다.
+    """
     ev = st.dataframe(data, *args, **kw)
     if dl and xlsx_bytes is not None:
         _i = next(_WTBL_SEQ)
         _nm = dl_name or "표"
         _fn = re.sub(r"[^\w가-힣.\- ]", "", str(_nm)).strip() or "표"
         # set_index로 축을 세운 표가 많아 인덱스도 같이 내보낸다(기본 RangeIndex면 제외)
-        _df = getattr(data, "data", data)
+        _src = data if dl_data is None else dl_data
+        _df = getattr(_src, "data", _src)
         _idx = (not kw.get("hide_index", False)) and not isinstance(
             getattr(_df, "index", None), pd.RangeIndex)
         try:
             st.download_button(
                 "⬇️ 엑셀", key=f"_wxl{_i}",
-                data=lambda d=data, n=_nm, x=_idx: xlsx_bytes(d, sheet_name=n, title=n, index=x),
+                data=lambda d=_src, n=_nm, x=_idx: xlsx_bytes(d, sheet_name=n, title=n, index=x),
                 file_name=f"{_fn}_{today_kst():%Y%m%d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 help="화면에 보이는 서식 그대로 받아요. 숫자는 엑셀 숫자로 들어가서 정렬·합계가 돼요.")
@@ -3451,11 +3457,16 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
     st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)}"
                + ("" if additive else f" · «{esc(met)}»는 하위 합이 상위와 안 맞는 지표라 "
                                       "비중 칸을 뺐어요"))
-    # 셀렉트박스 대신 **행을 눌러** 내려간다 — 조직을 고르고 다시 표를 보는 왕복이 없어진다
-    ev = wtable(style_delta_cols(org_tbl), width="stretch", key="wr_fn_orgsel",
+    # 셀렉트박스 대신 **행을 눌러** 내려간다 — 조직을 고르고 다시 표를 보는 왕복이 없어진다.
+    # 하이라이트는 **그리기 전에** 세션에서 읽는다 — 클릭이 리런을 일으키니 이 시점의
+    # 세션값이 이미 방금 누른 행이다(반환값으로 칠하면 한 박자 늦는다).
+    _pre = _picked_row(st.session_state.get("wr_fn_orgsel"), len(org_tbl))
+    _org_sty = style_delta_cols(org_tbl)
+    ev = wtable(_hl_row(_org_sty, _pre), width="stretch", key="wr_fn_orgsel",
                 on_select="rerun", selection_mode="single-cell", hide_index=True,
-                dl_name=f"조직별 {met} ({period_lbl})")
-    st.caption("조직 한 줄에서 **아무 칸이나 누르면** 아래에 그 조직의 카테고리가 열려요.")
+                dl_name=f"조직별 {met} ({period_lbl})", dl_data=_org_sty)
+    st.caption("조직 한 줄에서 **아무 칸이나 누르면** 그 줄에 색이 들어오고 "
+               "아래에 그 조직의 카테고리가 열려요.")
 
     picked = None
     _i = _picked_row(ev, len(org_tbl))
@@ -3474,21 +3485,36 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
             _sub_tot = view.get((picked,), met, cy, clabel, "mtd")
             # 조직마다 위젯 키를 갈라 둔다 — 같은 키를 쓰면 조직을 바꿔도 옛 행 번호가
             # 남아 엉뚱한 카테고리가 열린다
-            ev2 = wtable(style_delta_cols(_funnel_level_table(
+            _ckey = f"wr_fn_catsel_{picked}"
+            _cat_sty = style_delta_cols(_funnel_level_table(
                 view, [picked], _kids, "카테고리", met, cy, py, clabel, prv_close,
-                _sub_tot if additive else None)), width="stretch",
-                key=f"wr_fn_catsel_{picked}", on_select="rerun",
+                _sub_tot if additive else None))
+            _pre2 = _picked_row(st.session_state.get(_ckey), len(_kids))
+            ev2 = wtable(_hl_row(_cat_sty, _pre2), width="stretch",
+                key=_ckey, on_select="rerun",
                 selection_mode="single-cell", hide_index=True,
-                dl_name=f"{picked} 카테고리별 {met} ({period_lbl})")
-            st.caption("카테고리 한 줄에서 **아무 칸이나 누르면** 아래 요인 분해가 "
-                       "그 카테고리로 바뀌어요.")
+                dl_name=f"{picked} 카테고리별 {met} ({period_lbl})", dl_data=_cat_sty)
+            st.caption("카테고리 한 줄에서 **아무 칸이나 누르면** 그 줄에 색이 들어오고 "
+                       "아래 요인 분해가 그 카테고리로 바뀌어요.")
             _i2 = _picked_row(ev2, len(_kids))
             if _i2 is not None:
                 path, node_lbl = [picked, _kids[_i2]], f"{picked} › {_kids[_i2]}"
 
-    _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
-                         period_lbl, base_lbl)
-    _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, prv_close)
+    # 위에서 고른 게 있을 때만 펼친다 — 고르기 전엔 조직 표에 집중하게 둔다.
+    # `expanded`는 리런마다 다시 먹으므로 행을 누르면 그 자리에서 열린다.
+    _drilled = bool(path)
+    with st.expander(f"어디에서 빠졌나 — {node_lbl}", expanded=_drilled):
+        if not _drilled:
+            st.caption("위 표에서 조직 한 줄을 누르면 그 조직 기준으로 바뀌어요. "
+                       "지금은 **전체** 기준이에요.")
+        _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
+                             period_lbl, base_lbl)
+    with st.expander("카테고리별 (조직 합산)", expanded=False):
+        st.caption("조직을 안 고르고 **카테고리만 가로질러** 봐요 — 같은 카테고리를 "
+                   "여러 조직이 나눠 갖고 있어서, 조직을 하나씩 들어가면 안 보이는 "
+                   "구멍이 여기서 드러나요.")
+        _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl,
+                           prv_close)
 
 
 def _funnel_level_table(view, path, kids, lv_lbl, met, cy, py, clabel, prv_close, tot=None):
@@ -3508,6 +3534,33 @@ def _funnel_level_table(view, path, kids, lv_lbl, met, cy, py, clabel, prv_close
                           else f"{kc / tot * 100:.1f}%")
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+# 셀 선택은 **누른 칸에만** 옅은 테두리를 그린다 — 칼럼이 많으면 어느 줄을 눌렀는지
+# 눈에 안 들어온다. 그래서 그 행 전체에 배경을 깐다. 파고들기 상태를 화면에서
+# 되짚는 유일한 표시이기도 하다(셀렉트박스가 없어졌으니까).
+ROW_PICK_BG = "#E8F0FE"
+
+
+def _hl_row(sty, i, color=ROW_PICK_BG):
+    """Styler의 i번째 **행 전체**에 배경을 입힌다. i가 None이면 그대로 둔다.
+
+    위치로 칠한다 — 인덱스 종류에 안 기댄다. 배경은 엑셀까지 따라가므로
+    이 Styler는 화면에만 쓰고 내려받기는 `dl_data`로 원본을 넘길 것.
+    """
+    if i is None:
+        return sty
+
+    def _paint(d):
+        out = pd.DataFrame("", index=d.index, columns=d.columns)
+        if 0 <= i < len(d):
+            out.iloc[i, :] = f"background-color:{color}"
+        return out
+
+    try:
+        return sty.apply(_paint, axis=None)
+    except Exception:                                     # noqa: BLE001
+        return sty                                        # 색이 없어도 표는 보여야 한다
 
 
 def _picked_row(ev, n):
@@ -3555,8 +3608,6 @@ def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
     """
     prev = [view.get(tuple(path), f, py, clabel, prv_close) for f, _ in ORGCAT_FACTORS]
     cur = [view.get(tuple(path), f, cy, clabel, "mtd") for f, _ in ORGCAT_FACTORS]
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.markdown(f"###### 어디에서 빠졌나 — {esc(node_lbl)}")
     rows = []
     for (f, nick), pv, cv in zip(ORGCAT_FACTORS, prev, cur):
         rows.append({"요인": f"{nick} ({f})", f"{py}년": fmt_value(f, pv),
@@ -3598,7 +3649,6 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
     거래액·고객수 두 축만 모으면 세 지표가 다 나온다 — 지표마다 따로 훑지 않는다.
     """
     if met not in FUNNEL_ROLLUP_METS:
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.caption(f"«{esc(met)}»는 조직을 가로질러 **모을 수 없는 지표**라 카테고리 합산 "
                    "표를 안 만들었어요.")
         return
@@ -3642,8 +3692,6 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
         rows.append(row)
     tbl = (pd.DataFrame(rows).sort_values("_sort")
            .drop(columns=["_sort"]).set_index("카테고리"))
-    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.markdown("###### 카테고리별 (조직 합산)")
     _why = {"첫구매 거래액": "조직 합이 전체와 맞는 지표라 그대로 더했어요.",
             "첫구매 고객수": "같은 고객이 여러 조직에 잡혀 **합이 전체를 조금 넘어요** — "
                           "순위·전년비로 읽고 절대값은 위 표를 보세요.",
