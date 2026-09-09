@@ -10,6 +10,7 @@
     python tests/test_funnel_page.py
 """
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -86,7 +87,9 @@ def synth_store(with_push=True):
     return pd.DataFrame(rows)[STORE_COLS]
 
 
-TREE = {"e-영업1": ["가방", "지갑"], "e-영업2": ["슈즈"]}
+# 「가방」은 **두 조직이 나눠 갖는다** — 조직 합산 경로를 실제로 밟게 하려고 그렇다.
+# 한 조직에만 있는 카테고리뿐이면 합산을 빼먹어도 값이 안 변해 검사가 무의미해진다.
+TREE = {"e-영업1": ["가방", "지갑"], "e-영업2": ["슈즈", "가방"]}
 
 
 def synth_orgcat():
@@ -198,6 +201,22 @@ def _frames(at):
         v = getattr(t.value, "data", t.value)
         if hasattr(v, "columns"):
             out.append(v)
+    return out
+
+
+def _org_frames(at):
+    """④의 조직 표. 이름이 **일반 칼럼**이라 index.name으로는 못 찾는다."""
+    return [f for f in _frames(at) if "조직" in f.columns]
+
+
+def _clickable(at):
+    """행 클릭으로 파고드는 표들 — 셀 선택 + 인덱스 숨김이어야 한다."""
+    out = []
+    for t in at.dataframe:
+        kw = getattr(t, "proto", None)
+        key = getattr(t, "key", None) or ""
+        if "wr_fn_orgsel" in str(key) or "wr_fn_catsel" in str(key):
+            out.append(t)
     return out
 
 
@@ -371,9 +390,10 @@ def t_orgcat_lists_orgs_with_rowclick_hint():
     at = _open()
     assert not [s for s in at.selectbox if s.label == "1. 조직"], \
         "셀렉트박스가 남아 있어요 — 행 클릭으로 바뀌었어요"
-    fr = [f for f in _frames(at) if f.index.name == "조직"]
-    assert fr, f"조직 표가 없어요 — {[f.index.name for f in _frames(at)]}"
-    assert set(TREE) <= set(fr[0].index), list(fr[0].index)
+    fr = _org_frames(at)
+    assert fr, f"조직 표가 없어요 — {[list(f.columns) for f in _frames(at)]}"
+    # 이름은 인덱스가 아니라 「조직」 칼럼에 있다(셀 선택이 인덱스 칸을 안 돌려준다)
+    assert set(TREE) <= set(fr[0]["조직"]), list(fr[0]["조직"])
     assert any("누르면" in t and "카테고리" in t for t in _texts(at)), "행 클릭 안내가 없어요"
 
 
@@ -388,7 +408,8 @@ def t_org_row_opens_its_categories():
     tbl = W._funnel_level_table(view, ["e-영업1"], kids, "카테고리", "첫구매 거래액",
                                 2026, 2025, "1월", "final",
                                 view.get(("e-영업1",), "첫구매 거래액", 2026, "1월", "mtd"))
-    assert list(tbl.index) == kids, list(tbl.index)
+    # 이름은 인덱스가 아니라 칼럼이다 — 셀 선택이 인덱스 칸을 안 돌려주기 때문
+    assert list(tbl["카테고리"]) == kids, list(tbl["카테고리"])
     assert "비중" in tbl.columns, list(tbl.columns)      # 거래액은 가산 지표
     # 가방·지갑이 각각 절반 → 비중 50.0%
     assert set(tbl["비중"]) == {"50.0%"}, tbl["비중"].tolist()
@@ -399,10 +420,10 @@ def t_orgcat_share_only_for_additive():
     """하위 합이 상위와 맞는 건 거래액뿐이다 — 고객수에 비중을 붙이면 거짓말이 된다."""
     at = _open()
     _sel_oc(at).set_value("첫구매 거래액"); at.run()
-    fr = [f for f in _frames(at) if f.index.name == "조직"][0]
+    fr = _org_frames(at)[0]
     assert "비중" in fr.columns, f"거래액엔 비중이 있어야 해요 — {list(fr.columns)}"
     _sel_oc(at).set_value("첫구매 고객수"); at.run()
-    fr = [f for f in _frames(at) if f.index.name == "조직"][0]
+    fr = _org_frames(at)[0]
     assert "비중" not in fr.columns, f"고객수엔 비중이 없어야 해요 — {list(fr.columns)}"
     assert any("하위 합이 상위와 안 맞는" in t for t in _texts(at)), "왜 뺐는지 안 밝혔어요"
 
@@ -725,7 +746,7 @@ def t_recognized_list_mentions_broken_days():
 def t_category_rollup_spans_orgs():
     """조직을 가로질러 카테고리를 모은 표 — 조직을 하나씩 안 들어가도 보인다."""
     at = _open()
-    fr = [f for f in _frames(at) if f.index.name == "카테고리" and "조직 수" in f.columns]
+    fr = [f for f in _frames(at) if f.index.name == "카테고리"]
     assert fr, f"카테고리 합산 표가 없어요 — {[list(f.columns) for f in _frames(at)]}"
     cats = set(fr[0].index)
     want = {c for v in TREE.values() for c in v}
@@ -737,15 +758,123 @@ def t_category_rollup_sums_only_what_can_be_summed():
     """거래액은 조직 합, 객단가는 거래액합÷고객수합. 고객수 합은 중복이 섞인다고 밝힌다."""
     at = _open()
     _sel_oc(at).set_value("첫구매 거래액"); at.run()
-    fr = [f for f in _frames(at) if f.index.name == "카테고리" and "조직 수" in f.columns][0]
+    fr = [f for f in _frames(at) if f.index.name == "카테고리"][0]
     assert "비중" in fr.columns, list(fr.columns)
     assert any("조직 합이 전체와 맞는" in t for t in _texts(at)), "거래액 설명이 없어요"
 
     _sel_oc(at).set_value("첫구매 객단가"); at.run()
     assert not at.exception, at.exception[0].value
-    fr = [f for f in _frames(at) if f.index.name == "카테고리" and "조직 수" in f.columns][0]
+    fr = [f for f in _frames(at) if f.index.name == "카테고리"][0]
     assert "비중" not in fr.columns, "객단가는 더할 수 없어 비중을 붙이면 안 돼요"
     assert any("거래액 합 ÷ 고객수 합" in t for t in _texts(at)), "객단가 산식 설명이 없어요"
+
+
+@case
+def t_category_rollup_carries_uv_and_cr():
+    """상품UV·상품CR도 조직 합산 표에 나온다.
+
+    원천이 조직×카테고리로 주는 값이라 낱개는 그대로 읽고, 가로지를 땐 UV는 더하고
+    CR은 **고객수 합 ÷ 상품UV 합**으로 되만든다(`거래액 = 상품UV × 상품CR × 객단가`와
+    `거래액 = 고객수 × 객단가`에서 나오는 항등식). 더하기로 되돌리면 CR이 카테고리
+    개수만큼 부풀어 오른다.
+    """
+    at = _open()
+    for met in ("상품UV", "상품CR"):
+        _sel_oc(at).set_value(met); at.run()
+        assert not at.exception, at.exception[0].value
+        fr = [f for f in _frames(at) if f.index.name == "카테고리"]
+        assert fr, f"«{met}» 합산 표가 없어요 — {[list(f.columns) for f in _frames(at)]}"
+        cats = set(fr[0].index)
+        want = {c for v in TREE.values() for c in v}
+        assert cats == want, (met, cats, want)
+        # 둘 다 유니크/비율이라 비중 칸이 붙으면 안 된다
+        assert "비중" not in fr[0].columns, f"«{met}»에 비중이 붙었어요 — {list(fr[0].columns)}"
+    assert any("고객수 합 ÷ 상품UV 합" in t for t in _texts(at)), "상품CR 산식 설명이 없어요"
+
+
+@case
+def t_rollup_cr_matches_the_identity():
+    """합산 상품CR은 **고객수 합 ÷ 상품UV 합**이다 — 화면 값을 직접 읽어 대조한다.
+
+    손으로 계산한 값끼리만 맞춰 보면 화면이 그냥 더하고 있어도 통과한다. 그래서
+    합산 표에서 값을 꺼내 온다. 「가방」은 두 조직이 나눠 가져서, 더하기로 되돌리면
+    CR이 두 배로 부풀어 이 검사에 걸린다.
+    """
+    oc = synth_orgcat()
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    view = W.orgcat_view(sub)
+    cat = next(c for c in {c for v in TREE.values() for c in v}
+               if sum(c in v for v in TREE.values()) > 1)
+    cu = uv = 0.0
+    for o in view.live(())[0]:
+        if cat not in view.live((o,))[0]:
+            continue
+        cu += view.get((o, cat), "첫구매 고객수", 2026, "1월", "mtd")
+        uv += view.get((o, cat), "상품UV", 2026, "1월", "mtd")
+    assert cu > 0 and uv > 0, (cat, cu, uv)
+    want = W.fmt_value("상품CR", cu / uv)
+
+    at = _open(mode="월누적(MTD) — 전년 동월")
+    _sel_oc(at).set_value("상품CR"); at.run()
+    assert not at.exception, at.exception[0].value
+    fr = [f for f in _frames(at) if f.index.name == "카테고리"]
+    assert fr, f"합산 표가 없어요 — {[list(f.columns) for f in _frames(at)]}"
+    got = fr[0].loc[cat, "2026년"]
+    assert got == want, f"«{cat}» 합산 상품CR이 {got} — 고객수합÷UV합이면 {want}"
+
+
+@case
+def t_org_table_is_click_to_drill_not_checkbox():
+    """조직·카테고리 표는 **셀 선택**이어야 한다.
+
+    `single-row`는 화면에 체크박스 열로 나와 행을 눌러도 안 잡힌다. 셀 선택이면
+    아무 칸이나 눌러서 내려갈 수 있다. 다만 셀 선택은 **인덱스 칸을 안 돌려주므로**
+    이름이 일반 칼럼이어야 하고 인덱스는 숨겨야 한다 — 셋이 한 묶음이다.
+    """
+    at = _open()
+    hit = [t for t in at.dataframe if "wr_fn_orgsel" in str(getattr(t, "key", "") or "")]
+    assert hit, "조직 표에 key가 없어요 — 행 클릭을 걸 데가 없어요"
+    from streamlit.proto.Dataframe_pb2 import Dataframe as _DfP
+    sp = hit[0].proto
+    assert list(sp.selection_mode) == [_DfP.SelectionMode.SINGLE_CELL], \
+        f"셀 선택이 아니에요(행 선택은 체크박스 열로 나와요) — {list(sp.selection_mode)}"
+    # hide_index는 프로토 필드가 아니라 컬럼 설정 JSON으로 실린다
+    assert json.loads(sp.columns or "{}").get("_index", {}).get("hidden") is True, \
+        f"인덱스를 숨기지 않으면 셀 선택에 빈 칸이 하나 생겨요 — {sp.columns}"
+    assert "조직" in _org_frames(at)[0].columns, "이름이 인덱스에 있으면 눌러도 안 잡혀요"
+
+
+@case
+def t_picked_row_reads_cell_selection():
+    """_picked_row는 셀 선택·행 선택 둘 다 받고, 범위를 벗어나면 None."""
+    class _Ev:
+        def __init__(self, sel): self.selection = sel
+    assert W._picked_row(_Ev({"cells": [(2, "2026년")], "rows": []}), 5) == 2
+    assert W._picked_row(_Ev({"cells": [], "rows": [1]}), 5) == 1      # 옛 세션 호환
+    assert W._picked_row(_Ev({"cells": [(9, "x")], "rows": []}), 5) is None
+    assert W._picked_row(_Ev({"cells": [], "rows": []}), 5) is None
+    assert W._picked_row(_Ev(None), 5) is None
+    assert W._picked_row({"selection": {"cells": [[0, "a"]]}}, 3) == 0  # dict로 오는 경우
+
+
+@case
+def t_app_detail_swaps_prior_year_for_shares():
+    """앱설치 상세 — 전년이 한 칸도 없으면 그 열 대신 전체설치 대비 비중을 낸다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "지표" and "전체설치" in f.index]
+    assert fr, f"앱설치 상세 표가 없어요 — {[list(f.index) for f in _frames(at)]}"
+    t = fr[0]
+    assert "전체설치 대비" in t.columns, list(t.columns)
+    assert not [c for c in t.columns if "전년" in str(c)], \
+        f"전년 칸이 통째로 비는데 남아 있어요 — {list(t.columns)}"
+    assert "신규설치" in t.index, "전체설치 = 신규 + 재설치가 한 표에서 닫혀야 해요"
+    # 재설치 비중은 재설치 ÷ 전체설치 — 100%를 넘을 수 없다
+    _rr = str(t.loc["재설치", "전체설치 대비"])
+    assert _rr.endswith("%") and 0 < float(_rr.rstrip("%")) < 100, _rr
+    # Push 활성 기기는 잔고라 비중이 없다
+    assert t.loc["Push활성기기", "전체설치 대비"] == "–"
+    assert any("전체설치 대비 비중을 넣었어요" in x for x in _texts(at)), "왜 바꿨는지 안 밝혔어요"
 
 
 @case
@@ -831,16 +960,23 @@ def t_factor_split_refuses_when_it_cannot():
 
 
 @case
-def t_rollup_refuses_metrics_it_cannot_sum():
-    """상품UV·상품CR은 조직을 가로질러 합칠 수 없다 — 만들지 말고 왜인지 말한다."""
+def t_rollup_covers_every_selectable_metric():
+    """④에서 고를 수 있는 지표는 **전부** 조직 합산 표가 나와야 한다.
+
+    예전엔 상품UV·상품CR을 막아 뒀는데, 원천이 조직×카테고리로 주는 값이라 UV는
+    더하면 되고 CR은 항등식으로 되만들 수 있다. 막아 두면 '가방이 어느 조직에서든
+    전환이 빠졌나'를 조직 하나씩 들어가 봐야만 알 수 있다.
+    막는 분기는 남겨 두되(고를 수 없는 지표가 생길 때를 위해) 지금은 아무도 안 밟는다.
+    """
     at = _open()
     opts = list(_sel_oc(at).options)
-    assert "상품UV" in opts and "상품CR" in opts, f"상품 지표를 못 골라요 — {opts}"
-    _sel_oc(at).set_value("상품CR"); at.run()
-    assert not at.exception, at.exception[0].value
-    assert not [f for f in _frames(at) if f.index.name == "카테고리" and "조직 수" in f.columns], \
-        "합칠 수 없는 지표인데 합산 표가 나왔어요"
-    assert any("합칠 수 없는 지표" in t for t in _texts(at)), "왜 없는지 안 밝혔어요"
+    assert set(opts) <= set(W.FUNNEL_ROLLUP_METS), \
+        f"모을 수 없는 지표를 고를 수 있어요 — {set(opts) - set(W.FUNNEL_ROLLUP_METS)}"
+    for met in opts:
+        _sel_oc(at).set_value(met); at.run()
+        assert not at.exception, f"{met}: {at.exception[0].value if at.exception else ''}"
+        assert [f for f in _frames(at) if f.index.name == "카테고리"], \
+            f"«{met}» 합산 표가 없어요"
 
 
 def main():
