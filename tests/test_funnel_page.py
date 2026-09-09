@@ -1196,6 +1196,22 @@ def t_guard_select_default_only_seeds_once():
 
 
 @case
+def t_app_rates_say_they_are_daily_means():
+    """비율을 '가입한 사람의 몇 %가 앱을 깔았다'로 읽지 않게 못 박는다.
+
+    원천이 가입↔설치를 개인 단위로 잇지 않아 거기까진 알 수 없다. 안 적어 두면
+    두 일평균을 나눈 값을 개인 추적 결과로 읽는다.
+    """
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    txt = _texts(at)
+    assert any("일평균끼리 나눈 값" in t for t in txt), "일평균 비율이라는 안내가 없어요"
+    assert any("개인 단위로" in t for t in txt), "개인 추적이 아니라는 안내가 없어요"
+    # 신규 설치 기준(재설치 제외)이라는 안내는 카드 아래에 이미 있다
+    assert any("재설치는 빼고" in t for t in txt), "신규 설치 기준 안내가 없어요"
+
+
+@case
 def t_picked_row_reads_cell_selection():
     """_picked_row는 셀 선택·행 선택 둘 다 받고, 범위를 벗어나면 None."""
     class _Ev:

@@ -4054,7 +4054,11 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
 
     _funnel_app_trend(df, gran, cy, clabel)
 
-    notes = []
+    # 비율을 어디까지 믿고 읽을지 — 안 적어 두면 '가입한 사람의 몇 %가 앱을 깔았다'로
+    # 읽힌다. 원천이 가입↔설치를 개인 단위로 잇지 않아 거기까진 알 수 없다.
+    notes = ["비율은 모두 **일평균끼리 나눈 값**이에요. 그날 가입한 사람이 그날 "
+             "설치·동의했다는 뜻은 아니에요 — 원천이 가입↔설치를 개인 단위로 "
+             "잇지 않아 거기까진 알 수 없어요."]
     # 어느 날까지 들어와 있는지 — 기간은 맞는데 원천이 아직 안 닿았을 수 있다
     _cov = df[(df["metric"] == "앱설치") & (df["gran"] == "일")
               & (df["segment"] == "*TOTAL") & df["value"].notna()]
