@@ -396,6 +396,7 @@ def t_orgcat_lists_orgs_with_rowclick_hint():
     assert fr, f"조직 표가 없어요 — {[list(f.columns) for f in _frames(at)]}"
     # 이름은 인덱스가 아니라 「조직」 칼럼에 있다(셀 선택이 인덱스 칸을 안 돌려준다)
     assert set(TREE) <= set(fr[0]["조직"]), list(fr[0]["조직"])
+    assert fr[0]["조직"].iloc[0] == W.TOTAL_ROW, list(fr[0]["조직"])
     assert any("누르면" in t and "카테고리" in t for t in _texts(at)), "행 클릭 안내가 없어요"
 
 
@@ -410,11 +411,12 @@ def t_org_row_opens_its_categories():
     tbl = W._funnel_level_table(view, ["e-영업1"], kids, "카테고리", "첫구매 거래액",
                                 2026, 2025, "1월", "final",
                                 view.get(("e-영업1",), "첫구매 거래액", 2026, "1월", "mtd"))
-    # 이름은 인덱스가 아니라 칼럼이다 — 셀 선택이 인덱스 칸을 안 돌려주기 때문
-    assert list(tbl["카테고리"]) == kids, list(tbl["카테고리"])
+    # 맨 위가 합계, 그 아래가 자식이다
+    assert list(tbl["카테고리"]) == [W.TOTAL_ROW] + kids, list(tbl["카테고리"])
     assert "비중" in tbl.columns, list(tbl.columns)      # 거래액은 가산 지표
-    # 가방·지갑이 각각 절반 → 비중 50.0%
-    assert set(tbl["비중"]) == {"50.0%"}, tbl["비중"].tolist()
+    # 가방·지갑이 각각 절반 → 비중 50.0% (합계 줄은 100.0%)
+    assert set(tbl["비중"][1:]) == {"50.0%"}, tbl["비중"].tolist()
+    assert tbl["비중"].iloc[0] == "100.0%", tbl["비중"].iloc[0]
 
 
 @case
@@ -751,7 +753,8 @@ def t_category_rollup_spans_orgs():
     at = _open()
     fr = [f for f in _frames(at) if f.index.name == "카테고리"]
     assert fr, f"카테고리 합산 표가 없어요 — {[list(f.columns) for f in _frames(at)]}"
-    cats = set(fr[0].index)
+    assert fr[0].index[0] == W.TOTAL_ROW, list(fr[0].index)
+    cats = set(fr[0].index) - {W.TOTAL_ROW}
     want = {c for v in TREE.values() for c in v}
     assert cats == want, (cats, want)
 
@@ -787,7 +790,7 @@ def t_category_rollup_carries_uv_and_cr():
         assert not at.exception, at.exception[0].value
         fr = [f for f in _frames(at) if f.index.name == "카테고리"]
         assert fr, f"«{met}» 합산 표가 없어요 — {[list(f.columns) for f in _frames(at)]}"
-        cats = set(fr[0].index)
+        cats = set(fr[0].index) - {W.TOTAL_ROW}
         want = {c for v in TREE.values() for c in v}
         assert cats == want, (met, cats, want)
         # 둘 다 유니크/비율이라 비중 칸이 붙으면 안 된다
@@ -1193,6 +1196,117 @@ def t_guard_select_default_only_seeds_once():
     assert _st.session_state["k3"] == "a"
     for k in ("k1", "k2", "k3"):
         _st.session_state.pop(k, None)
+
+
+@case
+def t_app_rates_say_they_are_daily_means():
+    """비율을 '가입한 사람의 몇 %가 앱을 깔았다'로 읽지 않게 못 박는다.
+
+    원천이 가입↔설치를 개인 단위로 잇지 않아 거기까진 알 수 없다. 안 적어 두면
+    두 일평균을 나눈 값을 개인 추적 결과로 읽는다.
+    """
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    txt = _texts(at)
+    assert any("일평균끼리 나눈 값" in t for t in txt), "일평균 비율이라는 안내가 없어요"
+    assert any("개인 단위로" in t for t in txt), "개인 추적이 아니라는 안내가 없어요"
+    # 신규 설치 기준(재설치 제외)이라는 안내는 카드 아래에 이미 있다
+    assert any("재설치는 빼고" in t for t in txt), "신규 설치 기준 안내가 없어요"
+
+
+@case
+def t_tables_open_with_a_total_row():
+    """두 표 모두 **맨 위에 합계** — 기준점이 없으면 개별 값이 큰지 작은지 가늠이 안 된다.
+
+    합계는 **파일이 준 상위 값**이지 자식 합이 아니다. 고객수·상품UV는 유니크라
+    자식 합이 상위를 넘고(실파일 +2.4%·+33%), 객단가·상품CR은 애초에 더할 수 없다.
+    """
+    oc = synth_orgcat()
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    view = W.orgcat_view(sub)
+    orgs = view.live(())[0]
+    tbl = W._funnel_level_table(view, [], orgs, "조직", "첫구매 거래액", 2026, 2025,
+                                "1월", "final",
+                                view.get((), "첫구매 거래액", 2026, "1월", "mtd"))
+    assert tbl["조직"].iloc[0] == W.TOTAL_ROW, list(tbl["조직"])
+    assert list(tbl["조직"])[1:] == orgs, list(tbl["조직"])
+    # 값은 파일이 준 최상위 값과 같아야 한다(자식 합이 아니라)
+    assert tbl["2026년"].iloc[0] == W.fmt_value(
+        "첫구매 거래액", view.get((), "첫구매 거래액", 2026, "1월", "mtd"))
+    # 유니크 지표는 자식 합이 상위를 넘는다 — 합계 자리에 그 합을 적으면 안 된다
+    _kid_sum = sum(view.get((o,), "첫구매 고객수", 2026, "1월", "mtd") for o in orgs)
+    _top = view.get((), "첫구매 고객수", 2026, "1월", "mtd")
+    t2 = W._funnel_level_table(view, [], orgs, "조직", "첫구매 고객수", 2026, 2025,
+                               "1월", "final")
+    assert t2["2026년"].iloc[0] == W.fmt_value("첫구매 고객수", _top), \
+        f"합계가 파일 값이 아니에요 (자식 합 {_kid_sum}, 파일 {_top})"
+
+
+@case
+def t_total_row_does_not_shift_the_drilldown():
+    """합계 행이 0번을 차지하니 **자식 번호가 한 칸씩 밀린다** — 그대로 읽으면 안 된다.
+
+    화면은 멀쩡히 뜨고 값만 어긋나서 눈으로는 안 잡히는 종류다.
+    """
+    kids = ["가", "나", "다"]
+
+    class _Ev:
+        def __init__(self, i): self.selection = {"cells": [(i, "2026년")], "rows": []}
+
+    assert W._picked_child(_Ev(0), kids) is None, "합계 줄은 자식이 아니에요"
+    for i, want in enumerate(kids, start=1):
+        assert W._picked_child(_Ev(i), kids) == want, (i, W._picked_child(_Ev(i), kids))
+    # 범위 밖은 None
+    assert W._picked_child(_Ev(len(kids) + 1), kids) is None
+
+
+@case
+def t_factor_block_shows_customer_count_without_double_counting():
+    """전환율만 있고 고객수가 없으면 사슬이 안 읽힌다 — 넣되 **기여액은 안 매긴다**.
+
+    `고객수 = 상품UV × 상품CR`이 정확히 성립하므로(원본 항등식 둘을 나누면 나온다)
+    기여액까지 주면 그 몫이 유입·전환과 겹쳐 두 번 세어진다.
+    """
+    at = _open(mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "요인"]
+    assert fr, "요인 분해 표가 없어요"
+    t = fr[0]
+    cu = [i for i in t.index if "고객수" in str(i)]
+    assert cu, f"고객수 줄이 없어요 — {list(t.index)}"
+    assert str(cu[0]).startswith("="), f"유입×전환의 결과라는 표시가 없어요 — {cu[0]}"
+    assert t.loc[cu[0], "2026년"] != "–", "값이 비었어요"
+    assert t.loc[cu[0], "기여액"] == "–", \
+        f"고객수에 기여액이 붙었어요 — 유입·전환과 이중 계산돼요 ({t.loc[cu[0], '기여액']})"
+    # 자리: 전환 바로 다음이어야 곱셈 사슬로 읽힌다
+    idx = list(t.index)
+    _cr = [i for i in idx if "상품CR" in str(i)][0]
+    assert idx.index(cu[0]) == idx.index(_cr) + 1, idx
+    # 기여액 칼럼은 여전히 합계와 정확히 맞아야 한다
+    def _n(v):
+        return float(re.sub(r"[^0-9.+-]", "", str(v)))
+    parts = [_n(v) for i, v in t["기여액"].items()
+             if str(v) != "–" and "합계" not in str(i)]
+    tot = [_n(v) for i, v in t["기여액"].items() if "합계" in str(i)][0]
+    assert abs(sum(parts) - tot) < 0.05, f"기여액 합 {sum(parts)} ≠ 합계 {tot}"
+    assert any("고객수는 유입 × 전환" in x for x in _texts(at)), "왜 기여액이 없는지 안 밝혔어요"
+
+
+@case
+def t_customer_count_equals_uv_times_cr():
+    """`고객수 = 상품UV × 상품CR` — 이 항등식이 깨지면 위 표가 거짓말이 된다."""
+    oc = synth_orgcat()
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    view = W.orgcat_view(sub)
+    seen = 0
+    for path in [(), ("e-영업1",), ("e-영업1", "가방"), ("e-영업2",)]:
+        uv = view.get(path, "상품UV", 2026, "1월", "mtd")
+        cr = view.get(path, "상품CR", 2026, "1월", "mtd")
+        cu = view.get(path, "첫구매 고객수", 2026, "1월", "mtd")
+        if any(pd.isna(v) for v in (uv, cr, cu)):
+            continue
+        seen += 1
+        assert abs(uv * cr - cu) < 1e-6, f"{path}: UV×CR={uv * cr} ≠ 고객수={cu}"
+    assert seen >= 3, f"검사한 노드가 {seen}개뿐이에요"
 
 
 @case
