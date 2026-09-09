@@ -1882,9 +1882,19 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
 # ══════════════════════════════════════════════════════
 def month_label(n): return f"{n}월"
 
+def month_trim(s):
+    """표시용 — 달의 앞자리 0을 뗀다 ('08월 2주차' → '8월 2주차').
+
+    **저장 라벨은 그대로 둔다.** 라벨이 곧 조회 키(`pick`·`label` 비교)라 여기서
+    바꾸면 조인이 통째로 어긋난다. 화면·엑셀에 찍기 **직전에만** 쓴다.
+    `10월`은 0 앞이 숫자라 lookbehind에 걸려 안 바뀐다.
+    """
+    return re.sub(r"(?<!\d)0(\d월)", r"\1", str(s)) if s else s
+
+
 def week_disp(year, label):
-    """주차 표시: 2026년 06월 2주차"""
-    return f"{year}년 {label}" if label else "-"
+    """주차 표시: 2026년 6월 2주차"""
+    return f"{year}년 {month_trim(label)}" if label else "-"
 
 def week_back(df, wy, wlabel, years):
     """wlabel의 `years`년 전 대응 주차 (label, exact). 5주차 등은 그 달 마지막 주로 대체."""
@@ -1981,31 +1991,57 @@ def yoy_summary_table(df, ref_year, ref_month, metrics):
         })
     return pd.DataFrame(rows).set_index("구분"), (pm_y, pm_m)
 
-def trend_table(df, gran, metrics, years, seg="*TOTAL"):
-    """추이표: 행=지표, 열=(연도, 기간)"""
-    out, columns = {}, []
+def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None):
+    """추이표: 행=지표, 열=(연도, 기간)
+
+    `delta_year`를 주면 그 해의 각 기간 **바로 옆에** 전년 같은 기간 대비 증감 칸을
+    끼운다. 표가 넓어지지만 눈이 두 해 사이를 오갈 필요가 없어진다 — 2025년 1월과
+    2026년 1월이 열두 칸 떨어져 있어서 그냥은 못 맞댄다.
+
+    비교 대상은 **화면에 그린 연도와 무관하게** `delta_year - 1`을 직접 조회한다.
+    전년을 안 그리고 있어도 증감은 나와야 한다.
+    """
+    spec = []                       # (연도, 표시 라벨, 조회 라벨, 비교 연도 or None)
     for y in years:
         for lb in labels_sorted(df, gran, [y]):
             sub = df[(df["gran"] == gran) & (df["year"] == y) & (df["label"] == lb) &
                      df["value"].notna()]
             if sub.empty: continue
-            columns.append((y, lb))
-    if not columns:
+            spec.append((y, lb, lb, None))
+            if delta_year is not None and y == delta_year:
+                spec.append((y, f"{lb} 증감", lb, y - 1))
+    if not spec:
         return pd.DataFrame()
+    out = {}
     for met in metrics:
         vals = []
-        for y, lb in columns:
-            vals.append(pick(df, gran, met, seg, y, lb, "final"))
+        for y, _show, lb, base in spec:
+            v = pick(df, gran, met, seg, y, lb, "final")
+            if base is None:
+                vals.append(v)
+            else:
+                # 이 칸만 미리 문자열이다 — style_trend가 fmt_value를 다시 안 먹인다
+                vals.append(fmt_delta(met, v,
+                                      pick(df, gran, met, seg, base, lb, "final")) or "–")
         out[met] = vals
+    # 표시용으로만 앞자리 0을 뗀다 — 조회는 위에서 원래 라벨로 이미 끝났다
+    columns = [(y, month_trim(show)) for y, show, _lb, _b in spec]
     tbl = pd.DataFrame(out, index=pd.MultiIndex.from_tuples(columns, names=["연도", "기간"])).T
     return tbl
+
+def _is_delta_col(c):
+    """추이표에서 증감 칸인지 — MultiIndex면 마지막 레벨(기간 라벨)을 본다."""
+    return "증감" in str(c[-1] if isinstance(c, tuple) else c)
 
 def style_trend(tbl, metrics):
     # 최신 pandas는 float 컬럼에 문자열 대입을 금지하므로 object로 변환 후 포맷
     disp = tbl.astype(object).copy()
+    # 증감 칸은 이미 문자열이라 fmt_value를 먹이면 '△5.2%'가 뭉개진다
+    dmask = [_is_delta_col(c) for c in tbl.columns]
     for met in disp.index:
-        disp.loc[met] = [fmt_value(met, v) for v in tbl.loc[met]]
-    return disp
+        disp.loc[met] = [v if d else fmt_value(met, v)
+                         for v, d in zip(tbl.loc[met], dmask)]
+    return style_delta_cols(disp) if any(dmask) else disp
 
 # ══════════════════════════════════════════════════════
 # YoY 라인차트 (Plotly)
@@ -2040,7 +2076,8 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
         # 연도마다 없는 주차(5주차 등)는 건너뛰고 선을 잇는다
         s = series_by_label(df, gran, metric, seg, y, prefer="final").reindex(x_all).dropna()
         fig.add_trace(go.Scatter(
-            x=s.index.tolist(), y=(s / div).tolist(), mode="lines+markers", name=str(y),
+            x=[month_trim(v) for v in s.index], y=(s / div).tolist(),
+            mode="lines+markers", name=str(y),
             line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
             marker=dict(size=5),
         ))
@@ -2048,7 +2085,7 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
     ly = base_layout(h, ysuffix=unit if unit == "%" else "",
                      title=f"{metric} {gname} 추이 ({unit})")
     ly["xaxis"]["categoryorder"] = "array"
-    ly["xaxis"]["categoryarray"] = x_all
+    ly["xaxis"]["categoryarray"] = [month_trim(v) for v in x_all]
     if gran == "주": ly["xaxis"]["tickangle"] = -45; ly["xaxis"]["nticks"] = 20
     fig.update_layout(**ly)
     return fig
@@ -2082,7 +2119,7 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
             ws.cell(r, 1, met).font = title_font
             for j, (y, lb) in enumerate(cols):
                 ws.cell(r, 2 + j, y).font = head_font
-                ws.cell(r + 1, 2 + j, lb).font = head_font
+                ws.cell(r + 1, 2 + j, month_trim(lb)).font = head_font
                 ws.cell(r + 1, 2 + j).fill = head_fill
             segs = ["*TOTAL"] + [s for s in CHANNELS if s in set(sub_m["segment"])]
             for i, seg in enumerate(segs):
@@ -2140,7 +2177,7 @@ def build_workbook(df, texts, ref_year, ref_month, chart_years):
         for k, met in enumerate(chart_metrics):
             ws.cell(r, 1, f"{met} {gname} (차트 데이터)").font = head_font
             for j, lb in enumerate(x_all):
-                ws.cell(r, 2 + j, lb).fill = head_fill
+                ws.cell(r, 2 + j, month_trim(lb)).fill = head_fill
             nrow = 0
             for y in sorted(chart_years):
                 s = series_by_label(df, gran, met, "*TOTAL", y).reindex(x_all)
@@ -3740,7 +3777,8 @@ def _funnel_app_trend(df, gran, cy, clabel):
         got = {m: _funnel_app_one(df, gran, m, y, lb, "mtd") for m in APP_STEPS}
         jn, ins, ag = got["가입자수"], got["앱설치"], got["앱푸시수신동의"]
         rows.append({
-            "기간": f"{y}년 {lb}" + (" ◀" if (y == cy and lb == str(clabel)) else ""),
+            "기간": f"{y}년 {month_trim(lb)}"
+                    + (" ◀" if (y == cy and lb == str(clabel)) else ""),
             "가입자수": fmt_value("가입자수", jn),
             "앱 신규설치": fmt_value("앱설치", ins),
             "앱푸시 수신동의": fmt_value("앱푸시수신동의", ag),
@@ -4003,10 +4041,10 @@ def render_orgcat_page(odf, ddf=None):
     part = {p for p in opts if p not in _fin}
     guard_select("oc_per", opts)
     cy, clabel = st.selectbox("기준 기간", opts, key="oc_per",
-                              format_func=lambda p: f"{p[0]}년 {p[1]}"
+                              format_func=lambda p: f"{p[0]}년 {month_trim(p[1])}"
                               + (" · 부분 기간" if p in part else ""))
     py = cy - 1
-    ccol, pcol = f"{cy}년 {clabel}", f"{py}년 {clabel}"
+    ccol, pcol = f"{cy}년 {month_trim(clabel)}", f"{py}년 {month_trim(clabel)}"
     has_prev = not base[(base["year"] == py) & (base["label"] == clabel)].empty
     if (cy, clabel) in part:
         # MICRO는 '일마감'만 있는 진행 중 기간이고, 원장은 적재 범위 끝(또는 처음)이
@@ -4499,7 +4537,7 @@ def main():
                             else latest_w)
             ref_week = st.selectbox("기준 주차", weeks_avail[::-1],
                                     index=weeks_avail[::-1].index(default_week),
-                                    key="wr_refw",
+                                    key="wr_refw", format_func=month_trim,
                                     help="주간보고 대상 주차예요. 최신 주차가 진행 중이면 직전 완료 주차가 기본으로 잡혀요.")
         else:
             ref_week = None
@@ -4721,7 +4759,12 @@ def main():
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("월별 추이표 (일평균)")
-        tbl = trend_table(df, "월", METRICS7, chart_years)
+        _dy = max(chart_years) if chart_years else None
+        tbl = trend_table(df, "월", METRICS7, chart_years, delta_year=_dy)
+        if _dy:
+            st.caption(f"**{_dy}년**은 달마다 오른쪽에 **전년 같은 달 대비 증감**을 "
+                       f"붙였어요. 비율 지표(가입율·당일가입CR)는 %p 차이예요. "
+                       f"전년 값이 없는 달은 '–'로 둬요.")
         wtable(style_trend(tbl, METRICS7), width="stretch", dl_name="월별 추이표 (일평균)")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
