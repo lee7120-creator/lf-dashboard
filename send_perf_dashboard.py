@@ -50,6 +50,13 @@ except Exception:
 # 조용히 사라진다(2025-09-01 주 6건·유입UV 27,475 = 그 주의 4.8%). 증상이 '숫자가 좀 적네'로만
 # 보여서 원인이 안 드러나므로, 못 읽은 코드는 아래 af_rejected로 화면에 띄운다.
 AF_RE   = re.compile(r'^(AP|PB)[A-Z]*\d+$', re.I)
+# **실적 파서에서 AF코드는 행을 버리는 잣대가 아니다.** 접두어 화이트리스트에 안 맞는다고
+# 버리면 새 코드 체계가 들어올 때마다 실적이 조용히 샌다 — `APZ*`로 이미 한 번 겪었고
+# (2025-09-01 주 6건·발송 142만·유입UV 27,475), 같은 백업의 다른 시트엔 `EV**` 코드가
+# 이미 들어 있다. 그래서 **숫자가 하나라도 든 코드면 실적으로 받는다.** 빈 칸·라벨 행
+# (합계·소계 등)만 걸러 낸다 — 그건 실적이 아니라 잡행이라 받으면 이중 계산이 된다.
+# 받되 익숙한 형식이 아니면 `af_unknown`으로 화면에 띄운다.
+AF_KEEP = re.compile(r'^(?=.*\d)[A-Z0-9][A-Z0-9._/-]*$', re.I)
 WEEK_RE = re.compile(r'\d{1,2}\s*월\s*\d\s*주차')    # 기획 주차 시트명
 
 # 실적 '소재별 실적(당주)' 시트 컬럼 → 표준 키
@@ -161,20 +168,26 @@ def parse_perf_bytes(file_bytes):
                 idx["날짜"] = idx[h]
                 break
     recs = []
-    # AF코드 형식에 안 맞아 버린 행 — 헤더·합계 같은 잡행이 대부분이지만, 새 코드 체계가
-    # 들어오면 여기로 조용히 흘러가 유입UV가 통째로 빠진다. 세서 호출부에 넘긴다.
-    rejected = {}
+    # 정말 버린 행(잡행)과, 받았지만 형식이 낯선 행을 나눠 센다. 예전엔 둘을 안 갈라
+    # 새 코드 체계까지 같이 버렸다 — 증상이 '숫자가 좀 적네'로만 보여 원인이 안 드러난다.
+    rejected, unknown = {}, {}
+
+    def _tally(bag, af, r):
+        _ui = idx.get("UV")
+        _uv = r[_ui] if (_ui is not None and _ui < len(r)) else None
+        _cnt, _sum = bag.get(af, (0, 0.0))
+        bag[af] = (_cnt + 1, _sum + (float(_uv) if isinstance(_uv, (int, float)) else 0.0))
+
     for r in rows[1:]:
         afi = idx.get("AF코드")
         if afi is None or afi >= len(r) or r[afi] is None:
             continue
         af = str(r[afi]).strip().upper()             # 대문자 정규화 — 실적↔기획 대소문자
-        if not AF_RE.match(af):                        # 불일치로 인한 미매칭·저장소 중복 방지
-            _ui = idx.get("UV")
-            _uv = r[_ui] if (_ui is not None and _ui < len(r)) else None
-            _cnt, _sum = rejected.get(af, (0, 0.0))
-            rejected[af] = (_cnt + 1, _sum + (float(_uv) if isinstance(_uv, (int, float)) else 0.0))
+        if not AF_KEEP.match(af):                    # 빈 칸·합계 같은 잡행만 버린다
+            _tally(rejected, af, r)
             continue
+        if not AF_RE.match(af):                      # 실적엔 넣되 낯선 형식이라고 알린다
+            _tally(unknown, af, r)
         rec = {}
         for kcol, key in PERF_COLMAP.items():
             i = idx.get(kcol)
@@ -186,6 +199,7 @@ def parse_perf_bytes(file_bytes):
     # attrs는 pickle을 타므로 st.cache_data를 거쳐도 살아남는다. 다만 이후 merge·concat에서
     # 사라지니 호출부(cached_perf 직후)에서 바로 읽어야 한다.
     out.attrs["af_rejected"] = rejected
+    out.attrs["af_unknown"] = unknown
     return out
 
 
@@ -2597,6 +2611,21 @@ def main():
     [data-testid="stMetric"]{background:#ffffff;border-radius:8px;padding:12px 16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
     [data-testid="stMetricLabel"]{color:#64748b!important;font-size:12px!important}
     [data-testid="stMetricValue"]{color:#1e293b!important;font-size:20px!important}
+
+    /* 표 첫 행(헤더) — 기본값이 옅은 회색 12px이라 잘 안 보인다. 표는 캔버스
+       (glide-data-grid)로 그려져 보통 CSS가 안 닿으므로, 그 라이브러리가 읽는
+       `--gdg-*` 변수로 바꾼다. 글자만 진하게·크게 하고 배경은 살짝 눌러 첫 행이
+       본문과 구분되게 한다. 폰트 패밀리는 건드리지 않는다(Material 아이콘 보호). */
+    [data-testid="stDataFrame"], [data-testid="stDataFrameResizable"],
+    [data-testid="stDataEditor"], .stDataFrame {
+      --gdg-text-header: #1e293b;
+      --gdg-text-header-selected: #0f172a;
+      --gdg-header-font-style: 600 13px;
+      --gdg-bg-header: #eef2f7;
+      --gdg-bg-header-hovered: #e2e8f0;
+      --gdg-bg-header-has-focus: #e2e8f0;
+      --gdg-border-color: #dbe3ec;
+    }
     .vg{border:1px solid #e2e8f0;border-radius:8px;padding:14px 18px;margin:8px 0;line-height:1.7;background:#ffffff}
     .sdiv{border-top:1px solid #e2e8f0;margin:22px 0}
     .stat-label{font-size:11px;color:#545c6a;margin-bottom:3px;font-weight:500;letter-spacing:.04em;text-transform:uppercase}
@@ -3045,21 +3074,26 @@ def main():
     # 바이트 생성은 콜러블로 넘겨 '누를 때만' 만든다 — 표마다 미리 만들면 매 rerun이 느려진다.
     _tbl_seq = itertools.count(1)
 
-    def table(data, *args, dl=True, dl_name=None, dl_title=None, **kw):
-        """st.dataframe 과 같게 쓰되, 아래에 엑셀 다운로드 버튼을 붙인다."""
+    def table(data, *args, dl=True, dl_name=None, dl_title=None, dl_data=None, **kw):
+        """st.dataframe 과 같게 쓰되, 아래에 엑셀 다운로드 버튼을 붙인다.
+
+        `dl_data`를 주면 **내려받기만** 그 객체로 만든다. 화면에서 열을 접어 둔 표라도
+        파일엔 전부 들어가야 한다 — 접힌 건 화면 사정이지 데이터가 없는 게 아니다.
+        """
         ev = st.dataframe(data, *args, **kw)
         if dl and xlsx_bytes is not None:
             _i = next(_tbl_seq)
             _nm = dl_name or (dl_title or "표")
             _fn = re.sub(r"[^\w가-힣.\- ]", "", str(_nm)).strip() or "표"
             # 축을 인덱스에 세운 표(히트맵·피벗)는 인덱스도 같이 내보내야 뜻이 통한다
-            _d0 = getattr(data, "data", data)
+            _src = data if dl_data is None else dl_data
+            _d0 = getattr(_src, "data", _src)
             _idx = (not kw.get("hide_index", False)) and not isinstance(
                 getattr(_d0, "index", None), pd.RangeIndex)
             try:
                 st.download_button(
                     "⬇️ 엑셀", key=f"_xl{_i}",
-                    data=lambda d=data, t=dl_title or _nm, x=_idx: xlsx_bytes(
+                    data=lambda d=_src, t=dl_title or _nm, x=_idx: xlsx_bytes(
                         d, sheet_name=_nm, title=t, index=x),
                     file_name=f"{_fn}_{today_kst():%Y%m%d}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -3263,6 +3297,7 @@ def main():
     stored = st.session_state.camp_store
     parse_log = []
     af_rejected_msgs = []          # AF코드 형식이 아니라 빠진 발송 (사이드바 경고로 띄운다)
+    af_unknown_msgs = []           # 실적엔 넣었지만 코드 형식이 낯선 발송
     new_raw = None
 
     if perf_files:
@@ -3335,6 +3370,17 @@ def main():
                             # 접힌 「파싱 로그」에만 두면 실적이 사라진 걸 아무도 모른다.
                             # 유입UV가 붙은 발송이 빠진 거라 눈에 보이는 자리에 띄운다.
                             af_rejected_msgs.append(f"`{nm[:22]}` — {_msg}")
+                        # 받긴 했지만 형식이 낯선 코드 — 실적은 안 새지만 문구 조인이
+                        # 안 붙을 수 있어 눈에 띄게 알린다(예전엔 이런 걸 통째로 버렸다)
+                        _unk = pdf.attrs.get("af_unknown") or {}
+                        if _unk:
+                            _ut = sorted(_unk.items(), key=lambda kv: -kv[1][1])[:5]
+                            _umsg = (f"낯선 AF코드 {sum(v[0] for v in _unk.values())}건 · "
+                                     f"유입UV {sum(v[1] for v in _unk.values()):,.0f} — "
+                                     + ", ".join(f"{k}({v[1]:,.0f})" for k, v in _ut)
+                                     + (" 외" if len(_unk) > 5 else ""))
+                            parse_log.append("   ℹ " + _umsg)
+                            af_unknown_msgs.append(f"`{nm[:22]}` — {_umsg}")
                         mdf = merge_perf_plan(pdf, plan_lookup, keep_unmatched=True)
                         frames.append(mdf[[c for c in STORE_COLS if c in mdf]])
                         mr = mdf["matched"].mean() * 100 if len(mdf) else 0
@@ -3840,9 +3886,14 @@ def main():
                                "기획 시트 적재·형식(날짜/AF코드)을 확인해 주세요. "
                                "상세는 「9. 데이터·다운로드」의 매칭 품질 참고.")
     if af_rejected_msgs:
-        st.sidebar.warning("⚠️ 실적에 **AF코드 형식이 아닌 발송**이 있어 빼고 읽었어요.\n\n"
+        st.sidebar.warning("⚠️ 실적에 **AF코드로 볼 수 없는 행**이 있어 빼고 읽었어요 "
+                           "(숫자가 하나도 없는 값 — 합계·소계 같은 잡행).\n\n"
                            + "\n\n".join(af_rejected_msgs)
                            + "\n\n정상 발송이면 알려 주세요 — 코드 규칙을 넓혀야 해요.")
+    if af_unknown_msgs:
+        st.sidebar.info("ℹ️ **낯선 형식의 AF코드**가 있어요. 실적(주간보고·요약)에는 "
+                        "**전부 반영**했고, 다만 기획 문구가 안 붙을 수 있어요.\n\n"
+                        + "\n\n".join(af_unknown_msgs))
     if parse_log:
         with st.sidebar.expander("파싱 로그"):
             st.text("\n".join(parse_log))
@@ -4860,10 +4911,48 @@ def main():
             if s.startswith("△") or s.startswith("-"):    # △ = 마이너스 (회사 보고 양식)
                 return "color:#dc2626;font-weight:600"
             return ""
-        table(wr_tbl.style.map(_clr, subset=["전주비", "전월비", "전년비"]),
-                     hide_index=True, width="stretch", height=38 + 35 * len(wr_tbl),
+
+        # **기본은 기준주 + 비교 3열만.** 실적 열까지 일곱 칸을 늘어놓으면 가로로 넓어져
+        # 정작 봐야 할 증감이 눈에 안 들어온다. 비교 열 **머리를 누르면** 그 비교의 실적
+        # 열이 왼쪽에 펼쳐진다(다시 누르면 접힌다). 선택은 **칼럼 이름**으로 오므로 열이
+        # 늘었다 줄었다 해도 어긋나지 않는다.
+        _CMP = [("전주비", col_prev), ("전월비", col_pm), ("전년비", col_yoy)]
+        _WRK = "wr_sum_cols"
+
+        def _open_cmps(ev_or_state):
+            """펼쳐 둘 비교 열 이름들. 칼럼 선택이라 이름이 그대로 온다."""
+            sel = None
+            for _g in (lambda: ev_or_state["selection"],
+                       lambda: getattr(ev_or_state, "selection", None)):
+                try:
+                    sel = _g()
+                except Exception:                         # noqa: BLE001
+                    sel = None
+                if sel:
+                    break
+            if not sel:
+                return set()
+            try:
+                cols = sel["columns"]
+            except Exception:                             # noqa: BLE001
+                cols = getattr(sel, "columns", None)
+            return {c for c in (cols or []) if c in dict(_CMP)}
+
+        _open = _open_cmps(st.session_state.get(_WRK))
+        _show = ["지표", col_cur]
+        for _dc, _vc in _CMP:
+            if _dc in _open:                              # 펼친 비교만 실적 열을 곁들인다
+                _show.append(_vc)
+            _show.append(_dc)
+        _view = wr_tbl[[c for c in _show if c in wr_tbl.columns]]
+        _ev = table(_view.style.map(_clr, subset=["전주비", "전월비", "전년비"]),
+                     hide_index=True, width="stretch", height=38 + 35 * len(_view),
+                     key=_WRK, on_select="rerun", selection_mode="single-column",
                      column_config={"지표": st.column_config.Column(width="medium")},
-                     dl_name="주요 지표 현황")
+                     dl_name="주요 지표 현황",
+                     dl_data=wr_tbl.style.map(_clr, subset=["전주비", "전월비", "전년비"]))
+        st.caption("**전주비·전월비·전년비 열 머리를 누르면** 그 비교의 실적 열이 옆에 "
+                   "펼쳐져요. 다시 누르면 접혀요. 엑셀로 받으면 접힌 열까지 다 들어가요.")
         st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
                    "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
                    "전월비는 전월 동주(기준주 목요일의 한 달 전이 속한 주)와 비교해요 — "

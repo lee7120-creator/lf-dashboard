@@ -1310,6 +1310,30 @@ def t_customer_count_equals_uv_times_cr():
 
 
 @case
+def t_table_header_is_readable():
+    """표 첫 행이 옅은 회색 12px이라 안 보인다는 지적 — 진하게·크게 바꾼다.
+
+    표는 캔버스(glide-data-grid)로 그려져 보통 CSS가 안 닿는다. 그 라이브러리가 읽는
+    `--gdg-*` 변수로만 바뀌므로, 일반 셀렉터로 고쳐 놓고 됐다고 여기지 않게 못 박는다.
+    두 앱이 같은 표 스타일을 써야 해서 양쪽 다 본다.
+    """
+    for f in ("weekly_report.py", "send_perf_dashboard.py"):
+        src = (ROOT / f).read_text(encoding="utf-8")
+        for v in ("--gdg-text-header", "--gdg-header-font-style", "--gdg-bg-header"):
+            assert v in src, f"{f}: «{v}»가 없어요 — 캔버스 표는 이 변수로만 바뀌어요"
+        # 회색 기본값을 그대로 두면 고친 의미가 없다
+        i = src.index("--gdg-text-header")
+        assert "#1e293b" in src[i:i + 60], f"{f}: 헤더 글자색이 여전히 옅어요"
+        # Material 아이콘 폰트는 건드리지 않는다(아이콘이 네모로 깨진다)
+        j = src.index("--gdg-header-font-style")
+        assert "font-family" not in src[j:j + 80], f"{f}: 헤더에 폰트 패밀리를 지정했어요"
+    # 화면에도 실제로 실려야 한다
+    at = _open()
+    css = _html(at)
+    assert "--gdg-text-header" in css, "CSS가 페이지에 안 실렸어요"
+
+
+@case
 def t_picked_row_reads_cell_selection():
     """_picked_row는 셀 선택·행 선택 둘 다 받고, 범위를 벗어나면 None."""
     class _Ev:

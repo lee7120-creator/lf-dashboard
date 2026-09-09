@@ -44,6 +44,21 @@ def today_kst():
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"]{background:#f8f9fc}
+
+/* 표 첫 행(헤더) — 기본값이 옅은 회색 12px이라 잘 안 보인다. 표는 캔버스
+   (glide-data-grid)로 그려져 보통 CSS가 안 닿으므로, 그 라이브러리가 읽는
+   `--gdg-*` 변수로 바꾼다. 글자만 진하게·크게 하고 배경은 살짝 눌러 첫 행이
+   본문과 구분되게 한다. 폰트 패밀리는 건드리지 않는다(Material 아이콘 보호). */
+[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"],
+[data-testid="stDataEditor"], .stDataFrame {
+  --gdg-text-header: #1e293b;
+  --gdg-text-header-selected: #0f172a;
+  --gdg-header-font-style: 600 13px;
+  --gdg-bg-header: #eef2f7;
+  --gdg-bg-header-hovered: #e2e8f0;
+  --gdg-bg-header-has-focus: #e2e8f0;
+  --gdg-border-color: #dbe3ec;
+}
 [data-testid="stSidebar"]{background:#ffffff;border-right:1px solid #e2e8f0}
 [data-testid="stMetric"]{background:#ffffff;border-radius:8px;padding:12px 16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
 [data-testid="stMetricLabel"]{color:#64748b!important;font-size:12px!important}
