@@ -98,23 +98,35 @@ def synth_orgcat():
                      "brand": "", "item": "", "lfms": "N", "year": year,
                      "label": label, "close": "final", "sortkey": sortkey,
                      "value": float(v)})
+    def node(gran, label, sk, y, org, cat, rev, cust):
+        """한 노드에 다섯 지표를 다 심는다.
+
+        `거래액 = 상품UV × 상품CR × 객단가`가 **정확히** 성립하게 만든다 — 실파일에서
+        오차 0.000%로 맞는 항등식이라, 여기서 깨 두면 요인 분해 테스트가 아무것도 못 잡는다.
+        """
+        uv, cr = cust * 20.0, 0.05
+        add(gran, label, sk, y, org, cat, "첫구매 거래액", rev)
+        add(gran, label, sk, y, org, cat, "첫구매 고객수", cust)
+        add(gran, label, sk, y, org, cat, "첫구매 객단가", rev / cust)
+        add(gran, label, sk, y, org, cat, "상품UV", uv)
+        add(gran, label, sk, y, org, cat, "상품CR", cr)
+
     for y in YEARS:
-        k = 1.0 if y == 2026 else 0.8
+        # 거래액과 고객수를 서로 다른 비율로 흔들어 객단가도 같이 움직이게 한다 —
+        # 둘이 같은 배수면 객단가가 고정돼 요인 분해가 한 요인만 가리킨다
+        kr, kc = (1.0, 1.0) if y == 2026 else (0.8, 0.9)
         for gran, labels in (("월", [(f"{m}월", m * 100) for m in MONTHS]),
                              ("주", [(f"{m:02d}월 {w}주차", m * 100 + w)
                                      for m in MONTHS for w in WEEKS])):
             for label, sk in labels:
-                s = y * 10000 + sk
-                add(gran, label, s, y, "*TOTAL", "*TOTAL", "첫구매 거래액", 50e6 * k)
-                add(gran, label, s, y, "*TOTAL", "*TOTAL", "첫구매 고객수", 500 * k)
+                sv = y * 10000 + sk
+                node(gran, label, sv, y, "*TOTAL", "*TOTAL", 50e6 * kr, 500 * kc)
                 base = 30e6
                 for org, cats in TREE.items():
-                    add(gran, label, s, y, org, "*TOTAL", "첫구매 거래액", base * k)
-                    add(gran, label, s, y, org, "*TOTAL", "첫구매 고객수", 300 * k)
+                    node(gran, label, sv, y, org, "*TOTAL", base * kr, 300 * kc)
                     part = base / len(cats)
                     for cat in cats:
-                        add(gran, label, s, y, org, cat, "첫구매 거래액", part * k)
-                        add(gran, label, s, y, org, cat, "첫구매 고객수", 150 * k)
+                        node(gran, label, sv, y, org, cat, part * kr, 150 * kc)
                     base = 20e6
     return pd.DataFrame(rows)[W.ORGCAT_COLS]
 
@@ -187,6 +199,20 @@ def _frames(at):
         if hasattr(v, "columns"):
             out.append(v)
     return out
+
+
+def _sel_step(at):
+    """③ 채널별 증감의 지표 셀렉트 — 퍼널 단계가 선택지에 있는 쪽."""
+    got = [x for x in at.selectbox if x.label == "지표" and "가입자수" in x.options]
+    assert got, [(x.label, list(x.options)) for x in at.selectbox]
+    return got[0]
+
+
+def _sel_oc(at):
+    """④ 조직·카테고리의 지표 셀렉트 — 첫구매 지표만 있는 쪽."""
+    got = [x for x in at.selectbox if x.label == "지표" and "가입자수" not in x.options]
+    assert got, [(x.label, list(x.options)) for x in at.selectbox]
+    return got[0]
 
 
 CASES = []
@@ -323,14 +349,13 @@ def t_channel_table_carries_the_rate_caveat():
 def t_decomposition_offers_additive_only():
     """비율 지표는 채널 합 ≠ 전체라 분해가 성립하지 않는다 — 선택지에 있으면 안 된다."""
     at = _open()
-    box = [s for s in at.selectbox if s.label == "분해할 단계"]
-    assert box, f"분해 셀렉트가 없어요 — {[s.label for s in at.selectbox]}"
-    opts = list(box[0].options)
-    assert opts, "분해 지표가 하나도 없어요"
-    for bad in ("가입율", "당일가입CR", "첫구매 객단가"):
-        assert bad not in opts, f"비율 지표 «{bad}»가 분해 선택지에 있어요 — {opts}"
+    opts = list(_sel_step(at).options)
     for good in ("비회원트래픽", "가입자수", "첫구매 고객수", "첫구매 거래액"):
         assert good in opts, f"«{good}»가 빠졌어요 — {opts}"
+    # 가산 지표를 고르면 워터폴(부분의 합 = 전체)이 그려진다
+    _sel_step(at).set_value("첫구매 거래액"); at.run()
+    assert not at.exception, at.exception[0].value
+    assert any("증감 분해" in t for t in _texts(at)), "가산 지표인데 분해 설명이 없어요"
 
 
 @case
@@ -341,34 +366,42 @@ def t_decomposition_draws_a_waterfall():
 
 # ── ④ 조직 > 카테고리 ───────────────────────────────────────────────
 @case
-def t_orgcat_lists_orgs_then_categories():
+def t_orgcat_lists_orgs_with_rowclick_hint():
+    """조직 표는 늘 보이고, 한 단계 더는 **행을 눌러** 들어간다."""
     at = _open()
-    box = [s for s in at.selectbox if s.label == "1. 조직"]
-    assert box, f"조직 셀렉트가 없어요 — {[s.label for s in at.selectbox]}"
-    assert set(TREE) <= set(box[0].options), list(box[0].options)
+    assert not [s for s in at.selectbox if s.label == "1. 조직"], \
+        "셀렉트박스가 남아 있어요 — 행 클릭으로 바뀌었어요"
     fr = [f for f in _frames(at) if f.index.name == "조직"]
-    assert fr, "조직 표가 없어요"
+    assert fr, f"조직 표가 없어요 — {[f.index.name for f in _frames(at)]}"
     assert set(TREE) <= set(fr[0].index), list(fr[0].index)
+    assert any("누르면" in t and "카테고리" in t for t in _texts(at)), "행 클릭 안내가 없어요"
 
-    box[0].set_value("e-영업1"); at.run()
-    assert not at.exception, at.exception[0].value
-    fr = [f for f in _frames(at) if f.index.name == "카테고리"]
-    assert fr, "조직을 골랐는데 카테고리 표가 안 나와요"
-    assert set(TREE["e-영업1"]) == set(fr[0].index), list(fr[0].index)
+
+@case
+def t_org_row_opens_its_categories():
+    """행을 누른 뒤 나오는 표 — 화면이 부르는 것과 같은 헬퍼로 값을 대조한다."""
+    oc = synth_orgcat()
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    view = W.orgcat_view(sub)
+    kids = view.live(("e-영업1",))[0]
+    assert set(kids) == set(TREE["e-영업1"]), kids
+    tbl = W._funnel_level_table(view, ["e-영업1"], kids, "카테고리", "첫구매 거래액",
+                                2026, 2025, "1월", "final",
+                                view.get(("e-영업1",), "첫구매 거래액", 2026, "1월", "mtd"))
+    assert list(tbl.index) == kids, list(tbl.index)
+    assert "비중" in tbl.columns, list(tbl.columns)      # 거래액은 가산 지표
+    # 가방·지갑이 각각 절반 → 비중 50.0%
+    assert set(tbl["비중"]) == {"50.0%"}, tbl["비중"].tolist()
 
 
 @case
 def t_orgcat_share_only_for_additive():
     """하위 합이 상위와 맞는 건 거래액뿐이다 — 고객수에 비중을 붙이면 거짓말이 된다."""
     at = _open()
-    box = [s for s in at.selectbox if s.label == "지표"]
-    assert box, f"지표 셀렉트가 없어요 — {[s.label for s in at.selectbox]}"
-    assert box[0].value == "첫구매 고객수" or "첫구매 거래액" in box[0].options
-    box[0].set_value("첫구매 거래액"); at.run()
+    _sel_oc(at).set_value("첫구매 거래액"); at.run()
     fr = [f for f in _frames(at) if f.index.name == "조직"][0]
     assert "비중" in fr.columns, f"거래액엔 비중이 있어야 해요 — {list(fr.columns)}"
-    box = [s for s in at.selectbox if s.label == "지표"][0]
-    box.set_value("첫구매 고객수"); at.run()
+    _sel_oc(at).set_value("첫구매 고객수"); at.run()
     fr = [f for f in _frames(at) if f.index.name == "조직"][0]
     assert "비중" not in fr.columns, f"고객수엔 비중이 없어야 해요 — {list(fr.columns)}"
     assert any("하위 합이 상위와 안 맞는" in t for t in _texts(at)), "왜 뺐는지 안 밝혔어요"
@@ -387,12 +420,14 @@ def t_orgcat_missing_source_explains_itself():
 def t_push_period_avg_reads_daily_rows():
     """앱푸시는 일별로만 쌓인다 — 월은 정확히, 주는 근사로 묶는다."""
     d = synth_store()
-    v, approx = W.push_period_avg(d, 2026, "9월")
+    v, approx, n = W.push_period_avg(d, 2026, "9월")
     assert abs(v - np.mean(list(PUSH_DAILY.values()))) < 1e-6, v
     assert approx is False, "월은 근사가 아니에요"
-    v2, approx2 = W.push_period_avg(d, 2026, "09월 1주차")
+    assert n == len(PUSH_DAILY), f"며칠치인지 같이 돌려줘야 해요 — {n}"
+    v2, approx2, n2 = W.push_period_avg(d, 2026, "09월 1주차")
     assert approx2 is True, "주는 근사라고 알려야 해요"
     assert abs(v2 - PUSH_DAILY[1]) < 1e-6, v2      # 1~7일 = 1일치뿐
+    assert n2 == 1, n2
     assert pd.isna(W.push_period_avg(d, 2026, "없는라벨")[0])
 
 
@@ -684,6 +719,128 @@ def t_clean_data_does_not_warn():
 def t_recognized_list_mentions_broken_days():
     cls = W.classify_uploads((("일별.csv", appinstall_csv()),))
     assert any("기기 수가 절반 이하인 날 5일" in c[1] and "08-31" in c[1] for c in cls), cls
+
+
+@case
+def t_category_rollup_spans_orgs():
+    """조직을 가로질러 카테고리를 모은 표 — 조직을 하나씩 안 들어가도 보인다."""
+    at = _open()
+    fr = [f for f in _frames(at) if f.index.name == "카테고리" and "조직 수" in f.columns]
+    assert fr, f"카테고리 합산 표가 없어요 — {[list(f.columns) for f in _frames(at)]}"
+    cats = set(fr[0].index)
+    want = {c for v in TREE.values() for c in v}
+    assert cats == want, (cats, want)
+
+
+@case
+def t_category_rollup_sums_only_what_can_be_summed():
+    """거래액은 조직 합, 객단가는 거래액합÷고객수합. 고객수 합은 중복이 섞인다고 밝힌다."""
+    at = _open()
+    _sel_oc(at).set_value("첫구매 거래액"); at.run()
+    fr = [f for f in _frames(at) if f.index.name == "카테고리" and "조직 수" in f.columns][0]
+    assert "비중" in fr.columns, list(fr.columns)
+    assert any("조직 합이 전체와 맞는" in t for t in _texts(at)), "거래액 설명이 없어요"
+
+    _sel_oc(at).set_value("첫구매 객단가"); at.run()
+    assert not at.exception, at.exception[0].value
+    fr = [f for f in _frames(at) if f.index.name == "카테고리" and "조직 수" in f.columns][0]
+    assert "비중" not in fr.columns, "객단가는 더할 수 없어 비중을 붙이면 안 돼요"
+    assert any("거래액 합 ÷ 고객수 합" in t for t in _texts(at)), "객단가 산식 설명이 없어요"
+
+
+@case
+def t_channel_decomposition_accepts_ratio_metrics():
+    """당일가입CR 같은 비율도 고를 수 있어야 한다 — 다만 워터폴이 아니라 채널별 변화다."""
+    at = _open()
+    opts = list(_sel_step(at).options)
+    for m in ("당일가입CR", "가입율", "첫구매 객단가"):
+        assert m in opts, f"«{m}»를 못 골라요 — {opts}"
+    _sel_step(at).set_value("당일가입CR"); at.run()
+    assert not at.exception, at.exception[0].value
+    assert any("채널을 더해도 전체가 안 돼요" in t for t in _texts(at)), \
+        "비율 지표 주의 문구가 없어요"
+
+
+@case
+def t_app_block_states_its_period():
+    """⑤는 한참 내려온 자리라 어느 기간 값인지 다시 말해야 한다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store)
+    assert any(t.startswith("기준:") and "일평균" in t for t in _texts(at)), \
+        [t for t in _texts(at) if "기준" in t]
+
+
+@case
+def t_app_block_shows_recent_periods():
+    """카드 한 장으로는 '이번이 낮은 건지 원래 그런 건지'를 못 본다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store)
+    fr = [f for f in _frames(at) if f.index.name == "기간" and "앱 신규설치" in f.columns]
+    assert fr, f"최근 추이 표가 없어요 — {[f.index.name for f in _frames(at)]}"
+    assert len(fr[0]) >= W.APP_TREND_N["주"], f"주 단위는 8개 이상 — {len(fr[0])}"
+    # 앱 원천이 마스터보다 짧게 끝나도 **지금 보고 있는 기간**은 빈 줄로라도 서야 한다 —
+    # 표에서 통째로 빠지면 '왜 카드가 비었지'가 안 풀린다
+    assert sum("◀" in str(i) for i in fr[0].index) == 1, list(fr[0].index)
+    # 단위는 위 비교 기준을 따라간다
+    at2 = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    fr2 = [f for f in _frames(at2) if f.index.name == "기간" and "앱 신규설치" in f.columns]
+    assert fr2 and len(fr2[0]) >= W.APP_TREND_N["월"], \
+        f"월 단위는 6개 이상 — {len(fr2[0]) if fr2 else None}"
+    assert sum("◀" in str(i) for i in fr2[0].index) == 1, list(fr2[0].index)
+
+
+@case
+def t_app_block_reports_coverage():
+    """기간은 맞는데 원천이 아직 안 닿았을 수 있다 — 어디까지 들어왔는지 말한다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store)
+    assert any("앱설치 원천은" in t and "까지 들어와 있어요" in t for t in _texts(at)), \
+        "커버리지 안내가 없어요"
+
+
+@case
+def t_empty_app_period_says_why():
+    """마스터는 09월 4주차까지인데 앱 원천은 09월 1주차까지다 — 그때 빈 카드만 두면 안 된다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store)
+    warn = " ".join(str(w.value) for w in at.warning)
+    assert "앱 데이터가 없어요" in warn and "까지 들어와 있어요" in warn, warn
+
+
+@case
+def t_factor_split_shows_where_it_leaked():
+    """`거래액 = 상품UV × 상품CR × 객단가` — 어느 요인이 끌어내렸는지 짚어야 한다."""
+    at = _open()
+    fr = [f for f in _frames(at) if f.index.name == "요인"]
+    assert fr, f"요인 분해 표가 없어요 — {[f.index.name for f in _frames(at)]}"
+    idx = " ".join(str(i) for i in fr[0].index)
+    for nick in ("유입", "전환", "객단가"):
+        assert nick in idx, (nick, list(fr[0].index))
+    assert any("어디에서 빠졌나" in t for t in _texts(at)), "요인 분해 제목이 없어요"
+
+
+@case
+def t_factor_split_refuses_when_it_cannot():
+    """0·결측이 섞이면 로그가 정의되지 않는다 — 숫자를 지어내면 안 된다."""
+    assert W.factor_split([1.0, 0.0, 1.0], [1.0, 1.0, 1.0]) is None
+    assert W.factor_split([1.0, 1.0], [1.0, np.nan]) is None
+    got = W.factor_split([10.0, 2.0], [20.0, 2.0])
+    assert got is not None
+    parts, total = got
+    assert abs(sum(parts) - total) < 1e-6, (parts, total)   # 합이 실제 증감과 같다
+
+
+@case
+def t_rollup_refuses_metrics_it_cannot_sum():
+    """상품UV·상품CR은 조직을 가로질러 합칠 수 없다 — 만들지 말고 왜인지 말한다."""
+    at = _open()
+    opts = list(_sel_oc(at).options)
+    assert "상품UV" in opts and "상품CR" in opts, f"상품 지표를 못 골라요 — {opts}"
+    _sel_oc(at).set_value("상품CR"); at.run()
+    assert not at.exception, at.exception[0].value
+    assert not [f for f in _frames(at) if f.index.name == "카테고리" and "조직 수" in f.columns], \
+        "합칠 수 없는 지표인데 합산 표가 나왔어요"
+    assert any("합칠 수 없는 지표" in t for t in _texts(at)), "왜 없는지 안 밝혔어요"
 
 
 def main():

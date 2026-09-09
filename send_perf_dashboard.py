@@ -7663,25 +7663,49 @@ def main():
             xcol = "_x"
 
             # ── 비교할 두 지표 (막대 = 발송량 계열, 선 = 효율 계열) ──
-            _bar_opts = [o for o in ("인당 발송 건수", "총발송 건수", "유입률(발송당)", "CTR(고객당)",
-                                     "총거래액", "총유입", "거래액", "객단가",
-                                     "유니크 유입", "유니크 발송 고객수")
-                         if MTDOPT[o] in agg.columns]
+            # **집계 기준을 이름에 박는다.** 이 목록엔 '하루 평균'과 '기간 합계'가 섞여
+            # 있는데, 예전 이름은 `총`을 두 뜻으로 썼다 — `총발송 건수`의 총은 '전사'(값은
+            # 일평균)고 `총거래액`·`총유입`의 총은 '기간 합계'였다. 그래서 막대(일평균 250만)와
+            # 선(월 합계 290만)이 나란히 서면 "발송이 유입보다 적네"로 읽혔다.
+            # MTDOPT는 다른 화면 셋이 같이 쓰므로 건드리지 않고, 여기서만 이름을 갈아 끼운다.
+            _FAT_BAR = [("발송 건수 (일평균)", "totalSend"),
+                        ("발송 건수 (기간 합계)", "totalSend_sum"),
+                        ("인당 발송 건수", "perSend"),
+                        ("유입률(발송당)", "ctr_send"), ("CTR(고객당)", "ctr"),
+                        ("거래액 (일평균)", "revenue"), ("거래액 (기간 합계)", "revenue_sum"),
+                        ("총유입 (일평균)", "totalInflow"),
+                        ("총유입 (기간 합계)", "totalInflow_sum"),
+                        ("객단가", "avgOrderVal"),
+                        ("유니크 유입 (일평균)", "uniqueInflow"),
+                        ("유니크 유입 (기간 합계)", "uniqueInflow_sum"),
+                        ("유니크 발송 고객수 (일평균)", "customers")]
             # 기본은 '유입률(발송당)' — 피로도는 발송 1건당 효율로 봐야 신호가 선명하다.
             # CTR(고객당)은 분모(유니크 고객)가 거의 안 움직여서 피로도를 과소평가한다.
-            _line_opts = [o for o in ("유입률(발송당)", "CTR(고객당)", "구매전환율(CR)", "발송건당거래액(RPS)",
-                                      "거래액", "객단가", "총거래액", "총유입",
-                                      "유입 대비 구매전환율", "유입 1명당 거래액",
-                                      "유입 1명당 방문 횟수")
-                          if MTDOPT[o] in agg.columns]
+            _FAT_LINE = [("유입률(발송당)", "ctr_send"), ("CTR(고객당)", "ctr"),
+                         ("구매전환율(CR)", "purchaseRate"),
+                         ("발송건당거래액(RPS)", "rps"),
+                         ("거래액 (일평균)", "revenue"), ("거래액 (기간 합계)", "revenue_sum"),
+                         ("객단가", "avgOrderVal"),
+                         ("총유입 (일평균)", "totalInflow"),
+                         ("총유입 (기간 합계)", "totalInflow_sum"),
+                         ("유입 대비 구매전환율", "uniq_cr"),
+                         ("유입 1명당 거래액", "rev_per_uniq"),
+                         ("유입 1명당 방문 횟수", "inflow_dup")]
+            _FATCOL = dict(_FAT_BAR + _FAT_LINE)
+            _bar_opts = [o for o, c in _FAT_BAR if c in agg.columns]
+            _line_opts = [o for o, c in _FAT_LINE if c in agg.columns]
             _mc1, _mc2 = st.columns(2)
             guard_select("p_fat_bar", _bar_opts)
             xlab = _mc1.selectbox("기준 지표(좌·막대)", _bar_opts, key="p_fat_bar",
-                                  help="보통 발송량이에요. 다른 지표로 바꿔서 상관을 볼 수 있어요.")
+                                  help="보통 발송량이에요. 다른 지표로 바꿔서 상관을 볼 수 있어요. "
+                                       "이름 뒤 괄호가 집계 기준이에요 — **일평균은 구간 길이와 "
+                                       "상관없고, 기간 합계는 구간이 짧으면 그만큼 낮게 나와요.**")
             guard_select("p_fat_line", _line_opts)
             ylab = _mc2.selectbox("효율 지표(우·선)", _line_opts, key="p_fat_line",
-                                  help="위 기준 지표와 같은 축에 겹쳐서 함께 움직이는지 봐요.")
-            xc, yc = MTDOPT[xlab], MTDOPT[ylab]
+                                  help="위 기준 지표와 같은 축에 겹쳐서 함께 움직이는지 봐요. "
+                                       "**일평균과 기간 합계를 나란히 놓으면 크기가 안 맞아요** — "
+                                       "둘 다 같은 기준으로 고르는 게 읽기 쉬워요.")
+            xc, yc = _FATCOL[xlab], _FATCOL[ylab]
             _uses_sum = xc.endswith("_sum") or yc.endswith("_sum")
 
             # 첫·끝 구간이 잘려 있으면 합계 지표가 뚝 떨어져 '급락'으로 오독된다.
@@ -7691,7 +7715,7 @@ def main():
                     f"잘린 구간 {len(_partial)}개 빼기 — {', '.join(_partial[:3])}"
                     + ("…" if len(_partial) > 3 else ""),
                     value=True, key="p_fat_dropparts",
-                    help="합계 지표(총거래액·총유입)는 구간이 짧으면 그만큼 낮게 나와요. "
+                    help="‘(기간 합계)’ 지표는 구간이 짧으면 그만큼 낮게 나와요. "
                          "끝 달이 며칠치뿐이면 급락처럼 보입니다. "
                          "일수가 8할도 안 차는 구간만 잡아요.")
                 if _drop:
@@ -7702,7 +7726,8 @@ def main():
                         st.stop()
                 elif _uses_sum:
                     _pn = agg.loc[agg["_part"], ["_x", "_n", "_full"]]
-                    st.warning("⚠️ 합계 지표를 보고 있는데 일수가 모자란 구간이 섞여 있어요 — "
+                    st.warning("⚠️ ‘(기간 합계)’ 지표를 보고 있는데 일수가 모자란 구간이 "
+                               "섞여 있어요 — "
                                "값이 낮은 게 성과 하락이 아니라 **기간이 짧아서**일 수 있어요: "
                                + " · ".join(f"{r['_x']} {int(r['_n'])}/{int(r['_full'])}일"
                                             for _, r in _pn.iterrows()))
@@ -7711,13 +7736,14 @@ def main():
             # 안 적어 두면 월별 거래액을 월 합계로 오해한다.
             if gran != "일별":
                 _agg_note = "일별 값의 <b>평균</b>" if not _uses_sum \
-                    else "일별 값의 <b>평균</b>(‘총거래액·총유입’만 <b>기간 합계</b>)"
+                    else "이름 뒤 괄호대로예요 — <b>(일평균)</b>은 일별 값의 평균, " \
+                         "<b>(기간 합계)</b>는 그 구간을 다 더한 값"
                 st.markdown(f'<div class="appendix">{gran} 값은 {_agg_note}이에요. '
-                            f'예: 월별 ‘거래액’은 그 달의 <b>하루 평균</b> 거래액이고, '
-                            f'월 전체 합계는 ‘총거래액’이에요.'
+                            f'예: 월별 ‘거래액 (일평균)’은 그 달의 <b>하루 평균</b> 거래액이고, '
+                            f'‘거래액 (기간 합계)’가 월 전체 합계예요.'
                             + ('<br><b>합계 지표는 구간 길이에 비례해요</b> — 잘린 구간과 온전한 '
                                '구간을 나란히 놓고 비교하지 마세요. 추세만 보려면 일평균 지표'
-                               '(‘거래액’·‘유입률(발송당)’)가 더 안전해요.' if _uses_sum else '')
+                               '(‘거래액 (일평균)’·‘유입률(발송당)’)가 더 안전해요.' if _uses_sum else '')
                             + '</div>', unsafe_allow_html=True)
 
             _xv = agg[xc] * (100 if xc in MTD_PCT else 1)
