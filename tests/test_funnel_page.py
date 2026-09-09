@@ -11,6 +11,7 @@
 """
 import datetime
 import inspect
+import io
 import json
 import os
 import pathlib
@@ -459,9 +460,10 @@ def t_app_block_shows_consent_rate():
     fr = [f for f in _frames(at) if f.index.name == "비율"]
     assert fr, f"앱 비율 표가 없어요 — {[f.index.name for f in _frames(at)]}"
     tbl = fr[0]
-    assert "신규회원 앱 수신동의율" in tbl.index, list(tbl.index)
+    # 앱 보유 무관 원천이 붙으면서 이름에 분모를 밝히게 바뀌었다
+    assert "앱푸시(앱포함)/신규회원" in tbl.index, list(tbl.index)
     # 주간 기본 모드: 그 주 앱푸시 일평균 ÷ 가입자수
-    assert tbl.loc["신규회원 앱 수신동의율", "2026년"] != "–", tbl.to_dict()
+    assert tbl.loc["앱푸시(앱포함)/신규회원", "2026년"] != "–", tbl.to_dict()
 
 
 @case
@@ -999,6 +1001,124 @@ def t_trend_columns_show_trimmed_labels():
     assert not [l for l in labs if l.startswith("0")], f"앞자리 0이 남았어요 — {labs[:6]}"
     # 값은 그대로 나와야 한다(라벨을 바꿔서 조회가 깨지지 않았는지)
     assert tbl.notna().any().any(), "라벨을 다듬다 조회가 깨졌어요"
+
+
+def pushall_xlsx(days=400, end=datetime.date(2026, 9, 8), tot=1500, yes=650,
+                 rows=("Push Total", "Push Y Cnt", "Push N Cnt")):
+    """앱 보유 무관 수신동의 원천 — 실파일과 같은 모양의 xlsx를 만든다.
+
+    1행 날짜(**연도 없음**) · 2행 요일 · 3~5행 Total/Y/N. `rows`를 줄이면
+    '세 줄이 다 있어야 잡는다'를 검사할 수 있다.
+    """
+    import openpyxl
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sheet 1"
+    ds = [end - datetime.timedelta(days=i) for i in range(days)][::-1]
+    for j, d in enumerate(ds, start=2):
+        ws.cell(1, j, f"{d.month}/{d.day}")
+        ws.cell(2, j, "(월)")
+    vals = {"Push Total": tot, "Push Y Cnt": yes, "Push N Cnt": tot - yes}
+    for i, name in enumerate(rows, start=3):
+        ws.cell(i, 1, name)
+        for j in range(2, len(ds) + 2):
+            ws.cell(i, j, vals[name])
+    bio = io.BytesIO(); wb.save(bio)
+    return bio.getvalue()
+
+
+@case
+def t_pushall_source_is_parsed():
+    """Total/Y/N 세 줄짜리 원천을 읽어 동의·대상 두 지표로 쌓는다."""
+    d = W.parse_pushall_file("Push_14.xlsx", pushall_xlsx(days=400))
+    assert not d.empty, "못 읽었어요"
+    assert set(d["metric"]) == {"앱푸시동의_앱무관", "앱푸시대상_앱무관"}, set(d["metric"])
+    # Push N Cnt는 Total-Y로 언제든 나오는 파생이라 안 쌓는다
+    assert not [m for m in set(d["metric"]) if "미동의" in m or "N" in m]
+    assert set(d["gran"]) == {"일"}, set(d["gran"])
+    # 연도는 상대값으로 나온다 — 절대연도는 combine_files가 마스터와 맞춰 정한다
+    assert set(d["year"]) == {0, -1}, sorted(set(d["year"]))
+    assert d["label"].str.contains("/").all()
+
+
+@case
+def t_pushall_needs_all_three_rows():
+    """세 줄이 다 있어야 이 원천이다 — 한 줄만 보고 잡으면 기존 PUSH 표를 가로챈다."""
+    for rows in (("Push Total",), ("Push Total", "Push Y Cnt")):
+        d = W.parse_pushall_file("Push_14.xlsx", pushall_xlsx(days=40, rows=rows))
+        assert d.empty, f"{rows} 만으로 잡았어요 — {set(d['metric']) if len(d) else ''}"
+
+
+@case
+def t_pushall_does_not_hijack_the_old_push_file():
+    """기존 PUSH 원천은 그대로 기존 파서가 가져가야 한다."""
+    import inspect as _i
+    src = pathlib.Path(APP).read_text(encoding="utf-8")
+    i = src.index("pa = parse_pushall_file(n, b)")
+    j = src.index("pf = parse_push_file(n, b)")
+    assert i < j, "새 파서가 기존 PUSH 파서 뒤에 있어요 — 파일명이 PUSH라 먼저 가로채집니다"
+    # 기존 PUSH 표(섹션×행 구조)엔 Total/Y/N 세 줄이 없으니 새 파서가 안 잡는다
+    assert "{\"pushtotal\", \"pushycnt\", \"pushncnt\"} <= have" in src
+
+
+@case
+def t_pushall_years_resolve_against_the_master():
+    """연도가 없는 원천이라 마스터 일자와 겹침으로 절대연도를 정한다."""
+    b = pushall_xlsx(days=400)
+    comb = W.combine_files((("Push_14.xlsx", b),))
+    pa = comb[comb["metric"] == "앱푸시동의_앱무관"]
+    assert not pa.empty, "결합 후 사라졌어요"
+    yrs = sorted(set(pa["year"]))
+    assert len(yrs) == 2 and yrs[1] - yrs[0] == 1, yrs
+    assert yrs[1] >= 2026, f"최근 해가 이상해요 — {yrs}"
+    # sortkey가 붙어야 기간 정렬이 된다
+    assert (pa["sortkey"] > 0).all(), "sortkey가 안 붙었어요"
+
+
+@case
+def t_pushall_rolls_up_to_the_period_as_a_daily_mean():
+    """일별로만 쌓이는 원천이라 주·월 칸은 일평균으로 묶는다."""
+    b = pushall_xlsx(days=400, tot=1500, yes=650)
+    comb = W.combine_files((("Push_14.xlsx", b),))
+    y = max(comb[comb["metric"] == "앱푸시동의_앱무관"]["year"])
+    v, approx, n = W.push_period_avg(comb, y, "8월", metric="앱푸시동의_앱무관")
+    assert n == 31, f"8월인데 {n}일치예요"
+    assert abs(v - 650) < 1e-6, v
+    assert not approx, "달은 라벨에서 바로 읽으니 근사가 아니에요"
+    # 주는 원천에 주차가 없어 근사다
+    _, approx_w, _ = W.push_period_avg(comb, y, "08월 2주차", metric="앱푸시동의_앱무관")
+    assert approx_w, "주차는 근사라고 알려야 해요"
+
+
+@case
+def t_funnel_shows_both_consent_denominators():
+    """⑤에 두 줄이 나란히 — 앱 보유 무관 / 앱 포함."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    extra = W.combine_files((("Push_14.xlsx", pushall_xlsx(days=400)),))
+    at = _open(store=pd.concat([store, extra], ignore_index=True),
+               mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "비율"]
+    assert fr, f"비율 표가 없어요 — {[f.index.name for f in _frames(at)]}"
+    idx = list(fr[0].index)
+    assert "앱푸시(앱보유무관)/신규회원" in idx, idx
+    assert "앱푸시(앱포함)/신규회원" in idx, idx
+    # 앱 보유 무관이 먼저 온다(분모가 더 넓은 쪽부터 읽는다)
+    assert idx.index("앱푸시(앱보유무관)/신규회원") < idx.index("앱푸시(앱포함)/신규회원"), idx
+    v = str(fr[0].loc["앱푸시(앱보유무관)/신규회원", "2026년"])
+    assert v.endswith("%") and v != "–", v
+    assert any("앱을 안 깔아서 못 받는 몫" in t for t in _texts(at)), \
+        "두 줄 차이가 뭔지 안 밝혔어요"
+
+
+@case
+def t_missing_pushall_source_says_why():
+    """원천이 없으면 빈 줄을 남기지 말고 왜 없는지 말한다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "비율"]
+    assert fr, "비율 표가 없어요"
+    assert "앱푸시(앱보유무관)/신규회원" not in list(fr[0].index), \
+        "원천이 없는데 빈 줄이 남았어요"
+    assert any("앱 보유와 무관한 수신동의" in t and "원천이 없어요" in t
+               for t in _texts(at)), "왜 없는지 안 밝혔어요"
 
 
 @case
