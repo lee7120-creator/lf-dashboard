@@ -864,6 +864,16 @@ Push N Cnt   791  894 …     ← 미동의
   있다는 뜻이라 화면에 띄운다.
 - 원천이 아직 없으면 그 줄을 **아예 빼고** 왜 없는지 캡션으로 밝힌다. 빈 줄을 남기면
   0인지 없는 건지 안 갈린다 (`test_funnel_page.py`의 `t_missing_pushall_source_says_why`).
+- **추이표의 비율 칸은 동의율 둘만 둔다.** 「가입자 대비 설치율」까지 넣으면 설치와 동의
+  두 갈래의 비율이 한 표에 섞여 어느 이야기인지 안 갈린다(실제로 헷갈린다는 지적을 받았다).
+  설치는 원값 칸으로 읽고, 비율은 **분모가 다른 동의율 둘**을 나란히 놓아 맞대게 한다.
+  앱 보유 무관 원천이 없으면 그 두 칼럼은 통째로 뺀다 — `–`만 늘어선 칼럼은 표만 넓힌다
+  (`t_trend_carries_both_consent_rates_not_install_rate`·
+  `t_trend_drops_pushall_columns_when_source_is_missing`).
+- **③ 채널별 증감의 기본 지표는 `첫구매 거래액`이다.** 목록 순서(`FUNNEL_STEPS`)대로 두면
+  맨 위 비회원트래픽으로 열려 매번 바꿔야 한다. 초기값은 `guard_select(default=)`로
+  **위젯을 만들기 전에 세션에 심는다** — `key`가 붙은 위젯에 `index=`를 같이 넘기면
+  경고가 나고, 이미 고른 값을 덮으면 안 된다 (`t_guard_select_default_only_seeds_once`).
 
 
 ### 앱설치 원천 (LFmall 앱 대시보드 export) — 「02」 하단 앱 블록

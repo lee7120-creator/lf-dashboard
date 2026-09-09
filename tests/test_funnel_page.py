@@ -1122,6 +1122,73 @@ def t_missing_pushall_source_says_why():
 
 
 @case
+def t_trend_carries_both_consent_rates_not_install_rate():
+    """추이표의 비율 칸은 **동의율 둘**뿐이다 — 설치율까지 섞으면 어느 이야기인지 헷갈린다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    extra = W.combine_files((("Push_14.xlsx", pushall_xlsx(days=400)),))
+    at = _open(store=pd.concat([store, extra], ignore_index=True),
+               mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "기간" and "앱 신규설치" in f.columns]
+    assert fr, "추이표가 없어요"
+    cols = list(fr[0].columns)
+    assert "가입자 대비 설치율" not in cols, f"설치율이 남았어요 — {cols}"
+    for c in ("앱푸시(앱보유무관)/신규회원", "앱푸시(앱포함)/신규회원"):
+        assert c in cols, f"«{c}» 칸이 없어요 — {cols}"
+    # 분모가 넓은 쪽이 먼저 온다 (위 비율 표와 같은 순서)
+    assert cols.index("앱푸시(앱보유무관)/신규회원") < cols.index("앱푸시(앱포함)/신규회원"), cols
+    v = str(fr[0]["앱푸시(앱보유무관)/신규회원"].iloc[0])
+    assert v.endswith("%") and v != "–", v
+    assert any("앱을 안 깔아서 못 받는 몫" in t for t in _texts(at)), \
+        "두 분모가 다르다는 걸 안 밝혔어요"
+
+
+@case
+def t_trend_drops_pushall_columns_when_source_is_missing():
+    """원천이 없으면 '–'만 늘어선 칼럼을 남기지 말고 통째로 뺀다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "기간" and "앱 신규설치" in f.columns]
+    assert fr, "추이표가 없어요"
+    cols = list(fr[0].columns)
+    assert not [c for c in cols if "앱보유무관" in c], f"빈 칼럼이 남았어요 — {cols}"
+    assert "앱푸시(앱포함)/신규회원" in cols, cols
+    assert "가입자 대비 설치율" not in cols, cols
+
+
+@case
+def t_channel_decomposition_opens_on_revenue():
+    """③은 **첫구매 거래액**으로 열린다 — 목록 순서대로 두면 비회원트래픽이 잡힌다."""
+    at = _open()
+    sel = _sel_step(at)
+    assert sel.value == "첫구매 거래액", f"기본값이 «{sel.value}» 예요 — {list(sel.options)}"
+    # 첫 칸이 아니라는 걸 못 박아 둔다(순서를 바꿔도 기본값은 거래액이어야 한다)
+    assert list(sel.options)[0] != "첫구매 거래액", \
+        "목록 첫 칸이 거래액이면 이 검사가 아무것도 안 잡아요"
+    # 사용자가 고른 값은 안 덮는다
+    sel.set_value("가입자수"); at.run()
+    assert not at.exception, at.exception[0].value
+    assert _sel_step(at).value == "가입자수", "고른 값이 기본값으로 되돌아갔어요"
+
+
+@case
+def t_guard_select_default_only_seeds_once():
+    """default는 옵션에 있을 때만, 세션이 비었을 때만 심는다."""
+    import streamlit as _st
+    _st.session_state.clear()
+    W.guard_select("k1", ["a", "b"], default="b")
+    assert _st.session_state["k1"] == "b"
+    W.guard_select("k1", ["a", "b"], default="a")          # 이미 있으면 안 덮는다
+    assert _st.session_state["k1"] == "b"
+    W.guard_select("k2", ["a", "b"], default="z")          # 옵션 밖이면 안 심는다
+    assert "k2" not in _st.session_state
+    _st.session_state["k3"] = "사라진값"                     # 옵션 밖 옛 값은 치우고
+    W.guard_select("k3", ["a", "b"], default="a")          # 그 자리에 기본값
+    assert _st.session_state["k3"] == "a"
+    for k in ("k1", "k2", "k3"):
+        _st.session_state.pop(k, None)
+
+
+@case
 def t_picked_row_reads_cell_selection():
     """_picked_row는 셀 선택·행 선택 둘 다 받고, 범위를 벗어나면 None."""
     class _Ev:

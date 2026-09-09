@@ -2826,10 +2826,17 @@ def render_push_page(df, ref_year, chart_years):
 # ══════════════════════════════════════════════════════
 # 페이지 PDF 저장 (브라우저 인쇄 → PDF, 차트 포함)
 # ══════════════════════════════════════════════════════
-def guard_select(key, opts):
-    """옵션 목록이 바뀌면 세션에 남은 옛 선택값이 목록 밖이 된다 — 조용한 리셋·예외 방지."""
+def guard_select(key, opts, default=None):
+    """옵션 목록이 바뀌면 세션에 남은 옛 선택값이 목록 밖이 된다 — 조용한 리셋·예외 방지.
+
+    `default`를 주면 **처음 한 번만** 그 값을 초기값으로 심는다(옵션에 있을 때만).
+    위젯을 만들기 전에 세션에 넣는 방식이라, `key`가 붙은 위젯에 `index=`를 같이
+    넘길 때 나는 경고를 피하고 사용자가 고른 값도 덮지 않는다.
+    """
     if key in st.session_state and st.session_state[key] not in opts:
         st.session_state.pop(key, None)
+    if key not in st.session_state and default is not None and default in opts:
+        st.session_state[key] = default
 
 
 def guard_multi(key, opts):
@@ -3405,7 +3412,9 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     if not avail_dec:
         st.info("채널별로 나눠 볼 지표 데이터가 없어요.")
     else:
-        guard_select("wr_decomp_met", avail_dec)
+        # 기본은 **첫구매 거래액** — 퍼널이 결국 설명하려는 결과 지표다.
+        # 목록 순서대로 두면 맨 위 비회원트래픽으로 열려 매번 바꿔야 한다.
+        guard_select("wr_decomp_met", avail_dec, default="첫구매 거래액")
         dec_met = st.selectbox("지표", avail_dec, key="wr_decomp_met",
                                help="고른 지표가 전년 대비 얼마나 움직였는지 채널별로 봐요.")
         if dec_met not in FUNNEL_ADDITIVE:
@@ -3858,29 +3867,44 @@ def _funnel_app_trend(df, gran, cy, clabel):
             per = pd.concat([per, pd.DataFrame([{"year": cy, "label": _pp[0],
                                                  "sortkey": _pp[1]}])], ignore_index=True)
             per = per.sort_values("sortkey")
+    # 「가입자 대비 설치율」은 뺐다 — 설치와 동의 두 갈래의 비율이 한 표에 섞여 있어
+    # 어느 쪽 이야기인지 헷갈렸다. 설치는 위의 원값으로 읽고, 비율 칸은 **동의율 둘**만
+    # 남겨 분모(앱 보유 무관 ↔ 앱 포함)끼리 맞대게 한다.
+    _rate = lambda a, b: ("–" if (pd.isna(a) or pd.isna(b) or not b)
+                          else f"{a / b * 100:.2f}%")
     rows = []
     for _, r in per.iterrows():
         y, lb = int(r["year"]), str(r["label"])
-        got = {m: _funnel_app_one(df, gran, m, y, lb, "mtd") for m in APP_STEPS}
-        jn, ins, ag = got["가입자수"], got["앱설치"], got["앱푸시수신동의"]
+        got = {m: _funnel_app_one(df, gran, m, y, lb, "mtd")
+               for m in APP_STEPS + ["앱푸시동의_앱무관"]}
+        jn, ins = got["가입자수"], got["앱설치"]
+        ag, aa = got["앱푸시수신동의"], got["앱푸시동의_앱무관"]
         rows.append({
             "기간": f"{y}년 {month_trim(lb)}"
                     + (" ◀" if (y == cy and lb == str(clabel)) else ""),
             "가입자수": fmt_value("가입자수", jn),
             "앱 신규설치": fmt_value("앱설치", ins),
-            "앱푸시 수신동의": fmt_value("앱푸시수신동의", ag),
-            "가입자 대비 설치율": ("–" if (pd.isna(ins) or pd.isna(jn) or not jn)
-                              else f"{ins / jn * 100:.2f}%"),
-            "신규회원 수신동의율": ("–" if (pd.isna(ag) or pd.isna(jn) or not jn)
-                              else f"{ag / jn * 100:.2f}%"),
+            "앱푸시 동의(앱보유무관)": fmt_value("앱푸시동의_앱무관", aa),
+            "앱푸시 동의(앱포함)": fmt_value("앱푸시수신동의", ag),
+            "앱푸시(앱보유무관)/신규회원": _rate(aa, jn),
+            "앱푸시(앱포함)/신규회원": _rate(ag, jn),
         })
     if not rows:
         return
+    tbl = pd.DataFrame(rows).set_index("기간")
+    # 앱 보유 무관 원천이 아직 없으면 그 두 칸은 통째로 뺀다 — '–'만 늘어선 칼럼은
+    # 0인지 없는 건지 안 갈리고 표만 넓힌다(위 비율 표와 같은 규칙).
+    _pa_cols = ["앱푸시 동의(앱보유무관)", "앱푸시(앱보유무관)/신규회원"]
+    if all((tbl[c] == "–").all() for c in _pa_cols):
+        tbl = tbl.drop(columns=_pa_cols)
     with st.expander(f"최근 {gran} 추이 ({len(rows)}개 기간)", expanded=True):
-        wtable(pd.DataFrame(rows).set_index("기간"), width="stretch",
-               dl_name=f"앱 설치·수신동의 최근 {gran} 추이")
-        st.caption("`◀` 가 위 카드와 같은 기간이에요. 값은 모두 **일평균**이라 기간 길이가 "
-                   "달라도 그대로 견줄 수 있어요.")
+        wtable(tbl, width="stretch", dl_name=f"앱 설치·수신동의 최근 {gran} 추이")
+        _cap = ("`◀` 가 위 카드와 같은 기간이에요. 값은 모두 **일평균**이라 기간 길이가 "
+                "달라도 그대로 견줄 수 있어요.")
+        if len(tbl.columns) > 4:
+            _cap += (" 동의율 두 칸은 **분모가 달라요** — 두 값의 차이가 곧 "
+                     "'앱을 안 깔아서 못 받는 몫'이에요.")
+        st.caption(_cap)
 
 
 def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
