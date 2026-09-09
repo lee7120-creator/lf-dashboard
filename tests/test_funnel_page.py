@@ -1343,17 +1343,44 @@ def _trend_spec(at):
 
 
 @case
-def t_orgcat_trend_draws_two_years():
-    """④ 하단 — 지금 보는 대상의 올해 흐름을 전년과 맞댄다."""
+def t_orgcat_trend_draws_children_of_the_node():
+    """④ 하단 — 지금 자리의 **한 단계 아래 항목을 전부** 그리고, 각 항목마다 두 해를 맞댄다.
+
+    합계에서 두 줄(전체 올해·전년)만 그리면 '어느 조직이 빠지고 있나'가 안 보인다.
+    """
     at = _open()
     spec = _trend_spec(at)
     assert spec, "연중 추이 차트가 없어요"
     names = [t.get("name") for t in spec["data"]]
-    assert names == ["2026년", "2025년"], names
+    # 합계 자리 → 조직들이 나와야 한다 (항목 × 연도)
+    for org in TREE:
+        for y in (2026, 2025):
+            assert f"{org} ({y})" in names, f"«{org} ({y})»가 없어요 — {names}"
+    assert len(names) == len(TREE) * 2, names
     # x축은 **올해 라벨**로 세운다 — 전년에만 있는 기간까지 그리면 축이 늘어진다
     assert spec["data"][0]["x"][0].endswith("주차"), spec["data"][0]["x"][:3]
     # 값이 없는 기간은 선을 끊는다(이으면 그 사이에 데이터가 있는 것처럼 보인다)
     assert spec["data"][0].get("connectgaps") is False, spec["data"][0].get("connectgaps")
+
+
+@case
+def t_orgcat_trend_colors_items_and_dashes_prior_year():
+    """항목이 여럿이면 **색은 항목, 점선은 전년**이다.
+
+    색을 연도에 쓰면 항목이 셋만 넘어도 무엇이 무엇인지 못 짚는다. 같은 항목의
+    두 해는 **같은 색**이어야 짝이 눈에 들어온다.
+    """
+    spec = _trend_spec(_open())
+    by = {t["name"]: t for t in spec["data"]}
+    for org in TREE:
+        cur, prv = by[f"{org} (2026)"], by[f"{org} (2025)"]
+        assert cur["line"]["color"] == prv["line"]["color"], \
+            f"«{org}» 두 해 색이 달라요 — {cur['line']['color']} vs {prv['line']['color']}"
+        assert cur["line"].get("dash") in (None, "solid"), cur["line"].get("dash")
+        assert prv["line"].get("dash") == "dot", f"전년이 점선이 아니에요 — {prv['line']}"
+    # 항목끼리는 색이 달라야 한다
+    cols = {by[f"{o} (2026)"]["line"]["color"] for o in TREE}
+    assert len(cols) == len(TREE), f"항목 색이 겹쳐요 — {cols}"
 
 
 @case
@@ -1371,20 +1398,115 @@ def t_orgcat_trend_axis_is_this_year_only():
     assert "12월 5주차" not in xs, f"전년에만 있는 기간이 축에 들어왔어요 — {xs[-3:]}"
     # 전년 선을 켜 둔 상태에서도 축은 올해 기준이어야 한다
     names = [t.get("name") for t in _trend_spec(at)["data"]]
-    assert "2025년" in names, names
+    assert any("(2025)" in str(n) for n in names), names
+
+
+@case
+def t_orgcat_trend_drops_ticks_nothing_has():
+    """**아무 항목·아무 해에도 값이 없는 기간은 축에서 뺀다** — 선이 괜히 끊긴다.
+
+    x축은 그 해의 **모든 지표·모든 노드**가 쓴 라벨로 세운다. 그래서 지금 보는
+    지표엔 없는 기간이 섞이고, 그 자리에서 **모든 선이 나란히 끊겨** 데이터가 빠진
+    것처럼 보인다. 실은 그 칸에 애초에 아무것도 없다.
+    """
+    oc = synth_orgcat()
+    # 2026년에만, 그리고 **다른 지표로만** 존재하는 기간을 심는다
+    ghost = oc[(oc["gran"] == "주") & (oc["year"] == 2026)
+               & (oc["metric"] == "상품UV")].head(20).copy()
+    ghost["label"] = "12월 4주차"
+    ghost["sortkey"] = 2026 * 10000 + 1204
+    at = _open(orgcat=pd.concat([oc, ghost], ignore_index=True))
+    spec = _trend_spec(at)
+    xs = spec["data"][0]["x"]
+    assert "12월 4주차" not in xs, f"빈 눈금이 축에 남았어요 — {xs[-3:]}"
+    assert "12월 4주차" not in (spec["layout"]["xaxis"].get("categoryarray") or []), \
+        "categoryarray에 빈 눈금이 남았어요"
+    # 그 결과 선 안쪽에 구멍이 없어야 한다
+    for tr in spec["data"]:
+        ys = tr["y"]
+        idx = [i for i, v in enumerate(ys) if v is not None]
+        assert idx, tr["name"]
+        holes = [i for i in range(idx[0], idx[-1] + 1) if ys[i] is None]
+        assert not holes, f"«{tr['name']}» 선 안에 구멍이 남았어요 — {holes[:5]}"
+    assert any("축에서 뺐어요" in t for t in _texts(at)), "몇 개를 뺐는지 안 밝혀요"
+
+
+@case
+def t_orgcat_trend_keeps_one_sided_gaps():
+    """한쪽 해에만 값이 없는 칸은 **남겨서 끊어** 보여 준다 — 그건 진짜 결측이다.
+
+    빈 눈금을 지우는 규칙이 여기까지 번지면 '전년엔 없었다'는 사실이 사라진다.
+    """
+    oc = synth_orgcat()
+    # 2026년에만 값이 있는 기간 — 전년 선은 여기서 끊겨야 한다
+    only26 = oc[(oc["gran"] == "주") & (oc["year"] == 2026)].copy()
+    only26 = only26[only26["label"] == sorted(set(only26["label"]))[0]].copy()
+    only26["label"] = "12월 3주차"
+    only26["sortkey"] = 2026 * 10000 + 1203
+    at = _open(orgcat=pd.concat([oc, only26], ignore_index=True))
+    spec = _trend_spec(at)
+    xs = list(spec["data"][0]["x"])
+    assert "12월 3주차" in xs, f"올해 값이 있는 기간이 사라졌어요 — {xs[-3:]}"
+    j = xs.index("12월 3주차")
+    cur = [t for t in spec["data"] if "(2026)" in str(t["name"])]
+    prv = [t for t in spec["data"] if "(2025)" in str(t["name"])]
+    assert cur and prv, [t["name"] for t in spec["data"]]
+    assert cur[0]["y"][j] is not None, "올해 값이 비었어요"
+    assert prv[0]["y"][j] is None, "전년에 없는 칸인데 값이 채워졌어요"
+    assert prv[0].get("connectgaps") is False, "전년 선을 이어 버리면 없는 데이터가 있는 것처럼 보여요"
 
 
 @case
 def t_orgcat_trend_can_hide_prior_year():
-    """항목이 많아 복잡할 때 전년 선을 끌 수 있어야 한다."""
+    """항목을 다 그리면 두 해가 겹쳐 복잡하다 — **연도를 체크로 넣고 뺄 수 있어야** 한다."""
     at = _open()
-    cb = [c for c in at.checkbox if "전년 비교선" in str(c.label)]
-    assert cb, f"전년 토글이 없어요 — {[str(c.label) for c in at.checkbox]}"
-    assert cb[0].value is True, "기본은 켜져 있어야 해요"
-    cb[0].set_value(False); at.run()
+    cb = {str(c.label): c for c in at.checkbox}
+    for y in ("2026년", "2025년"):
+        assert y in cb, f"«{y}» 체크가 없어요 — {list(cb)}"
+        assert cb[y].value is True, f"«{y}»는 기본으로 켜져 있어야 해요"
+    cb["2025년"].set_value(False); at.run()
     assert not at.exception, at.exception[0].value
     names = [t.get("name") for t in _trend_spec(at)["data"]]
-    assert names == ["2026년"], f"전년 선이 안 꺼졌어요 — {names}"
+    assert names and not [n for n in names if "(2025)" in str(n)], \
+        f"전년이 안 꺼졌어요 — {names}"
+    assert [n for n in names if "(2026)" in str(n)], f"올해까지 사라졌어요 — {names}"
+    # 올해도 끄면 빈 차트 대신 왜 비었는지 말한다
+    at.checkbox[[str(c.label) for c in at.checkbox].index("2026년")].set_value(False)
+    at.run()
+    assert not at.exception, at.exception[0].value
+    assert any("연도를 하나도 안 골랐어요" in t for t in _texts(at)), "왜 비었는지 안 밝혀요"
+
+
+@case
+def t_orgcat_trend_uses_year_colors_when_single_item():
+    """말단 노드(항목 1개)에선 색을 **연도**에 쓴다 — 올해가 파랑, 전년이 회색.
+
+    앱의 다른 추이 차트(`yoy_chart`)와 같은 규칙이다. 반대로 매기면 최신 흐름이
+    회색으로 눌려 한눈에 안 들어온다.
+    """
+    oc = synth_orgcat()
+    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")]
+    org = W.orgcat_view(sub).live(())[0][0]
+
+    at = _open()
+    # 조직 → 카테고리까지 파고들면 말단이라 항목이 하나가 된다.
+    # **리런 때 표 위젯이 자기 선택(빈 값)을 세션에 다시 써서** 앞 단계가 풀린다 —
+    # 두 번째 단계에선 조직 키도 같이 다시 심어야 한다.
+    _pick = {"selection": {"cells": [[1, "2026년"]]}}
+    at.session_state["wr_fn_orgsel"] = _pick
+    at.run()
+    at.session_state["wr_fn_orgsel"] = _pick
+    at.session_state[f"wr_fn_catsel_{org}"] = _pick
+    at.run()
+    assert not at.exception, at.exception[0].value
+    by = {t["name"]: t for t in _trend_spec(at)["data"]}
+    assert set(by) == {"2026년", "2025년"}, f"항목이 하나면 연도 이름이어야 해요 — {list(by)}"
+    assert by["2026년"]["line"]["color"] == W.clr("blue"), \
+        f"올해가 파랑이 아니에요 — {by['2026년']['line']['color']}"
+    assert by["2025년"]["line"]["color"] == W.clr("slate"), \
+        f"전년이 회색이 아니에요 — {by['2025년']['line']['color']}"
+    assert by["2025년"]["line"].get("dash") in (None, "solid"), \
+        "항목이 하나면 색으로 갈리니 점선까지 쓸 필요가 없어요"
 
 
 @case
@@ -1426,8 +1548,9 @@ def t_orgcat_trend_follows_the_drilldown():
     at = _open()
     heads = [h for h in _texts(at) if "연중 추이" in h]
     assert heads and "전체" in heads[0], f"기본은 전체여야 해요 — {heads[:1]}"
+    # 합계 자리에선 **자식(조직)** 을 그린다 — data[0]은 첫 조직의 올해 선
     got0 = [v for v in _trend_spec(at)["data"][0]["y"] if v is not None][:3]
-    assert got0 == _want(()), (got0, _want(()))
+    assert got0 == _want((orgs[0],)), (got0, _want((orgs[0],)))
 
     # 첫 조직을 고른다 — 합계 행이 0번이라 자식은 1번부터
     at.session_state["wr_fn_orgsel"] = {"selection": {"cells": [[1, "2026년"]]}}
@@ -1436,8 +1559,10 @@ def t_orgcat_trend_follows_the_drilldown():
     org = orgs[0]
     heads = [h for h in _texts(at) if "연중 추이" in h]
     assert heads and org in heads[0], f"제목이 «{org}»로 안 바뀌었어요 — {heads[:1]}"
+    # 조직을 고르면 그 조직의 **카테고리들**이 그려진다
+    _kid = view.live((org,))[0][0]
     got1 = [v for v in _trend_spec(at)["data"][0]["y"] if v is not None][:3]
-    assert got1 == _want((org,)), (got1, _want((org,)))
+    assert got1 == _want((org, _kid)), (got1, _want((org, _kid)))
     # 전체와 달라야 이 검사가 의미가 있다
     assert got1 != got0, f"조직을 골라도 값이 그대로예요 — {got1}"
 
