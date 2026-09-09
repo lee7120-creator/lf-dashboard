@@ -126,7 +126,12 @@ CHANNEL_PAL = {
     "제휴": "red", "브랜드광고": "teal", "미디어커머스": "orange", "*TOTAL": "slate",
 }
 CHANNELS = ["직접", "광고", "EP", "PUSH", "제휴", "브랜드광고", "미디어커머스"]
+# **오래된 해부터** 이 순서로 색이 붙는다(`sorted(years)`) — 올해가 파랑, 전년이 회색.
+# 색을 반대로 매기면 최신 흐름이 회색으로 눌려 한눈에 안 들어온다.
 YEAR_PAL = ["slate", "blue", "red", "green", "purple", "amber", "teal"]
+# 항목(조직·카테고리)별 선 색 — 연도가 아니라 항목을 색으로 가를 때 쓴다.
+# 회색(slate)은 '전년'이 이미 쓰는 자리라 맨 뒤로 뺀다.
+ORGCAT_PAL = ["blue", "amber", "green", "purple", "red", "teal", "orange", "slate"]
 
 # ══════════════════════════════════════════════════════
 # 지표 정의
@@ -3834,13 +3839,22 @@ def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
 
 
 def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
-    """④ 하단 — **지금 보고 있는 대상**의 올해 전체 흐름을 전년과 맞댄 차트.
+    """④ 하단 — 지금 보고 있는 자리의 **하위 항목별** 연중 흐름.
 
     표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 여기서
     연중 흐름을 보고, 이상한 구간을 찾으면 위 표에서 그 기간으로 옮겨 가면 된다.
 
-    **드릴다운을 따라간다** — 아무것도 안 고르면 전체, 조직을 누르면 그 조직,
-    카테고리까지 누르면 그 카테고리. 두 줄뿐이라 항목이 많아도 안 복잡하다.
+    **드릴다운을 따라가며 한 단계 아래를 그린다** — 합계면 조직들, 조직을 누르면 그
+    조직의 카테고리들, 더 내려갈 데가 없으면 그 노드 자신. 항목을 다 그려야 '어느
+    조직이 빠지고 있나'가 한 화면에서 보인다.
+
+    **색은 항목, 선 모양은 연도**다. 올해는 실선, 전년은 얇은 점선. 색을 연도에 쓰면
+    항목이 셋만 넘어도 무엇이 무엇인지 못 짚는다. 항목 색은 **전체 자식 목록** 기준으로
+    고정한다 — 그린 것만으로 색을 매기면 연도를 끄고 켤 때 색이 바뀐다
+    (「06. 앱푸시 동의 현황」의 `_ycolor`와 같은 이유).
+
+    연도는 체크로 넣고 뺀다. 항목이 많으면 두 해가 겹쳐 구분이 안 되므로, 전년을 꺼서
+    올해 흐름만 보는 길을 열어 둔다.
 
     기간 단위는 여기서 따로 고른다(위 비교 기준과 별개) — 주차로 흐름을 보다가
     월로 묶어 추세만 보는 왕복이 잦다. 있는 단위만 선택지에 올린다.
@@ -3857,13 +3871,31 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
         tg = st.radio("기간 단위", _grans, key=_gk, horizontal=True,
                       format_func=lambda g: "주차별" if g == "주" else "월별")
     with c2:
-        show_py = st.checkbox("전년 비교선", value=True, key="wr_fn_trend_py",
-                              help="끄면 올해 흐름만 봐요. 항목이 많아 복잡할 때 꺼 보세요.")
+        st.markdown("**차트에 올릴 연도**")
+        y1, y2 = st.columns(2)
+        show_cy = y1.checkbox(f"{cy}년", value=True, key="wr_fn_trend_cy")
+        show_py = y2.checkbox(f"{py}년", value=True, key="wr_fn_trend_py",
+                              help="항목이 많아 겹쳐 보이면 꺼서 올해만 봐요.")
+    yrs = [y for y, on in ((cy, show_cy), (py, show_py)) if on]
+    if not yrs:
+        st.caption("차트에 올릴 연도를 하나도 안 골랐어요. 위에서 연도를 켜 주세요.")
+        return
 
     sub = odf[(odf["gran"] == tg) & (odf["lfms"] == base["lfms"].iloc[0])] \
         if "lfms" in base.columns and len(base) else odf[odf["gran"] == tg]
     view = orgcat_view(sub)
-    yrs = [cy] + ([py] if show_py else [])
+    # 그릴 대상 — 한 단계 아래 항목 전부. 더 내려갈 데가 없으면 그 노드 자신.
+    kids = view.live(tuple(path))[0]
+    items = ([(k, tuple(path) + (k,)) for k in kids] if kids
+             else [(node_lbl, tuple(path))])
+    # 색은 **전체 목록** 기준으로 미리 굳힌다 — 연도를 끄고 켜도 안 바뀌게.
+    # 항목이 하나뿐이면(말단 노드) 색을 **연도**에 쓴다. 그게 앱의 다른 추이 차트와
+    # 같은 얼굴이고, 항목이 하나면 색으로 가를 게 연도밖에 없다.
+    # 연도 색은 `yoy_chart`와 같은 규칙 — **오래된 해부터** YEAR_PAL 순서라 올해가 파랑이다.
+    ycolor = {y: YEAR_PAL[i % len(YEAR_PAL)] for i, y in enumerate(sorted({cy, py}))}
+    icolor = {nm: ORGCAT_PAL[i % len(ORGCAT_PAL)] for i, (nm, _p) in enumerate(items)}
+    by_item = len(items) > 1
+
     # x축은 **올해 라벨**로 세운다 — 전년에만 있는 기간까지 그리면 축이 늘어져
     # 정작 올해 흐름이 눌린다. 전년은 같은 라벨끼리 맞대진다.
     _lb = (sub[sub["year"] == cy][["label", "sortkey"]].drop_duplicates()
@@ -3874,23 +3906,46 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
     unit, div = METRIC_UNIT.get(met, ("", 1))
     if met in PCT_METRICS:
         div, unit = 0.01, "%"
+
+    # 값을 먼저 다 뽑고 **아무 항목·아무 해에도 값이 없는 기간은 축에서 뺀다.** `_lb`는
+    # 그 해의 모든 지표·모든 노드가 쓴 라벨이라 지금 보는 것과 무관한 기간이 섞인다.
+    # 그대로 두면 **모든 선이 같은 자리에서 나란히 끊겨** 데이터가 빠진 것처럼 보이는데,
+    # 실은 그 칸에 애초에 아무것도 없다. 정보가 없는 눈금이라 빼는 게 맞다.
+    # (일부 항목·한쪽 해에만 값이 없는 칸은 남긴다 — 그건 진짜 결측이라 끊어 보여 준다.)
+    series = {(nm, y): [view.get(_pth, met, y, lb, "mtd") for lb in _lb]
+              for nm, _pth in items for y in yrs}
+    keep = [j for j in range(len(_lb))
+            if any(not pd.isna(v[j]) for v in series.values())]
+    dropped = len(_lb) - len(keep)
+    _lb = [_lb[j] for j in keep]
+    if not _lb:
+        st.caption(f"«{esc(node_lbl)}»의 {tg} 단위 값이 없어요.")
+        return
+
     fig = go.Figure()
     drew = 0
-    for i, y in enumerate(yrs):
-        vals = [view.get(tuple(path), met, y, lb, "mtd") for lb in _lb]
-        if not any(not pd.isna(v) for v in vals):
-            continue
-        drew += 1
-        fig.add_trace(go.Scatter(
-            x=[month_trim(v) for v in _lb],
-            y=[(v / div if not pd.isna(v) else None) for v in vals],
-            mode="lines+markers", name=f"{y}년",
-            line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
-            marker=dict(size=5), connectgaps=False))
+    for nm, _pth in items:
+        for y in yrs:
+            vals = [series[(nm, y)][j] for j in keep]
+            if not any(not pd.isna(v) for v in vals):
+                continue
+            drew += 1
+            _cur = (y == cy)
+            fig.add_trace(go.Scatter(
+                x=[month_trim(v) for v in _lb],
+                y=[(v / div if not pd.isna(v) else None) for v in vals],
+                mode="lines+markers",
+                name=(f"{nm} ({y})" if by_item else f"{y}년"),
+                line=dict(color=clr(icolor[nm] if by_item else ycolor[y]),
+                          width=2 if _cur else 1.4,
+                          dash=None if _cur else ("dot" if by_item else None)),
+                opacity=1.0 if _cur else (0.65 if by_item else 1.0),
+                marker=dict(size=5 if _cur else 4), connectgaps=False))
     if not drew:
         st.caption(f"«{esc(node_lbl)}»의 {tg} 단위 값이 없어요.")
         return
-    ly = base_layout(300, ysuffix=unit if unit == "%" else "",
+    ly = base_layout(340 if by_item else 300,
+                     ysuffix=unit if unit == "%" else "",
                      title=f"{met} {'주차별' if tg == '주' else '월별'} 추이 ({unit})")
     ly["xaxis"]["categoryorder"] = "array"
     ly["xaxis"]["categoryarray"] = [month_trim(v) for v in _lb]
@@ -3899,9 +3954,16 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
         ly["xaxis"]["nticks"] = 20
     fig.update_layout(**ly)
     st.plotly_chart(fig, width="stretch")
-    st.caption("위 표에서 조직·카테고리를 누르면 이 차트도 그 대상으로 바뀌어요. "
-               "값이 없는 기간은 **선을 끊어** 둬요 — 이어 버리면 그 사이에 데이터가 "
-               "있는 것처럼 보여요.")
+
+    _cap = "위 표에서 조직·카테고리를 누르면 이 차트도 그 아래 단계로 바뀌어요."
+    if by_item:
+        _cap += (f" 지금은 **{len(items)}개 항목**을 그렸어요 — 색이 항목, "
+                 "**점선이 전년**이에요. 겹쳐 보이면 위에서 전년을 꺼 보세요.")
+    if dropped:
+        _cap += (f" 어느 항목·어느 해에도 값이 없는 {dropped}개 기간은 축에서 뺐어요 — "
+                 "빈 눈금이 끼면 선이 괜히 끊겨 보여요.")
+    _cap += " 값이 없는 기간은 **선을 끊어** 둬요 — 이어 버리면 그 사이에 데이터가 있는 것처럼 보여요."
+    st.caption(_cap)
 
 
 def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, prv_close):
