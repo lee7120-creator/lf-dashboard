@@ -898,6 +898,110 @@ def t_lower_blocks_start_collapsed():
 
 
 @case
+def t_monthly_trend_puts_yoy_next_to_each_month():
+    """월별 추이표 — 당해년도는 달마다 **바로 옆에** 전년 대비 증감이 붙는다.
+
+    2025년 1월과 2026년 1월이 열두 칸 떨어져 있어 그냥은 못 맞댄다.
+    """
+    df = synth_store()
+    tbl = W.trend_table(df, "월", W.METRICS7, [2025, 2026], delta_year=2026)
+    cols = list(tbl.columns)
+    cur = [c for c in cols if c[0] == 2026]
+    # 값 칸 바로 다음이 그 달의 증감 칸이어야 한다
+    plain = [c for c in cur if "증감" not in c[1]]
+    for c in plain:
+        i = cols.index(c)
+        assert i + 1 < len(cols) and cols[i + 1] == (2026, f"{c[1]} 증감"), \
+            f"«{c[1]}» 옆에 증감이 없어요 — {cols[i:i + 2]}"
+    # 전년(2025)엔 안 붙는다 — 그 앞해가 없어 늘 '–'라 자리만 먹는다
+    assert not [c for c in cols if c[0] == 2025 and "증감" in c[1]], \
+        [c for c in cols if c[0] == 2025]
+    # 값이 실제 전년비인지
+    a = W.pick(df, "월", "첫구매 거래액", "*TOTAL", 2026, "1월", "final")
+    b = W.pick(df, "월", "첫구매 거래액", "*TOTAL", 2025, "1월", "final")
+    want = W.fmt_delta("첫구매 거래액", a, b)
+    got = tbl.loc["첫구매 거래액", (2026, "1월 증감")]
+    assert got == want, f"{got} vs {want}"
+
+
+@case
+def t_trend_delta_keeps_its_own_formatting():
+    """증감 칸은 이미 문자열이다 — fmt_value를 다시 먹이면 뭉개진다."""
+    df = synth_store()
+    tbl = W.trend_table(df, "월", W.METRICS7, [2025, 2026], delta_year=2026)
+    sty = W.style_trend(tbl, W.METRICS7)
+    disp = getattr(sty, "data", sty)
+    v = str(disp.loc["첫구매 거래액", (2026, "1월 증감")])
+    assert v[0] in "+△" and v.endswith("%"), f"증감 서식이 깨졌어요 — {v}"
+    # 비율 지표는 %p 차이
+    r = str(disp.loc["가입율", (2026, "1월 증감")])
+    assert r.endswith("%p"), f"비율 지표는 %p여야 해요 — {r}"
+    # 값 칸은 평소대로 포맷된다
+    assert "원" in str(disp.loc["첫구매 거래액", (2026, "1월")])
+    # 색도 입어야 한다(△ 빨강 / + 초록)
+    ctx = sty._compute().ctx
+    assert any(v for v in ctx.values()), "증감 칸에 색이 안 입었어요"
+
+
+@case
+def t_trend_delta_survives_missing_prior_year():
+    """전년이 없는 달은 '–'로 두고 표는 그대로 뜬다."""
+    df = synth_store()
+    df = df[df["year"] != 2025]                    # 전년을 통째로 없앤다
+    tbl = W.trend_table(df, "월", W.METRICS7, [2026], delta_year=2026)
+    assert not tbl.empty, "전년이 없다고 표가 통째로 비면 안 돼요"
+    dcols = [c for c in tbl.columns if "증감" in c[1]]
+    assert dcols, "증감 칸이 아예 없어요"
+    assert set(tbl.loc["첫구매 거래액", dcols]) == {"–"}, \
+        tbl.loc["첫구매 거래액", dcols].tolist()
+
+
+@case
+def t_month_trim_drops_only_the_leading_zero():
+    """'08월 2주차' → '8월 2주차'. 10~12월은 그대로 둔다(0 앞이 숫자라 안 걸린다)."""
+    for src, want in (("08월 2주차", "8월 2주차"), ("01월 5주차", "1월 5주차"),
+                      ("09월", "9월"), ("10월 1주차", "10월 1주차"),
+                      ("11월 3주차", "11월 3주차"), ("12월", "12월"),
+                      ("08월 4주차 증감", "8월 4주차 증감"),   # 증감 칸도 같이 다듬긴다
+                      # 달이 문자열 **가운데**에 와도 걸려야 한다 — 지금은 늘 맨 앞이라
+                      # lstrip("0")로도 통과하지만, 앞에 연도가 붙는 순간 조용히 실패한다
+                      ("2026년 08월 2주차", "2026년 8월 2주차"),
+                      ("3/1", "3/1"), ("2026. 08", "2026. 08"),
+                      ("", ""), (None, None)):
+        assert W.month_trim(src) == want, f"{src!r} → {W.month_trim(src)!r} (기대 {want!r})"
+    assert W.week_disp(2026, "08월 2주차") == "2026년 8월 2주차"
+    assert W.week_disp(2026, "10월 1주차") == "2026년 10월 1주차"
+    assert W.week_disp(2026, None) == "-"
+
+
+@case
+def t_stored_labels_keep_their_zero():
+    """다듬는 건 **표시뿐**이다 — 저장 라벨이 바뀌면 조회 키가 어긋나 조인이 깨진다."""
+    df = synth_store()
+    labs = set(df[df["gran"] == "주"]["label"])
+    assert any(l.startswith("0") for l in labs), f"합성본에 0으로 시작하는 주차가 없어요 — {sorted(labs)[:5]}"
+    # detail_periods가 내는 라벨도 zero-pad를 유지해야 한다
+    import pandas as _pd
+    pr = W.detail_periods(_pd.Series(["20260810", "20260811"]), "주")
+    got = [str(v) for v in pr["label"]]
+    assert got and all(v.startswith("08월") for v in got), got
+    # 화면 헬퍼를 거치면 그때 다듬긴다
+    assert W.month_trim(got[0]).startswith("8월"), got[0]
+
+
+@case
+def t_trend_columns_show_trimmed_labels():
+    """추이표 열 머리도 다듬어서 나온다 — 조회는 원래 라벨로 이미 끝났다."""
+    df = synth_store()
+    tbl = W.trend_table(df, "주", W.METRICS7, [2026])
+    labs = [c[1] for c in tbl.columns]
+    assert labs, "주차 열이 없어요"
+    assert not [l for l in labs if l.startswith("0")], f"앞자리 0이 남았어요 — {labs[:6]}"
+    # 값은 그대로 나와야 한다(라벨을 바꿔서 조회가 깨지지 않았는지)
+    assert tbl.notna().any().any(), "라벨을 다듬다 조회가 깨졌어요"
+
+
+@case
 def t_picked_row_reads_cell_selection():
     """_picked_row는 셀 선택·행 선택 둘 다 받고, 범위를 벗어나면 None."""
     class _Ev:
