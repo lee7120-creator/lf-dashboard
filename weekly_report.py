@@ -147,6 +147,7 @@ METRIC_UNIT = {
     "앱_스토어방문": ("명", 1), "앱_삭제": ("명", 1),
     "앱_Push활성기기": ("명", 1), "앱_순증설치": ("명", 1),
     "앱푸시수신동의": ("명", 1), "앱푸시_동의자수": ("명", 1),
+    "앱푸시동의_앱무관": ("명", 1), "앱푸시대상_앱무관": ("명", 1),
     "앱푸시_신규추가": ("명", 1), "앱푸시_이탈": ("명", 1),
     "앱푸시_유효회원": ("명", 1), "앱푸시_수신동의전체": ("명", 1),
     "상품UV": ("명", 1), "상품CR": ("%", 1), "거래액비중": ("%", 1), "고객비중": ("%", 1),
@@ -934,6 +935,78 @@ def parse_push_file(name, data: bytes) -> pd.DataFrame:
             })
     return pd.DataFrame(records)
 
+# ══════════════════════════════════════════════════════
+# 앱 보유와 무관한 푸시 수신동의 (Push Total / Y / N)
+# ══════════════════════════════════════════════════════
+# 기존 PUSH 원천은 **앱을 가진 회원**의 수신동의라, '앱을 안 깐 신규회원까지 포함하면
+# 동의율이 얼마인가'에 답하지 못한다. 이 원천이 그 자리를 메운다.
+#
+#   (빈칸) 1/1  1/2  1/3 …      ← 1행: 날짜, 연도가 없다
+#   (빈칸) (수) (목) (금) …     ← 2행: 요일
+#   Push Total  1451 1626 …     ← 그날 신규회원 전체
+#   Push Y Cnt   660  732 …     ← 그중 수신동의
+#   Push N Cnt   791  894 …     ← 미동의 (= Total - Y, 실파일 616일 전부 정확히 성립)
+#
+# **연도는 기존 PUSH와 같은 길로 푼다** — 상대연도로 내보내고 `combine_files`가 마스터
+# 일자와 겹침이 가장 큰 기준연도를 고른다. 여기서 따로 추론하면 규칙이 둘로 갈린다.
+# `Push N Cnt`는 안 쌓는다 — Total-Y로 언제든 나오고, 축이 아니라 파생이다.
+PUSHALL_ROWS = {"pushtotal": "앱푸시대상_앱무관", "pushycnt": "앱푸시동의_앱무관"}
+
+
+def parse_pushall_file(name, data: bytes) -> pd.DataFrame:
+    """앱 보유 무관 푸시 수신동의 원천 → long DF (연도는 상대값)."""
+    try:
+        rows = read_grid(name, data)
+    except Exception:                                     # noqa: BLE001
+        return pd.DataFrame()
+    if not rows or len(rows) < 3:
+        return pd.DataFrame()
+
+    _k = lambda v: re.sub(r"[^a-z]", "", _cell(v).lower())
+    have = {_k(r[0]) for r in rows if r}
+    # 세 줄이 다 있어야 이 원천이다 — 한 줄만 보고 잡으면 기존 PUSH 표를 가로챈다
+    if not ({"pushtotal", "pushycnt", "pushncnt"} <= have):
+        return pd.DataFrame()
+
+    # 날짜 행 — M/D 셀이 가장 많은 행 (앞 4행 중)
+    def _dcols(row):
+        return [(ci, _cell(row[ci])) for ci in range(1, len(row))
+                if re.match(r"^\d{1,2}/\d{1,2}$", _cell(row[ci]))]
+    date_cols, best = [], None
+    for ri in range(min(4, len(rows))):
+        cand = _dcols(rows[ri])
+        if len(cand) > len(date_cols):
+            date_cols, best = cand, ri
+    if len(date_cols) < 3:
+        return pd.DataFrame()
+
+    # 뒤에서 앞으로 읽으며 월이 커지면 한 해 전 (기존 PUSH 파서와 같은 규칙)
+    rel, cur_rel = {}, 0
+    last_m = int(date_cols[-1][1].split("/")[0])
+    for ci, d in reversed(date_cols):
+        mo = int(d.split("/")[0])
+        if last_m < 6 and mo > 6:
+            cur_rel -= 1
+        elif last_m > 6 and mo < 6:
+            cur_rel += 1
+        rel[ci] = cur_rel
+        last_m = mo
+
+    recs = []
+    for row in rows:
+        met = PUSHALL_ROWS.get(_k(row[0] if row else ""))
+        if not met:
+            continue
+        for ci, d in date_cols:
+            v = _num(row[ci] if ci < len(row) else None)
+            if pd.isna(v):
+                continue
+            recs.append({"gran": "일", "metric": met, "segment": "*TOTAL",
+                         "year": rel[ci], "label": d, "sortkey": 0,
+                         "close": "final", "value": v})
+    return pd.DataFrame(recs)
+
+
 def looks_like_push_name(name: str) -> bool:
     """파일명이 앱푸시 원천으로 보이는가 (한글명 포함)"""
     up = name.upper()
@@ -1164,6 +1237,11 @@ def route_push(n, b):
         return None, ai
     if ai.attrs.get("appinstall_kind"):   # 앱설치인데 안 쌓는 단위 — 마스터로 흘리지 않는다
         return None, None
+    # 파일명이 PUSH라 기존 파서가 먼저 집어 가려 한다 — 세 줄(Total/Y/N)이 다 있는
+    # 이 원천만 여기서 먼저 가른다. 상대연도라 push 프레임으로 내보낸다.
+    pa = parse_pushall_file(n, b)
+    if not pa.empty:
+        return pa, None
     is_xlsx = n.lower().endswith((".xlsx", ".xls"))
     if is_xlsx and looks_like_push_name(n):
         pf = parse_push_file(n, b)
@@ -1421,8 +1499,14 @@ def classify_uploads(file_tuples):
             continue
         pf, d = route_push(n, b)  # combine_files와 동일한 라우팅 (한글명 PUSH 포함)
         if pf is not None:
-            nseries = pf.groupby(["metric", "segment"]).ngroups
-            out.append((n, f"✅ 앱푸시 원천 · {nseries}시리즈", len(pf)))
+            # 앱 보유 무관 원천은 기존 PUSH와 답하는 질문이 달라 따로 찍는다 —
+            # 같은 문구로 두면 어느 쪽을 올렸는지 확인할 방법이 없다
+            if set(pf["metric"]) <= set(PUSHALL_ROWS.values()):
+                _d = pf["label"].nunique()
+                out.append((n, f"✅ 앱푸시 수신동의(앱 보유 무관) · {_d:,}일", len(pf)))
+            else:
+                nseries = pf.groupby(["metric", "segment"]).ngroups
+                out.append((n, f"✅ 앱푸시 원천 · {nseries}시리즈", len(pf)))
         elif d is None:
             hint = ("❌ PUSH 인식 실패 (헤더 확인)" if looks_like_push_name(n)
                     else "❌ 미인식 (파일명·형식 확인)")
@@ -2742,10 +2826,17 @@ def render_push_page(df, ref_year, chart_years):
 # ══════════════════════════════════════════════════════
 # 페이지 PDF 저장 (브라우저 인쇄 → PDF, 차트 포함)
 # ══════════════════════════════════════════════════════
-def guard_select(key, opts):
-    """옵션 목록이 바뀌면 세션에 남은 옛 선택값이 목록 밖이 된다 — 조용한 리셋·예외 방지."""
+def guard_select(key, opts, default=None):
+    """옵션 목록이 바뀌면 세션에 남은 옛 선택값이 목록 밖이 된다 — 조용한 리셋·예외 방지.
+
+    `default`를 주면 **처음 한 번만** 그 값을 초기값으로 심는다(옵션에 있을 때만).
+    위젯을 만들기 전에 세션에 넣는 방식이라, `key`가 붙은 위젯에 `index=`를 같이
+    넘길 때 나는 경고를 피하고 사용자가 고른 값도 덮지 않는다.
+    """
     if key in st.session_state and st.session_state[key] not in opts:
         st.session_state.pop(key, None)
+    if key not in st.session_state and default is not None and default in opts:
+        st.session_state[key] = default
 
 
 def guard_multi(key, opts):
@@ -3112,6 +3203,8 @@ FUNNEL_DERIVED = {"가입율": ("가입자수", "비회원트래픽"),
 FUNNEL_FILE_FIRST = {"첫구매 객단가"}
 # 하단 앱 블록 — 앱설치는 아직 원천이 안 올라와서, 없으면 '–'로 비우고 왜인지 밝힌다
 APP_STEPS = ["가입자수", "앱설치", "앱푸시수신동의"]
+# 원천이 일자 헤더 표라 `gran='일'`로만 쌓이는 지표 — 주·월은 일평균으로 묶어야 한다
+PUSH_DAILY_ONLY = {"앱푸시수신동의", "앱푸시동의_앱무관", "앱푸시대상_앱무관"}
 # 앱설치 원천이 같이 주는 나머지 칸 — 카드 세 장 아래 접이식으로만 보여 준다.
 # 스토어 방문 → 설치 → 삭제까지가 한 흐름이라 같이 봐야 '설치가 준 건지 삭제가 는 건지'가 갈린다.
 APP_EXTRA = ["앱_전체설치", "앱_재설치", "앱_삭제", "앱_순증설치",
@@ -3137,8 +3230,8 @@ def funnel_val(g, met, seg="*TOTAL"):
     return g(met, seg)
 
 
-def push_period_avg(pdf, year, label):
-    """앱푸시 수신동의의 그 기간 **일평균**과 근사 여부.
+def push_period_avg(pdf, year, label, metric="앱푸시수신동의"):
+    """일별로만 쌓이는 지표의 그 기간 **일평균**과 근사 여부.
 
     이 지표는 원천이 일자 헤더 표라 **일별로만** 쌓인다(`gran='일'`, `label='M/D'`).
     주·월 칸을 그냥 집으면 늘 비므로 일별 값을 묶어 준다. 화면의 다른 값이 전부
@@ -3153,7 +3246,7 @@ def push_period_avg(pdf, year, label):
     m = re.match(r"(\d{1,2})\s*월(?:\s*(\d)\s*주차)?", str(label or ""))
     if not m:
         return np.nan, False, 0
-    d = pdf[(pdf["metric"] == "앱푸시수신동의") & (pdf["gran"] == "일")
+    d = pdf[(pdf["metric"] == metric) & (pdf["gran"] == "일")
             & (pdf["segment"] == "*TOTAL") & (pdf["year"] == year)]
     d = d[d["label"].astype(str).str.contains("/", na=False)]
     if d.empty:
@@ -3319,7 +3412,9 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     if not avail_dec:
         st.info("채널별로 나눠 볼 지표 데이터가 없어요.")
     else:
-        guard_select("wr_decomp_met", avail_dec)
+        # 기본은 **첫구매 거래액** — 퍼널이 결국 설명하려는 결과 지표다.
+        # 목록 순서대로 두면 맨 위 비회원트래픽으로 열려 매번 바꿔야 한다.
+        guard_select("wr_decomp_met", avail_dec, default="첫구매 거래액")
         dec_met = st.selectbox("지표", avail_dec, key="wr_decomp_met",
                                help="고른 지표가 전년 대비 얼마나 움직였는지 채널별로 봐요.")
         if dec_met not in FUNNEL_ADDITIVE:
@@ -3746,8 +3841,9 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
 def _funnel_app_one(df, gran, met, year, label, close):
     """앱 블록의 값 하나. 앱푸시 수신동의만 원천이 일별이라 그 기간 일평균으로 묶는다."""
     v = pick(df, gran, met, "*TOTAL", year, label, close)
-    if met == "앱푸시수신동의" and pd.isna(v):
-        v = push_period_avg(df, year, label)[0]
+    # 원천이 일자 헤더 표라 주·월 칸이 늘 비는 지표들 — 일별을 그 기간 일평균으로 묶는다
+    if met in PUSH_DAILY_ONLY and pd.isna(v):
+        v = push_period_avg(df, year, label, metric=met)[0]
     return v
 
 
@@ -3771,29 +3867,52 @@ def _funnel_app_trend(df, gran, cy, clabel):
             per = pd.concat([per, pd.DataFrame([{"year": cy, "label": _pp[0],
                                                  "sortkey": _pp[1]}])], ignore_index=True)
             per = per.sort_values("sortkey")
+    # 「가입자 대비 설치율」은 뺐다 — 설치와 동의 두 갈래의 비율이 한 표에 섞여 있어
+    # 어느 쪽 이야기인지 헷갈렸다. 설치는 위의 원값으로 읽고, 비율 칸은 **동의율 둘**만
+    # 남겨 분모(앱 보유 무관 ↔ 앱 포함)끼리 맞대게 한다.
+    _rate = lambda a, b: ("–" if (pd.isna(a) or pd.isna(b) or not b)
+                          else f"{a / b * 100:.2f}%")
     rows = []
     for _, r in per.iterrows():
         y, lb = int(r["year"]), str(r["label"])
-        got = {m: _funnel_app_one(df, gran, m, y, lb, "mtd") for m in APP_STEPS}
-        jn, ins, ag = got["가입자수"], got["앱설치"], got["앱푸시수신동의"]
+        got = {m: _funnel_app_one(df, gran, m, y, lb, "mtd")
+               for m in APP_STEPS + ["앱푸시동의_앱무관"]}
+        jn, ins = got["가입자수"], got["앱설치"]
+        ag, aa = got["앱푸시수신동의"], got["앱푸시동의_앱무관"]
         rows.append({
             "기간": f"{y}년 {month_trim(lb)}"
                     + (" ◀" if (y == cy and lb == str(clabel)) else ""),
             "가입자수": fmt_value("가입자수", jn),
             "앱 신규설치": fmt_value("앱설치", ins),
-            "앱푸시 수신동의": fmt_value("앱푸시수신동의", ag),
-            "가입자 대비 설치율": ("–" if (pd.isna(ins) or pd.isna(jn) or not jn)
-                              else f"{ins / jn * 100:.2f}%"),
-            "신규회원 수신동의율": ("–" if (pd.isna(ag) or pd.isna(jn) or not jn)
-                              else f"{ag / jn * 100:.2f}%"),
+            "_동의_앱무관": fmt_value("앱푸시동의_앱무관", aa),
+            "_동의_앱포함": fmt_value("앱푸시수신동의", ag),
+            "_율_앱무관": _rate(aa, jn),
+            "_율_앱포함": _rate(ag, jn),
         })
     if not rows:
         return
+    tbl = pd.DataFrame(rows).set_index("기간")
+    # **앱 보유 무관 원천을 안 올렸으면 예전 화면 그대로 낸다.** 구분할 대상이 하나뿐인데
+    # 칼럼 이름에 `(앱포함)`을 달아 두면 있지도 않은 다른 칸을 찾게 되고, `–`만 늘어선
+    # 칼럼은 0인지 없는 건지도 안 갈린다. 위 비율 표와 같은 규칙이다.
+    has_pa = not ((tbl["_동의_앱무관"] == "–").all() and (tbl["_율_앱무관"] == "–").all())
+    if has_pa:
+        tbl = tbl.rename(columns={"_동의_앱무관": "앱푸시 동의(앱보유무관)",
+                                  "_동의_앱포함": "앱푸시 동의(앱포함)",
+                                  "_율_앱무관": "앱푸시(앱보유무관)/신규회원",
+                                  "_율_앱포함": "앱푸시(앱포함)/신규회원"})
+    else:
+        tbl = (tbl.drop(columns=["_동의_앱무관", "_율_앱무관"])
+                  .rename(columns={"_동의_앱포함": "앱푸시 수신동의",
+                                   "_율_앱포함": "신규회원 수신동의율"}))
     with st.expander(f"최근 {gran} 추이 ({len(rows)}개 기간)", expanded=True):
-        wtable(pd.DataFrame(rows).set_index("기간"), width="stretch",
-               dl_name=f"앱 설치·수신동의 최근 {gran} 추이")
-        st.caption("`◀` 가 위 카드와 같은 기간이에요. 값은 모두 **일평균**이라 기간 길이가 "
-                   "달라도 그대로 견줄 수 있어요.")
+        wtable(tbl, width="stretch", dl_name=f"앱 설치·수신동의 최근 {gran} 추이")
+        _cap = ("`◀` 가 위 카드와 같은 기간이에요. 값은 모두 **일평균**이라 기간 길이가 "
+                "달라도 그대로 견줄 수 있어요.")
+        if has_pa:
+            _cap += (" 동의율 두 칸은 **분모가 달라요** — 두 값의 차이가 곧 "
+                     "'앱을 안 깔아서 못 받는 몫'이에요.")
+        st.caption(_cap)
 
 
 def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
@@ -3809,8 +3928,10 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
 
     if period_lbl:
         st.caption(f"기준: **{period_lbl}** vs {base_lbl} · 값은 모두 **일평균**이에요.")
-    cur = {m: _one(m, cy, "mtd") for m in APP_STEPS}
-    prv = {m: _one(m, py, prv_close) for m in APP_STEPS}
+    # 비율 계산에 쓰는 지표까지 같이 읽는다(카드는 APP_STEPS만 세운다)
+    _need = APP_STEPS + ["앱푸시동의_앱무관", "앱푸시대상_앱무관"]
+    cur = {m: _one(m, cy, "mtd") for m in _need}
+    prv = {m: _one(m, py, prv_close) for m in _need}
     _, approx, n_push = push_period_avg(df, cy, clabel)
     # '원천이 아예 없다'와 '이 기간에만 없다'는 다른 문제다 — 뒤엣것은 커버리지 이야기라
     # 어디까지 들어왔는지 같이 말해 줘야 '업로드가 실패했나'로 안 읽힌다.
@@ -3822,7 +3943,7 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
                    f"**{int(_last['year'])}년 {_last['label']}**까지 들어와 있어요 — "
                    "마스터(가입자수·거래액)보다 며칠 늦게 끝나요. 아래 추이에서 "
                    "값이 있는 기간을 보세요.")
-    if all(pd.isna(v) for v in cur.values()):
+    if all(pd.isna(cur[m]) for m in APP_STEPS):
         st.info("가입자수·앱설치·앱푸시 수신동의 데이터가 모두 없어요.")
         _funnel_app_trend(df, gran, cy, clabel)
         return
@@ -3837,12 +3958,26 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
     st.caption("**앱설치는 「신규 설치」예요** — 재설치는 빼고 봐요. 이 블록이 묻는 게 "
                "'신규 가입자가 앱까지 오나'라서예요. 전체 설치·재설치는 아래 상세에 있어요.")
 
-    # 비율 3종 — 분모가 없으면 그 줄만 비운다(0으로 두면 없는 걸 있는 것처럼 읽는다)
-    RATIOS = [("신규회원 앱 수신동의율", "앱푸시수신동의", "가입자수"),
+    # 비율 — 분모가 없으면 그 줄만 비운다(0으로 두면 없는 걸 있는 것처럼 읽는다)
+    #
+    # **수신동의는 두 원천이 서로 다른 질문에 답한다.** 기존 PUSH는 *앱을 가진 회원*의
+    # 동의라 '앱을 안 깐 신규회원까지 넣으면 얼마인가'엔 답하지 못한다. 둘을 나란히
+    # 놓으면 '앱을 안 깔아서 못 받는 사람'이 얼마나 되는지가 그 차이로 드러난다.
+    #
+    # **앱 보유 무관 원천을 안 올렸으면 화면은 예전 그대로여야 한다.** 구분할 대상이
+    # 하나뿐인데 이름에 `(앱포함)`을 달아 두면, 있지도 않은 다른 지표를 찾게 된다.
+    # 그래서 이름·안내를 원천 유무로 갈라 둔다 — 올리면 두 줄, 안 올리면 예전 한 줄.
+    has_pa = not (pd.isna(cur.get("앱푸시동의_앱무관"))
+                  and pd.isna(prv.get("앱푸시동의_앱무관")))
+    RATIOS = ([("앱푸시(앱보유무관)/신규회원", "앱푸시동의_앱무관", "가입자수"),
+               ("앱푸시(앱포함)/신규회원", "앱푸시수신동의", "가입자수")] if has_pa
+              else [("신규회원 앱 수신동의율", "앱푸시수신동의", "가입자수")]) + [
               ("가입자 대비 앱 신규설치율", "앱설치", "가입자수"),
               ("앱 신규설치 대비 수신동의율", "앱푸시수신동의", "앱설치")]
     rrows = []
     for name, num, den in RATIOS:
+        if pd.isna(cur.get(num)) and pd.isna(prv.get(num)):
+            continue                    # 원천을 아직 안 올린 줄은 아예 빼 둔다
         rc = (cur[num] / cur[den] if not (pd.isna(cur[num]) or pd.isna(cur[den])
                                           or not cur[den]) else np.nan)
         rp = (prv[num] / prv[den] if not (pd.isna(prv[num]) or pd.isna(prv[den])
@@ -3851,8 +3986,25 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
                       f"{py}년": ("–" if pd.isna(rp) else f"{rp * 100:.2f}%"),
                       f"{cy}년": ("–" if pd.isna(rc) else f"{rc * 100:.2f}%"),
                       "전년비": (fmt_delta("동의율", rc, rp) or "–")})
-    wtable(style_delta_cols(pd.DataFrame(rrows).set_index("비율")), width="stretch",
-           dl_name="신규회원 앱 수신동의")
+    if rrows:
+        wtable(style_delta_cols(pd.DataFrame(rrows).set_index("비율")), width="stretch",
+               dl_name="신규회원 앱 수신동의")
+    # 원천이 없으면 아무 말도 덧붙이지 않는다 — 안 올린 데이터를 채근하는 문구가
+    # 상시로 떠 있으면 그것도 소음이다. 올렸을 때만 두 줄을 어떻게 읽는지 말한다.
+    if has_pa:
+        # 이 원천은 그날의 신규회원 전체(Push Total)도 같이 준다. 마스터 가입자수와
+        # 크게 어긋나면 둘 중 하나가 다른 모수를 세고 있다는 뜻이라 눈으로 잡히게 한다.
+        _tot, _jn = cur.get("앱푸시대상_앱무관"), cur.get("가입자수")
+        _gap = (abs(_tot - _jn) / _jn if not (pd.isna(_tot) or pd.isna(_jn) or not _jn)
+                else np.nan)
+        _msg = ("**앱푸시(앱보유무관)**은 앱 설치 여부와 상관없이 신규회원 중 "
+                "수신동의한 사람이에요. **앱푸시(앱포함)**은 앱을 가진 회원만 세니 "
+                "두 줄의 차이가 곧 **앱을 안 깔아서 못 받는 몫**이에요.")
+        if not pd.isna(_gap) and _gap > 0.1:
+            _msg += (f" 다만 이 원천이 센 신규회원({fmt_value('가입자수', _tot)})이 "
+                     f"마스터 가입자수({fmt_value('가입자수', _jn)})와 "
+                     f"{_gap * 100:.0f}% 어긋나요 — 모수 정의가 다를 수 있어요.")
+        st.caption(_msg)
     # 원천이 같이 준 나머지 칸 — 접이식으로만 (카드를 아홉 장 세우면 퍼널이 안 읽힌다)
     # 신규설치는 위 카드에도 있지만 여기 같이 둔다 — `전체설치 = 신규 + 재설치`가
     # 한 표에서 닫혀야 구성비가 읽힌다.
@@ -4780,18 +4932,32 @@ def main():
     elif page == "04. 주차별 추이":
         st.markdown("## 주차별 추이")
         st.subheader("주차별 추이 차트 — 전년 비교")
-        c1, c2, c3 = st.columns(3)
-        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
-            with col:
-                st.plotly_chart(yoy_chart(df, "주", met, chart_years, h=280),
-                                width="stretch")
+        # 월별 추이(03)와 같은 여섯 장 — 화면마다 보는 지표가 다르면 두 페이지를
+        # 오갈 때 매번 다시 찾아야 한다
+        for _wrow in (TREND_CHARTS[:3], TREND_CHARTS[3:]):
+            for _col, _met in zip(st.columns(3), _wrow):
+                with _col:
+                    st.plotly_chart(yoy_chart(df, "주", _met, chart_years, h=280),
+                                    width="stretch")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader(f"주차별 추이표 — {ref_year}년")
-        tbl = trend_table(df, "주", METRICS7, [ref_year])
+        tbl = trend_table(df, "주", METRICS7, [ref_year], delta_year=ref_year)
         if not tbl.empty:
-            recent = tbl.columns[-16:]
-            wtable(style_trend(tbl[recent], METRICS7), width="stretch", dl_name="주차별 추이 차트 — 전년 비교")
+            # **자를 땐 주차를 센다.** 증감 칸까지 섞어 16칸을 집으면 보이는 주가
+            # 8주로 반토막 난다. 주차를 16개 고른 뒤 짝이 되는 증감 칸을 딸려 보낸다.
+            _all = set(tbl.columns)
+            recent = []
+            for _c in [c for c in tbl.columns if not _is_delta_col(c)][-16:]:
+                recent.append(_c)
+                _d = (_c[0], f"{_c[1]} 증감")
+                if _d in _all:
+                    recent.append(_d)
+            st.caption(f"주차마다 오른쪽에 **전년 같은 주차 대비 증감**을 붙였어요. "
+                       f"비율 지표(가입율·당일가입CR)는 %p 차이예요. 전년에 그 주차가 "
+                       f"없으면 '–'로 둬요.")
+            wtable(style_trend(tbl[recent], METRICS7), width="stretch",
+                   dl_name=f"주차별 추이표 ({ref_year}년)")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("전주비(WoW)·전년비(YoY) 증감")

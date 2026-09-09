@@ -11,6 +11,7 @@
 """
 import datetime
 import inspect
+import io
 import json
 import os
 import pathlib
@@ -459,6 +460,7 @@ def t_app_block_shows_consent_rate():
     fr = [f for f in _frames(at) if f.index.name == "비율"]
     assert fr, f"앱 비율 표가 없어요 — {[f.index.name for f in _frames(at)]}"
     tbl = fr[0]
+    # 앱 보유 무관 원천이 없으면 이름은 예전 그대로다(구분할 대상이 하나뿐이라서)
     assert "신규회원 앱 수신동의율" in tbl.index, list(tbl.index)
     # 주간 기본 모드: 그 주 앱푸시 일평균 ÷ 가입자수
     assert tbl.loc["신규회원 앱 수신동의율", "2026년"] != "–", tbl.to_dict()
@@ -999,6 +1001,198 @@ def t_trend_columns_show_trimmed_labels():
     assert not [l for l in labs if l.startswith("0")], f"앞자리 0이 남았어요 — {labs[:6]}"
     # 값은 그대로 나와야 한다(라벨을 바꿔서 조회가 깨지지 않았는지)
     assert tbl.notna().any().any(), "라벨을 다듬다 조회가 깨졌어요"
+
+
+def pushall_xlsx(days=400, end=datetime.date(2026, 9, 8), tot=1500, yes=650,
+                 rows=("Push Total", "Push Y Cnt", "Push N Cnt")):
+    """앱 보유 무관 수신동의 원천 — 실파일과 같은 모양의 xlsx를 만든다.
+
+    1행 날짜(**연도 없음**) · 2행 요일 · 3~5행 Total/Y/N. `rows`를 줄이면
+    '세 줄이 다 있어야 잡는다'를 검사할 수 있다.
+    """
+    import openpyxl
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sheet 1"
+    ds = [end - datetime.timedelta(days=i) for i in range(days)][::-1]
+    for j, d in enumerate(ds, start=2):
+        ws.cell(1, j, f"{d.month}/{d.day}")
+        ws.cell(2, j, "(월)")
+    vals = {"Push Total": tot, "Push Y Cnt": yes, "Push N Cnt": tot - yes}
+    for i, name in enumerate(rows, start=3):
+        ws.cell(i, 1, name)
+        for j in range(2, len(ds) + 2):
+            ws.cell(i, j, vals[name])
+    bio = io.BytesIO(); wb.save(bio)
+    return bio.getvalue()
+
+
+@case
+def t_pushall_source_is_parsed():
+    """Total/Y/N 세 줄짜리 원천을 읽어 동의·대상 두 지표로 쌓는다."""
+    d = W.parse_pushall_file("Push_14.xlsx", pushall_xlsx(days=400))
+    assert not d.empty, "못 읽었어요"
+    assert set(d["metric"]) == {"앱푸시동의_앱무관", "앱푸시대상_앱무관"}, set(d["metric"])
+    # Push N Cnt는 Total-Y로 언제든 나오는 파생이라 안 쌓는다
+    assert not [m for m in set(d["metric"]) if "미동의" in m or "N" in m]
+    assert set(d["gran"]) == {"일"}, set(d["gran"])
+    # 연도는 상대값으로 나온다 — 절대연도는 combine_files가 마스터와 맞춰 정한다
+    assert set(d["year"]) == {0, -1}, sorted(set(d["year"]))
+    assert d["label"].str.contains("/").all()
+
+
+@case
+def t_pushall_needs_all_three_rows():
+    """세 줄이 다 있어야 이 원천이다 — 한 줄만 보고 잡으면 기존 PUSH 표를 가로챈다."""
+    for rows in (("Push Total",), ("Push Total", "Push Y Cnt")):
+        d = W.parse_pushall_file("Push_14.xlsx", pushall_xlsx(days=40, rows=rows))
+        assert d.empty, f"{rows} 만으로 잡았어요 — {set(d['metric']) if len(d) else ''}"
+
+
+@case
+def t_pushall_does_not_hijack_the_old_push_file():
+    """기존 PUSH 원천은 그대로 기존 파서가 가져가야 한다."""
+    import inspect as _i
+    src = pathlib.Path(APP).read_text(encoding="utf-8")
+    i = src.index("pa = parse_pushall_file(n, b)")
+    j = src.index("pf = parse_push_file(n, b)")
+    assert i < j, "새 파서가 기존 PUSH 파서 뒤에 있어요 — 파일명이 PUSH라 먼저 가로채집니다"
+    # 기존 PUSH 표(섹션×행 구조)엔 Total/Y/N 세 줄이 없으니 새 파서가 안 잡는다
+    assert "{\"pushtotal\", \"pushycnt\", \"pushncnt\"} <= have" in src
+
+
+@case
+def t_pushall_years_resolve_against_the_master():
+    """연도가 없는 원천이라 마스터 일자와 겹침으로 절대연도를 정한다."""
+    b = pushall_xlsx(days=400)
+    comb = W.combine_files((("Push_14.xlsx", b),))
+    pa = comb[comb["metric"] == "앱푸시동의_앱무관"]
+    assert not pa.empty, "결합 후 사라졌어요"
+    yrs = sorted(set(pa["year"]))
+    assert len(yrs) == 2 and yrs[1] - yrs[0] == 1, yrs
+    assert yrs[1] >= 2026, f"최근 해가 이상해요 — {yrs}"
+    # sortkey가 붙어야 기간 정렬이 된다
+    assert (pa["sortkey"] > 0).all(), "sortkey가 안 붙었어요"
+
+
+@case
+def t_pushall_rolls_up_to_the_period_as_a_daily_mean():
+    """일별로만 쌓이는 원천이라 주·월 칸은 일평균으로 묶는다."""
+    b = pushall_xlsx(days=400, tot=1500, yes=650)
+    comb = W.combine_files((("Push_14.xlsx", b),))
+    y = max(comb[comb["metric"] == "앱푸시동의_앱무관"]["year"])
+    v, approx, n = W.push_period_avg(comb, y, "8월", metric="앱푸시동의_앱무관")
+    assert n == 31, f"8월인데 {n}일치예요"
+    assert abs(v - 650) < 1e-6, v
+    assert not approx, "달은 라벨에서 바로 읽으니 근사가 아니에요"
+    # 주는 원천에 주차가 없어 근사다
+    _, approx_w, _ = W.push_period_avg(comb, y, "08월 2주차", metric="앱푸시동의_앱무관")
+    assert approx_w, "주차는 근사라고 알려야 해요"
+
+
+@case
+def t_funnel_shows_both_consent_denominators():
+    """⑤에 두 줄이 나란히 — 앱 보유 무관 / 앱 포함."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    extra = W.combine_files((("Push_14.xlsx", pushall_xlsx(days=400)),))
+    at = _open(store=pd.concat([store, extra], ignore_index=True),
+               mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "비율"]
+    assert fr, f"비율 표가 없어요 — {[f.index.name for f in _frames(at)]}"
+    idx = list(fr[0].index)
+    assert "앱푸시(앱보유무관)/신규회원" in idx, idx
+    assert "앱푸시(앱포함)/신규회원" in idx, idx
+    # 앱 보유 무관이 먼저 온다(분모가 더 넓은 쪽부터 읽는다)
+    assert idx.index("앱푸시(앱보유무관)/신규회원") < idx.index("앱푸시(앱포함)/신규회원"), idx
+    v = str(fr[0].loc["앱푸시(앱보유무관)/신규회원", "2026년"])
+    assert v.endswith("%") and v != "–", v
+    assert any("앱을 안 깔아서 못 받는 몫" in t for t in _texts(at)), \
+        "두 줄 차이가 뭔지 안 밝혔어요"
+
+
+@case
+def t_missing_pushall_source_says_why():
+    """원천이 없으면 빈 줄을 남기지 말고 왜 없는지 말한다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "비율"]
+    assert fr, "비율 표가 없어요"
+    idx = list(fr[0].index)
+    assert "앱푸시(앱보유무관)/신규회원" not in idx, "원천이 없는데 빈 줄이 남았어요"
+    # **예전 화면 그대로여야 한다** — 구분할 대상이 하나뿐인데 `(앱포함)`을 달아 두면
+    # 있지도 않은 다른 지표를 찾게 된다
+    assert "신규회원 앱 수신동의율" in idx, idx
+    assert not [i for i in idx if "앱포함" in str(i)], idx
+    # 안 올린 데이터를 채근하는 문구도 안 띄운다(상시로 뜨면 그것도 소음이다)
+    assert not [t for t in _texts(at) if "원천이 없어요" in t], "채근 문구가 떠 있어요"
+
+
+@case
+def t_trend_carries_both_consent_rates_not_install_rate():
+    """추이표의 비율 칸은 **동의율 둘**뿐이다 — 설치율까지 섞으면 어느 이야기인지 헷갈린다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    extra = W.combine_files((("Push_14.xlsx", pushall_xlsx(days=400)),))
+    at = _open(store=pd.concat([store, extra], ignore_index=True),
+               mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "기간" and "앱 신규설치" in f.columns]
+    assert fr, "추이표가 없어요"
+    cols = list(fr[0].columns)
+    assert "가입자 대비 설치율" not in cols, f"설치율이 남았어요 — {cols}"
+    for c in ("앱푸시(앱보유무관)/신규회원", "앱푸시(앱포함)/신규회원"):
+        assert c in cols, f"«{c}» 칸이 없어요 — {cols}"
+    # 분모가 넓은 쪽이 먼저 온다 (위 비율 표와 같은 순서)
+    assert cols.index("앱푸시(앱보유무관)/신규회원") < cols.index("앱푸시(앱포함)/신규회원"), cols
+    v = str(fr[0]["앱푸시(앱보유무관)/신규회원"].iloc[0])
+    assert v.endswith("%") and v != "–", v
+    assert any("앱을 안 깔아서 못 받는 몫" in t for t in _texts(at)), \
+        "두 분모가 다르다는 걸 안 밝혔어요"
+
+
+@case
+def t_trend_drops_pushall_columns_when_source_is_missing():
+    """원천이 없으면 '–'만 늘어선 칼럼을 남기지 말고 통째로 뺀다."""
+    store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
+    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    fr = [f for f in _frames(at) if f.index.name == "기간" and "앱 신규설치" in f.columns]
+    assert fr, "추이표가 없어요"
+    cols = list(fr[0].columns)
+    assert not [c for c in cols if "앱보유무관" in c], f"빈 칼럼이 남았어요 — {cols}"
+    # 이름도 예전 그대로 — 「앱포함」은 견줄 대상이 있을 때만 붙인다
+    assert not [c for c in cols if "앱포함" in c], cols
+    assert "앱푸시 수신동의" in cols and "신규회원 수신동의율" in cols, cols
+    # 설치율은 원천과 무관하게 뺀 채로 둔다(따로 요청받은 정리다)
+    assert "가입자 대비 설치율" not in cols, cols
+
+
+@case
+def t_channel_decomposition_opens_on_revenue():
+    """③은 **첫구매 거래액**으로 열린다 — 목록 순서대로 두면 비회원트래픽이 잡힌다."""
+    at = _open()
+    sel = _sel_step(at)
+    assert sel.value == "첫구매 거래액", f"기본값이 «{sel.value}» 예요 — {list(sel.options)}"
+    # 첫 칸이 아니라는 걸 못 박아 둔다(순서를 바꿔도 기본값은 거래액이어야 한다)
+    assert list(sel.options)[0] != "첫구매 거래액", \
+        "목록 첫 칸이 거래액이면 이 검사가 아무것도 안 잡아요"
+    # 사용자가 고른 값은 안 덮는다
+    sel.set_value("가입자수"); at.run()
+    assert not at.exception, at.exception[0].value
+    assert _sel_step(at).value == "가입자수", "고른 값이 기본값으로 되돌아갔어요"
+
+
+@case
+def t_guard_select_default_only_seeds_once():
+    """default는 옵션에 있을 때만, 세션이 비었을 때만 심는다."""
+    import streamlit as _st
+    _st.session_state.clear()
+    W.guard_select("k1", ["a", "b"], default="b")
+    assert _st.session_state["k1"] == "b"
+    W.guard_select("k1", ["a", "b"], default="a")          # 이미 있으면 안 덮는다
+    assert _st.session_state["k1"] == "b"
+    W.guard_select("k2", ["a", "b"], default="z")          # 옵션 밖이면 안 심는다
+    assert "k2" not in _st.session_state
+    _st.session_state["k3"] = "사라진값"                     # 옵션 밖 옛 값은 치우고
+    W.guard_select("k3", ["a", "b"], default="a")          # 그 자리에 기본값
+    assert _st.session_state["k3"] == "a"
+    for k in ("k1", "k2", "k3"):
+        _st.session_state.pop(k, None)
 
 
 @case
