@@ -352,7 +352,9 @@ def t_weekly_kpi_table_has_apppush_rows():
     hit = None
     for t in at.dataframe:
         cols = [str(c) for c in getattr(t.value, "columns", [])]
-        if "지표" in cols and any(c.startswith("전주 (") for c in cols):
+        # 실적 열(`전주 (…)`)은 이제 **접혀 있다** — 비교 열 머리를 눌러야 펼쳐진다.
+        # 그래서 늘 떠 있는 증감 열로 이 표를 찾는다.
+        if "지표" in cols and "전주비" in cols:
             hit = t.value
             break
     assert hit is not None, "주요 지표 현황 표를 못 찾았어요"
