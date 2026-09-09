@@ -271,23 +271,71 @@ def t_af_code_with_letters_survives_parsing():
 
 
 @case
-def t_rejected_af_codes_are_reported():
-    """버린 행을 세어 두지 않으면 새 코드 체계가 들어와도 조용히 사라진다.
+def t_unknown_af_prefix_still_counts_as_실적():
+    """**접두어 화이트리스트로 실적을 버리지 않는다.**
 
-    화면(업로드 인식 로그)이 읽는 건 `df.attrs['af_rejected']`다. attrs는 pickle을 타서
-    `st.cache_data`를 거쳐도 살아남지만, 이후 merge·concat에서는 사라진다."""
+    `(AP|PB)`에 안 맞는다고 버리면 새 코드 체계가 들어올 때마다 실적이 조용히 샌다.
+    실제로 `APZ*`로 한 번 겪었고(2025-09-01 주 6건·UV 27,475), 같은 백업의 다른 시트엔
+    이미 `EV**`가 있다. 숫자가 든 코드면 받고, 낯선 형식이라고 따로 알리기만 한다.
+    """
+    d = "20250904"
+    perf = S.parse_perf_bytes(perf_xlsx([
+        row(d, "AP59", uv=100),
+        row(d, "EV05", uv=200),            # ← 낯선 접두어지만 실제 발송
+        row(d, "MK12", uv=300),
+        row(d, "합계", uv=999999),          # ← 잡행은 계속 버린다
+    ]))
+    got = set(perf["af"])
+    assert {"AP59", "EV05", "MK12"} <= got, f"낯선 코드가 빠졌어요 — {sorted(got)}"
+    assert "합계" not in got, f"잡행이 들어왔어요 — {sorted(got)}"
+    assert perf["uv"].sum() == 600, perf["uv"].sum()
+    # 받았다는 사실을 조용히 넘기지 않는다 — 문구가 안 붙을 수 있어서다
+    unk = perf.attrs.get("af_unknown") or {}
+    assert set(unk) == {"EV05", "MK12"}, unk
+    assert unk["EV05"][0] == 1 and unk["EV05"][1] == 200, unk["EV05"]
+    # 익숙한 코드는 낯설다고 하지 않는다
+    assert "AP59" not in unk, unk
+    # 버린 잡행은 rejected 쪽에만
+    rej = perf.attrs.get("af_rejected") or {}
+    assert "합계" in rej, rej
+
+
+@case
+def t_junk_rows_are_still_dropped():
+    """숫자가 없는 값은 실적이 아니다 — 받으면 합계 행이 이중 계산된다."""
+    keep = ("AP01", "APZ04", "EV05", "MK12", "AF-3", "PB17", "A1")
+    drop = ("합계", "소계", "계", "전체", "Total", "", "   ", "-", "N/A")
+    for v in keep:
+        assert S.AF_KEEP.match(v.upper()), f"«{v}»는 실적으로 받아야 해요"
+    for v in drop:
+        assert not S.AF_KEEP.match(v.strip().upper()), f"«{v}»가 실적으로 들어왔어요"
+
+
+@case
+def t_rejected_af_codes_are_reported():
+    """버린 행·낯선 행을 세어 두지 않으면 새 코드 체계가 조용히 사라진다.
+
+    화면(업로드 인식 로그)이 읽는 건 `df.attrs['af_rejected']`·`['af_unknown']`이다.
+    attrs는 pickle을 타서 `st.cache_data`를 거쳐도 살아남지만 merge·concat에선 사라진다.
+
+    **`ZZ01`처럼 숫자가 든 코드는 이제 실적으로 받는다** — 접두어가 낯설다고 버리면
+    실적이 조용히 새기 때문이다(`APZ*`로 겪은 그 사고). 버리는 건 잡행뿐이다.
+    """
     d = "20250904"
     perf = S.parse_perf_bytes(perf_xlsx([
         row(d, "AP59", uv=9562),
-        row(d, "ZZ01", uv=7777),           # ← 지금 규칙으로도 못 읽는 코드
+        row(d, "ZZ01", uv=7777),           # ← 낯선 접두어지만 실적으로 받는다
         row(d, "합계", uv=0),
     ]))
+    assert "ZZ01" in set(perf["af"]), f"낯선 코드를 버렸어요 — {sorted(set(perf['af']))}"
+    assert perf["uv"].sum() == 9562 + 7777, perf["uv"].sum()
+    unk = perf.attrs.get("af_unknown")
+    assert isinstance(unk, dict) and unk.get("ZZ01") == (1, 7777), f"낯선 코드 집계 — {unk}"
     rej = perf.attrs.get("af_rejected")
     assert isinstance(rej, dict), f"버린 행 정보가 없어요 — {rej!r}"
-    assert "ZZ01" in rej, f"못 읽은 코드가 안 담겼어요 — {rej}"
-    assert rej["ZZ01"] == (1, 7777), f"건수·UV가 안 맞아요 — {rej['ZZ01']}"
-    # UV가 0인 잡행은 화면에 안 띄운다(호출부가 v[1] > 0으로 거른다) — 담기기는 해야 한다
+    # 잡행만 버린다. UV가 0이라 화면엔 안 띄우지만(호출부가 v[1] > 0으로 거른다) 담기긴 한다
     assert rej.get("합계", (0, 0))[1] == 0, rej
+    assert "ZZ01" not in rej, f"실적으로 받은 코드가 버림 목록에 있어요 — {rej}"
     import pickle
     assert pickle.loads(pickle.dumps(perf)).attrs.get("af_rejected") == rej, \
         "attrs가 pickle(st.cache_data)을 못 넘어가요"
@@ -304,6 +352,10 @@ def t_rejected_af_codes_reach_the_sidebar():
     assert "st.sidebar.warning" in src[i_warn - 400:i_warn + 400], \
         "버린 코드가 사이드바 경고로 안 떠요 (접힌 로그에만 있으면 못 본다)"
     assert i_warn > i_add, "경고를 채우기 전에 그리고 있어요"
+    # 낯선 코드는 실적엔 들어가지만 문구가 안 붙을 수 있다 — 그것도 눈에 띄어야 한다
+    assert "af_unknown_msgs" in src, "낯선 코드를 모아 두는 곳이 없어요"
+    j = src.rindex("af_unknown_msgs")
+    assert "st.sidebar" in src[j - 400:j + 400], "낯선 코드 알림이 사이드바에 안 떠요"
 
 
 @case

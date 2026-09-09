@@ -1310,6 +1310,139 @@ def t_customer_count_equals_uv_times_cr():
 
 
 @case
+def t_table_header_is_readable():
+    """표 첫 행이 옅은 회색 12px이라 안 보인다는 지적 — 진하게·크게 바꾼다.
+
+    표는 캔버스(glide-data-grid)로 그려져 보통 CSS가 안 닿는다. 그 라이브러리가 읽는
+    `--gdg-*` 변수로만 바뀌므로, 일반 셀렉터로 고쳐 놓고 됐다고 여기지 않게 못 박는다.
+    두 앱이 같은 표 스타일을 써야 해서 양쪽 다 본다.
+    """
+    for f in ("weekly_report.py", "send_perf_dashboard.py"):
+        src = (ROOT / f).read_text(encoding="utf-8")
+        for v in ("--gdg-text-header", "--gdg-header-font-style", "--gdg-bg-header"):
+            assert v in src, f"{f}: «{v}»가 없어요 — 캔버스 표는 이 변수로만 바뀌어요"
+        # 회색 기본값을 그대로 두면 고친 의미가 없다
+        i = src.index("--gdg-text-header")
+        assert "#1e293b" in src[i:i + 60], f"{f}: 헤더 글자색이 여전히 옅어요"
+        # Material 아이콘 폰트는 건드리지 않는다(아이콘이 네모로 깨진다)
+        j = src.index("--gdg-header-font-style")
+        assert "font-family" not in src[j:j + 80], f"{f}: 헤더에 폰트 패밀리를 지정했어요"
+    # 화면에도 실제로 실려야 한다
+    at = _open()
+    css = _html(at)
+    assert "--gdg-text-header" in css, "CSS가 페이지에 안 실렸어요"
+
+
+def _trend_spec(at):
+    """④ 하단 연중 추이 차트의 figure JSON. AppTest는 plotly에 .value를 안 준다."""
+    for e in at.get("plotly_chart"):
+        spec = json.loads(e.proto.spec)
+        if "추이" in str((spec.get("layout", {}).get("title") or {}).get("text", "")):
+            return spec
+    return None
+
+
+@case
+def t_orgcat_trend_draws_two_years():
+    """④ 하단 — 지금 보는 대상의 올해 흐름을 전년과 맞댄다."""
+    at = _open()
+    spec = _trend_spec(at)
+    assert spec, "연중 추이 차트가 없어요"
+    names = [t.get("name") for t in spec["data"]]
+    assert names == ["2026년", "2025년"], names
+    # x축은 **올해 라벨**로 세운다 — 전년에만 있는 기간까지 그리면 축이 늘어진다
+    assert spec["data"][0]["x"][0].endswith("주차"), spec["data"][0]["x"][:3]
+    # 값이 없는 기간은 선을 끊는다(이으면 그 사이에 데이터가 있는 것처럼 보인다)
+    assert spec["data"][0].get("connectgaps") is False, spec["data"][0].get("connectgaps")
+
+
+@case
+def t_orgcat_trend_axis_is_this_year_only():
+    """x축은 **올해 라벨**로 세운다 — 전년에만 있는 기간까지 그리면 축이 늘어져
+    정작 올해 흐름이 눌린다. 두 해 라벨이 같은 합성본으론 안 잡혀서 일부러
+    전년에만 있는 주차를 심는다."""
+    oc = synth_orgcat()
+    extra = oc[(oc["gran"] == "주") & (oc["year"] == 2025)].head(40).copy()
+    extra["label"] = "12월 5주차"
+    extra["sortkey"] = 2025 * 10000 + 1205
+    oc2 = pd.concat([oc, extra], ignore_index=True)
+    at = _open(orgcat=oc2)
+    xs = _trend_spec(at)["data"][0]["x"]
+    assert "12월 5주차" not in xs, f"전년에만 있는 기간이 축에 들어왔어요 — {xs[-3:]}"
+    # 전년 선을 켜 둔 상태에서도 축은 올해 기준이어야 한다
+    names = [t.get("name") for t in _trend_spec(at)["data"]]
+    assert "2025년" in names, names
+
+
+@case
+def t_orgcat_trend_can_hide_prior_year():
+    """항목이 많아 복잡할 때 전년 선을 끌 수 있어야 한다."""
+    at = _open()
+    cb = [c for c in at.checkbox if "전년 비교선" in str(c.label)]
+    assert cb, f"전년 토글이 없어요 — {[str(c.label) for c in at.checkbox]}"
+    assert cb[0].value is True, "기본은 켜져 있어야 해요"
+    cb[0].set_value(False); at.run()
+    assert not at.exception, at.exception[0].value
+    names = [t.get("name") for t in _trend_spec(at)["data"]]
+    assert names == ["2026년"], f"전년 선이 안 꺼졌어요 — {names}"
+
+
+@case
+def t_orgcat_trend_switches_granularity():
+    """기간 단위를 주차↔월로 바꿀 수 있고, 축 라벨이 따라간다."""
+    at = _open()
+    rd = [r for r in at.radio if r.label == "기간 단위"]
+    assert rd, f"기간 단위 라디오가 없어요 — {[r.label for r in at.radio]}"
+    assert set(rd[0].options) == {"주차별", "월별"}, list(rd[0].options)
+    rd[0].set_value("월"); at.run()
+    assert not at.exception, at.exception[0].value
+    spec = _trend_spec(at)
+    assert "월별 추이" in spec["layout"]["title"]["text"], spec["layout"]["title"]["text"]
+    xs = spec["data"][0]["x"]
+    assert all(str(v).endswith("월") for v in xs), xs[:4]
+    # 위 비교 기준(주)과 별개로 움직여야 한다 — 같이 묶이면 왕복이 안 된다
+    assert [r for r in at.radio if r.label == "비교 기준"], "비교 기준 라디오가 사라졌어요"
+
+
+@case
+def t_orgcat_trend_follows_the_drilldown():
+    """조직을 **실제로 눌러** 차트가 그 조직으로 바뀌는지 본다.
+
+    기본(전체)만 확인하면 `path`를 무시하고 늘 전체를 그려도 통과한다 — 실제로
+    그렇게 짜 보고 안 잡히는 걸 확인했다. 그래서 세션에 셀 선택을 심어 리런한다
+    (표 클릭은 AppTest가 흉내 못 내지만 선택 상태는 세션으로 넣을 수 있다).
+    """
+    oc = synth_orgcat()
+    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")]
+    view = W.orgcat_view(sub)
+    orgs = view.live(())[0]
+    lbs = (sub[sub["year"] == 2026][["label", "sortkey"]].drop_duplicates()
+           .sort_values("sortkey")["label"].astype(str).tolist())
+
+    def _want(path):
+        return [v for v in (view.get(path, "첫구매 고객수", 2026, lb, "mtd") for lb in lbs)
+                if not pd.isna(v)][:3]
+
+    at = _open()
+    heads = [h for h in _texts(at) if "연중 추이" in h]
+    assert heads and "전체" in heads[0], f"기본은 전체여야 해요 — {heads[:1]}"
+    got0 = [v for v in _trend_spec(at)["data"][0]["y"] if v is not None][:3]
+    assert got0 == _want(()), (got0, _want(()))
+
+    # 첫 조직을 고른다 — 합계 행이 0번이라 자식은 1번부터
+    at.session_state["wr_fn_orgsel"] = {"selection": {"cells": [[1, "2026년"]]}}
+    at.run()
+    assert not at.exception, at.exception[0].value
+    org = orgs[0]
+    heads = [h for h in _texts(at) if "연중 추이" in h]
+    assert heads and org in heads[0], f"제목이 «{org}»로 안 바뀌었어요 — {heads[:1]}"
+    got1 = [v for v in _trend_spec(at)["data"][0]["y"] if v is not None][:3]
+    assert got1 == _want((org,)), (got1, _want((org,)))
+    # 전체와 달라야 이 검사가 의미가 있다
+    assert got1 != got0, f"조직을 골라도 값이 그대로예요 — {got1}"
+
+
+@case
 def t_picked_row_reads_cell_selection():
     """_picked_row는 셀 선택·행 선택 둘 다 받고, 범위를 벗어나면 None."""
     class _Ev:

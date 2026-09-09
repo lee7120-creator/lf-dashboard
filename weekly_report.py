@@ -44,6 +44,21 @@ def today_kst():
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"]{background:#f8f9fc}
+
+/* 표 첫 행(헤더) — 기본값이 옅은 회색 12px이라 잘 안 보인다. 표는 캔버스
+   (glide-data-grid)로 그려져 보통 CSS가 안 닿으므로, 그 라이브러리가 읽는
+   `--gdg-*` 변수로 바꾼다. 글자만 진하게·크게 하고 배경은 살짝 눌러 첫 행이
+   본문과 구분되게 한다. 폰트 패밀리는 건드리지 않는다(Material 아이콘 보호). */
+[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"],
+[data-testid="stDataEditor"], .stDataFrame {
+  --gdg-text-header: #1e293b;
+  --gdg-text-header-selected: #0f172a;
+  --gdg-header-font-style: 600 13px;
+  --gdg-bg-header: #eef2f7;
+  --gdg-bg-header-hovered: #e2e8f0;
+  --gdg-bg-header-has-focus: #e2e8f0;
+  --gdg-border-color: #dbe3ec;
+}
 [data-testid="stSidebar"]{background:#ffffff;border-right:1px solid #e2e8f0}
 [data-testid="stMetric"]{background:#ffffff;border-radius:8px;padding:12px 16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
 [data-testid="stMetricLabel"]{color:#64748b!important;font-size:12px!important}
@@ -3640,6 +3655,7 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
                        "지금은 **전체** 기준이에요.")
         _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
                              period_lbl, base_lbl)
+    _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran)
     with st.expander("카테고리별 (조직 합산)", expanded=False):
         st.caption("조직을 안 고르고 **카테고리만 가로질러** 봐요 — 같은 카테고리를 "
                    "여러 조직이 나눠 갖고 있어서, 조직을 하나씩 들어가면 안 보이는 "
@@ -3815,6 +3831,77 @@ def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
         st.caption(_cap)
     wtable(style_delta_cols(pd.DataFrame(rows).set_index("요인")), width="stretch",
            dl_name=f"요인 분해 {node_lbl} ({period_lbl})")
+
+
+def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
+    """④ 하단 — **지금 보고 있는 대상**의 올해 전체 흐름을 전년과 맞댄 차트.
+
+    표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 여기서
+    연중 흐름을 보고, 이상한 구간을 찾으면 위 표에서 그 기간으로 옮겨 가면 된다.
+
+    **드릴다운을 따라간다** — 아무것도 안 고르면 전체, 조직을 누르면 그 조직,
+    카테고리까지 누르면 그 카테고리. 두 줄뿐이라 항목이 많아도 안 복잡하다.
+
+    기간 단위는 여기서 따로 고른다(위 비교 기준과 별개) — 주차로 흐름을 보다가
+    월로 묶어 추세만 보는 왕복이 잦다. 있는 단위만 선택지에 올린다.
+    """
+    _grans = [g for g in ("주", "월") if (odf["gran"] == g).any()]
+    if not _grans:
+        return
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.markdown(f"###### 연중 추이 — {esc(node_lbl)} · {esc(met)}")
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        _gk = "wr_fn_trend_gran"
+        guard_select(_gk, _grans, default=gran if gran in _grans else _grans[-1])
+        tg = st.radio("기간 단위", _grans, key=_gk, horizontal=True,
+                      format_func=lambda g: "주차별" if g == "주" else "월별")
+    with c2:
+        show_py = st.checkbox("전년 비교선", value=True, key="wr_fn_trend_py",
+                              help="끄면 올해 흐름만 봐요. 항목이 많아 복잡할 때 꺼 보세요.")
+
+    sub = odf[(odf["gran"] == tg) & (odf["lfms"] == base["lfms"].iloc[0])] \
+        if "lfms" in base.columns and len(base) else odf[odf["gran"] == tg]
+    view = orgcat_view(sub)
+    yrs = [cy] + ([py] if show_py else [])
+    # x축은 **올해 라벨**로 세운다 — 전년에만 있는 기간까지 그리면 축이 늘어져
+    # 정작 올해 흐름이 눌린다. 전년은 같은 라벨끼리 맞대진다.
+    _lb = (sub[sub["year"] == cy][["label", "sortkey"]].drop_duplicates()
+           .sort_values("sortkey")["label"].astype(str).tolist())
+    if not _lb:
+        st.caption(f"{cy}년 «{tg}» 데이터가 없어요.")
+        return
+    unit, div = METRIC_UNIT.get(met, ("", 1))
+    if met in PCT_METRICS:
+        div, unit = 0.01, "%"
+    fig = go.Figure()
+    drew = 0
+    for i, y in enumerate(yrs):
+        vals = [view.get(tuple(path), met, y, lb, "mtd") for lb in _lb]
+        if not any(not pd.isna(v) for v in vals):
+            continue
+        drew += 1
+        fig.add_trace(go.Scatter(
+            x=[month_trim(v) for v in _lb],
+            y=[(v / div if not pd.isna(v) else None) for v in vals],
+            mode="lines+markers", name=f"{y}년",
+            line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
+            marker=dict(size=5), connectgaps=False))
+    if not drew:
+        st.caption(f"«{esc(node_lbl)}»의 {tg} 단위 값이 없어요.")
+        return
+    ly = base_layout(300, ysuffix=unit if unit == "%" else "",
+                     title=f"{met} {'주차별' if tg == '주' else '월별'} 추이 ({unit})")
+    ly["xaxis"]["categoryorder"] = "array"
+    ly["xaxis"]["categoryarray"] = [month_trim(v) for v in _lb]
+    if tg == "주":
+        ly["xaxis"]["tickangle"] = -45
+        ly["xaxis"]["nticks"] = 20
+    fig.update_layout(**ly)
+    st.plotly_chart(fig, width="stretch")
+    st.caption("위 표에서 조직·카테고리를 누르면 이 차트도 그 대상으로 바뀌어요. "
+               "값이 없는 기간은 **선을 끊어** 둬요 — 이어 버리면 그 사이에 데이터가 "
+               "있는 것처럼 보여요.")
 
 
 def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, prv_close):
