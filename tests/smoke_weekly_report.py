@@ -196,6 +196,74 @@ def check_yoy_summary():
     return fails
 
 
+def check_weekly_trend_page():
+    """「04. 주차별 추이」 — 차트 여섯 장과 주차별 전년비.
+
+    렌더 스모크는 '떴다'까지만 본다. 차트가 세 장으로 줄거나 증감 칸이 빠져도
+    화면은 멀쩡하니 여기서 개수·칼럼으로 잡는다. 자를 때 **주차를 세야** 하는 것도
+    같이 본다 — 증감까지 섞어 16칸을 집으면 보이는 주가 8주로 반토막 난다.
+    """
+    from streamlit.testing.v1 import AppTest
+    sys.path.insert(0, str(ROOT))
+    import weekly_report as W
+
+    fails, cwd = [], os.getcwd()
+    tmp = tempfile.mkdtemp()
+    try:
+        shutil.copy(ROOT / "weekly_report.py", os.path.join(tmp, "weekly_report.py"))
+        _te = ROOT / "table_export.py"
+        if _te.exists():
+            shutil.copy(_te, os.path.join(tmp, "table_export.py"))
+        synth_store().to_csv(os.path.join(tmp, W.DATA_STORE), index=False,
+                             encoding="utf-8-sig")
+        os.chdir(tmp)
+        at = AppTest.from_file(os.path.join(tmp, "weekly_report.py"), default_timeout=TIMEOUT)
+        at.run()
+        rad = [r for r in at.sidebar.radio if r.label == "페이지"]
+        rad[0].set_value("04. 주차별 추이"); at.run()
+        if at.exception:
+            print(f"  FAIL [주차별추이] 예외 — {at.exception[0].value}")
+            return ["주차별추이:예외"]
+        n_chart = len(at.get("plotly_chart"))
+        if n_chart != 6:
+            print(f"  FAIL [주차별추이] 차트가 {n_chart}장이에요 (기대 6장)")
+            fails.append("주차별추이:차트수")
+        fr = [getattr(t.value, "data", t.value) for t in at.dataframe]
+        fr = [f for f in fr if hasattr(f, "columns")
+              and getattr(f.columns, "nlevels", 1) == 2]
+        if not fr:
+            print("  FAIL [주차별추이] 추이표가 없어요")
+            fails.append("주차별추이:표없음")
+        else:
+            cols = list(fr[0].columns)
+            wk = [c for c in cols if "증감" not in c[1]]
+            dl = [c for c in cols if "증감" in c[1]]
+            if not dl:
+                print(f"  FAIL [주차별추이] 전년비 칸이 없어요 — {cols[:4]}")
+                fails.append("주차별추이:증감없음")
+            elif len(wk) != len(dl):
+                print(f"  FAIL [주차별추이] 주차 {len(wk)} ≠ 증감 {len(dl)}")
+                fails.append("주차별추이:짝안맞음")
+            elif len(wk) < 12:
+                print(f"  FAIL [주차별추이] 보이는 주가 {len(wk)}개뿐 — "
+                      "증감까지 세서 잘랐나요?")
+                fails.append("주차별추이:주차반토막")
+            else:
+                # 증감 칸은 값 칸 **바로 오른쪽**이어야 한다
+                bad = [c for c in wk
+                       if (c[0], f"{c[1]} 증감") in set(cols)
+                       and cols.index((c[0], f"{c[1]} 증감")) != cols.index(c) + 1]
+                if bad:
+                    print(f"  FAIL [주차별추이] 증감이 값 옆이 아니에요 — {bad[:2]}")
+                    fails.append("주차별추이:자리")
+    finally:
+        os.chdir(cwd)
+        shutil.rmtree(tmp, ignore_errors=True)
+    if not fails:
+        print("  OK   [주차별추이] 차트 6장 · 주차별 전년비")
+    return fails
+
+
 def check_push_year_picker():
     """「타겟팅 가능 모수 — 연중 추이」의 연도 선택.
 
@@ -307,6 +375,7 @@ def main():
     fails += check_yoy_summary()
 
     print("── 앱푸시 연중 추이 연도 선택 ──")
+    fails += check_weekly_trend_page()
     fails += check_push_year_picker()
 
     print("── 5주차 포함 2개년 ──")

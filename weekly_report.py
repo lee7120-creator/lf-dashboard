@@ -3884,24 +3884,32 @@ def _funnel_app_trend(df, gran, cy, clabel):
                     + (" ◀" if (y == cy and lb == str(clabel)) else ""),
             "가입자수": fmt_value("가입자수", jn),
             "앱 신규설치": fmt_value("앱설치", ins),
-            "앱푸시 동의(앱보유무관)": fmt_value("앱푸시동의_앱무관", aa),
-            "앱푸시 동의(앱포함)": fmt_value("앱푸시수신동의", ag),
-            "앱푸시(앱보유무관)/신규회원": _rate(aa, jn),
-            "앱푸시(앱포함)/신규회원": _rate(ag, jn),
+            "_동의_앱무관": fmt_value("앱푸시동의_앱무관", aa),
+            "_동의_앱포함": fmt_value("앱푸시수신동의", ag),
+            "_율_앱무관": _rate(aa, jn),
+            "_율_앱포함": _rate(ag, jn),
         })
     if not rows:
         return
     tbl = pd.DataFrame(rows).set_index("기간")
-    # 앱 보유 무관 원천이 아직 없으면 그 두 칸은 통째로 뺀다 — '–'만 늘어선 칼럼은
-    # 0인지 없는 건지 안 갈리고 표만 넓힌다(위 비율 표와 같은 규칙).
-    _pa_cols = ["앱푸시 동의(앱보유무관)", "앱푸시(앱보유무관)/신규회원"]
-    if all((tbl[c] == "–").all() for c in _pa_cols):
-        tbl = tbl.drop(columns=_pa_cols)
+    # **앱 보유 무관 원천을 안 올렸으면 예전 화면 그대로 낸다.** 구분할 대상이 하나뿐인데
+    # 칼럼 이름에 `(앱포함)`을 달아 두면 있지도 않은 다른 칸을 찾게 되고, `–`만 늘어선
+    # 칼럼은 0인지 없는 건지도 안 갈린다. 위 비율 표와 같은 규칙이다.
+    has_pa = not ((tbl["_동의_앱무관"] == "–").all() and (tbl["_율_앱무관"] == "–").all())
+    if has_pa:
+        tbl = tbl.rename(columns={"_동의_앱무관": "앱푸시 동의(앱보유무관)",
+                                  "_동의_앱포함": "앱푸시 동의(앱포함)",
+                                  "_율_앱무관": "앱푸시(앱보유무관)/신규회원",
+                                  "_율_앱포함": "앱푸시(앱포함)/신규회원"})
+    else:
+        tbl = (tbl.drop(columns=["_동의_앱무관", "_율_앱무관"])
+                  .rename(columns={"_동의_앱포함": "앱푸시 수신동의",
+                                   "_율_앱포함": "신규회원 수신동의율"}))
     with st.expander(f"최근 {gran} 추이 ({len(rows)}개 기간)", expanded=True):
         wtable(tbl, width="stretch", dl_name=f"앱 설치·수신동의 최근 {gran} 추이")
         _cap = ("`◀` 가 위 카드와 같은 기간이에요. 값은 모두 **일평균**이라 기간 길이가 "
                 "달라도 그대로 견줄 수 있어요.")
-        if len(tbl.columns) > 4:
+        if has_pa:
             _cap += (" 동의율 두 칸은 **분모가 달라요** — 두 값의 차이가 곧 "
                      "'앱을 안 깔아서 못 받는 몫'이에요.")
         st.caption(_cap)
@@ -3955,9 +3963,15 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
     # **수신동의는 두 원천이 서로 다른 질문에 답한다.** 기존 PUSH는 *앱을 가진 회원*의
     # 동의라 '앱을 안 깐 신규회원까지 넣으면 얼마인가'엔 답하지 못한다. 둘을 나란히
     # 놓으면 '앱을 안 깔아서 못 받는 사람'이 얼마나 되는지가 그 차이로 드러난다.
-    # 어느 쪽이 맞다가 아니라 **분모가 다른 두 지표**라 이름에 그렇게 적는다.
-    RATIOS = [("앱푸시(앱보유무관)/신규회원", "앱푸시동의_앱무관", "가입자수"),
-              ("앱푸시(앱포함)/신규회원", "앱푸시수신동의", "가입자수"),
+    #
+    # **앱 보유 무관 원천을 안 올렸으면 화면은 예전 그대로여야 한다.** 구분할 대상이
+    # 하나뿐인데 이름에 `(앱포함)`을 달아 두면, 있지도 않은 다른 지표를 찾게 된다.
+    # 그래서 이름·안내를 원천 유무로 갈라 둔다 — 올리면 두 줄, 안 올리면 예전 한 줄.
+    has_pa = not (pd.isna(cur.get("앱푸시동의_앱무관"))
+                  and pd.isna(prv.get("앱푸시동의_앱무관")))
+    RATIOS = ([("앱푸시(앱보유무관)/신규회원", "앱푸시동의_앱무관", "가입자수"),
+               ("앱푸시(앱포함)/신규회원", "앱푸시수신동의", "가입자수")] if has_pa
+              else [("신규회원 앱 수신동의율", "앱푸시수신동의", "가입자수")]) + [
               ("가입자 대비 앱 신규설치율", "앱설치", "가입자수"),
               ("앱 신규설치 대비 수신동의율", "앱푸시수신동의", "앱설치")]
     rrows = []
@@ -3975,12 +3989,9 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
     if rrows:
         wtable(style_delta_cols(pd.DataFrame(rrows).set_index("비율")), width="stretch",
                dl_name="신규회원 앱 수신동의")
-    _pa = cur.get("앱푸시동의_앱무관")
-    if pd.isna(_pa):
-        st.caption("**앱 보유와 무관한 수신동의**는 아직 원천이 없어요. "
-                   "`Push Total`·`Push Y Cnt`·`Push N Cnt` 세 줄이 있는 파일을 올리면 "
-                   "「앱푸시(앱보유무관)/신규회원」 줄이 생겨요.")
-    else:
+    # 원천이 없으면 아무 말도 덧붙이지 않는다 — 안 올린 데이터를 채근하는 문구가
+    # 상시로 떠 있으면 그것도 소음이다. 올렸을 때만 두 줄을 어떻게 읽는지 말한다.
+    if has_pa:
         # 이 원천은 그날의 신규회원 전체(Push Total)도 같이 준다. 마스터 가입자수와
         # 크게 어긋나면 둘 중 하나가 다른 모수를 세고 있다는 뜻이라 눈으로 잡히게 한다.
         _tot, _jn = cur.get("앱푸시대상_앱무관"), cur.get("가입자수")
@@ -4921,18 +4932,32 @@ def main():
     elif page == "04. 주차별 추이":
         st.markdown("## 주차별 추이")
         st.subheader("주차별 추이 차트 — 전년 비교")
-        c1, c2, c3 = st.columns(3)
-        for col, met in zip((c1, c2, c3), ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]):
-            with col:
-                st.plotly_chart(yoy_chart(df, "주", met, chart_years, h=280),
-                                width="stretch")
+        # 월별 추이(03)와 같은 여섯 장 — 화면마다 보는 지표가 다르면 두 페이지를
+        # 오갈 때 매번 다시 찾아야 한다
+        for _wrow in (TREND_CHARTS[:3], TREND_CHARTS[3:]):
+            for _col, _met in zip(st.columns(3), _wrow):
+                with _col:
+                    st.plotly_chart(yoy_chart(df, "주", _met, chart_years, h=280),
+                                    width="stretch")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader(f"주차별 추이표 — {ref_year}년")
-        tbl = trend_table(df, "주", METRICS7, [ref_year])
+        tbl = trend_table(df, "주", METRICS7, [ref_year], delta_year=ref_year)
         if not tbl.empty:
-            recent = tbl.columns[-16:]
-            wtable(style_trend(tbl[recent], METRICS7), width="stretch", dl_name="주차별 추이 차트 — 전년 비교")
+            # **자를 땐 주차를 센다.** 증감 칸까지 섞어 16칸을 집으면 보이는 주가
+            # 8주로 반토막 난다. 주차를 16개 고른 뒤 짝이 되는 증감 칸을 딸려 보낸다.
+            _all = set(tbl.columns)
+            recent = []
+            for _c in [c for c in tbl.columns if not _is_delta_col(c)][-16:]:
+                recent.append(_c)
+                _d = (_c[0], f"{_c[1]} 증감")
+                if _d in _all:
+                    recent.append(_d)
+            st.caption(f"주차마다 오른쪽에 **전년 같은 주차 대비 증감**을 붙였어요. "
+                       f"비율 지표(가입율·당일가입CR)는 %p 차이예요. 전년에 그 주차가 "
+                       f"없으면 '–'로 둬요.")
+            wtable(style_trend(tbl[recent], METRICS7), width="stretch",
+                   dl_name=f"주차별 추이표 ({ref_year}년)")
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.subheader("전주비(WoW)·전년비(YoY) 증감")

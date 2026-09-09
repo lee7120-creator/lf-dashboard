@@ -460,10 +460,10 @@ def t_app_block_shows_consent_rate():
     fr = [f for f in _frames(at) if f.index.name == "비율"]
     assert fr, f"앱 비율 표가 없어요 — {[f.index.name for f in _frames(at)]}"
     tbl = fr[0]
-    # 앱 보유 무관 원천이 붙으면서 이름에 분모를 밝히게 바뀌었다
-    assert "앱푸시(앱포함)/신규회원" in tbl.index, list(tbl.index)
+    # 앱 보유 무관 원천이 없으면 이름은 예전 그대로다(구분할 대상이 하나뿐이라서)
+    assert "신규회원 앱 수신동의율" in tbl.index, list(tbl.index)
     # 주간 기본 모드: 그 주 앱푸시 일평균 ÷ 가입자수
-    assert tbl.loc["앱푸시(앱포함)/신규회원", "2026년"] != "–", tbl.to_dict()
+    assert tbl.loc["신규회원 앱 수신동의율", "2026년"] != "–", tbl.to_dict()
 
 
 @case
@@ -1115,10 +1115,14 @@ def t_missing_pushall_source_says_why():
     at = _open(store=store, mode="월누적(MTD) — 전년 동월")
     fr = [f for f in _frames(at) if f.index.name == "비율"]
     assert fr, "비율 표가 없어요"
-    assert "앱푸시(앱보유무관)/신규회원" not in list(fr[0].index), \
-        "원천이 없는데 빈 줄이 남았어요"
-    assert any("앱 보유와 무관한 수신동의" in t and "원천이 없어요" in t
-               for t in _texts(at)), "왜 없는지 안 밝혔어요"
+    idx = list(fr[0].index)
+    assert "앱푸시(앱보유무관)/신규회원" not in idx, "원천이 없는데 빈 줄이 남았어요"
+    # **예전 화면 그대로여야 한다** — 구분할 대상이 하나뿐인데 `(앱포함)`을 달아 두면
+    # 있지도 않은 다른 지표를 찾게 된다
+    assert "신규회원 앱 수신동의율" in idx, idx
+    assert not [i for i in idx if "앱포함" in str(i)], idx
+    # 안 올린 데이터를 채근하는 문구도 안 띄운다(상시로 뜨면 그것도 소음이다)
+    assert not [t for t in _texts(at) if "원천이 없어요" in t], "채근 문구가 떠 있어요"
 
 
 @case
@@ -1151,7 +1155,10 @@ def t_trend_drops_pushall_columns_when_source_is_missing():
     assert fr, "추이표가 없어요"
     cols = list(fr[0].columns)
     assert not [c for c in cols if "앱보유무관" in c], f"빈 칼럼이 남았어요 — {cols}"
-    assert "앱푸시(앱포함)/신규회원" in cols, cols
+    # 이름도 예전 그대로 — 「앱포함」은 견줄 대상이 있을 때만 붙인다
+    assert not [c for c in cols if "앱포함" in c], cols
+    assert "앱푸시 수신동의" in cols and "신규회원 수신동의율" in cols, cols
+    # 설치율은 원천과 무관하게 뺀 채로 둔다(따로 요청받은 정리다)
     assert "가입자 대비 설치율" not in cols, cols
 
 
