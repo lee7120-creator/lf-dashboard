@@ -10,6 +10,7 @@
     python tests/test_funnel_page.py
 """
 import datetime
+import inspect
 import json
 import os
 import pathlib
@@ -845,6 +846,58 @@ def t_org_table_is_click_to_drill_not_checkbox():
 
 
 @case
+def t_picked_row_gets_a_whole_row_background():
+    """고른 행은 **줄 전체**에 배경이 들어와야 한다 — 셀 테두리만으론 안 보인다."""
+    import pandas as _pd
+    df = _pd.DataFrame({"조직": ["가", "나", "다"], "2026년": [1, 2, 3]})
+    sty = W._hl_row(df.style, 1)
+    ctx = sty._compute().ctx
+    # ctx는 (행, 열) → 스타일 목록. 1번 행만 전 칼럼이 칠해져야 한다.
+    painted = {r for (r, _c), v in ctx.items()
+               if any("background-color" in str(x) for x in v)}
+    assert painted == {1}, f"1번 행만 칠해져야 해요 — {painted}"
+    cols = {c for (r, c), v in ctx.items()
+            if r == 1 and any("background-color" in str(x) for x in v)}
+    assert cols == {0, 1}, f"줄 전체가 아니라 일부만 칠해졌어요 — {cols}"
+    # None이면 손대지 않는다
+    assert W._hl_row(df.style, None)._compute().ctx == {}
+
+
+@case
+def t_highlight_does_not_leak_into_excel():
+    """하이라이트는 화면 전용이다 — 받은 파일에 한 줄만 색칠돼 있으면 뭔지 알 수 없다.
+
+    `wtable(dl_data=)`로 색 안 입힌 쪽을 내려받기에 넘기는지 본다.
+    """
+    src = inspect.getsource(W.funnel_orgcat_block if hasattr(W, "funnel_orgcat_block")
+                            else W._funnel_level_table)
+    whole = pathlib.Path(APP).read_text(encoding="utf-8")
+    for key in ("wr_fn_orgsel", "_ckey"):
+        i = whole.index(f"key={key}" if key.startswith("_") else f'key="{key}"')
+        seg = whole[i - 400:i + 400]
+        assert "dl_data=" in seg, f"«{key}» 표가 하이라이트를 엑셀까지 보내요"
+    # wtable이 dl_data를 실제로 쓰는지
+    assert "_src = data if dl_data is None else dl_data" in whole, \
+        "wtable이 dl_data를 안 써요 — 넘겨도 소용없어요"
+
+
+@case
+def t_lower_blocks_start_collapsed():
+    """하위 블록은 접혀 있다가 위를 누르면 펼쳐진다."""
+    at = _open()
+    labels = {str(e.label): e for e in at.expander}
+    assert any("어디에서 빠졌나" in x for x in labels), f"요인 분해 접이식이 없어요 — {list(labels)}"
+    assert any("카테고리별 (조직 합산)" in x for x in labels), \
+        f"합산 접이식이 없어요 — {list(labels)}"
+    # 아무것도 안 골랐으면 둘 다 접혀 있어야 한다
+    for lb, e in labels.items():
+        if "어디에서 빠졌나" in lb or "카테고리별 (조직 합산)" in lb:
+            assert not e.proto.expanded, f"«{lb}»가 처음부터 펼쳐져 있어요"
+    assert any("전체" in t and "누르면" in t for t in _texts(at)), \
+        "왜 전체 기준인지 안 밝혔어요"
+
+
+@case
 def t_picked_row_reads_cell_selection():
     """_picked_row는 셀 선택·행 선택 둘 다 받고, 범위를 벗어나면 None."""
     class _Ev:
@@ -945,7 +998,9 @@ def t_factor_split_shows_where_it_leaked():
     idx = " ".join(str(i) for i in fr[0].index)
     for nick in ("유입", "전환", "객단가"):
         assert nick in idx, (nick, list(fr[0].index))
-    assert any("어디에서 빠졌나" in t for t in _texts(at)), "요인 분해 제목이 없어요"
+    # 제목은 접이식 라벨로 옮겼다 — _texts는 expander 라벨을 안 모은다
+    assert any("어디에서 빠졌나" in str(e.label) for e in at.expander), \
+        f"요인 분해 제목이 없어요 — {[str(e.label) for e in at.expander]}"
 
 
 @case
