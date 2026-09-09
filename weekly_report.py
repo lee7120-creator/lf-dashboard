@@ -3597,13 +3597,11 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
     ev = wtable(_hl_row(_org_sty, _pre), width="stretch", key="wr_fn_orgsel",
                 on_select="rerun", selection_mode="single-cell", hide_index=True,
                 dl_name=f"조직별 {met} ({period_lbl})", dl_data=_org_sty)
-    st.caption("조직 한 줄에서 **아무 칸이나 누르면** 그 줄에 색이 들어오고 "
-               "아래에 그 조직의 카테고리가 열려요.")
+    st.caption("맨 윗줄은 **합계**예요(파일이 준 전체 값이라 아래 합과 꼭 같진 않아요). "
+               "조직 한 줄에서 **아무 칸이나 누르면** 그 줄에 색이 들어오고 아래에 그 "
+               "조직의 카테고리가 열려요. 합계 줄을 누르면 다시 닫혀요.")
 
-    picked = None
-    _i = _picked_row(ev, len(org_tbl))
-    if _i is not None:
-        picked = org_tbl["조직"].iloc[_i]
+    picked = _picked_child(ev, orgs)
 
     path, node_lbl = [], "전체"
     if picked:
@@ -3621,16 +3619,17 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
             _cat_sty = style_delta_cols(_funnel_level_table(
                 view, [picked], _kids, "카테고리", met, cy, py, clabel, prv_close,
                 _sub_tot if additive else None))
-            _pre2 = _picked_row(st.session_state.get(_ckey), len(_kids))
+            _pre2 = _picked_row(st.session_state.get(_ckey), len(_kids) + 1)
             ev2 = wtable(_hl_row(_cat_sty, _pre2), width="stretch",
                 key=_ckey, on_select="rerun",
                 selection_mode="single-cell", hide_index=True,
                 dl_name=f"{picked} 카테고리별 {met} ({period_lbl})", dl_data=_cat_sty)
-            st.caption("카테고리 한 줄에서 **아무 칸이나 누르면** 그 줄에 색이 들어오고 "
-                       "아래 요인 분해가 그 카테고리로 바뀌어요.")
-            _i2 = _picked_row(ev2, len(_kids))
-            if _i2 is not None:
-                path, node_lbl = [picked, _kids[_i2]], f"{picked} › {_kids[_i2]}"
+            st.caption(f"맨 윗줄은 **{esc(picked)} 합계**예요. 카테고리 한 줄에서 "
+                       "**아무 칸이나 누르면** 그 줄에 색이 들어오고 아래 요인 분해가 "
+                       "그 카테고리로 바뀌어요.")
+            _c2 = _picked_child(ev2, _kids)
+            if _c2 is not None:
+                path, node_lbl = [picked, _c2], f"{picked} › {_c2}"
 
     # 위에서 고른 게 있을 때만 펼친다 — 고르기 전엔 조직 표에 집중하게 둔다.
     # `expanded`는 리런마다 다시 먹으므로 행을 누르면 그 자리에서 열린다.
@@ -3649,13 +3648,31 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
                            prv_close)
 
 
+# 표 맨 위에 두는 기준 행의 이름. 합계가 없으면 개별 값이 큰지 작은지 가늠이 안 된다.
+TOTAL_ROW = "합계"
+
+
 def _funnel_level_table(view, path, kids, lv_lbl, met, cy, py, clabel, prv_close, tot=None):
     """한 레벨의 표 — 행=자식, 열=전년·올해·전년비(+비중). `tot`을 주면 비중을 붙인다.
+
+    **맨 위에 상위 합계 행을 둔다.** 기준점이 없으면 '골프 4명'이 큰지 작은지 가늠이
+    안 된다. 값은 **파일이 준 상위 값** 그대로다 — 자식을 더하지 않는다. 고객수·상품UV는
+    유니크라 자식 합이 상위를 넘고(실파일 +2.4%·+33%), 객단가·상품CR은 애초에 더할 수
+    없다. 그래서 `*TOTAL`은 늘 파일 값이라는 규칙을 여기서도 지킨다.
 
     비중은 **하위 합이 상위와 맞는 지표에만** 붙인다(거래액). 고객수는 유니크 값이라
     같은 사람이 여러 곳에 잡혀 합이 상위를 넘는다 — 붙이면 거짓말이 된다.
     """
     rows = []
+    # 합계 행 — 지금 보고 있는 노드(자식들의 상위) 값
+    _tc = view.get(tuple(path), met, cy, clabel, "mtd")
+    _tp = view.get(tuple(path), met, py, clabel, prv_close)
+    _trow = {lv_lbl: TOTAL_ROW, f"{py}년": fmt_value(met, _tp),
+             f"{cy}년": fmt_value(met, _tc),
+             "전년비": fmt_delta(met, _tc, _tp) or "–"}
+    if tot is not None:
+        _trow["비중"] = "100.0%"
+    rows.append(_trow)
     for k in kids:
         kc = view.get(tuple(list(path) + [k]), met, cy, clabel, "mtd")
         kp = view.get(tuple(list(path) + [k]), met, py, clabel, prv_close)
@@ -3693,6 +3710,17 @@ def _hl_row(sty, i, color=ROW_PICK_BG):
         return sty.apply(_paint, axis=None)
     except Exception:                                     # noqa: BLE001
         return sty                                        # 색이 없어도 표는 보여야 한다
+
+
+def _picked_child(ev, kids):
+    """표에서 고른 **자식**. 맨 위 합계 행(0번)을 누르면 고르지 않은 것으로 본다.
+
+    `_funnel_level_table`이 0번에 합계 행을 끼우므로 행 번호가 한 칸씩 밀린다.
+    그대로 `kids[i]`로 읽으면 **한 칸씩 어긋난 항목이 열린다** — 화면은 멀쩡히 뜨고
+    값만 틀려서 눈으로는 안 잡힌다. 합계 줄을 누르는 건 '전체로 되돌리기'로 읽는다.
+    """
+    i = _picked_row(ev, len(kids) + 1)
+    return None if i in (None, 0) else kids[i - 1]
 
 
 def _picked_row(ev, n):
@@ -3737,20 +3765,38 @@ def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
 
     **0·음수·결측이 하나라도 있으면 로그가 정의되지 않는다** — 그럴 땐 숫자를 지어내지 말고
     왜 못 쪼갰는지 말한다.
+
+    **고객수는 요인이 아니라 중간 결과다.** 원본에서 `고객수 = 상품UV × 상품CR`이
+    정확히 성립해서(위 항등식과 `거래액 = 고객수 × 객단가`를 나누면 나온다), 값은
+    보여 주되 **기여액은 안 매긴다** — 그 몫이 유입·전환 두 줄에 이미 들어 있어
+    같이 세면 두 번 센다. 안 넣으면 '전환율은 있는데 고객수가 없다'로 읽힌다.
     """
     prev = [view.get(tuple(path), f, py, clabel, prv_close) for f, _ in ORGCAT_FACTORS]
     cur = [view.get(tuple(path), f, cy, clabel, "mtd") for f, _ in ORGCAT_FACTORS]
+    _cu_p = view.get(tuple(path), "첫구매 고객수", py, clabel, prv_close)
+    _cu_c = view.get(tuple(path), "첫구매 고객수", cy, clabel, "mtd")
     rows = []
     for (f, nick), pv, cv in zip(ORGCAT_FACTORS, prev, cur):
         rows.append({"요인": f"{nick} ({f})", f"{py}년": fmt_value(f, pv),
                      f"{cy}년": fmt_value(f, cv), "전년비": fmt_delta(f, cv, pv) or "–"})
+        # 유입 × 전환 = 고객수 — 그 자리에 끼워야 곱셈 사슬로 읽힌다
+        if f == "상품CR" and not (pd.isna(_cu_p) and pd.isna(_cu_c)):
+            rows.append({"요인": "= 고객수 (첫구매 고객수)",
+                         f"{py}년": fmt_value("첫구매 고객수", _cu_p),
+                         f"{cy}년": fmt_value("첫구매 고객수", _cu_c),
+                         "전년비": fmt_delta("첫구매 고객수", _cu_c, _cu_p) or "–"})
     split = factor_split(prev, cur)
     if split is None:
         st.caption(f"{period_lbl} vs {base_lbl} · 세 요인 중 하나라도 값이 없거나 0 이하라 "
                    "기여액은 못 쪼갰어요. 증감률만 보세요.")
     else:
         parts, total = split
-        for r, part in zip(rows, parts):
+        # 기여액은 **요인 세 줄에만** 붙인다. 고객수 줄은 유입 × 전환이라 여기서
+        # 숫자를 주면 칼럼을 더했을 때 그 몫이 두 번 세어진다.
+        _fr = [r for r in rows if not str(r["요인"]).startswith("=")]
+        for r in rows:
+            r["기여액"] = "–"
+        for r, part in zip(_fr, parts):
             r["기여액"] = f"{part / 1e6:+,.1f}백만원"
         _rv_p = view.get(tuple(path), "첫구매 거래액", py, clabel, prv_close)
         _rv_c = view.get(tuple(path), "첫구매 거래액", cy, clabel, "mtd")
@@ -3759,9 +3805,14 @@ def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
                      "전년비": fmt_delta("첫구매 거래액", _rv_c, _rv_p) or "–",
                      "기여액": f"{total / 1e6:+,.1f}백만원"})
         _worst = min(zip(ORGCAT_FACTORS, parts), key=lambda x: x[1])
-        st.caption(f"{period_lbl} vs {base_lbl} · 거래액 증감을 세 요인으로 쪼갰어요 "
-                   f"(합이 실제 증감과 원 단위까지 같아요). 가장 많이 끌어내린 건 "
-                   f"**{_worst[0][1]}**({_worst[0][0]}) 이에요.")
+        _cap = (f"{period_lbl} vs {base_lbl} · 거래액 증감을 세 요인으로 쪼갰어요 "
+                f"(합이 실제 증감과 원 단위까지 같아요). 가장 많이 끌어내린 건 "
+                f"**{_worst[0][1]}**({_worst[0][0]}) 이에요.")
+        if any(str(r["요인"]).startswith("=") for r in rows):
+            _cap += (f" **고객수는 유입 × 전환**이라 기여액을 따로 안 매겨요 — 그 몫 "
+                     f"{(parts[0] + parts[1]) / 1e6:+,.1f}백만원은 위 두 줄에 이미 "
+                     f"들어 있어요.")
+        st.caption(_cap)
     wtable(style_delta_cols(pd.DataFrame(rows).set_index("요인")), width="stretch",
            dl_name=f"요인 분해 {node_lbl} ({period_lbl})")
 
@@ -3822,6 +3873,17 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
             row["비중"] = ("–" if (pd.isna(kc) or not tot_c)
                           else f"{kc / tot_c * 100:.1f}%")
         rows.append(row)
+    # 맨 위에 전체 합계 — **파일이 준 최상위 값**이지 카테고리 합이 아니다.
+    # 고객수는 유니크라 카테고리 합이 전체를 조금 넘는데(실파일 +2.4%), 그 합을
+    # 합계라고 적으면 아래 줄과 안 맞는 숫자를 기준점으로 삼게 된다.
+    _gc = view.get((), met, cy, clabel, "mtd")
+    _gp = view.get((), met, py, clabel, prv_close)
+    _grow = {"카테고리": TOTAL_ROW, f"{py}년": fmt_value(met, _gp),
+             f"{cy}년": fmt_value(met, _gc),
+             "전년비": fmt_delta(met, _gc, _gp) or "–", "_sort": float("-inf")}
+    if additive:
+        _grow["비중"] = "100.0%"
+    rows.append(_grow)
     tbl = (pd.DataFrame(rows).sort_values("_sort")
            .drop(columns=["_sort"]).set_index("카테고리"))
     _why = {"첫구매 거래액": "조직 합이 전체와 맞는 지표라 그대로 더했어요.",
@@ -3834,7 +3896,8 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
             "상품CR": "더할 수 없는 지표라 **고객수 합 ÷ 상품UV 합**으로 다시 만들었어요 "
                     "(`거래액 = 상품UV × 상품CR × 객단가`에서 나오는 항등식이에요). "
                     "중복이 분자·분모에 같이 들어가 상품UV 단독보다는 왜곡이 작아요."}
-    st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)} · {_why.get(met, '')}")
+    st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)} · 맨 윗줄 **합계**는 파일이 "
+               f"준 전체 값이라 아래 카테고리 합과 꼭 같진 않아요. {_why.get(met, '')}")
     wtable(style_delta_cols(tbl), width="stretch",
            dl_name=f"카테고리 전체 {met} ({period_lbl})")
 
