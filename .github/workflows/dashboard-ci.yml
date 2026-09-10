@@ -69,6 +69,9 @@ jobs:
       - name: 문구 개선 효과(기획시트 W·X) 검사
         run: python tests/test_copy_effect.py
 
+      - name: 리런 상시 비용(사전 캐시·지연 다운로드) 검사
+        run: python tests/test_rerun_cost.py
+
       - name: 발송성과 전 페이지 렌더 스모크
         run: python tests/smoke_pages.py
 
