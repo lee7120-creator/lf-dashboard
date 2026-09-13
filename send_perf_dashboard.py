@@ -16,6 +16,10 @@ Streamlit 의존이 없는 순수 함수이며 모듈 import 만으로 테스트
 import io, os, re, csv, json, hashlib, datetime, time, itertools
 import numpy as np
 import pandas as pd
+# UI 호출은 여전히 main() 안에서만 한다. 여기서 올리는 건 **리런을 넘겨 사는 캐시**
+# (`@st.cache_resource`)를 모듈 최상단에서 걸기 위해서다 — 스크립트 본문은 리런마다
+# 통째로 다시 실행되므로, 사전 CSV 같은 건 캐시에 얹지 않으면 매번 다시 읽는다.
+import streamlit as st
 
 # table_export는 같은 폴더의 모듈이다. 테스트 하네스가 앱만 임시 폴더로 복사해 돌리는
 # 경우가 있어 경로를 직접 얹는다 (없으면 엑셀 버튼만 빠지고 앱은 정상 동작).
@@ -1408,7 +1412,7 @@ def push_weekly(df, group="Total"):
     if g.empty:
         return pd.DataFrame()
     g["is_outlier"] = g["is_outlier"].astype(bool) if "is_outlier" in g else False
-    g["week"] = g["date"].dt.to_period("W-SUN").apply(lambda p: p.start_time)
+    g["week"] = g["date"].dt.to_period("W-SUN").dt.start_time
 
     sub = g[~g["is_outlier"]]
     if sub.empty:
@@ -1807,8 +1811,6 @@ def _load_brand_map(path=BRAND_MAP_CSV):
     return long_map, exact_map
 
 
-BRAND_MAP, BRAND_EXACT = _load_brand_map()
-
 BRAND_CODE_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "data", "brand_code_map.csv")
 
@@ -1833,20 +1835,6 @@ def _load_brand_codes(path=BRAND_CODE_CSV):
     return out
 
 
-BRAND_CODE = _load_brand_codes()
-
-# 같은 브랜드가 표기만 다르게 사전에 두 번 들어 있으면('질스튜어트 뉴욕' / '질 스튜어트 뉴욕',
-# '일꼬르소' / '일 꼬르소') 화면에서 두 줄로 갈라진다. 정규화 키가 같으면 한 이름으로 모은다.
-_BRAND_CANON = {}
-for _m in (BRAND_MAP, BRAND_EXACT):
-    for _n, (_b, _o) in _m.items():
-        _BRAND_CANON.setdefault(_n, _b)
-for _m in (BRAND_MAP, BRAND_EXACT, BRAND_CODE):
-    for _n, (_b, _o) in list(_m.items()):
-        _canon = _BRAND_CANON.setdefault(_br_norm(_b), _b)
-        if _canon != _b:
-            _m[_n] = (_canon, _o)
-
 # 시트의 ADMIN브랜드코드에는 없지만 담당자가 실제로 쓰는 약어. 확인받고 넣은 것만 둔다.
 #   DD 골프 발송 · DG(닥스 골프)와 같은 자리   HG 골프 발송 · HU(헤지스 골프)와 같은 자리
 #   AR 남성 발송 · 0A/WX(알레그리)             TN 남성 발송 · TG(티엔지티)
@@ -1858,23 +1846,56 @@ BRAND_CODE_ALIAS = {
     "AR": "알레그리",
     "TN": "티엔지티",
 }
-for _c, _b in BRAND_CODE_ALIAS.items():
-    _cn = _br_norm(_b)
-    _corg = (BRAND_MAP.get(_cn) or BRAND_EXACT.get(_cn) or (None, ORG_UNKNOWN))[1]
-    BRAND_CODE[_br_norm(_c)] = (_b, _corg)
 
-# 별칭도 같은 사전에 얹는다 — 정본 브랜드명으로 되돌려 준다.
-for _al, _canon in BRAND_ALIAS.items():
-    _n, _cn = _br_norm(_al), _br_norm(_canon)
-    if not _n:
-        continue
-    _org = (BRAND_MAP.get(_cn) or BRAND_EXACT.get(_cn) or (None, ORG_UNKNOWN))[1]
-    (BRAND_MAP if len(_n) >= _BRAND_MIN_LEN else BRAND_EXACT).setdefault(_n, (_canon, _org))
 
-# 긴 이름부터 찾아야 '닥스런던골프'가 '닥스'에 먼저 먹히지 않는다.
-_BRAND_ORDER = sorted(BRAND_MAP, key=len, reverse=True)
-BRAND_FIND_RE = (re.compile("|".join(re.escape(n) for n in _BRAND_ORDER))
-                 if _BRAND_ORDER else None)
+@st.cache_resource(show_spinner=False)
+def _build_brand_dicts():
+    """브랜드 사전 CSV 로드 + 정본화·별칭까지 한 번에. 결과는 리런을 넘겨 캐시한다.
+
+    **스크립트 본문은 리런마다 통째로 다시 실행된다.** 9천 줄짜리 사전 CSV 두 개를
+    매번 파싱하면 그것만 0.4초라, 어느 페이지를 보든 무슨 필터를 만지든 그 값을 낸다.
+    사전은 세션 안에서 바뀌지 않으니 한 번만 읽으면 된다.
+
+    **후처리도 전부 여기서 끝낸다.** 캐시가 돌려주는 건 같은 객체라, 밖에서 고쳐 쓰면
+    두 번째 리런부터 이미 고쳐진 사전을 또 고치게 된다. 지금 규칙은 우연히 멱등이지만
+    (setdefault·정본 대입) 그 우연에 기대면 규칙이 하나 늘 때 조용히 깨진다.
+    """
+    brand_map, brand_exact = _load_brand_map()
+    brand_code = _load_brand_codes()
+
+    # 같은 브랜드가 표기만 다르게 사전에 두 번 들어 있으면('질스튜어트 뉴욕' / '질 스튜어트 뉴욕',
+    # '일꼬르소' / '일 꼬르소') 화면에서 두 줄로 갈라진다. 정규화 키가 같으면 한 이름으로 모은다.
+    canon = {}
+    for _m in (brand_map, brand_exact):
+        for _n, (_b, _o) in _m.items():
+            canon.setdefault(_n, _b)
+    for _m in (brand_map, brand_exact, brand_code):
+        for _n, (_b, _o) in list(_m.items()):
+            _cv = canon.setdefault(_br_norm(_b), _b)
+            if _cv != _b:
+                _m[_n] = (_cv, _o)
+
+    for _c, _b in BRAND_CODE_ALIAS.items():
+        _cn = _br_norm(_b)
+        _corg = (brand_map.get(_cn) or brand_exact.get(_cn) or (None, ORG_UNKNOWN))[1]
+        brand_code[_br_norm(_c)] = (_b, _corg)
+
+    # 별칭도 같은 사전에 얹는다 — 정본 브랜드명으로 되돌려 준다.
+    for _al, _cv in BRAND_ALIAS.items():
+        _n, _cn = _br_norm(_al), _br_norm(_cv)
+        if not _n:
+            continue
+        _org = (brand_map.get(_cn) or brand_exact.get(_cn) or (None, ORG_UNKNOWN))[1]
+        (brand_map if len(_n) >= _BRAND_MIN_LEN else brand_exact).setdefault(_n, (_cv, _org))
+
+    # 긴 이름부터 찾아야 '닥스런던골프'가 '닥스'에 먼저 먹히지 않는다.
+    order = sorted(brand_map, key=len, reverse=True)
+    find_re = (re.compile("|".join(re.escape(n) for n in order)) if order else None)
+    return brand_map, brand_exact, brand_code, canon, order, find_re
+
+
+(BRAND_MAP, BRAND_EXACT, BRAND_CODE,
+ _BRAND_CANON, _BRAND_ORDER, BRAND_FIND_RE) = _build_brand_dicts()
 
 
 def brand_lookup(raw):
@@ -2552,7 +2573,6 @@ def growth_pace_note(s_cur, s_prev=None):
 
 
 def main():
-    import streamlit as st
     import plotly.graph_objects as go
     from scipy import stats
 
@@ -3920,14 +3940,23 @@ def main():
                 return int(pd.util.hash_pandas_object(d.astype(str), index=False).sum())
             except Exception:
                 return len(d)
-        try:
-            _notes_now = st.session_state.get("wr_notes") or {}
-            _notes_sig = hash(frozenset((k, str(v)) for k, v in _notes_now.items()))
-        except Exception:
-            _notes_sig = 0
-        _bak_sig = (len(work), _dfsig(work),
-                    _dfsig(mtd_work), _dfsig(promo_work), _dfsig(_push_df),
-                    _dfsig(st.session_state.get("site_store_df")), _notes_sig)
+        # 시그니처는 **필요할 때만** 잰다 — 저장소 전체를 문자열로 바꿔 해시하는 값이라,
+        # 백업을 만들지도 받지도 않는 리런에서까지 물면 모든 페이지가 그만큼 느려진다.
+        # 쓰이는 자리는 둘뿐이다: 백업을 만들 때(키로 저장), 만들어 둔 게 있을 때(신선도 대조).
+        _sig_memo = []
+
+        def _bak_sig_now():
+            if not _sig_memo:
+                try:
+                    _notes_now = st.session_state.get("wr_notes") or {}
+                    _notes_sig = hash(frozenset((k, str(v)) for k, v in _notes_now.items()))
+                except Exception:                         # noqa: BLE001
+                    _notes_sig = 0
+                _sig_memo.append((len(work), _dfsig(work),
+                                  _dfsig(mtd_work), _dfsig(promo_work), _dfsig(_push_df),
+                                  _dfsig(st.session_state.get("site_store_df")), _notes_sig))
+            return _sig_memo[0]
+
         if st.button("📦 백업 파일 만들기", width="stretch", key="bak_make"):
             _zbuf = io.BytesIO()
             _has_any = False
@@ -3962,10 +3991,10 @@ def main():
                         _has_any = True
                 except Exception:
                     pass
-            st.session_state["_bak_zip"] = (_bak_sig, _zbuf.getvalue()) if _has_any else None
+            st.session_state["_bak_zip"] = (_bak_sig_now(), _zbuf.getvalue()) if _has_any else None
         _bak_cached = st.session_state.get("_bak_zip")
         if _bak_cached:
-            if _bak_cached[0] != _bak_sig:
+            if _bak_cached[0] != _bak_sig_now():
                 st.caption("데이터가 바뀌었어요. 「📦 백업 파일 만들기」를 다시 눌러 최신본을 받으세요.")
             st.download_button(
                 "📥 통합 백업 (전체 ZIP)", _bak_cached[1],
@@ -3993,7 +4022,8 @@ def main():
             if len(work):
                 st.download_button(
                     f"📥 캠페인 백업 (CSV · {len(work):,}건)",
-                    work[[c for c in STORE_COLS if c in work]].to_csv(index=False).encode("utf-8-sig"),
+                    data=lambda d=work: d[[c for c in STORE_COLS if c in d]]
+                        .to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"send_perf_store_backup_{today_kst():%Y%m%d}.csv", mime="text/csv", width="stretch")
             if st.button("🧹 캠페인 저장소 초기화", width="stretch", key="clear_store"):
                 storage_clear(BK, "campaign")
@@ -4006,7 +4036,8 @@ def main():
             if mtd_work is not None and len(mtd_work):
                 st.download_button(
                     "📥 MTD 백업 (CSV)",
-                    mtd_work[[c for c in MTD_STORE_COLS if c in mtd_work]].to_csv(index=False).encode("utf-8-sig"),
+                    data=lambda d=mtd_work: d[[c for c in MTD_STORE_COLS if c in d]]
+                        .to_csv(index=False).encode("utf-8-sig"),
                     file_name="send_perf_mtd_backup.csv", mime="text/csv",
                     width="stretch", key="mtd_bak")
             if st.button("🧹 MTD 저장소 초기화", width="stretch", key="clear_mtd"):
@@ -4020,7 +4051,8 @@ def main():
             if promo_work is not None and len(promo_work):
                 st.download_button(
                     "📥 기획전 백업 (CSV)",
-                    promo_work[[c for c in PROMO_STORE_COLS if c in promo_work]].to_csv(index=False).encode("utf-8-sig"),
+                    data=lambda d=promo_work: d[[c for c in PROMO_STORE_COLS if c in d]]
+                        .to_csv(index=False).encode("utf-8-sig"),
                     file_name="send_perf_promo_backup.csv", mime="text/csv",
                     width="stretch", key="promo_bak")
             rest_p = st.file_uploader("기획전 백업 CSV로 복원하기", type=["csv"], key="restore_promo")
@@ -4046,7 +4078,7 @@ def main():
             if _p_df is not None and not _p_df.empty:
                 st.download_button(
                     "📥 앱푸시 백업 (CSV)",
-                    _p_df.to_csv(index=False).encode("utf-8-sig"),
+                    data=lambda d=_p_df: d.to_csv(index=False).encode("utf-8-sig"),
                     file_name="send_perf_push_backup.csv", mime="text/csv",
                     width="stretch", key="push_bak"
                 )
@@ -4064,7 +4096,7 @@ def main():
             if len(_s_df):
                 st.download_button(
                     "📥 사이트 백업 (CSV)",
-                    _s_df.to_csv(index=False).encode("utf-8-sig"),
+                    data=lambda d=_s_df: d.to_csv(index=False).encode("utf-8-sig"),
                     file_name="send_perf_site_backup.csv", mime="text/csv",
                     width="stretch", key="site_bak")
             if st.button("🧹 사이트 저장소 초기화", width="stretch", key="clear_site"):
@@ -4460,7 +4492,7 @@ def main():
             # (업로드 파일의 연도 오타 등으로 미래 주차가 뜨는 것 방지). 주간보고와 동일 관행.
             _p1_today = today_kst()
             _p1_mon = pd.Timestamp(_p1_today) - pd.Timedelta(days=_p1_today.weekday())
-            _wks = sorted([w for w in _bp["dt"].dt.to_period("W").apply(lambda p: p.start_time).unique()
+            _wks = sorted([w for w in _bp["dt"].dt.to_period("W").dt.start_time.unique()
                            if pd.Timestamp(w) <= _p1_mon], reverse=True)
 
             def _wlab(ws):
@@ -4676,7 +4708,7 @@ def main():
         g0 = g0[g0["send"].fillna(0) > 0]
         if len(g0) < 3:
             st.info("데이터가 부족해요. 실적 파일을 더 올려 주세요."); st.stop()
-        g0["주"] = g0["dt"].dt.to_period("W").apply(lambda p: p.start_time)
+        g0["주"] = g0["dt"].dt.to_period("W").dt.start_time
 
         # 기준 주차 목록 — 발송 실적은 과거만 가능하므로 '오늘이 속한 주'보다 이후(미래) 주는
         # 제외한다. 업로드 파일에 오타난 미래 날짜(예: 2025→2027)가 섞여도 미래 주차가
@@ -6236,21 +6268,43 @@ def main():
         tagcols = [t for t in TAG_BOOLS if t in base.columns]
         base_r = base.reset_index(drop=True)
         view = base_r.copy()
-        view["속성"] = view[tagcols].apply(lambda r: " ".join(t for t in tagcols if r[t]), axis=1)
+        # 행마다 Series를 만드는 apply(axis=1)은 붙이는 일 자체보다 오버헤드가 크다
+        # (add_tags와 같은 이유). astype(bool)은 원래 truthiness와 결과가 같다 — NaN은 True.
+        _tarr = view[tagcols].astype(bool).to_numpy() if tagcols else None
+        _tnames = np.array(tagcols, dtype=object)
+        view["속성"] = ([" ".join(_tnames[_r]) for _r in _tarr] if tagcols else "")
         view["_bprev"] = view["body"].map(lambda x: " ".join(_s(x).split())[:60]) if "body" in view else ""
         _bc = "brand2" if "brand2" in view.columns else "brand"
         cols = ["date", "cat", _bc, "title", "_bprev", "send", "infl_cr", "ord_cr", "rps", "amt", "속성"]
         ren = {"date": "날짜", "cat": "카테고리", "brand": "브랜드", "brand2": "브랜드",
                "title": "제목", "_bprev": "내용",
                "send": "발송", "infl_cr": "CTR", "ord_cr": "주문CR", "rps": "RPS", "amt": "거래액"}
-        _styled = view[cols].rename(columns=ren).style.format(
+        _lb = view[cols].rename(columns=ren)
+        _styled = _lb.style.format(
             {"발송": "{:,.0f}", "CTR": "{:.2%}", "주문CR": "{:.2%}", "RPS": "{:,.0f}", "거래액": "{:,.0f}"})
+        # 화면 서식은 Styler 대신 column_config로 — 이 표는 필터 전체(실백업 1.2만 행)를
+        # 담는데, Styler를 넘기면 Streamlit이 **모든 행을 미리 문자열로 번역**한다
+        # (`Styler._translate`). 1.2만 행에서 그것만 2.6초라, 정렬을 바꾸든 필터를 만지든
+        # 매번 그 값을 냈다. column_config는 브라우저가 그리므로 행 수와 무관하다.
+        # **엑셀은 Styler 그대로 내보낸다**(`dl_data=`) — 숫자+표시형식 규칙이 그대로 산다.
+        # 비율은 ×100해서 넘긴다. `format="percent"`는 끝자리 0을 떼어 `0.00%`를 `0%`로
+        # 만들어 소수점 자리가 안 맞는다 — 브라우저로 대조해 확인했다.
+        _lb_show = _lb.assign(**{"CTR": _lb["CTR"] * 100, "주문CR": _lb["주문CR"] * 100})
+        _lb_cfg = {
+            "발송": st.column_config.NumberColumn(format="%,.0f"),
+            "CTR": st.column_config.NumberColumn(format="%.2f%%"),
+            "주문CR": st.column_config.NumberColumn(format="%.2f%%"),
+            "RPS": st.column_config.NumberColumn(format="%,.0f"),
+            "거래액": st.column_config.NumberColumn(format="%,.0f"),
+        }
         try:
-            _ev = table(_styled, hide_index=True, width="stretch", height=560,
+            _ev = table(_lb_show, dl_data=_styled, column_config=_lb_cfg,
+                               hide_index=True, width="stretch", height=560,
                                key="p03_tbl", on_select="rerun", selection_mode="single-row")
         except TypeError:
             _ev = None
-            table(_styled, hide_index=True, width="stretch", height=560)
+            table(_lb_show, dl_data=_styled, column_config=_lb_cfg,
+                         hide_index=True, width="stretch", height=560)
 
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 🔍 실제 문구 확인")
@@ -7040,7 +7094,7 @@ def main():
         if len(g) < 3:
             st.info("데이터가 부족해요. 더 많은 주차를 올려 주세요."); st.stop()
 
-        g["주"] = g["dt"].dt.to_period("W").apply(lambda p: p.start_time)
+        g["주"] = g["dt"].dt.to_period("W").dt.start_time
         rows = []
         for wkstart, d in g.groupby("주"):
             s, u, o, a = d["send"].sum(), d["uv"].sum(), d["oc"].sum(), d["amt"].sum()
@@ -7484,7 +7538,7 @@ def main():
         base = fdf.dropna(subset=["dt"]).copy()
         if len(base) < 8:
             st.info("데이터가 부족해요. 더 많은 주차를 쌓거나 '최소 발송수'를 낮춰 보세요."); st.stop()
-        base["주"] = base["dt"].dt.to_period("W").apply(lambda p: p.start_time)
+        base["주"] = base["dt"].dt.to_period("W").dt.start_time
 
         sel_attrs = st.multiselect("추세를 볼 속성(소구)", [t for t in TAG_BOOLS if t in base.columns],
                                    default=[t for t in ["할인율소구", "마감임박"] if t in base.columns],
@@ -8730,7 +8784,7 @@ def main():
 
                     # 실현 가능성 — 최근 52주 주별 CTR 분포에서 목표가 어디쯤인지
                     _tw = _tg_all[_tg_all["dt"] >= _tg_hi - pd.Timedelta(weeks=52)].copy()
-                    _tw["_wk"] = _tw["dt"].dt.to_period("W").apply(lambda p: p.start_time)
+                    _tw["_wk"] = _tw["dt"].dt.to_period("W").dt.start_time
                     _twg = _tw.groupby("_wk").apply(
                         lambda x: (float(x["uv"].sum()) / float(x["send"].sum())
                                    if x["send"].sum() else np.nan), include_groups=False).dropna()
@@ -9220,7 +9274,7 @@ def main():
         d1, d2 = st.columns(2)
         d1.download_button(
             f"📥 CSV 다운로드 ({len(dl_df):,}건)",
-            dl_df.to_csv(index=False).encode("utf-8-sig"),
+            data=lambda d=dl_df: d.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"발송성과_머지전체_{today_kst():%Y%m%d}.csv", mime="text/csv", width="stretch")
         if d2.button(f"📊 엑셀 생성 ({len(dl_df):,}건)", key="gen_full_xlsx", width="stretch"):
             try:
@@ -9458,7 +9512,7 @@ def main():
             if not _wk_raw.empty:
                 st.download_button(
                     "📥 주간 데이터 CSV",
-                    _wk_raw.to_csv(index=False).encode("utf-8-sig"),
+                    data=lambda d=_wk_raw: d.to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"앱푸시동의_주간_{sel_group}_{pd.Timestamp.today():%Y%m%d}.csv",
                     mime="text/csv")
 
@@ -9668,7 +9722,7 @@ def main():
 
                 def _pk(dts):
                     per = "M" if _gran == "월간" else "W-SUN"
-                    return dts.dt.to_period(per).apply(lambda p: p.start_time)
+                    return dts.dt.to_period(per).dt.start_time
 
                 # 동의(선택 그룹·이상치 제외·기간 필터 = pc_clean)를 기간 단위로 집계
                 cc = pc_clean.copy()
@@ -11093,10 +11147,12 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📄 이 페이지 리포트 다운로드")
         try:
-            _rep_html = build_report_html(str(page), list(_REPORT))
             _safe = re.sub(r'[^0-9A-Za-z가-힣]+', '_', str(page)).strip('_') or "report"
+            # 만드는 건 **누른 뒤**다. 이 페이지의 차트를 전부 HTML로 굽는 일이라
+            # 미리 만들어 넘기면 리포트를 받지 않는 리런까지 그 값을 치른다.
             st.download_button(
-                "📄 리포트 다운로드 (HTML)", _rep_html.encode("utf-8"),
+                "📄 리포트 다운로드 (HTML)",
+                data=lambda t=str(page), b=list(_REPORT): build_report_html(t, b).encode("utf-8"),
                 file_name=f"리포트_{_safe}.html", mime="text/html")
             st.caption("받은 HTML 파일을 열고 **Ctrl+P → PDF로 저장**을 누르면 돼요.")
         except Exception as e:
