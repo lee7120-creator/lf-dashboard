@@ -1334,10 +1334,16 @@ def t_table_header_is_readable():
 
 
 def _trend_spec(at):
-    """④ 하단 연중 추이 차트의 figure JSON. AppTest는 plotly에 .value를 안 준다."""
+    """⑤ 하단 연중 추이 차트의 figure JSON. AppTest는 plotly에 .value를 안 준다.
+
+    ②(퍼널 지표 추이)에도 제목에 '추이'가 붙은 차트가 여섯 장 있다 — 그냥 '추이'로
+    찾으면 그쪽이 먼저 잡혀 엉뚱한 figure를 검사하게 된다. ⑤ 차트만 제목에
+    **보고 있는 자리**(`전체 · …`, `e-영업1 · …`)를 앞에 달아 두므로 그걸로 가른다.
+    """
     for e in at.get("plotly_chart"):
         spec = json.loads(e.proto.spec)
-        if "추이" in str((spec.get("layout", {}).get("title") or {}).get("text", "")):
+        t = str((spec.get("layout", {}).get("title") or {}).get("text", ""))
+        if "추이" in t and " · " in t:
             return spec
     return None
 
@@ -1513,8 +1519,9 @@ def t_orgcat_trend_uses_year_colors_when_single_item():
 def t_orgcat_trend_switches_granularity():
     """기간 단위를 주차↔월로 바꿀 수 있고, 축 라벨이 따라간다."""
     at = _open()
-    rd = [r for r in at.radio if r.label == "기간 단위"]
-    assert rd, f"기간 단위 라디오가 없어요 — {[r.label for r in at.radio]}"
+    # ②(퍼널 지표 추이)에도 같은 라벨의 라디오가 있다 — **키로** 집어야 ⑤ 것을 잡는다.
+    rd = [r for r in at.radio if getattr(r, "key", None) == "wr_fn_trend_gran"]
+    assert rd, f"⑤ 기간 단위 라디오가 없어요 — {[(r.label, getattr(r, 'key', None)) for r in at.radio]}"
     assert set(rd[0].options) == {"주차별", "월별"}, list(rd[0].options)
     rd[0].set_value("월"); at.run()
     assert not at.exception, at.exception[0].value
@@ -1702,6 +1709,128 @@ def t_rollup_covers_every_selectable_metric():
         assert not at.exception, f"{met}: {at.exception[0].value if at.exception else ''}"
         assert [f for f in _frames(at) if f.index.name == "카테고리"], \
             f"«{met}» 합산 표가 없어요"
+
+
+# ── ② 퍼널 지표 추이 ────────────────────────────────────────────────
+def _ftrend_tbl(at):
+    """②의 추이표 — 열이 (연도, 기간) MultiIndex인 표."""
+    for f in _frames(at):
+        if isinstance(f.columns, pd.MultiIndex):
+            return f
+    return None
+
+
+@case
+def t_trend_block_draws_charts_and_a_yoy_table():
+    """②는 차트와 표를 같이 낸다. 표는 기간마다 **바로 오른쪽**에 전년비 증감 칸."""
+    at = _open()
+    txt = " ".join(_texts(at))
+    assert "② 퍼널 지표 추이" in txt, "② 블록이 없어요"
+    ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_fn_ftrend_mets"]
+    assert ms, "추이 지표 선택이 없어요"
+    sel = list(ms[0].value)
+    assert len(sel) >= 4, sel
+    tbl = _ftrend_tbl(at)
+    assert tbl is not None, "추이표를 못 찾았어요"
+    assert list(tbl.index) == sel, (list(tbl.index), sel)
+    cols = list(tbl.columns)
+    vals = [c for c in cols if "증감" not in c[1]]
+    assert vals, cols
+    for c in vals:                                        # 증감은 값 칸 **바로 오른쪽**
+        i = cols.index(c)
+        assert i + 1 < len(cols) and cols[i + 1] == (c[0], f"{c[1]} 증감"), \
+            f"{c} 오른쪽이 증감 칸이 아니에요 — {cols[i:i + 2]}"
+
+
+@case
+def t_trend_counts_periods_not_columns():
+    """**자를 땐 기간을 센다.** 증감 칸까지 섞어 16칸을 집으면 보이는 주가 8주로 반토막 난다."""
+    at = _open()
+    tbl = _ftrend_tbl(at)
+    assert tbl is not None
+    vals = [c for c in tbl.columns if "증감" not in c[1]]
+    assert len(vals) == W.FUNNEL_TREND_KEEP["주"], f"주차가 {len(vals)}개예요 — {vals}"
+
+
+@case
+def t_trend_join_rate_matches_the_funnel_card():
+    """**같은 가입율이 페이지마다 다른 숫자면 안 된다.**
+
+    파일에도 「가입율」이 오지만 그건 일별 비율의 평균이라 값이 다르다(픽스처는 50%로
+    심어 뒀다). ①의 카드는 `가입자수 ÷ 비회원트래픽`으로 계산하는데, 추이표가 파일
+    값을 그대로 읽으면 같은 기간이 1.00% vs 50.00%로 갈린다 — 실제로 그렇게 났다.
+    """
+    at = _open()
+    card = _rate(at, "가입율")
+    assert card == "1.00%", f"① 카드가 계산값이 아니에요 — {card}"
+    tbl = _ftrend_tbl(at)
+    assert tbl is not None
+    last = [c for c in tbl.columns if "증감" not in c[1]][-1]
+    got = tbl.loc["가입율", last]
+    assert got == "1.00%", f"② 추이표가 파일값을 읽고 있어요 — {got} (기대 1.00%)"
+    # 전년(0.625%) 대비 +0.38%p — 계산값끼리 맞대야 나오는 숫자다
+    assert tbl.loc["가입율", (last[0], f"{last[1]} 증감")] == "+0.38%p", \
+        tbl.loc["가입율", (last[0], f"{last[1]} 증감")]
+
+
+@case
+def t_join_rate_is_the_same_metric_everywhere():
+    """03·04 추이표도 같은 규칙을 타야 한다 — 규칙이 `report_series` 한 곳이라서."""
+    st_df = synth_store()
+    for gran in ("월", "주"):
+        s = W.report_series(st_df, gran, "가입율", "*TOTAL", 2026, "final")
+        assert not s.empty, gran
+        assert abs(float(s.iloc[-1]) - 0.01) < 1e-9, \
+            f"{gran} 가입율이 계산값이 아니에요 — {float(s.iloc[-1])}"
+    # 파일 우선 칸(객단가)은 반대로 **파일 값**이 나와야 한다
+    a = W.report_series(st_df, "월", "첫구매 객단가", "*TOTAL", 2026, "final")
+    assert abs(float(a.iloc[-1]) - FILE_AOV) < 1e-6, float(a.iloc[-1])
+
+
+# ── ⑤ 합계 대사 ─────────────────────────────────────────────────────
+def _two_lfms(scale_n=1.0, scale_y=1.25):
+    oc = synth_orgcat()
+    a = oc.copy(); a["value"] = a["value"] * scale_n
+    b = oc.copy(); b["lfms"] = "Y"; b["value"] = b["value"] * scale_y
+    return pd.concat([a, b], ignore_index=True)
+
+
+@case
+def t_lfms_default_follows_the_master():
+    """LFMS는 **모집단이 다른 축**이라 아무 쪽이나 잡으면 ①과 총계가 통째로 어긋난다.
+
+    예전엔 `sorted()[0]`(='N')로 고정이라, 마스터가 Y쪽 모집단이면 같은 기간·같은
+    지표인데도 25%씩 벌어진 채로 ①과 ⑤가 나란히 떴다.
+    """
+    at = _open(orgcat=_two_lfms(scale_n=1.25, scale_y=1.0))   # Y가 마스터와 일치
+    rd = [r for r in at.radio if r.label == "LFMS 포함"]
+    assert rd, "LFMS 라디오가 없어요"
+    assert rd[0].value == "Y", f"마스터와 맞는 쪽이 아니에요 — {rd[0].value}"
+    at2 = _open(orgcat=_two_lfms(scale_n=1.0, scale_y=1.25))  # N이 마스터와 일치
+    rd2 = [r for r in at2.radio if r.label == "LFMS 포함"]
+    assert rd2[0].value == "N", f"마스터와 맞는 쪽이 아니에요 — {rd2[0].value}"
+
+
+@case
+def t_total_gap_against_the_master_is_announced():
+    """어긋나면 **얼마나·왜**를 화면에서 말한다. 조용히 나란히 두면 '뭐가 맞지'로 끝난다."""
+    at = _open(orgcat=_two_lfms(scale_n=1.30, scale_y=1.60))
+    warn = [str(w.value) for w in at.warning if "합계 대사" in str(w.value)]
+    assert warn, f"차이가 30%인데 경고가 없어요 — {[str(w.value)[:60] for w in at.warning]}"
+    w = warn[0]
+    assert "+30.0%" in w, w[:160]
+    for why in ("LFMS", "커버리지", "마감분"):
+        assert why in w, f"«{why}» 안내가 없어요 — {w[:200]}"
+
+
+@case
+def t_matching_totals_do_not_shout():
+    """맞물릴 땐 경고를 띄우지 않는다 — 매번 ⚠가 뜨면 진짜 문제를 무시하게 된다."""
+    at = _open()                                          # 픽스처는 마스터와 일치
+    assert not [w for w in at.warning if "합계 대사" in str(w.value)], \
+        "맞는데도 경고가 떴어요"
+    cap = [str(c.value) for c in at.caption if "합계 대사" in str(c.value)]
+    assert cap and "+0.0%" in cap[0], cap
 
 
 def main():
