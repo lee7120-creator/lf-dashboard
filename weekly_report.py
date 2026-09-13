@@ -1768,6 +1768,62 @@ def series_by_label(df, gran, metric, seg, year, prefer="final"):
     sub = sub.sort_values(["sortkey", "_p"]).drop_duplicates("label", keep="first")
     return sub.set_index("label")["value"]
 
+# ── 보고서가 읽는 '한 칸의 값' 규칙 ────────────────────────────────────
+# **파일 값을 그대로 읽지 않는 칸이 있다.** 가입율은 `가입자수 ÷ 비회원트래픽`으로
+# 계산한다 — 파일에도 「가입율」이 오지만 그건 **일별 비율의 평균**이라 트래픽이 적은
+# 날이 과대 대표돼 값이 다르다. 이 앱의 값은 전부 일평균이라 두 일평균을 나누면 곧
+# 기간 합계끼리의 비율이 된다(「6. 유입 퍼널」의 단계 비율과 같은 이유).
+#
+# 예전엔 「01 KPI·02 퍼널」만 계산값을 쓰고 「01 하단·03·04 추이」는 파일값을 써서
+# **같은 가입율이 페이지마다 다른 숫자**로 떴다(합성 데이터에서 1.00% vs 50.00%).
+# 규칙은 여기 한 곳이고, 낱개 조회(`funnel_val`)와 기간 조회(`report_series`)가
+# 같은 표를 본다 — 한쪽만 고치면 또 갈린다.
+# 비율 칸을 두 카운트로 만들 때의 (분자, 분모)
+FUNNEL_DERIVED = {"가입율": ("가입자수", "비회원트래픽"),
+                  "첫구매 객단가": ("첫구매 거래액", "첫구매 고객수")}
+# 파일 값을 **먼저** 쓰는 칸 — 객단가는 「01」 KPI 카드와 같은 숫자여야 한다.
+# 가입율은 반대로 계산이 먼저다(그래야 퍼널 앞 두 칸이 딱 맞는다).
+FUNNEL_FILE_FIRST = {"첫구매 객단가"}
+
+
+def funnel_val(g, met, seg="*TOTAL"):
+    """한 칸의 값. `g(metric, segment)`가 원값을 돌려주는 함수다.
+
+    비율 칸은 되도록 **두 카운트에서 만든다** — 채널로 쪼갤 때 합계와 같은 규칙으로
+    나와야 해서다. 당일가입CR만은 분자(당일가입 첫구매 고객수)가 데이터에 없어 늘 파일
+    값이고, 채널별 파일이 없으면 그 칸은 빈다.
+    """
+    if met in FUNNEL_FILE_FIRST:
+        v = g(met, seg)
+        if not pd.isna(v):
+            return v
+    if met in FUNNEL_DERIVED:
+        num, den = FUNNEL_DERIVED[met]
+        a, b = g(num, seg), g(den, seg)
+        if not pd.isna(a) and not pd.isna(b) and b > 0:
+            return a / b
+    return g(met, seg)
+
+
+def report_series(df, gran, metric, seg, year, prefer="final"):
+    """`series_by_label`의 **보고서 규칙 판** — 추이표·차트가 이걸 쓴다.
+
+    `funnel_val`과 칸별로 결과가 같아야 한다. 낱개로 훑으면 기간 수만큼 프레임을
+    필터하게 되므로(주차 50개 × 지표 6개 × 2개년) 시리즈 단위로 한 번에 만든다.
+    """
+    file_s = series_by_label(df, gran, metric, seg, year, prefer)
+    if metric not in FUNNEL_DERIVED:
+        return file_s
+    num, den = FUNNEL_DERIVED[metric]
+    a = series_by_label(df, gran, num, seg, year, prefer)
+    b = series_by_label(df, gran, den, seg, year, prefer)
+    idx = file_s.index.union(a.index).union(b.index)
+    a, b, f = a.reindex(idx), b.reindex(idx), file_s.reindex(idx)
+    der = a / b.where(b > 0)                              # 분모 0·결측은 NaN
+    # 파일 우선 칸은 파일이 빈 자리만 계산으로 메우고, 나머지는 그 반대다.
+    return f.fillna(der) if metric in FUNNEL_FILE_FIRST else der.fillna(f)
+
+
 def labels_sorted(df, gran, years=None):
     sub = df[df["gran"] == gran]
     if years is not None: sub = sub[sub["year"].isin(years)]
@@ -2116,17 +2172,27 @@ def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None):
                 spec.append((y, f"{lb} 증감", lb, y - 1))
     if not spec:
         return pd.DataFrame()
+    # 값은 **보고서 규칙**으로 읽는다(`report_series`) — 파일의 가입율은 일별 비율의
+    # 평균이라 ①·② 카드와 다른 숫자가 된다. 연도마다 한 번만 만들어 재사용한다.
+    _ser = {}
+
+    def _v(met, y, lb):
+        s = _ser.get((met, y))
+        if s is None:
+            s = _ser[(met, y)] = report_series(df, gran, met, seg, y, "final")
+        v = s.get(lb, np.nan)
+        return np.nan if v is None else v
+
     out = {}
     for met in metrics:
         vals = []
         for y, _show, lb, base in spec:
-            v = pick(df, gran, met, seg, y, lb, "final")
+            v = _v(met, y, lb)
             if base is None:
                 vals.append(v)
             else:
                 # 이 칸만 미리 문자열이다 — style_trend가 fmt_value를 다시 안 먹인다
-                vals.append(fmt_delta(met, v,
-                                      pick(df, gran, met, seg, base, lb, "final")) or "–")
+                vals.append(fmt_delta(met, v, _v(met, base, lb)) or "–")
         out[met] = vals
     # 표시용으로만 앞자리 0을 뗀다 — 조회는 위에서 원래 라벨로 이미 끝났다
     columns = [(y, month_trim(show)) for y, show, _lb, _b in spec]
@@ -2178,7 +2244,7 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
     fig = go.Figure()
     for i, y in enumerate(sorted(years)):
         # 연도마다 없는 주차(5주차 등)는 건너뛰고 선을 잇는다
-        s = series_by_label(df, gran, metric, seg, y, prefer="final").reindex(x_all).dropna()
+        s = report_series(df, gran, metric, seg, y, "final").reindex(x_all).dropna()
         fig.add_trace(go.Scatter(
             x=[month_trim(v) for v in s.index], y=(s / div).tolist(),
             mode="lines+markers", name=str(y),
@@ -3194,8 +3260,9 @@ def detail_provider(sdf, gran, axis):
 # ══════════════════════════════════════════════════════
 # 「01 요약」에 얹혀 있던 전환 퍼널·채널 기여 분해를 빼내어, 퍼널 한 줄을 끝까지 따라가며
 # 진단하는 화면으로 다시 짰다. 읽는 순서가 곧 화면 순서다 — ① 합계 퍼널로 전체 흐름을
-# 보고 → ② 어느 채널이 어느 단계에서 빠지는지 한 표로 훑고 → ③ 문제 단계의 채널 기여를
-# 분해하고 → ④ 첫구매 3지표는 조직 > 카테고리로 한 단계 더 내려간다 → ⑤ 앱 수신동의.
+# 보고 → ② 그게 추세인지 연중 흐름으로 확인하고 → ③ 어느 채널이 어느 단계에서 빠지는지
+# 한 표로 훑고 → ④ 문제 단계의 채널 기여를 분해하고 → ⑤ 첫구매 3지표는 조직 > 카테고리로
+# 한 단계 더 내려간다 → ⑥ 앱 수신동의.
 #
 # **비율 두 칸의 출처가 다르다.** 가입율은 두 카운트에서 계산하고(그래야 채널로 쪼갤 때
 # 합계와 같은 규칙이 된다), 당일가입CR은 파일 값을 그대로 쓴다 — 분자인 '당일가입 첫구매
@@ -3215,12 +3282,14 @@ FUNNEL_ROLLUP_METS = ["첫구매 거래액", "첫구매 고객수", "첫구매 �
                       "상품UV", "상품CR"]
 # 채널 합 ≈ 전체가 성립하는 가산 지표 — 기여도 분해는 여기서만 성립한다
 FUNNEL_ADDITIVE = ["비회원트래픽", "가입자수", "첫구매 고객수", "첫구매 거래액"]
-# 비율 칸을 두 카운트로 만들 때의 (분자, 분모)
-FUNNEL_DERIVED = {"가입율": ("가입자수", "비회원트래픽"),
-                  "첫구매 객단가": ("첫구매 거래액", "첫구매 고객수")}
-# 파일 값을 먼저 쓰는 칸 — 객단가는 「01」 KPI 카드와 같은 숫자여야 한다. 가입율은 반대로
-# 계산이 먼저다(기존 화면이 그렇게 보여 왔고, 그래야 퍼널 앞 두 칸이 딱 맞는다).
-FUNNEL_FILE_FIRST = {"첫구매 객단가"}
+# 값 규칙(FUNNEL_DERIVED·FUNNEL_FILE_FIRST·funnel_val)은 조회 계층 옆으로 옮겼다 —
+# 추이표·차트도 같은 규칙을 타야 페이지마다 숫자가 갈리지 않는다.
+# ② 추이에 기본으로 올릴 지표 — 퍼널을 앞에서 뒤로 훑는 순서 그대로다. 객단가는 빼 뒀다
+# (거래액·고객수가 이미 있어 셋을 다 켜면 차트가 여덟 장이 된다). 필요하면 골라서 켠다.
+FUNNEL_TREND_DEFAULT = ["비회원트래픽", "가입율", "가입자수", "당일가입CR",
+                        "첫구매 고객수", "첫구매 거래액"]
+# 표에 보일 기간 수 — 주차는 넉 달치, 월은 한 해치
+FUNNEL_TREND_KEEP = {"주": 16, "월": 12}
 # 하단 앱 블록 — 앱설치는 아직 원천이 안 올라와서, 없으면 '–'로 비우고 왜인지 밝힌다
 APP_STEPS = ["가입자수", "앱설치", "앱푸시수신동의"]
 # 원천이 일자 헤더 표라 `gran='일'`로만 쌓이는 지표 — 주·월은 일평균으로 묶어야 한다
@@ -3229,25 +3298,6 @@ PUSH_DAILY_ONLY = {"앱푸시수신동의", "앱푸시동의_앱무관", "앱푸
 # 스토어 방문 → 설치 → 삭제까지가 한 흐름이라 같이 봐야 '설치가 준 건지 삭제가 는 건지'가 갈린다.
 APP_EXTRA = ["앱_전체설치", "앱_재설치", "앱_삭제", "앱_순증설치",
              "앱_스토어방문", "앱_Push활성기기"]
-
-
-def funnel_val(g, met, seg="*TOTAL"):
-    """퍼널 한 칸의 값. `g(metric, segment)`가 원값을 돌려주는 함수다.
-
-    비율 칸은 되도록 **두 카운트에서 만든다** — 채널로 쪼갤 때 합계와 같은 규칙으로
-    나와야 해서다. 당일가입CR만은 분자(당일가입 첫구매 고객수)가 데이터에 없어 늘 파일
-    값이고, 채널별 파일이 없으면 그 칸은 빈다.
-    """
-    if met in FUNNEL_FILE_FIRST:
-        v = g(met, seg)
-        if not pd.isna(v):
-            return v
-    if met in FUNNEL_DERIVED:
-        num, den = FUNNEL_DERIVED[met]
-        a, b = g(num, seg), g(den, seg)
-        if not pd.isna(a) and not pd.isna(b) and b > 0:
-            return a / b
-    return g(met, seg)
 
 
 def push_period_avg(pdf, year, label, metric="앱푸시수신동의"):
@@ -3392,9 +3442,18 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
                    "첫구매율`이 오른쪽 첫구매 고객수와 안 맞아요. 마지막 칸은 과거 가입자까지 "
                    "포함한 **전체 첫구매**거든요.")
 
-    # ── ② 채널별 퍼널 ──────────────────────────────────
+    # ── ② 퍼널 지표 추이 ───────────────────────────────
+    # ①은 한 기간의 사진이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 바로 여기서
+    # 같은 지표의 연중 흐름을 전년과 맞대 본 뒤 ③ 이하로 파고든다.
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("② 채널별 퍼널")
+    st.subheader("② 퍼널 지표 추이")
+    st.caption("①이 한 기간의 사진이라면 여기는 흐름이에요. 이상한 구간을 찾으면 "
+               "사이드바에서 그 기간으로 옮겨 다시 보세요.")
+    _render_funnel_trend(df, gran, cy, py)
+
+    # ── ③ 채널별 퍼널 ──────────────────────────────────
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader("③ 채널별 퍼널")
     st.caption("어느 채널이 **어느 단계에서** 빠지는지 한 표로 훑어요.")
     chans = [c for c in CHANNELS
              if not df[(df["gran"] == gran) & (df["segment"] == c)
@@ -3418,9 +3477,9 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
                    "**당일가입 첫구매율은 채널별 파일 값**이라 원천에 없으면 '–'로 비어요. "
                    "비율 지표는 채널 합이 전체와 다른 게 정상이에요.")
 
-    # ── ③ 채널별 증감 ──────────────────────────────────
+    # ── ④ 채널별 증감 ──────────────────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("③ 채널별 증감")
+    st.subheader("④ 채널별 증감")
     # 지표는 **일곱 단계 전부** 고를 수 있다. 다만 그리는 그림이 갈린다 —
     # 가산 지표(발송·고객수·거래액)는 부분의 합이 전체라 워터폴이 성립하지만,
     # 비율·평균(가입율·당일가입CR·객단가)은 채널 합 ≠ 전체라 워터폴이 거짓말이 된다.
@@ -3544,22 +3603,138 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
 채널 합 ≠ 전체** 라 분해가 성립하지 않아 뺐어요.
 """)
 
-    # ── ④ 조직·카테고리별 첫구매 ────────────────────────
+    # ── ⑤ 조직·카테고리별 첫구매 ────────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("④ 조직·카테고리별 첫구매")
-    _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_close)
+    st.subheader("⑤ 조직·카테고리별 첫구매")
+    _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_close)
 
-    # ── ⑤ 신규회원 앱 설치·수신동의 ─────────────────────
+    # ── ⑥ 신규회원 앱 설치·수신동의 ─────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader("⑤ 신규회원 앱 설치·수신동의")
+    st.subheader("⑥ 신규회원 앱 설치·수신동의")
     _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
                        period_lbl, base_lbl)
 
 
-def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_close):
-    """④ 조직 > 카테고리 — MICRO 조직×카테고리 export를 퍼널과 같은 기간으로 자른다.
+def _render_funnel_trend(df, gran, cy, py):
+    """② 퍼널 지표 추이 — ①의 한 장면이 흐름 위 어디쯤인지.
 
-    이 원천엔 **채널 축이 없다.** 그래서 ②의 채널 상세와 교차하지 않고 나란히 놓는다 —
+    ①은 한 기간의 **사진**이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 같은 퍼널
+    지표를 연중으로 펼쳐 전년과 맞대면 그게 갈린다. 여기서 이상한 구간을 찾으면
+    사이드바에서 그 기간으로 옮겨 가 ①~④를 다시 보면 된다.
+
+    **표는 03·04와 같은 얼굴**이다 — 행=지표, 열=기간, 각 기간 **바로 오른쪽**에 전년 같은
+    기간 대비 증감(`trend_table(delta_year=)`). 두 해가 열두 칸 떨어져 있으면 눈으로는
+    못 맞댄다. 비율 지표(가입율·당일가입CR)는 %p 차이다.
+
+    **자를 땐 기간을 센다.** 증감 칸까지 섞어 `columns[-N:]`으로 집으면 보이는 기간이
+    반토막 난다(04에서 실제로 8주로 줄었다). 기간을 N개 고른 뒤 짝이 되는 증감 칸을
+    딸려 보낸다.
+
+    기간 단위는 여기서 따로 고른다(위 비교 기준과 별개) — ④의 연중 추이와 같은 이유로,
+    주차로 흐름을 보다 월로 묶어 추세만 보는 왕복이 잦다.
+    """
+    _grans = [g for g in ("주", "월") if (df["gran"] == g).any()]
+    if not _grans:
+        st.info("추이를 그릴 주·월 데이터가 없어요.")
+        return
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        _gk = "wr_fn_ftrend_gran"
+        guard_select(_gk, _grans, default=gran if gran in _grans else _grans[-1])
+        tg = st.radio("기간 단위", _grans, key=_gk, horizontal=True,
+                      format_func=lambda g: "주차별" if g == "주" else "월별")
+    avail = [m for m in FUNNEL_STEPS
+             if ((df["gran"] == tg) & (df["metric"] == m)).any()]
+    if not avail:
+        st.info(f"«{'주차' if tg == '주' else '월'}» 단위에 퍼널 지표가 없어요.")
+        return
+    with c2:
+        # 라벨을 '지표'로 두면 ③·④의 지표 셀렉트와 섞인다 — 위젯 종류도 다르게 둔다.
+        _dft = [m for m in FUNNEL_TREND_DEFAULT if m in avail] or avail[:4]
+        sel = st.multiselect("추이에 올릴 지표", avail, default=_dft,
+                             key="wr_fn_ftrend_mets")
+    if not sel:
+        st.caption("지표를 하나도 안 골랐어요. 위에서 골라 주세요.")
+        return
+
+    # ── 차트 — 03·04와 같이 한 줄에 세 장 ──
+    _yrs = [y for y in (py, cy) if ((df["gran"] == tg) & (df["year"] == y)).any()]
+    for i in range(0, len(sel), 3):
+        for _col, _met in zip(st.columns(3), sel[i:i + 3]):
+            with _col:
+                st.plotly_chart(yoy_chart(df, tg, _met, _yrs, h=280), width="stretch")
+
+    # ── 표 — 기간마다 오른쪽에 전년 대비 증감 ──
+    tbl = trend_table(df, tg, sel, [cy], delta_year=cy)
+    if tbl.empty:
+        st.caption(f"{cy}년 «{'주차' if tg == '주' else '월'}» 값이 아직 없어요.")
+        return
+    cap = FUNNEL_TREND_KEEP[tg]
+    _all = set(tbl.columns)
+    keep = []
+    for _c in [c for c in tbl.columns if not _is_delta_col(c)][-cap:]:
+        keep.append(_c)
+        _d = (_c[0], f"{_c[1]} 증감")
+        if _d in _all:
+            keep.append(_d)
+    _unit = "주차" if tg == "주" else "월"
+    st.caption(f"{cy}년 {_unit}마다 오른쪽에 **전년 같은 {_unit} 대비 증감**을 붙였어요. "
+               f"비율 지표(가입율·당일가입 첫구매율)는 %p 차이예요. 전년에 그 {_unit}가 "
+               f"없으면 '–'로 둬요. 값은 전체(채널 합산) 기준이에요.")
+    wtable(style_trend(tbl[keep], sel), width="stretch",
+           dl_name=f"퍼널 지표 {_unit}별 추이 ({cy}년)")
+
+
+# ⑤의 값은 MICRO export, ①의 값은 마스터 export — **원천이 두 벌이다.** 같은 기간·같은
+# 지표인데도 어긋날 수 있는데, 지금까지 화면엔 그냥 나란히 떠서 '어느 쪽이 맞나'로 끝났다.
+# 숫자를 억지로 맞추는 게 아니라 **얼마나 다른지 밝히는** 게 여기서 할 일이다.
+ORGCAT_GAP_WARN = 0.01                                    # 1% 넘게 벌어지면 띄운다
+# 마스터에도 있는 지표만 대사할 수 있다 — 상품UV·상품CR은 MICRO에만 있다.
+ORGCAT_GAP_METS = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가"]
+
+
+def _lfms_like_master(df, base, gran, cy, clabel, lfmss):
+    """마스터(①)와 **같은 모집단**인 LFMS 쪽. 고를 근거가 없으면 None.
+
+    LFMS 포함 여부는 모집단이 다른 축이라 Y와 N의 전체 값이 다르다. 그런데 기본값이
+    `sorted()[0]`(= 'N')이라, 마스터가 Y쪽 모집단이면 ①과 ④가 **같은 기간·같은 지표인데도
+    수십 %씩 어긋난 채로** 나란히 떴다. 합성 재현에서 25% 차이가 났다.
+
+    거래액으로 먼저 맞춘다 — 실파일에서 조직 합이 전체와 오차 0.00%로 맞는 유일한
+    가산 지표라 대사 기준으로 가장 믿을 만하다. 없으면 고객수로 떨어진다.
+    """
+    for met in ("첫구매 거래액", "첫구매 고객수"):
+        ref = pick(df, gran, met, "*TOTAL", cy, clabel, "mtd")
+        if pd.isna(ref) or not ref:
+            continue
+        best, bgap = None, None
+        for lf in lfmss:
+            v = orgcat_view(base[base["lfms"] == lf]).get((), met, cy, clabel, "mtd")
+            if pd.isna(v):
+                continue
+            g = abs(v - ref) / abs(ref)
+            if bgap is None or g < bgap:
+                best, bgap = lf, g
+        if best is not None:
+            return best
+    return None
+
+
+def _orgcat_master_gap(df, view, gran, met, cy, clabel):
+    """⑤ 파일 합계와 ① 마스터 값의 차이 → `(마스터, 파일, 상대차)`. 비교 불가면 None."""
+    if met not in ORGCAT_GAP_METS:
+        return None
+    m = pick(df, gran, met, "*TOTAL", cy, clabel, "mtd")
+    o = view.get((), met, cy, clabel, "mtd")
+    if pd.isna(m) or pd.isna(o) or not m:
+        return None
+    return float(m), float(o), (float(o) - float(m)) / abs(float(m))
+
+
+def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_close):
+    """⑤ 조직 > 카테고리 — MICRO 조직×카테고리 export를 퍼널과 같은 기간으로 자른다.
+
+    이 원천엔 **채널 축이 없다.** 그래서 ③의 채널 상세와 교차하지 않고 나란히 놓는다 —
     '어느 채널에서 빠졌나'와 '어느 조직에서 빠졌나'는 서로 독립된 두 질문이다.
     """
     if odf is None or odf.empty:
@@ -3575,10 +3750,16 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
     # LFMS 포함여부는 모집단이 다른 축이라 섞으면 안 된다. 고른 단위 안에서만 뽑는다 —
     # 단위마다 받아 온 export가 달라 전역 목록을 쓰면 데이터가 있는데도 빈 화면이 된다.
     lfmss = sorted(base["lfms"].dropna().astype(str).unique())
+    # 기본값은 **① 퍼널과 총계가 가장 가까운 쪽**으로 맞춘다. 세션에 이미 고른 값이 있으면
+    # 재지 않는다 — 인덱스를 LFMS마다 새로 만드는 값이라 매 리런에 물면 안 된다.
+    _lf_auto = (_lfms_like_master(df, base, gran, cy, clabel, lfmss)
+                if (len(lfmss) > 1 and "wr_fn_lfms" not in st.session_state) else None)
     with f1:
         if len(lfmss) > 1:
-            guard_select("wr_fn_lfms", lfmss)
-            lf = st.radio("LFMS 포함", lfmss, horizontal=True, key="wr_fn_lfms")
+            guard_select("wr_fn_lfms", lfmss, default=_lf_auto)
+            lf = st.radio("LFMS 포함", lfmss, horizontal=True, key="wr_fn_lfms",
+                          help="모집단이 다른 축이에요. 처음 열 때는 위 ① 전체 퍼널과 "
+                               "총계가 가장 가까운 쪽으로 맞춰 둬요.")
         else:
             lf = lfmss[0] if lfmss else "N"
             st.caption(f"LFMS 포함: **{esc(lf)}**")
@@ -3597,6 +3778,26 @@ def _render_funnel_orgcat(odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_c
         return
 
     view = orgcat_view(base)
+    # ── 합계 대사 — ①과 ④는 원천이 다르다 ──
+    # 같은 기간·같은 지표를 두 파일에서 읽으니 어긋날 수 있다. 조용히 나란히 두면
+    # '어느 쪽이 맞나'로 끝나므로, 얼마나 다른지와 왜 다를 수 있는지를 여기서 밝힌다.
+    _gap = _orgcat_master_gap(df, view, gran, met, cy, clabel)
+    if _gap:
+        _mv, _ov, _rel = _gap
+        _line = (f"**합계 대사** — ① 전체 퍼널 `{fmt_value(met, _mv)}` vs "
+                 f"⑤ 파일 합계 `{fmt_value(met, _ov)}` · 차이 **{_rel * 100:+.1f}%**")
+        if abs(_rel) >= ORGCAT_GAP_WARN:
+            st.warning(
+                _line + "\n\n두 값은 **원천이 달라요** — ①은 마스터 export, ④는 MICRO "
+                "조직×카테고리 export예요. 벌어지는 이유는 대개 셋 중 하나예요.\n"
+                "- **LFMS 포함 여부**가 다른 모집단을 가리켜요 (위에서 바꿔 볼 수 있어요)\n"
+                "- 두 export의 **커버리지**가 달라요 (「09. 조직·카테고리별 실적」에서 "
+                "어느 기간이 있는지 볼 수 있어요)\n"
+                "- 한쪽만 **최신 마감분**이 안 올라왔어요\n\n"
+                "조직·카테고리 **구성비와 증감**은 ⑤ 안에서 일관되니 그대로 읽어도 돼요. "
+                "총량은 ①을 기준으로 보세요.")
+        else:
+            st.caption(_line + " · 두 원천이 맞물려요.")
     orgs = view.live(())[0]
     if not orgs:
         st.info("조직 항목이 없어요.")
@@ -3839,7 +4040,7 @@ def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
 
 
 def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
-    """④ 하단 — 지금 보고 있는 자리의 **하위 항목별** 연중 흐름.
+    """⑤ 하단 — 지금 보고 있는 자리의 **하위 항목별** 연중 흐름.
 
     표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 여기서
     연중 흐름을 보고, 이상한 구간을 찾으면 위 표에서 그 기간으로 옮겨 가면 된다.
@@ -3944,9 +4145,11 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
     if not drew:
         st.caption(f"«{esc(node_lbl)}»의 {tg} 단위 값이 없어요.")
         return
+    # 제목에 **보고 있는 자리**를 박는다 — 이 페이지엔 ②의 퍼널 지표 추이 차트가 여럿
+    # 있어서, 지표 이름만 적혀 있으면 어느 블록 것인지 구분이 안 된다.
     ly = base_layout(340 if by_item else 300,
                      ysuffix=unit if unit == "%" else "",
-                     title=f"{met} {'주차별' if tg == '주' else '월별'} 추이 ({unit})")
+                     title=f"{node_lbl} · {met} {'주차별' if tg == '주' else '월별'} 추이 ({unit})")
     ly["xaxis"]["categoryorder"] = "array"
     ly["xaxis"]["categoryarray"] = [month_trim(v) for v in _lb]
     if tg == "주":
