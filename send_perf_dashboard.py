@@ -8719,8 +8719,8 @@ def main():
         else:
             _tg_c = st.columns([1, 1.3, 1])
             with _tg_c[0]:
-                _tg_wk = st.selectbox("현재 구간", ["최근 4주", "최근 8주", "최근 13주"],
-                                      key="p14_tgt_wk",
+                _TG_WK = {"최근 4주": 4, "최근 8주": 8, "최근 13주": 13}
+                _tg_wk = st.selectbox("현재 구간", list(_TG_WK), key="p14_tgt_wk",
                                       help="사이드바 기간 필터와 별개예요. 전년 같은 기간을 "
                                            "같이 봐야 해서 여기서 따로 골라요.")
             with _tg_c[1]:
@@ -8728,7 +8728,7 @@ def main():
                                                    "직접 입력"], key="p14_tgt_basis",
                                          help="'직전 같은 기간'은 현재 구간 바로 앞의 같은 "
                                               "길이 구간이에요. 창 길이만큼 밀어서 서로 안 겹쳐요.")
-            _tg_n = int(re.search(r"\d+", _tg_wk).group())
+            _tg_n = _TG_WK[_tg_wk]
             _tg_hi = _tg_all["dt"].max()
             _tg_lo = _tg_hi - pd.Timedelta(weeks=_tg_n) + pd.Timedelta(days=1)
 
@@ -9226,7 +9226,7 @@ def main():
                 base_lbl = "유입 거래액"
                 col = "inf_amt"
                 P2["발송"] = P2["promo"].isin(sent_ids)
-                P2["월"] = P2["dt"].dt.to_period("M").apply(lambda pp: pp.start_time)
+                P2["월"] = P2["dt"].dt.to_period("M").dt.start_time
                 gm = P2.groupby(["월", "발송"])[col].sum().reset_index()
                 fig = go.Figure()
                 for flag, name, clr in [(True, "발송 기획전", PALETTE["green"]),
@@ -10276,9 +10276,9 @@ def main():
         _mcol, _munit, _mcolor = _KT_MET[_mlab]
         _c3, _c4 = st.columns([1, 1])
         with _c3:
+            _KT_RECENT = {"2026-08 이후 전체": None, "최근 12주": 12, "최근 26주": 26}
             _recent = st.selectbox(
-                "기간", ["2026-08 이후 전체", "최근 12주", "최근 26주"],
-                index=0, key="kt_recent",
+                "기간", list(_KT_RECENT), index=0, key="kt_recent",
                 help="화면 전체가 2026-08-01 이후예요. 실적이 더 쌓이면 최근 12·26주로 "
                      "좁혀 보면 돼요.")
         with _c4:
@@ -10314,8 +10314,8 @@ def main():
         _mfmt = "{:.2f}%" if _munit == "%" else "{:,.0f}"
         _mtxt = (lambda v: f"{v:.2f}%") if _munit == "%" else (lambda v: f"{v:,.0f}")
 
-        if (not _recent.startswith("2026-08")) and len(_kt):
-            _wk = int(re.search(r"\d+", _recent).group())
+        _wk = _KT_RECENT.get(_recent)
+        if _wk and len(_kt):
             _kt = _kt[_kt["dt"] >= _kt["dt"].max() - pd.Timedelta(weeks=_wk)]
         if _scope == "평일 16시 슬롯 전체":
             _base = _kt[(_kt["hour"] == 1600) & (~_kt["dow_k"].isin(["토", "일"]))]

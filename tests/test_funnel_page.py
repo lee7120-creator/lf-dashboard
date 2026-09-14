@@ -1487,13 +1487,13 @@ def t_orgcat_trend_drops_ticks_nothing_has():
     assert "12월 4주차" not in xs, f"빈 눈금이 축에 남았어요 — {xs[-3:]}"
     assert "12월 4주차" not in (spec["layout"]["xaxis"].get("categoryarray") or []), \
         "categoryarray에 빈 눈금이 남았어요"
-    # 그 결과 선 안쪽에 구멍이 없어야 한다
-    for tr in spec["data"]:
-        ys = tr["y"]
-        idx = [i for i, v in enumerate(ys) if v is not None]
-        assert idx, tr["name"]
-        holes = [i for i in range(idx[0], idx[-1] + 1) if ys[i] is None]
-        assert not holes, f"«{tr['name']}» 선 안에 구멍이 남았어요 — {holes[:5]}"
+    # 그리고 축에 남은 눈금은 **적어도 한 선에는 값이 있어야** 한다.
+    # 「선 안에 구멍이 없어야 한다」로 적으면 안 된다 — 한쪽 해에만 있는 기간
+    # (일별에서 파생된 5주차 등)은 **남겨서 끊는 게 규칙**이라 그 구멍은 정상이다
+    # (`t_orgcat_trend_keeps_one_sided_gaps`). 여기서 봐야 하는 건 «아무도 안 쓴 칸».
+    for j, lb in enumerate(xs):
+        assert any(tr["y"][j] is not None for tr in spec["data"]), \
+            f"«{lb}» 칸엔 아무 선도 값이 없어요 — 축에서 뺐어야 해요"
     assert any("축에서 뺐어요" in t for t in _texts(at)), "몇 개를 뺐는지 안 밝혀요"
 
 

@@ -3312,6 +3312,124 @@ def detail_periods(dates, gran):
         "close": np.where((ps >= lo) & (pe <= hi), "final", "mtd")})
 
 
+
+# ── 일별에서 주·월을 만든다 ──────────────────────────────────────────
+# 같은 실적인데 일·주·월 **세 파일**을 따로 받아 올려야 했다. 실파일 대조 결과 일별을
+# 그 기간 평균으로 묶으면 월별 파일과 **원 단위까지 같다**(2025년 12개월, 거래액·고객수·
+# 상품UV 전부 오차 0.0%). 고객수·상품UV가 기간 단위로 중복제거된 값이 아니라는 뜻이라
+# 파생이 성립한다 — 유니크였다면 일별 평균이 월값보다 클 수밖에 없다.
+#
+# **비율은 평균 내지 말고 다시 만든다.** 파일의 객단가·상품CR은 '날마다의 비율을 평균'한
+# 값이라 합÷합과 다르다(실측 0.2%·1.0%). 앱은 다른 자리에서도 비율을 합÷합으로 읽으므로
+# (가입율 규칙과 같은 자리) 여기서도 두 카운트에서 만든다.
+ORGCAT_DERIVE_MEAN = ["첫구매 거래액", "첫구매 고객수", "상품UV"]
+# 비율 = (분자, 분모) — 둘 다 위 평균값에서 만든다
+ORGCAT_DERIVE_RATIO = {"첫구매 객단가": ("첫구매 거래액", "첫구매 고객수"),
+                       "상품CR": ("첫구매 고객수", "상품UV")}
+# 비중 = 그 노드 ÷ 같은 기간의 *TOTAL 노드
+ORGCAT_DERIVE_SHARE = {"거래액비중": "첫구매 거래액", "고객비중": "첫구매 고객수"}
+
+
+@st.cache_data(show_spinner=False)
+def orgcat_derive_periods(df):
+    """일별 행에서 주·월 행을 만들어 **빈자리만** 채운다.
+
+    **파일이 준 값이 늘 이긴다** — 주·월 파일을 올렸으면 그게 그대로 쓰이고, 파생은 그
+    파일에 없는 (기간·노드·지표)만 메운다. 그래야 지금까지 세 파일을 올리던 방식이
+    그대로 살고, 일별만 올려도 화면이 빈 채로 남지 않는다.
+
+    만든 기간은 `df.attrs["orgcat_derived"]`에 `{(gran, year, label)}`로 남긴다 —
+    화면이 '이건 일별에서 만든 값'이라고 밝힐 수 있게. `attrs`는 merge·concat에서
+    사라지니 **받은 자리에서 바로 읽을 것**(`af_rejected`와 같은 규칙).
+    """
+    if df is None or df.empty or not (df["gran"] == "일").any():
+        return df
+    day = df[df["gran"] == "일"]
+    # 일 라벨 'M/D' + 연도 → 실제 날짜. 못 읽는 라벨은 그냥 버린다(지어내지 않는다).
+    _d = (day["year"].astype(str) + "-"
+          + day["label"].astype(str).str.replace("/", "-", regex=False))
+    dt = pd.to_datetime(_d, errors="coerce")
+    day = day[dt.notna()].copy()
+    if day.empty:
+        return df
+    day["_date"] = dt[dt.notna()].dt.strftime("%Y-%m-%d").values
+
+    keys = ["metric"] + ORGCAT_LV + ["ch", "lfms"]
+    made, marks = [], set()
+    for tg in ("주", "월"):
+        # 캐시 함수라 해시 가능한 값으로 넘긴다 — Arrow 문자열 배열은 못 해시한다
+        per = detail_periods(list(pd.unique(day["_date"].astype(object))), tg)
+        if per.empty:
+            continue
+        pm = per.set_index("date")
+        d = day.join(pm[["year", "label", "sortkey", "close"]], on="_date",
+                     rsuffix="_p")
+        d = d[d["label_p"].notna()]
+        if d.empty:
+            continue
+        # **접미어 붙은 쪽을 쓸 것.** `day`에 이미 year·label·sortkey·close가 있어서
+        # 조인이 새 값에 `_p`를 붙인다. `sortkey`를 그냥 쓰면 **일별 정렬키**로 묶여
+        # 하루씩 따로 그룹이 되고, 월 값이 그 달 1일 값 그대로 나온다(실측 최대 59% 오차).
+        g = (d[d["metric"].isin(ORGCAT_DERIVE_MEAN)]
+             .groupby(keys + ["year_p", "label_p", "sortkey_p", "close_p"],
+                      as_index=False, sort=False)["value"].mean())
+        if g.empty:
+            continue
+        g = g.rename(columns={"year_p": "year", "label_p": "label",
+                              "sortkey_p": "sortkey", "close_p": "close"})
+        g["gran"] = tg
+        # 비율·비중은 평균이 아니라 **다시 만든다**
+        idx = keys[1:] + ["year", "label", "sortkey", "close"]
+        wide = g.pivot_table(index=idx, columns="metric", values="value",
+                             aggfunc="first")
+        extra = []
+        for met, (num, den) in ORGCAT_DERIVE_RATIO.items():
+            if num in wide.columns and den in wide.columns:
+                v = wide[num] / wide[den].where(wide[den] > 0)
+                extra.append(v.rename("value").reset_index().assign(metric=met))
+        # 비중 — 같은 기간·같은 축의 *TOTAL 노드로 나눈다
+        tot_key = ["ch", "lfms", "year", "label", "sortkey", "close"]
+        tot = wide.reset_index()
+        tot = tot[(tot["org"] == ORGCAT_TOTAL) & (tot["cat"] == ORGCAT_TOTAL)]
+        for met, base in ORGCAT_DERIVE_SHARE.items():
+            if base not in wide.columns or tot.empty:
+                continue
+            t = tot[tot_key + [base]].rename(columns={base: "_tot"})
+            j = wide.reset_index().merge(t, on=tot_key, how="left")
+            v = j[base] / j["_tot"].where(j["_tot"] > 0)
+            extra.append(j[idx].assign(value=v.values, metric=met))
+        parts = [g.reindex(columns=ORGCAT_COLS)]
+        for e in extra:
+            e = e.assign(gran=tg)
+            parts.append(e.reindex(columns=ORGCAT_COLS))
+        out = pd.concat(parts, ignore_index=True)
+        out = out[out["value"].notna()]
+        if out.empty:
+            continue
+        made.append(out)
+        marks |= {(tg, int(y), str(lb))
+                  for y, lb in out[["year", "label"]].drop_duplicates().values}
+    if not made:
+        return df
+    add = pd.concat(made, ignore_index=True)
+    # **파일이 있는 기간엔 아예 안 만든다 — 칸 단위가 아니라 «기간» 단위로 비킨다.**
+    # 키(`ORGCAT_KEY`)에 `close`가 들어 있어서, 칸 단위로 겹칠 때만 버리면 파일의
+    # `final`과 파생의 `mtd`가 **둘 다 남는다**. 그런데 화면은 올해를 `prefer="mtd"`로
+    # 읽으므로 파생 쪽을 먼저 집어, 사용자가 올린 마감값이 조용히 밀려난다.
+    # 한 기간 안에서 두 원천이 섞이는 것도 막아 준다.
+    have = set(map(tuple, df[df["gran"].isin(("주", "월"))]
+                   [["gran", "year", "label"]].astype(str).drop_duplicates().values))
+    key3 = list(zip(add["gran"].astype(str), add["year"].astype(str),
+                    add["label"].astype(str)))
+    add = add[[k not in have for k in key3]]
+    if add.empty:
+        return df
+    kept = pd.concat([df[ORGCAT_COLS], add[ORGCAT_COLS]], ignore_index=True)
+    kept.attrs["orgcat_derived"] = {
+        m for m in marks if (m[0], str(m[1]), m[2]) not in have}
+    return kept
+
+
 def detail_stamp(ddf, gran):
     """원장 + 기간 칼럼(year·label·sortkey) + 그 기간의 일수(nd)·완결여부(close).
 
@@ -5712,6 +5830,16 @@ def main():
     oc_stored = load_orgcat_store()
     oc_new = combine_orgcat(tuple(expanded)) if expanded else pd.DataFrame(columns=ORGCAT_COLS)
     odf = merge_orgcat(oc_stored, oc_new)
+    # **일별만 올려도 주·월이 나오게** 파생을 얹는다. 같은 실적인데 세 파일을 따로 받아
+    # 올려야 했던 자리다. 파일이 준 값이 늘 이기고 파생은 빈자리만 메운다 — 주·월 파일을
+    # 올리던 방식도 그대로 산다. 만든 기간은 `attrs`에 담겨 오니 **여기서 바로** 읽는다
+    # (merge·concat에서 사라진다 — `af_rejected`와 같은 규칙).
+    # **저장·백업은 파생 «전» 프레임(`odf_raw`)으로 한다.** 파생 행까지 저장하면 다음
+    # 세션엔 그게 '파일이 준 값'으로 보여서, 일별을 고쳐 다시 올려도 옛 파생이 그 기간을
+    # 차지한 채 안 갱신된다(파생은 파일 있는 기간을 비켜 가므로). 화면만 파생을 본다.
+    odf_raw = odf
+    odf = orgcat_derive_periods(odf_raw)
+    _oc_made = odf.attrs.get("orgcat_derived", set()) if odf is not None else set()
     # 브랜드·상품 원장도 마찬가지로 별도 store — 카테고리 어휘가 MICRO와 달라 섞을 수 없다
     dt_stored = load_detail_store()
     dt_new = combine_detail(tuple(expanded)) if expanded else pd.DataFrame(columns=DETAIL_COLS)
@@ -5781,7 +5909,7 @@ def main():
                 if st.button("💾 저장 (누적 반영)", key="wr_commit",
                              type="primary", width="stretch"):
                     if not df_new.empty: save_store(df)
-                    if not oc_new.empty: save_orgcat_store(odf)
+                    if not oc_new.empty: save_orgcat_store(odf_raw)
                     if not dt_new.empty: save_detail_store(ddf)
                     st.session_state["wr_saved_sig"] = sig
                     st.rerun()
@@ -5817,8 +5945,11 @@ def main():
         st.markdown("**기준 기간**")
         ref_year = st.selectbox("기준 연도", years_all[::-1],
                                 index=years_all[::-1].index(ref_year_default), key="wr_refy")
-        months_avail = sorted({int(re.match(r"(\d+)월", l).group(1))
-                               for l in df[(df["gran"] == "월") & (df["year"] == ref_year)]["label"]})
+        # 달은 라벨을 다시 파싱하지 말고 `sortkey`(=year*10000+월*100)에서 읽는다.
+        # `re.match(...).group()`을 그대로 부르면 매치가 없는 라벨 하나가 사이드바를
+        # 죽여 전 페이지가 같이 내려간다 — 그 사고를 두 번 냈다.
+        _mrows = df[(df["gran"] == "월") & (df["year"] == ref_year)]["sortkey"].dropna()
+        months_avail = sorted({int(k) // 100 % 100 for k in _mrows})
         ref_month = st.selectbox("기준 월", months_avail[::-1], key="wr_refm")
         weeks_avail = (df[(df["gran"] == "주") & (df["year"] == ref_year) & df["value"].notna()]
                        [["label", "sortkey"]].drop_duplicates()
@@ -5861,6 +5992,13 @@ def main():
                    f"조직×카테고리 {len(odf):,}행 · "
                    + (f"원장 {len(ddf):,}행 · " if not ddf.empty else "")
                    + f"메모 {len(st.session_state.wr_texts)}개")
+        # **파생한 기간은 밝힌다.** 일별만 올려도 주·월이 뜨는데, 그게 파일에서 온 값인지
+        # 만든 값인지 화면에서 갈리지 않으면 '주별 파일을 올렸던가?'를 되짚을 수가 없다.
+        if _oc_made:
+            _mw = sum(1 for g, _y, _l in _oc_made if g == "주")
+            _mm = len(_oc_made) - _mw
+            st.caption(f"↳ 조직×카테고리는 **일별에서 주 {_mw}개 · 월 {_mm}개**를 만들었어요. "
+                       "파일로 올린 기간은 그대로 쓰고 빈자리만 채워요.")
 
         # 백업 파일은 **누를 때 만든다.** `st.download_button`은 data를 미리 받아야 해서,
         # 여기에 직렬화 결과를 그대로 넘기면 **매 리런마다** 원장 전체를 CSV로 찍고
@@ -5875,7 +6013,8 @@ def main():
                                  "재배포로 초기화돼도 이 ZIP을 '백업 복원'에 올리면 그대로 "
                                  "되살아나요. 파일은 누른 뒤에 만들어요.")
         if _bk:
-            _bk(lambda: make_backup_zip(df, st.session_state.wr_texts, odf, ddf))
+            _bk(lambda: make_backup_zip(df, st.session_state.wr_texts,
+                                        odf_raw, ddf))
 
         # 통합 복원 — zip/csv/json 자동 인식
         restore_widget("wr_restore")
@@ -5885,9 +6024,11 @@ def main():
             for _key, _lab, _fn, _mime, _make in (
                 ("data", "⬇ 누적 데이터 (CSV)", f"wr_data_store_{_d:%Y%m%d}.csv", "text/csv",
                  lambda: df[STORE_COLS].to_csv(index=False).encode("utf-8-sig")),
+                # 백업도 **파생 전**(`odf_raw`)이다 — 파생을 담아 두면 복원한 쪽에서
+                # 그게 파일 값이 되어, 일별을 고쳐도 그 기간이 안 갱신된다.
                 ("orgcat", "⬇ 조직×카테고리 (CSV)", f"wr_orgcat_store_{_d:%Y%m%d}.csv", "text/csv",
-                 (lambda: odf[ORGCAT_COLS].to_csv(index=False).encode("utf-8-sig"))
-                 if not odf.empty else None),
+                 (lambda: odf_raw[ORGCAT_COLS].to_csv(index=False).encode("utf-8-sig"))
+                 if not odf_raw.empty else None),
                 # 원장은 gzip으로 준다 — 평문 CSV는 실측 122MB, gzip은 14MB다.
                 # 복원(`_try_csv`)이 매직바이트로 gzip을 알아보므로 그대로 다시 올리면 된다.
                 ("detail", "⬇ 브랜드·상품 원장 (CSV.GZ)",

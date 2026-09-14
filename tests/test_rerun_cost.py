@@ -301,6 +301,52 @@ def t_page_references_in_prose_match_the_real_pages():
                      "쓰세요:\n  " + "\n  ".join(bad))
 
 
+@case
+def t_derived_periods_never_reach_the_store():
+    """파생한 주·월은 **저장·백업에 안 실린다** — 담기면 다음 세션엔 '파일 값'이 된다.
+
+    파생은 파일이 있는 기간을 비켜 가므로, 한 번 저장되면 그 기간은 영영 안 갱신된다.
+    일별을 고쳐 다시 올려도 옛 파생이 그 자리를 차지한 채 남는다 — 증상이 '숫자가 안
+    바뀌네'로만 보여 원인이 안 드러난다.
+    """
+    tree = _tree("weekly_report.py")
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+    assert fn is not None, "main()을 못 찾았어요"
+    src = ast.unparse(fn)
+    assert "odf_raw = odf" in src and "orgcat_derive_periods(odf_raw)" in src, \
+        "파생 전 프레임을 따로 안 들고 있어요"
+    for call in ("save_orgcat_store(", "make_backup_zip("):
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call)
+                    and ast.unparse(node.func).endswith(call.rstrip("("))):
+                args = " ".join(ast.unparse(a) for a in node.args)
+                assert "odf_raw" in args or "odf" not in args.split(), \
+                    f"{call} 에 파생본(odf)을 넘겨요 — odf_raw여야 해요: {args[:80]}"
+
+
+@case
+def t_digit_parses_from_labels_are_guarded():
+    """선택지 라벨에서 숫자를 뽑을 땐 **None을 가드**한다.
+
+    `re.search(...).group()`은 매치가 없으면 `AttributeError`로 죽는다 — 주간보고
+    7페이지를 통째로 날린 사고가 정확히 이 모양이었다. 지금 라벨엔 다 숫자가 있어
+    안 터지지만, 라벨 문구는 자주 바뀌는 자리라 한 번 바꾸면 그 페이지가 죽는다.
+    """
+    bad = []
+    for name in APPS:
+        for node in ast.walk(_tree(name)):
+            if not (isinstance(node, ast.Attribute) and node.attr == "group"):
+                continue
+            inner = node.value
+            if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr in ("search", "match")
+                    and ast.unparse(inner.func.value) == "re"):
+                bad.append(f"{name}:{node.lineno} — {ast.unparse(node)[:60]}")
+    assert not bad, ("`re.search(...).group()`을 그대로 부르고 있어요. 매치가 없으면 "
+                     "페이지가 죽어요:\n  " + "\n  ".join(bad))
+
+
 def main():
     fails = []
     for fn in CASES:
