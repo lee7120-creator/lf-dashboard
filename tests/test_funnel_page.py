@@ -53,6 +53,7 @@ FILE_RATE = 0.5           # 파일이 주는 가입율 — 계산값(1.00%)과 �
 DAILY_CR = 0.0725         # 당일가입CR — 역산이 불가능한 값이라 파일 값이 그대로 나와야
 FILE_AOV = 111_111        # 파일이 주는 객단가 — 거래액/고객수(100,000원)와 다르게
 PUSH_DAILY = {1: 100.0, 8: 200.0, 15: 300.0, 22: 400.0}    # 일평균 250
+DAILY_DAYS = (1, 8, 15, 22)        # 일자별 퍼널을 심을 날 — 주·월과 같은 원값
 
 
 def _rows_for(gran, label, sortkey, year):
@@ -80,6 +81,10 @@ def synth_store(with_push=True):
             for wk in WEEKS:
                 rows += _rows_for("주", f"{mo:02d}월 {wk}주차",
                                   y * 10000 + mo * 100 + wk, y)
+            # 일자별 퍼널 — 화면의 「기간 단위」 일자별 경로를 실제로 밟게 한다.
+            # 주·월과 같은 원값이라 카드·추이 값이 단위와 무관하게 같아야 한다.
+            for dd in DAILY_DAYS:
+                rows += _rows_for("일", f"{mo}/{dd}", y * 10000 + mo * 100 + dd, y)
             if with_push:
                 # 앱푸시 수신동의는 원천이 일자 헤더 표라 **일별로만** 쌓인다
                 for dd, v in PUSH_DAILY.items():
@@ -136,7 +141,7 @@ def synth_orgcat():
     return pd.DataFrame(rows)[W.ORGCAT_COLS]
 
 
-def _open(store=None, orgcat=None, mode=None):
+def _open(store=None, orgcat=None, unit=None):
     """임시 폴더에 스토어를 깔고 앱을 띄운 뒤 새 페이지로 이동한다."""
     from streamlit.testing.v1 import AppTest
     tmp = tempfile.mkdtemp()
@@ -160,10 +165,12 @@ def _open(store=None, orgcat=None, mode=None):
     assert rad, "페이지 라디오를 못 찾았어요"
     rad[0].set_value(PAGE); at.run()
     assert not at.exception, at.exception[0].value
-    if mode:
-        cmp_r = [r for r in at.radio if r.label == "비교 기준"]
-        assert cmp_r, f"비교 기준 라디오가 없어요 — {[r.label for r in at.radio]}"
-        cmp_r[0].set_value(mode); at.run()
+    if unit:
+        # 화면 전체가 이 라디오 하나를 본다(일/주/월). 예전엔 「비교 기준」과 ②·⑤의
+        # 「기간 단위」가 따로 있어서 테스트도 그때그때 다른 위젯을 집었다.
+        rd = [r for r in at.radio if getattr(r, "key", None) == "wr_fn_gran"]
+        assert rd, f"기간 단위 라디오가 없어요 — {[(r.label, getattr(r, 'key', None)) for r in at.radio]}"
+        rd[0].set_value(unit); at.run()
         assert not at.exception, at.exception[0].value
     return at
 
@@ -264,7 +271,7 @@ def t_all_blocks_render():
 
 @case
 def t_mtd_mode_renders():
-    at = _open(mode="월누적(MTD) — 전년 동월")
+    at = _open(unit="월")
     txt = " ".join(_texts(at))
     assert "① " in txt and "④ " in txt, "MTD 모드에서 블록이 빠졌어요"
     assert _kpi(at, "가입자수"), "MTD 모드에서 퍼널 카드가 안 그려졌어요"
@@ -675,7 +682,7 @@ def t_appinstall_reaches_the_funnel_page():
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
     # 앱설치는 **실제 달력 주**라 마스터 합성본의 `09월 4주차`(9/21~)와 안 겹친다 —
     # 월 비교로 본다(9월 = 9/1~9/5, 값이 모든 날 같아 일평균은 그대로 3,000).
-    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at = _open(store=store, unit="월")
     # synth: 전체 3,000 = 신규 2,200 + 재설치 800 → 카드는 **신규**를 보여야 한다
     assert _kpi(at, "앱설치") == "2,200명", _kpi(at, "앱설치")
     fr = [f for f in _frames(at) if f.index.name == "비율"][0]
@@ -688,7 +695,7 @@ def t_appinstall_reaches_the_funnel_page():
 def t_prior_year_absence_is_explained():
     """전년이 없으면 빈 칸만 두지 말고 왜 비었는지 말해야 한다 (실제로 전년이 없다)."""
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
-    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at = _open(store=store, unit="월")
     assert any("전년 데이터가 없어" in t for t in _texts(at)), "전년 부재 안내가 없어요"
 
 @case
@@ -726,7 +733,7 @@ def t_broken_days_warn_on_screen():
     """숫자를 보는 자리에서 말해야 한다 — 인식 목록은 업로드 때 한 번 스쳐 간다."""
     store = pd.concat([synth_store(), synth_appinstall_store(3000, broken_tail=3)],
                       ignore_index=True)
-    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at = _open(store=store, unit="월")
     warn = [str(w.value) for w in at.warning]
     assert any("절반 이하로 찍힌 날이 3일" in w for w in warn), warn
     assert any("값은 원천 그대로 두었어요" in w for w in warn), warn
@@ -736,7 +743,7 @@ def t_broken_days_warn_on_screen():
 def t_clean_data_does_not_warn():
     """멀쩡한 데이터에 경고가 뜨면 정작 진짜 문제를 무시하게 된다."""
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
-    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at = _open(store=store, unit="월")
     assert not any("절반 이하" in str(w.value) for w in at.warning), \
         [str(w.value) for w in at.warning]
 
@@ -820,7 +827,7 @@ def t_rollup_cr_matches_the_identity():
     assert cu > 0 and uv > 0, (cat, cu, uv)
     want = W.fmt_value("상품CR", cu / uv)
 
-    at = _open(mode="월누적(MTD) — 전년 동월")
+    at = _open(unit="월")
     _sel_oc(at).set_value("상품CR"); at.run()
     assert not at.exception, at.exception[0].value
     fr = [f for f in _frames(at) if f.index.name == "카테고리"]
@@ -1097,7 +1104,7 @@ def t_funnel_shows_both_consent_denominators():
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
     extra = W.combine_files((("Push_14.xlsx", pushall_xlsx(days=400)),))
     at = _open(store=pd.concat([store, extra], ignore_index=True),
-               mode="월누적(MTD) — 전년 동월")
+               unit="월")
     fr = [f for f in _frames(at) if f.index.name == "비율"]
     assert fr, f"비율 표가 없어요 — {[f.index.name for f in _frames(at)]}"
     idx = list(fr[0].index)
@@ -1115,7 +1122,7 @@ def t_funnel_shows_both_consent_denominators():
 def t_missing_pushall_source_says_why():
     """원천이 없으면 빈 줄을 남기지 말고 왜 없는지 말한다."""
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
-    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at = _open(store=store, unit="월")
     fr = [f for f in _frames(at) if f.index.name == "비율"]
     assert fr, "비율 표가 없어요"
     idx = list(fr[0].index)
@@ -1134,7 +1141,7 @@ def t_trend_carries_both_consent_rates_not_install_rate():
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
     extra = W.combine_files((("Push_14.xlsx", pushall_xlsx(days=400)),))
     at = _open(store=pd.concat([store, extra], ignore_index=True),
-               mode="월누적(MTD) — 전년 동월")
+               unit="월")
     fr = [f for f in _frames(at) if f.index.name == "기간" and "앱 신규설치" in f.columns]
     assert fr, "추이표가 없어요"
     cols = list(fr[0].columns)
@@ -1153,7 +1160,7 @@ def t_trend_carries_both_consent_rates_not_install_rate():
 def t_trend_drops_pushall_columns_when_source_is_missing():
     """원천이 없으면 '–'만 늘어선 칼럼을 남기지 말고 통째로 뺀다."""
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
-    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at = _open(store=store, unit="월")
     fr = [f for f in _frames(at) if f.index.name == "기간" and "앱 신규설치" in f.columns]
     assert fr, "추이표가 없어요"
     cols = list(fr[0].columns)
@@ -1206,7 +1213,7 @@ def t_app_rates_say_they_are_daily_means():
     두 일평균을 나눈 값을 개인 추적 결과로 읽는다.
     """
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
-    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at = _open(store=store, unit="월")
     txt = _texts(at)
     assert any("일평균끼리 나눈 값" in t for t in txt), "일평균 비율이라는 안내가 없어요"
     assert any("개인 단위로" in t for t in txt), "개인 추적이 아니라는 안내가 없어요"
@@ -1267,7 +1274,7 @@ def t_factor_block_shows_customer_count_without_double_counting():
     `고객수 = 상품UV × 상품CR`이 정확히 성립하므로(원본 항등식 둘을 나누면 나온다)
     기여액까지 주면 그 몫이 유입·전환과 겹쳐 두 번 세어진다.
     """
-    at = _open(mode="월누적(MTD) — 전년 동월")
+    at = _open(unit="월")
     fr = [f for f in _frames(at) if f.index.name == "요인"]
     assert fr, "요인 분해 표가 없어요"
     t = fr[0]
@@ -1516,21 +1523,22 @@ def t_orgcat_trend_uses_year_colors_when_single_item():
 
 
 @case
-def t_orgcat_trend_switches_granularity():
-    """기간 단위를 주차↔월로 바꿀 수 있고, 축 라벨이 따라간다."""
-    at = _open()
-    # ②(퍼널 지표 추이)에도 같은 라벨의 라디오가 있다 — **키로** 집어야 ⑤ 것을 잡는다.
-    rd = [r for r in at.radio if getattr(r, "key", None) == "wr_fn_trend_gran"]
-    assert rd, f"⑤ 기간 단위 라디오가 없어요 — {[(r.label, getattr(r, 'key', None)) for r in at.radio]}"
-    assert set(rd[0].options) == {"주차별", "월별"}, list(rd[0].options)
-    rd[0].set_value("월"); at.run()
-    assert not at.exception, at.exception[0].value
+def t_orgcat_trend_follows_the_page_unit():
+    """⑤의 연중 추이는 **화면 위 기간 단위 하나**를 따라간다.
+
+    예전엔 ⑤에도 자체 라디오가 있어서, 단위 하나 바꾸려면 위·②·⑤ 세 군데를 눌러야 했다.
+    """
+    at = _open(unit="월")
+    assert not [r for r in at.radio if getattr(r, "key", None) == "wr_fn_trend_gran"], \
+        "⑤에 자체 기간 단위 라디오가 되살아났어요"
     spec = _trend_spec(at)
+    assert spec, "연중 추이 차트가 없어요"
     assert "월별 추이" in spec["layout"]["title"]["text"], spec["layout"]["title"]["text"]
     xs = spec["data"][0]["x"]
     assert all(str(v).endswith("월") for v in xs), xs[:4]
-    # 위 비교 기준(주)과 별개로 움직여야 한다 — 같이 묶이면 왕복이 안 된다
-    assert [r for r in at.radio if r.label == "비교 기준"], "비교 기준 라디오가 사라졌어요"
+    at2 = _open(unit="주")
+    sp2 = _trend_spec(at2)
+    assert "주차별 추이" in sp2["layout"]["title"]["text"], sp2["layout"]["title"]["text"]
 
 
 @case
@@ -1591,7 +1599,7 @@ def t_picked_row_reads_cell_selection():
 def t_app_detail_swaps_prior_year_for_shares():
     """앱설치 상세 — 전년이 한 칸도 없으면 그 열 대신 전체설치 대비 비중을 낸다."""
     store = pd.concat([synth_store(), synth_appinstall_store(3000)], ignore_index=True)
-    at = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at = _open(store=store, unit="월")
     fr = [f for f in _frames(at) if f.index.name == "지표" and "전체설치" in f.index]
     assert fr, f"앱설치 상세 표가 없어요 — {[list(f.index) for f in _frames(at)]}"
     t = fr[0]
@@ -1641,7 +1649,7 @@ def t_app_block_shows_recent_periods():
     # 표에서 통째로 빠지면 '왜 카드가 비었지'가 안 풀린다
     assert sum("◀" in str(i) for i in fr[0].index) == 1, list(fr[0].index)
     # 단위는 위 비교 기준을 따라간다
-    at2 = _open(store=store, mode="월누적(MTD) — 전년 동월")
+    at2 = _open(store=store, unit="월")
     fr2 = [f for f in _frames(at2) if f.index.name == "기간" and "앱 신규설치" in f.columns]
     assert fr2 and len(fr2[0]) >= W.APP_TREND_N["월"], \
         f"월 단위는 6개 이상 — {len(fr2[0]) if fr2 else None}"
@@ -1726,20 +1734,27 @@ def t_trend_block_draws_charts_and_a_yoy_table():
     at = _open()
     txt = " ".join(_texts(at))
     assert "② 퍼널 지표 추이" in txt, "② 블록이 없어요"
-    ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_fn_ftrend_mets"]
-    assert ms, "추이 지표 선택이 없어요"
-    sel = list(ms[0].value)
-    assert len(sel) >= 4, sel
+    # **지표를 고르게 하지 않는다** — 있는 걸 다 그린다. 고르게 두면 매번 같은 걸 다시
+    # 켜야 하고, 퍼널은 앞단·뒷단을 같이 봐야 어디서 빠졌는지가 보인다.
+    assert not [m for m in at.multiselect
+                if getattr(m, "key", None) == "wr_fn_ftrend_mets"], \
+        "추이 지표 선택이 되살아났어요"
+    sel = [m for m in W.FUNNEL_STEPS if (synth_store()["metric"] == m).any()]
+    assert len(sel) >= 6, sel
+    # 지표마다 한 장씩 그린다(⑤ 연중 추이 한 장이 더 붙는다)
+    n_chart = len(at.get("plotly_chart"))
+    assert n_chart >= len(sel), f"차트가 {n_chart}장뿐이에요 — 지표 {len(sel)}종"
     tbl = _ftrend_tbl(at)
     assert tbl is not None, "추이표를 못 찾았어요"
     assert list(tbl.index) == sel, (list(tbl.index), sel)
     cols = list(tbl.columns)
     vals = [c for c in cols if "증감" not in c[1]]
-    assert vals, cols
-    for c in vals:                                        # 증감은 값 칸 **바로 오른쪽**
-        i = cols.index(c)
-        assert i + 1 < len(cols) and cols[i + 1] == (c[0], f"{c[1]} 증감"), \
-            f"{c} 오른쪽이 증감 칸이 아니에요 — {cols[i:i + 2]}"
+    dlts = [c for c in cols if "증감" in c[1]]
+    assert vals and dlts, cols
+    # **왼쪽 실적 · 오른쪽 증감**으로 모은다 — 증감만 가로로 훑어야 '어느 기간부터
+    # 꺾였나'가 보인다. 자를 때 값·증감을 번갈아 넣으면 도로 섞인다(실제로 그랬다).
+    assert cols == vals + dlts, f"값·증감이 섞였어요 — {cols[:6]}"
+    assert dlts == [(c[0], f"{c[1]} 증감") for c in vals], (vals[:3], dlts[:3])
 
 
 @case
@@ -1785,6 +1800,174 @@ def t_join_rate_is_the_same_metric_everywhere():
     # 파일 우선 칸(객단가)은 반대로 **파일 값**이 나와야 한다
     a = W.report_series(st_df, "월", "첫구매 객단가", "*TOTAL", 2026, "final")
     assert abs(float(a.iloc[-1]) - FILE_AOV) < 1e-6, float(a.iloc[-1])
+
+
+# ── 기간 단위 — 화면 전체가 하나를 본다 ──────────────────────────────
+@case
+def t_one_granularity_switch_drives_the_page():
+    """단위 스위치는 **하나뿐**이어야 한다.
+
+    예전엔 위 「비교 기준」(주간/월누적)과 ②·⑤의 「기간 단위」가 따로 놀아서, 주→월로
+    바꾸려면 세 군데를 눌러야 했다. 하나만 남기고 나머지는 이걸 따라간다.
+    """
+    at = _open()
+    units = [r for r in at.radio if r.label == "기간 단위"]
+    assert len(units) == 1, [(r.label, getattr(r, "key", None)) for r in at.radio]
+    assert getattr(units[0], "key", None) == "wr_fn_gran"
+    assert list(units[0].options) == ["일자별", "주차별", "월별"], list(units[0].options)
+    assert not [r for r in at.radio if r.label == "비교 기준"], "옛 비교 기준이 남아 있어요"
+
+
+@case
+def t_daily_unit_renders_every_block():
+    """일자별도 ①~⑥이 다 떠야 한다 — 카드·추이·채널·앱까지."""
+    at = _open(unit="일")
+    assert not at.exception, at.exception[0].value
+    txt = " ".join(_texts(at))
+    for mark in ("① ", "② ", "③ ", "④ ", "⑥ "):
+        assert mark in txt, f"일자별에서 {mark} 블록이 안 보여요"
+    assert _kpi(at, "비회원트래픽"), "일자별에서 퍼널 카드가 안 그려졌어요"
+    # 사이드바엔 일자 선택이 없으니 이 화면에서 고른다
+    day = [s for s in at.selectbox if s.label == "기준 일자"]
+    assert day, [s.label for s in at.selectbox]
+    assert "/" in str(day[0].value), day[0].value
+
+
+@case
+def t_daily_values_match_the_other_units():
+    """같은 원값을 심었으니 단위를 바꿔도 카드 값은 같아야 한다.
+
+    라벨만 갈아 끼우고 조회 키가 어긋나면 값이 조용히 비거나 다른 날을 집는다.
+    """
+    got = {}
+    for unit in ("일", "주", "월"):
+        at = _open(unit=unit)
+        got[unit] = (_kpi(at, "비회원트래픽"), _kpi(at, "가입자수"), _rate(at, "가입율"))
+    assert len(set(got.values())) == 1, got
+
+
+@case
+def t_unit_only_offers_what_the_data_has():
+    """퍼널 지표가 없는 단위는 선택지에 안 올린다.
+
+    앱푸시 수신동의는 **늘** 일별로 쌓인다 — `gran=="일"`만 보면 퍼널 데이터가 없는데도
+    일자별이 켜지고, 눌러 보면 빈 화면이 나온다.
+    """
+    store = synth_store()
+    no_day = store[store["gran"] != "일"]
+    push_only = store[(store["gran"] == "일") & (store["metric"] == "앱푸시수신동의")]
+    at = _open(store=pd.concat([no_day, push_only], ignore_index=True))
+    units = [r for r in at.radio if r.label == "기간 단위"][0]
+    assert "일자별" not in list(units.options), list(units.options)
+
+
+@case
+def t_daily_trend_shows_a_month_of_days():
+    """일자별 추이표는 한 달치(`FUNNEL_TREND_KEEP['일']`)로 자른다 — 365칸은 못 읽는다."""
+    at = _open(unit="일")
+    tbl = _ftrend_tbl(at)
+    assert tbl is not None, "일자별 추이표가 없어요"
+    vals = [c for c in tbl.columns if "증감" not in c[1]]
+    assert len(vals) <= W.FUNNEL_TREND_KEEP["일"], len(vals)
+    assert all("/" in c[1] for c in vals), vals[:4]
+
+
+# ── 페이지 재구성 · 03 채널별 실적 ──────────────────────────────────
+def _open_page(page, store=None, orgcat=None):
+    """임시 폴더에 스토어를 깔고 그 페이지로 이동."""
+    from streamlit.testing.v1 import AppTest
+    tmp = tempfile.mkdtemp()
+    shutil.copy(APP, os.path.join(tmp, "weekly_report.py"))
+    _te = ROOT / "table_export.py"
+    if _te.exists():
+        shutil.copy(_te, os.path.join(tmp, "table_export.py"))
+    (synth_store() if store is None else store).to_csv(
+        os.path.join(tmp, W.DATA_STORE), index=False, encoding="utf-8-sig")
+    oc = synth_orgcat() if orgcat is None else orgcat
+    if oc is not None and not oc.empty:
+        oc.to_csv(os.path.join(tmp, W.ORGCAT_STORE), index=False, encoding="utf-8-sig")
+    os.chdir(tmp)
+    at = AppTest.from_file(os.path.join(tmp, "weekly_report.py"), default_timeout=TIMEOUT)
+    at.run()
+    [r for r in at.sidebar.radio if r.label == "페이지"][0].set_value(page)
+    at.run()
+    assert not at.exception, at.exception[0].value
+    return at
+
+
+@case
+def t_pages_are_reordered_without_the_trend_pages():
+    """「월별 추이」·「주차별 추이」는 접었다 — 「02」가 같은 걸 보여 준다.
+
+    「통합 데이터·다운로드」는 보는 화면이 아니라 받아 가는 화면이라 맨 뒤로 옮겼다.
+    """
+    at = _open()
+    pages = list([r for r in at.sidebar.radio if r.label == "페이지"][0].options)
+    assert pages == ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적", "03. 채널별 실적",
+                     "04. 앱푸시 동의 현황", "05. 첫구매 고객 세그먼트 성과",
+                     "06. 조직·카테고리별 실적", "07. 통합 데이터·다운로드"], pages
+
+
+@case
+def t_trend_page_memos_moved_not_lost():
+    """03·04의 액션·이슈 메모는 **키를 그대로 둔 채** 「02」로 옮겼다.
+
+    키를 갈면 이미 써 둔 글이 파일엔 남는데 화면에서 영영 안 보인다.
+    """
+    src = APP.read_text(encoding="utf-8")
+    for key in ('f"wr_week_memo_{cy}_{clabel}"', 'f"wr_month_memo_{ref_year}_{ref_month}"'):
+        assert key in src, f"{key} 메모가 사라졌어요"
+    at = _open(unit="주")
+    assert any("액션·이슈" in t for t in _texts(at)), "주차 메모가 「02」에 안 보여요"
+    at2 = _open(unit="월")
+    assert any("액션·이슈" in t for t in _texts(at2)), "월 메모가 「02」에 안 보여요"
+
+
+@case
+def t_channel_page_has_one_unit_and_no_metric_picker():
+    """「03 채널별 실적」도 **지표를 안 고르고 다 그린다** — 월 고정도 풀었다."""
+    at = _open_page("03. 채널별 실적")
+    rd = [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"]
+    assert rd, [(r.label, getattr(r, "key", None)) for r in at.radio]
+    assert list(rd[0].options) == ["일자별", "주차별", "월별"], list(rd[0].options)
+    assert not [s for s in at.selectbox if s.label == "지표 선택"], "지표 선택이 남아 있어요"
+    mets = [m for m in W.METRICS7 if (synth_store()["metric"] == m).any()]
+    assert len(at.get("plotly_chart")) >= len(mets), \
+        f"차트 {len(at.get('plotly_chart'))}장 — 지표 {len(mets)}종을 다 그려야 해요"
+
+
+@case
+def t_channel_table_puts_deltas_on_the_right():
+    """「03」 표도 **왼쪽 실적 · 오른쪽 전년비**."""
+    for unit in ("일", "주", "월"):
+        at = _open_page("03. 채널별 실적")
+        [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value(unit)
+        at.run()
+        assert not at.exception, (unit, at.exception[0].value)
+        got = [f for f in _frames(at)
+               if any("전년비" in str(c) for c in f.columns)]
+        assert got, f"{unit}: 전년비 표가 없어요"
+        cols = list(got[0].columns)
+        vals = [c for c in cols if "전년비" not in str(c)]
+        dlts = [c for c in cols if "전년비" in str(c)]
+        assert cols == vals + dlts, f"{unit}: 값·전년비가 섞였어요 — {cols[:4]}"
+
+
+@case
+def t_download_page_builds_files_on_click():
+    """받아 가는 화면 — **누르기 전엔 안 만든다.**
+
+    `st.download_button`은 data를 미리 받는 API라 그냥 넘기면 받지도 않는 리런마다
+    전체를 CSV로 찍는다(원장 120만 행이면 그것만 몇 초다).
+    """
+    at = _open_page("07. 통합 데이터·다운로드")
+    labels = [b.label for b in at.button]
+    assert any("마스터" in l for l in labels), labels
+    assert any("워크북" in l for l in labels), labels
+    # 세 원천 카드가 뜬다
+    html = _html(at)
+    for nm in ("마스터", "조직×카테고리", "결제 원장"):
+        assert nm in html, f"«{nm}» 카드가 없어요"
 
 
 # ── ⑤ 합계 대사 ─────────────────────────────────────────────────────

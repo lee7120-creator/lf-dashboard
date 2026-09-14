@@ -1805,6 +1805,14 @@ def funnel_val(g, met, seg="*TOTAL"):
     return g(met, seg)
 
 
+def report_val(df, gran, metric, seg, year, label, prefer="final"):
+    """한 칸의 값 — **보고서 규칙**으로 읽는다(`funnel_val`을 기간 조회에 얹은 껍데기).
+
+    `pick`을 그대로 쓰면 파일의 가입율(일별 비율의 평균)이 나와 ①·② 카드와 갈린다.
+    """
+    return funnel_val(lambda m, s=seg: pick(df, gran, m, s, year, label, prefer), metric)
+
+
 def report_series(df, gran, metric, seg, year, prefer="final"):
     """`series_by_label`의 **보고서 규칙 판** — 추이표·차트가 이걸 쓴다.
 
@@ -2151,17 +2159,23 @@ def yoy_summary_table(df, ref_year, ref_month, metrics):
         })
     return pd.DataFrame(rows).set_index("구분"), (pm_y, pm_m)
 
-def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None):
+def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None,
+                delta_side="inline"):
     """추이표: 행=지표, 열=(연도, 기간)
 
-    `delta_year`를 주면 그 해의 각 기간 **바로 옆에** 전년 같은 기간 대비 증감 칸을
-    끼운다. 표가 넓어지지만 눈이 두 해 사이를 오갈 필요가 없어진다 — 2025년 1월과
-    2026년 1월이 열두 칸 떨어져 있어서 그냥은 못 맞댄다.
+    `delta_year`를 주면 그 해의 각 기간에 전년 같은 기간 대비 증감 칸을 붙인다.
+    2025년 1월과 2026년 1월이 열두 칸 떨어져 있어서 그냥은 못 맞대기 때문이다.
+
+    `delta_side`가 자리를 정한다:
+      - `"inline"` — 기간 **바로 오른쪽**에 끼운다(03·04가 쓰는 배치).
+        한 기간의 값과 증감을 붙여 읽기 좋다.
+      - `"right"` — 값을 다 놓고 **증감을 오른쪽에 몰아**둔다.
+        증감만 가로로 훑어 '어느 달부터 꺾였나'를 보기 좋다.
 
     비교 대상은 **화면에 그린 연도와 무관하게** `delta_year - 1`을 직접 조회한다.
     전년을 안 그리고 있어도 증감은 나와야 한다.
     """
-    spec = []                       # (연도, 표시 라벨, 조회 라벨, 비교 연도 or None)
+    spec, tail = [], []             # (연도, 표시 라벨, 조회 라벨, 비교 연도 or None)
     for y in years:
         for lb in labels_sorted(df, gran, [y]):
             sub = df[(df["gran"] == gran) & (df["year"] == y) & (df["label"] == lb) &
@@ -2169,7 +2183,9 @@ def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None):
             if sub.empty: continue
             spec.append((y, lb, lb, None))
             if delta_year is not None and y == delta_year:
-                spec.append((y, f"{lb} 증감", lb, y - 1))
+                (tail if delta_side == "right" else spec).append(
+                    (y, f"{lb} 증감", lb, y - 1))
+    spec += tail
     if not spec:
         return pd.DataFrame()
     # 값은 **보고서 규칙**으로 읽는다(`report_series`) — 파일의 가입율은 일별 비율의
@@ -2251,12 +2267,15 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
             line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
             marker=dict(size=5),
         ))
-    gname = "월별" if gran == "월" else "주차별"
+    gname = {"일": "일자별", "주": "주차별", "월": "월별"}.get(gran, gran)
     ly = base_layout(h, ysuffix=unit if unit == "%" else "",
                      title=f"{metric} {gname} 추이 ({unit})")
     ly["xaxis"]["categoryorder"] = "array"
     ly["xaxis"]["categoryarray"] = [month_trim(v) for v in x_all]
-    if gran == "주": ly["xaxis"]["tickangle"] = -45; ly["xaxis"]["nticks"] = 20
+    # 일별은 라벨이 한 해 365개라 그대로 두면 축이 새까매진다 — 눈금 수를 묶는다.
+    if gran in ("주", "일"):
+        ly["xaxis"]["tickangle"] = -45
+        ly["xaxis"]["nticks"] = 20 if gran == "주" else 14
     fig.update_layout(**ly)
     return fig
 
@@ -3284,12 +3303,75 @@ FUNNEL_ROLLUP_METS = ["첫구매 거래액", "첫구매 고객수", "첫구매 �
 FUNNEL_ADDITIVE = ["비회원트래픽", "가입자수", "첫구매 고객수", "첫구매 거래액"]
 # 값 규칙(FUNNEL_DERIVED·FUNNEL_FILE_FIRST·funnel_val)은 조회 계층 옆으로 옮겼다 —
 # 추이표·차트도 같은 규칙을 타야 페이지마다 숫자가 갈리지 않는다.
+# 화면 전체가 **이 하나**를 본다 — ①의 카드부터 ⑥의 앱 추이까지. 예전엔 위의
+# 「비교 기준」과 ②·⑤의 「기간 단위」가 따로 놀아 단위 하나 바꾸려고 세 군데를 눌러야 했다.
+FUNNEL_GRAN_LABEL = {"일": "일자별", "주": "주차별", "월": "월별"}
+FUNNEL_GRAN_ORDER = ["일", "주", "월"]
+# 번호는 재정렬될 수 있으니 **이름**으로 가리킨다. 예전엔 `page.startswith("09.")`로
+# 박아 뒀다가 페이지를 옮기면서 '마스터 없이도 열리는' 예외가 조용히 끊겼다.
+PAGE_ORGCAT = "조직·카테고리별 실적"
+
+
+def gran_options(df, metrics):
+    """지표가 **실제로 있는** 기간 단위만. 없는 단위를 올리면 눌렀을 때 빈 화면이 된다.
+
+    앱푸시 수신동의는 원천이 일자 헤더 표라 **늘** 일별로 쌓인다 — `gran=="일"`만 보면
+    정작 볼 지표가 없는데도 일자별이 켜진다. 그래서 지표를 지정해 받는다.
+    """
+    m = df["metric"].isin(metrics) & df["value"].notna()
+    return [g for g in FUNNEL_GRAN_ORDER if (m & (df["gran"] == g)).any()]
+
+
+def gran_ref(df, gran, ref_year, ref_month, wy, wlabel, metrics, daykey, box=None):
+    """고른 단위의 **기준 기간 한 벌**. 못 잡으면 None(화면엔 이유를 남긴다).
+
+    두 화면(「02」·「03」)이 같은 규칙을 봐야 한다 — 따로 짜면 같은 단위인데 기준 기간이
+    갈려서 숫자가 어긋난다. 비교 기준도 단위에서 따라 나온다:
+    일=전년 같은 날 · 주=전년 동주 · 월=전년 동월 MTD.
+
+    사이드바 「기준 기간」엔 연·월·주차뿐이라 **일자만 화면에서 고른다**(`daykey`가 그
+    위젯 키다 — 화면마다 달라야 서로의 선택을 안 덮는다).
+    """
+    if gran == "주":
+        if not wlabel:
+            st.info("주차 데이터가 없어요. 다른 기간 단위를 골라 주세요.")
+            return None
+        return dict(clabel=wlabel, cy=wy, py=wy - 1,
+                    period_lbl=week_disp(wy, wlabel), base_lbl="전년 동주",
+                    base_tag="전년동주", prv_close="final",
+                    x_prv=f"{wy - 1}년", x_cur=f"{wy}년")
+    if gran == "월":
+        return dict(clabel=month_label(ref_month), cy=ref_year, py=ref_year - 1,
+                    period_lbl=f"{ref_year}년 {ref_month}월 누적(MTD)",
+                    base_lbl="전년 동월 MTD", base_tag="전년동월",
+                    # 전년 동월도 동일기간(MTD)으로 잘린 값 우선 — 「01」 요약 표와 같은 기준
+                    prv_close="mtd",
+                    x_prv=f"{ref_year - 1}년 {ref_month}월",
+                    x_cur=f"{ref_year}년 {ref_month}월")
+    days = (df[(df["gran"] == "일") & (df["year"] == ref_year)
+               & df["metric"].isin(metrics) & df["value"].notna()]
+            [["label", "sortkey"]].drop_duplicates()
+            .sort_values("sortkey")["label"].tolist())
+    if not days:
+        st.info(f"{ref_year}년은 일자별 데이터가 없어요. 다른 기간 단위를 골라 주세요.")
+        return None
+    guard_select(daykey, days, default=days[-1])
+    _box = box if box is not None else st
+    clabel = _box.selectbox("기준 일자", days[::-1], key=daykey,
+                            help="사이드바엔 일자 선택이 없어서 여기서 골라요. "
+                                 "가장 최근 날이 기본이에요.")
+    return dict(clabel=clabel, cy=ref_year, py=ref_year - 1,
+                period_lbl=f"{ref_year}년 {clabel}", base_lbl="전년 같은 날",
+                base_tag="전년동일", prv_close="final",
+                x_prv=f"{ref_year - 1}년 {clabel}", x_cur=f"{ref_year}년 {clabel}")
+
+
 # ② 추이에 기본으로 올릴 지표 — 퍼널을 앞에서 뒤로 훑는 순서 그대로다. 객단가는 빼 뒀다
 # (거래액·고객수가 이미 있어 셋을 다 켜면 차트가 여덟 장이 된다). 필요하면 골라서 켠다.
 FUNNEL_TREND_DEFAULT = ["비회원트래픽", "가입율", "가입자수", "당일가입CR",
                         "첫구매 고객수", "첫구매 거래액"]
-# 표에 보일 기간 수 — 주차는 넉 달치, 월은 한 해치
-FUNNEL_TREND_KEEP = {"주": 16, "월": 12}
+# 표에 보일 기간 수 — 일은 한 달치, 주차는 넉 달치, 월은 한 해치
+FUNNEL_TREND_KEEP = {"일": 31, "주": 16, "월": 12}
 # 하단 앱 블록 — 앱설치는 아직 원천이 안 올라와서, 없으면 '–'로 비우고 왜인지 밝힌다
 APP_STEPS = ["가입자수", "앱설치", "앱푸시수신동의"]
 # 원천이 일자 헤더 표라 `gran='일'`로만 쌓이는 지표 — 주·월은 일평균으로 묶어야 한다
@@ -3360,28 +3442,138 @@ def _fn_rate_cell(label, cur, prv, tag):
             f'{sub}</div>')
 
 
+def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
+    """채널별 실적 — 지표를 고르지 않고 **있는 걸 다 본다**.
+
+    예전엔 지표 셀렉트 하나에 월 고정이었다. 지표를 하나씩 갈아 끼우며 보게 되니 채널
+    사이의 이야기가 안 이어졌고, 주·일 단위로는 아예 볼 수 없었다.
+
+    구성은 「02」와 같은 얼굴이다 — **기간 단위 하나**(일/주/월)를 위에 두고,
+    표는 **왼쪽 실적 · 오른쪽 전년비**, 차트는 지표마다 한 장씩(선 = 채널).
+    """
+    st.markdown("## 채널별 실적")
+    mets = [m for m in METRICS7 if (df["metric"] == m).any()]
+    if not mets:
+        st.info("실적 지표가 없어요. 실적 파일을 올려 주세요.")
+        return
+    gr_avail = gran_options(df, mets)
+    if not gr_avail:
+        st.info("실적 데이터가 없어요.")
+        return
+    gsel, dsel = st.columns([1.3, 1.7])
+    with gsel:
+        guard_select("wr_ch_gran", gr_avail,
+                     default="월" if "월" in gr_avail else gr_avail[-1])
+        gran = st.radio("기간 단위", gr_avail, horizontal=True, key="wr_ch_gran",
+                        format_func=lambda g: FUNNEL_GRAN_LABEL[g],
+                        help="표와 차트가 같이 이 단위를 따라가요.")
+    ref = gran_ref(df, gran, ref_year, ref_month, wy, wlabel, mets,
+                   "wr_ch_day", box=dsel)
+    if ref is None:
+        return
+    clabel, cy, py = ref["clabel"], ref["cy"], ref["py"]
+    segs = ["*TOTAL"] + [c for c in CHANNELS if c in ch_sel]
+
+    # ── 표 — 왼쪽 실적 · 오른쪽 전년비 ──
+    st.subheader(f"채널별 실적 — {ref['period_lbl']}")
+    st.caption(f"{ref['base_lbl']} 대비예요. 왼쪽에 실적, 오른쪽에 전년비를 모아 뒀어요 — "
+               "전년비만 가로로 훑으면 어느 채널이 빠지는지 한눈에 보여요. "
+               "비율 지표(가입율·당일가입CR)는 %p 차이예요.")
+    rows = []
+    for seg in segs:
+        row = {"채널": "전체" if seg == "*TOTAL" else seg}
+        for met in mets:
+            cv = report_val(df, gran, met, seg, cy, clabel, "mtd")
+            pv = report_val(df, gran, met, seg, py, clabel, ref["prv_close"])
+            row[met] = fmt_value(met, cv)
+            row[f"{met} 전년비"] = fmt_delta(met, cv, pv) or "–"
+        rows.append(row)
+    tbl = pd.DataFrame(rows).set_index("채널")
+    # 실적을 다 놓고 전년비를 오른쪽에 몬다 (「02」 ②와 같은 규칙)
+    tbl = tbl[[m for m in mets] + [f"{m} 전년비" for m in mets]]
+    wtable(style_delta_cols(tbl), width="stretch",
+           dl_name=f"채널별 실적 ({ref['period_lbl']})")
+
+    # ── 차트 — 지표마다 한 장, 선 = 채널 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader(f"채널별 {FUNNEL_GRAN_LABEL[gran]} 추이 — {cy}년")
+    st.caption("지표를 고르지 않고 다 그려요. 채널은 사이드바 「채널 선택」을 따라가요.")
+    _x = labels_sorted(df, gran, [cy])
+    if not _x:
+        st.info(f"{cy}년 «{FUNNEL_GRAN_LABEL[gran]}» 값이 없어요.")
+        return
+    for i in range(0, len(mets), 3):
+        for _col, met in zip(st.columns(3), mets[i:i + 3]):
+            with _col:
+                unit, div = METRIC_UNIT.get(met, ("", 1))
+                if met in PCT_METRICS:
+                    div, unit = 0.01, "%"
+                fig = go.Figure()
+                for seg in [c for c in CHANNELS if c in ch_sel]:
+                    s = report_series(df, gran, met, seg, cy, "final").reindex(_x).dropna()
+                    if s.empty:
+                        continue
+                    fig.add_trace(go.Scatter(
+                        x=[month_trim(v) for v in s.index], y=(s / div).tolist(),
+                        mode="lines+markers", name=seg,
+                        line=dict(color=clr(CHANNEL_PAL.get(seg, "blue")), width=1.8),
+                        marker=dict(size=4)))
+                ly = base_layout(300, ysuffix=unit if unit == "%" else "",
+                                 title=f"{met} ({unit})")
+                ly["xaxis"]["categoryorder"] = "array"
+                ly["xaxis"]["categoryarray"] = [month_trim(v) for v in _x]
+                # 일별은 라벨이 한 해 365개라 그대로 두면 축이 새까매진다
+                if gran in ("주", "일"):
+                    ly["xaxis"]["tickangle"] = -45
+                    ly["xaxis"]["nticks"] = 20 if gran == "주" else 14
+                fig.update_layout(**ly)
+                st.plotly_chart(fig, width="stretch")
+
+    # ── 채널 × 기간 표 ──
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    st.subheader(f"채널 × 기간 — {cy}년")
+    guard_select("wr_ch_xmet", mets)
+    xmet = st.selectbox("표로 볼 지표", mets, key="wr_ch_xmet",
+                        help="위 차트는 다 그리고, 이 표만 한 지표를 자세히 봐요.")
+    cap = FUNNEL_TREND_KEEP.get(gran, 12)
+    keep_x = _x[-cap:]
+    xrows = []
+    for seg in segs:
+        s = report_series(df, gran, xmet, seg, cy, "final")
+        row = {"채널": "전체" if seg == "*TOTAL" else seg}
+        for lb in keep_x:
+            v = s.get(lb, np.nan)
+            row[month_trim(lb)] = fmt_value(xmet, v) if not pd.isna(v) else "–"
+        xrows.append(row)
+    wtable(pd.DataFrame(xrows).set_index("채널"), width="stretch",
+           dl_name=f"채널×기간 {xmet} ({cy}년)")
+    st.caption(f"최근 {len(keep_x)}개 기간이에요.")
+
+
 def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     """02. 첫구매 퍼널별 상세 실적 — 퍼널 한 줄을 끝까지 따라가며 진단하는 화면."""
     st.markdown("## 첫구매 퍼널별 상세 실적")
-    cmp_mode = st.radio("비교 기준", ["주간 — 전년 동주", "월누적(MTD) — 전년 동월"],
-                        horizontal=True, key="wr_fn_cmp")
-    weekly = cmp_mode.startswith("주간")
-    if weekly and not wlabel:
-        st.info("주차 데이터가 없어요. 월누적(MTD) 비교를 골라 주세요.")
+    # ── 기간 단위 — 이 화면의 유일한 단위 스위치 ──
+    # 퍼널 지표가 **실제로 있는** 단위만 올린다. `gran=="일"`만 보면 앱푸시 수신동의가
+    # 늘 일별로 쌓이는 탓에 퍼널 데이터가 없는데도 일자별이 켜진다.
+    gr_avail = gran_options(df, FUNNEL_STEPS)
+    if not gr_avail:
+        st.info("퍼널 지표 데이터가 없어요. 실적 파일을 올려 주세요.")
         return
-    if weekly:
-        gran, clabel, cy = "주", wlabel, wy
-        period_lbl, base_lbl, base_tag = week_disp(wy, wlabel), "전년 동주", "전년동주"
-        x_prv, x_cur = f"{wy - 1}년", f"{wy}년"
-        prv_close = "final"
-    else:
-        gran, clabel, cy = "월", month_label(ref_month), ref_year
-        period_lbl = f"{ref_year}년 {ref_month}월 누적(MTD)"
-        base_lbl, base_tag = "전년 동월 MTD", "전년동월"
-        x_prv, x_cur = f"{ref_year - 1}년 {ref_month}월", f"{ref_year}년 {ref_month}월"
-        # 전년 동월도 동일기간(MTD)으로 잘린 값 우선 — 「01」 실적 요약 표와 같은 기준
-        prv_close = "mtd"
-    py = cy - 1
+    gsel, dsel = st.columns([1.3, 1.7])
+    with gsel:
+        guard_select("wr_fn_gran", gr_avail,
+                     default="주" if "주" in gr_avail else gr_avail[-1])
+        gran = st.radio("기간 단위", gr_avail, horizontal=True, key="wr_fn_gran",
+                        format_func=lambda g: FUNNEL_GRAN_LABEL[g],
+                        help="이 화면 전체가 이 단위를 따라가요 — 카드·추이·채널·조직·앱까지.")
+    ref = gran_ref(df, gran, ref_year, ref_month, wy, wlabel,
+                   FUNNEL_STEPS, "wr_fn_day", box=dsel)
+    if ref is None:
+        return
+    clabel, cy, py = ref["clabel"], ref["cy"], ref["py"]
+    period_lbl, base_lbl, base_tag = ref["period_lbl"], ref["base_lbl"], ref["base_tag"]
+    prv_close, x_prv, x_cur = ref["prv_close"], ref["x_prv"], ref["x_cur"]
 
     def gcur(met, seg="*TOTAL"):
         return pick(df, gran, met, seg, cy, clabel, "mtd")
@@ -3614,6 +3806,27 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
                        period_lbl, base_lbl)
 
+    # ── 액션·이슈사항 ───────────────────────────────────
+    # 「03 월별 추이」·「04 주차별 추이」를 접으면서 그 메모를 여기로 옮겨 왔다.
+    # **키는 그대로 둔다** — 이미 써 둔 메모가 열쇠를 잃으면 파일엔 남는데 화면에서
+    # 영영 안 보인다. 일자별엔 메모를 두지 않는다(하루짜리 액션은 쌓을 자리가 아니다).
+    if gran in ("주", "월"):
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        _aim = st.session_state.get("wr_ai_model", DEFAULT_AI_MODEL)
+        if gran == "주":
+            report_text_block(
+                f"wr_week_memo_{cy}_{clabel}", f"{cy}년 {month_trim(clabel)} 액션·이슈사항",
+                ai_fn=lambda memo: ai_generate_insight(
+                    df, ref_year, ref_month, clabel, _aim,
+                    focus=f"{clabel} 주차 액션·이슈 및 인사이트", memo=memo))
+        else:
+            report_text_block(
+                f"wr_month_memo_{ref_year}_{ref_month}",
+                f"{ref_year}년 {ref_month}월 액션·이슈사항",
+                ai_fn=lambda memo: ai_generate_insight(
+                    df, ref_year, ref_month, None, _aim,
+                    focus=f"{ref_year}년 {ref_month}월 액션·이슈 및 인사이트", memo=memo))
+
 
 def _render_funnel_trend(df, gran, cy, py):
     """② 퍼널 지표 추이 — ①의 한 장면이 흐름 위 어디쯤인지.
@@ -3630,31 +3843,16 @@ def _render_funnel_trend(df, gran, cy, py):
     반토막 난다(04에서 실제로 8주로 줄었다). 기간을 N개 고른 뒤 짝이 되는 증감 칸을
     딸려 보낸다.
 
-    기간 단위는 여기서 따로 고른다(위 비교 기준과 별개) — ④의 연중 추이와 같은 이유로,
-    주차로 흐름을 보다 월로 묶어 추세만 보는 왕복이 잦다.
+    **기간 단위는 화면 위 「기간 단위」 하나를 따라간다.** 예전엔 여기에 자체 라디오가
+    있어서, 단위를 바꾸려면 위와 여기를 따로 눌러야 했다(⑤까지 세 군데였다).
     """
-    _grans = [g for g in ("주", "월") if (df["gran"] == g).any()]
-    if not _grans:
-        st.info("추이를 그릴 주·월 데이터가 없어요.")
-        return
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        _gk = "wr_fn_ftrend_gran"
-        guard_select(_gk, _grans, default=gran if gran in _grans else _grans[-1])
-        tg = st.radio("기간 단위", _grans, key=_gk, horizontal=True,
-                      format_func=lambda g: "주차별" if g == "주" else "월별")
-    avail = [m for m in FUNNEL_STEPS
-             if ((df["gran"] == tg) & (df["metric"] == m)).any()]
-    if not avail:
-        st.info(f"«{'주차' if tg == '주' else '월'}» 단위에 퍼널 지표가 없어요.")
-        return
-    with c2:
-        # 라벨을 '지표'로 두면 ③·④의 지표 셀렉트와 섞인다 — 위젯 종류도 다르게 둔다.
-        _dft = [m for m in FUNNEL_TREND_DEFAULT if m in avail] or avail[:4]
-        sel = st.multiselect("추이에 올릴 지표", avail, default=_dft,
-                             key="wr_fn_ftrend_mets")
+    tg = gran
+    # **지표는 안 고른다 — 있는 걸 다 그린다.** 고르게 해 두면 매번 같은 걸 다시 켜야 하고,
+    # 퍼널은 앞단(트래픽·가입)과 뒷단(고객수·거래액)을 같이 봐야 어디서 빠졌는지가 보인다.
+    sel = [m for m in FUNNEL_STEPS
+           if ((df["gran"] == tg) & (df["metric"] == m)).any()]
     if not sel:
-        st.caption("지표를 하나도 안 골랐어요. 위에서 골라 주세요.")
+        st.info(f"«{FUNNEL_GRAN_LABEL.get(tg, tg)}» 단위에 퍼널 지표가 없어요.")
         return
 
     # ── 차트 — 03·04와 같이 한 줄에 세 장 ──
@@ -3665,20 +3863,22 @@ def _render_funnel_trend(df, gran, cy, py):
                 st.plotly_chart(yoy_chart(df, tg, _met, _yrs, h=280), width="stretch")
 
     # ── 표 — 기간마다 오른쪽에 전년 대비 증감 ──
-    tbl = trend_table(df, tg, sel, [cy], delta_year=cy)
+    # 값을 왼쪽에 모으고 **증감은 오른쪽에 몰아**둔다 — 증감만 가로로 훑어야
+    # '어느 기간부터 꺾였나'가 보인다. 03·04는 기간마다 끼우는 배치 그대로다.
+    tbl = trend_table(df, tg, sel, [cy], delta_year=cy, delta_side="right")
     if tbl.empty:
-        st.caption(f"{cy}년 «{'주차' if tg == '주' else '월'}» 값이 아직 없어요.")
+        st.caption(f"{cy}년 «{FUNNEL_GRAN_LABEL.get(tg, tg)}» 값이 아직 없어요.")
         return
-    cap = FUNNEL_TREND_KEEP[tg]
-    _all = set(tbl.columns)
-    keep = []
-    for _c in [c for c in tbl.columns if not _is_delta_col(c)][-cap:]:
-        keep.append(_c)
-        _d = (_c[0], f"{_c[1]} 증감")
-        if _d in _all:
-            keep.append(_d)
-    _unit = "주차" if tg == "주" else "월"
-    st.caption(f"{cy}년 {_unit}마다 오른쪽에 **전년 같은 {_unit} 대비 증감**을 붙였어요. "
+    cap = FUNNEL_TREND_KEEP.get(tg, 12)
+    # **자를 땐 기간을 센다** — 증감 칸까지 섞어 `[-N:]`으로 집으면 보이는 기간이 반토막 난다.
+    # 자리는 `trend_table`이 이미 정했으니 **원래 순서 그대로 골라내기만** 한다.
+    # 여기서 값·증감을 새로 엮으면 배치를 정하는 데가 둘이 되고, `delta_side`를 바꿔도
+    # 화면이 안 따라온다(그렇게 짜 봤더니 버그를 심어도 검사가 못 잡았다).
+    _vals = [c for c in tbl.columns if not _is_delta_col(c)][-cap:]
+    _want = set(_vals) | {(c[0], f"{c[1]} 증감") for c in _vals}
+    keep = [c for c in tbl.columns if c in _want]
+    _unit = {"일": "날", "주": "주차", "월": "월"}.get(tg, tg)
+    st.caption(f"왼쪽은 {cy}년 실적, 오른쪽은 **전년 같은 {_unit} 대비 증감**을 모아 뒀어요. "
                f"비율 지표(가입율·당일가입 첫구매율)는 %p 차이예요. 전년에 그 {_unit}가 "
                f"없으면 '–'로 둬요. 값은 전체(채널 합산) 기준이에요.")
     wtable(style_trend(tbl[keep], sel), width="stretch",
@@ -4057,26 +4257,23 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
     연도는 체크로 넣고 뺀다. 항목이 많으면 두 해가 겹쳐 구분이 안 되므로, 전년을 꺼서
     올해 흐름만 보는 길을 열어 둔다.
 
-    기간 단위는 여기서 따로 고른다(위 비교 기준과 별개) — 주차로 흐름을 보다가
-    월로 묶어 추세만 보는 왕복이 잦다. 있는 단위만 선택지에 올린다.
+    **기간 단위는 화면 위 「기간 단위」 하나를 따라간다** — 예전엔 여기에도 자체 라디오가
+    있어서 단위 하나 바꾸는 데 세 군데를 눌러야 했다. 그 단위가 이 원천에 없으면
+    왜 못 그리는지 말하고 물러난다(커버리지가 마스터와 다를 수 있다).
     """
-    _grans = [g for g in ("주", "월") if (odf["gran"] == g).any()]
-    if not _grans:
+    tg = gran
+    if not (odf["gran"] == tg).any():
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.caption(f"조직×카테고리 원천엔 «{FUNNEL_GRAN_LABEL.get(tg, tg)}» 단위가 없어서 "
+                   "연중 추이는 못 그려요.")
         return
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.markdown(f"###### 연중 추이 — {esc(node_lbl)} · {esc(met)}")
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        _gk = "wr_fn_trend_gran"
-        guard_select(_gk, _grans, default=gran if gran in _grans else _grans[-1])
-        tg = st.radio("기간 단위", _grans, key=_gk, horizontal=True,
-                      format_func=lambda g: "주차별" if g == "주" else "월별")
-    with c2:
-        st.markdown("**차트에 올릴 연도**")
-        y1, y2 = st.columns(2)
-        show_cy = y1.checkbox(f"{cy}년", value=True, key="wr_fn_trend_cy")
-        show_py = y2.checkbox(f"{py}년", value=True, key="wr_fn_trend_py",
-                              help="항목이 많아 겹쳐 보이면 꺼서 올해만 봐요.")
+    st.markdown("**차트에 올릴 연도**")
+    y1, y2, _y3 = st.columns([1, 1, 4])
+    show_cy = y1.checkbox(f"{cy}년", value=True, key="wr_fn_trend_cy")
+    show_py = y2.checkbox(f"{py}년", value=True, key="wr_fn_trend_py",
+                          help="항목이 많아 겹쳐 보이면 꺼서 올해만 봐요.")
     yrs = [y for y, on in ((cy, show_cy), (py, show_py)) if on]
     if not yrs:
         st.caption("차트에 올릴 연도를 하나도 안 골랐어요. 위에서 연도를 켜 주세요.")
@@ -4264,7 +4461,7 @@ def _funnel_app_one(df, gran, met, year, label, close):
 
 # 최근 몇 개 기간을 나란히 — 카드 한 장으로는 '이번이 낮은 건지 원래 그런 건지'를 못 본다.
 # 단위는 화면 위 비교 기준(주간/월누적)을 그대로 따라간다.
-APP_TREND_N = {"주": 8, "월": 6}
+APP_TREND_N = {"일": 14, "주": 8, "월": 6}
 
 
 def _funnel_app_trend(df, gran, cy, clabel):
@@ -4977,10 +5174,13 @@ def main():
                  "MICRO 대시보드의 조직×카테고리(구분06×구분07) export, "
                  "브랜드·상품 결제 원장을 자동으로 인식해요.")
         st.markdown("---")
-        PAGES = ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적", "03. 월별 추이",
-                 "04. 주차별 추이", "05. 채널별 실적", "06. 통합 데이터·다운로드",
-                 "07. 앱푸시 동의 현황", "08. 첫구매 고객 세그먼트 성과",
-                 "09. 조직·카테고리별 실적"]
+        # 「월별 추이」·「주차별 추이」는 접었다 — 「02」가 기간 단위(일/주/월)를 갖게
+        # 되면서 같은 걸 두 벌 보여 주게 됐다. 두 페이지의 액션·이슈 메모는 키를 그대로
+        # 둔 채 「02」 하단으로 옮겨서, 써 둔 글이 사라지지 않는다.
+        # 「통합 데이터·다운로드」는 보는 화면이 아니라 받아 가는 화면이라 맨 뒤로.
+        PAGES = ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적", "03. 채널별 실적",
+                 "04. 앱푸시 동의 현황", "05. 첫구매 고객 세그먼트 성과",
+                 "06. 조직·카테고리별 실적", "07. 통합 데이터·다운로드"]
         page = st.radio("페이지", PAGES, key="wr_page")
 
     stored = load_store()
@@ -5065,9 +5265,11 @@ def main():
                     st.rerun()
 
     if df.empty:
-        # 사이드바 기준 기간·차트 연도가 전부 마스터에서 나오므로 01~08은 열 수 없다.
-        # 09는 자체 기간 선택을 쓰니 조직×카테고리만 올린 상태에서도 보여 준다.
-        if page.startswith("09.") and (not odf.empty or not ddf.empty):
+        # 사이드바 기준 기간·차트 연도가 전부 마스터에서 나오므로 나머지 화면은 열 수 없다.
+        # 조직·카테고리는 **자체 기간 선택**을 쓰니 그것만 올린 상태에서도 보여 준다.
+        # 번호가 아니라 **이름**으로 가른다 — 예전엔 `page.startswith("09.")`였는데
+        # 페이지를 재정렬하면서 조용히 안 열리게 됐다(증상이 '빈 화면'이라 안 드러난다).
+        if PAGE_ORGCAT in page and (not odf.empty or not ddf.empty):
             render_orgcat_page(odf, ddf)
             st.stop()
         _o8 = ", ".join(x for x in (f"조직×카테고리 {len(odf):,}행" if not odf.empty else "",
@@ -5075,7 +5277,7 @@ def main():
                         if x)
         st.warning("첫구매(전체관점·지표별) 데이터가 없어요. 원천 파일을 올려 주세요."
                    + (f" ({_o8}은 저장돼 있어요 — "
-                      "「09. 조직·카테고리별 실적」에서 볼 수 있어요)" if _o8 else ""))
+                      f"「{esc(PAGE_ORGCAT)}」에서 볼 수 있어요)" if _o8 else ""))
         st.stop()
 
     # ── 인식 결과 + 필터
@@ -5318,160 +5520,17 @@ def main():
         _fwy, _fwlabel = week_ref(df, ref_year, ref_week)
         render_funnel_page(df, odf, ref_year, ref_month, _fwy, _fwlabel)
 
-    # ════════════ 03. 월별 추이 ════════════
-    elif page == "03. 월별 추이":
-        st.markdown("## 월별 추이")
-        st.subheader("월별 추이 차트 — 전년 비교")
-        for _mrow in (TREND_CHARTS[:3], TREND_CHARTS[3:]):
-            for _col, _met in zip(st.columns(3), _mrow):
-                with _col:
-                    st.plotly_chart(yoy_chart(df, "월", _met, chart_years, h=280),
-                                    width="stretch")
+    # ════════════ 03. 채널별 실적 ════════════
+    elif page == "03. 채널별 실적":
+        _cwy, _cwlabel = week_ref(df, ref_year, ref_week)
+        render_channel_page(df, ref_year, ref_month, _cwy, _cwlabel, ch_sel)
 
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader("월별 추이표 (일평균)")
-        _dy = max(chart_years) if chart_years else None
-        tbl = trend_table(df, "월", METRICS7, chart_years, delta_year=_dy)
-        if _dy:
-            st.caption(f"**{_dy}년**은 달마다 오른쪽에 **전년 같은 달 대비 증감**을 "
-                       f"붙였어요. 비율 지표(가입율·당일가입CR)는 %p 차이예요. "
-                       f"전년 값이 없는 달은 '–'로 둬요.")
-        wtable(style_trend(tbl, METRICS7), width="stretch", dl_name="월별 추이표 (일평균)")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        ai_model = st.session_state.get("wr_ai_model", DEFAULT_AI_MODEL)
-        report_text_block(
-            f"wr_month_memo_{ref_year}_{ref_month}",
-            f"{ref_year}년 {ref_month}월 액션·이슈사항",
-            ai_fn=lambda memo: ai_generate_insight(df, ref_year, ref_month, None, ai_model,
-                                              focus=f"{ref_year}년 {ref_month}월 액션·이슈 및 인사이트",
-                                              memo=memo))
-
-    # ════════════ 04. 주차별 추이 ════════════
-    elif page == "04. 주차별 추이":
-        st.markdown("## 주차별 추이")
-        st.subheader("주차별 추이 차트 — 전년 비교")
-        # 월별 추이(03)와 같은 여섯 장 — 화면마다 보는 지표가 다르면 두 페이지를
-        # 오갈 때 매번 다시 찾아야 한다
-        for _wrow in (TREND_CHARTS[:3], TREND_CHARTS[3:]):
-            for _col, _met in zip(st.columns(3), _wrow):
-                with _col:
-                    st.plotly_chart(yoy_chart(df, "주", _met, chart_years, h=280),
-                                    width="stretch")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader(f"주차별 추이표 — {ref_year}년")
-        tbl = trend_table(df, "주", METRICS7, [ref_year], delta_year=ref_year)
-        if not tbl.empty:
-            # **자를 땐 주차를 센다.** 증감 칸까지 섞어 16칸을 집으면 보이는 주가
-            # 8주로 반토막 난다. 주차를 16개 고른 뒤 짝이 되는 증감 칸을 딸려 보낸다.
-            _all = set(tbl.columns)
-            recent = []
-            for _c in [c for c in tbl.columns if not _is_delta_col(c)][-16:]:
-                recent.append(_c)
-                _d = (_c[0], f"{_c[1]} 증감")
-                if _d in _all:
-                    recent.append(_d)
-            st.caption(f"주차마다 오른쪽에 **전년 같은 주차 대비 증감**을 붙였어요. "
-                       f"비율 지표(가입율·당일가입CR)는 %p 차이예요. 전년에 그 주차가 "
-                       f"없으면 '–'로 둬요.")
-            wtable(style_trend(tbl[recent], METRICS7), width="stretch",
-                   dl_name=f"주차별 추이표 ({ref_year}년)")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader("전주비(WoW)·전년비(YoY) 증감")
-        wy, wlabel = week_ref(df, ref_year, ref_week)
-        if wlabel:
-            st.caption(f"기준 주차: {week_disp(wy, wlabel)}")
-            wtable(style_delta_cols(wow_summary_table(df, wy, wlabel, METRICS7)),
-                         width="stretch", dl_name="전주비(WoW)·전년비(YoY) 증감")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        ai_model = st.session_state.get("wr_ai_model", DEFAULT_AI_MODEL)
-        report_text_block(
-            f"wr_week_memo_{wy}_{wlabel}",
-            f"{wy}년 {wlabel} 액션·이슈사항" if wlabel else "주차별 액션·이슈사항",
-            ai_fn=lambda memo: ai_generate_insight(df, ref_year, ref_month, wlabel, ai_model,
-                                              focus=f"{wlabel} 주차 액션·이슈 및 인사이트",
-                                              memo=memo))
-
-    # ════════════ 05. 채널별 실적 ════════════
-    elif page == "05. 채널별 실적":
-        st.markdown("## 채널별 실적")
-        avail = [m for m in METRICS7 if (df["metric"] == m).any()]
-        met = st.selectbox("지표 선택", avail, key="wr_chmet")
-
-        st.subheader(f"{met} — {ref_year}년 {ref_month}월 채널별 전년비")
-        rows = []
-        for seg in ["*TOTAL"] + [c for c in CHANNELS if c in ch_sel]:
-            pv = pick(df, "월", met, seg, ref_year - 1, month_label(ref_month), "mtd")
-            cv = pick(df, "월", met, seg, ref_year, month_label(ref_month), "mtd")
-            rows.append({"채널": seg,
-                         f"{ref_year-1}년 {ref_month}월": fmt_value(met, pv),
-                         f"{ref_year}년 {ref_month}월": fmt_value(met, cv),
-                         "전년비": fmt_delta(met, cv, pv) or "–"})
-        wtable(style_delta_cols(pd.DataFrame(rows).set_index("채널")),
-                     width="stretch", dl_name="채널별 실적")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader(f"{met} — 채널별 월 추이 ({ref_year}년)")
-        unit, div = METRIC_UNIT.get(met, ("", 1))
-        if met in PCT_METRICS: div, unit = 0.01, "%"
-        fig = go.Figure()
-        x = [month_label(i) for i in range(1, 13)]
-        for seg in [c for c in CHANNELS if c in ch_sel]:
-            s = series_by_label(df, "월", met, seg, ref_year).reindex(x).dropna()
-            if s.empty: continue
-            fig.add_trace(go.Scatter(
-                x=s.index.tolist(), y=(s / div).tolist(), mode="lines+markers", name=seg,
-                line=dict(color=clr(CHANNEL_PAL.get(seg, "blue")), width=1.8),
-                marker=dict(size=4)))
-        ly = base_layout(340, ysuffix=unit if unit == "%" else "",
-                         title=f"{met} 채널별 ({unit})")
-        fig.update_layout(**ly)
-        st.plotly_chart(fig, width="stretch")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader(f"{met} — 채널 × 월 표 ({ref_year}년)")
-        rows = []
-        for seg in ["*TOTAL"] + [c for c in CHANNELS if c in ch_sel]:
-            s = series_by_label(df, "월", met, seg, ref_year)
-            row = {"채널": seg}
-            for lb in [month_label(i) for i in range(1, 13)]:
-                if lb in s.index and not np.isnan(s[lb]):
-                    row[lb] = fmt_value(met, s[lb])
-            rows.append(row)
-        wtable(pd.DataFrame(rows).set_index("채널"), width="stretch")
-
-    # ════════════ 06. 통합 데이터·다운로드 ════════════
-    elif page == "06. 통합 데이터·다운로드":
-        st.markdown("## 통합 데이터 · 다운로드")
-        st.caption("올린 파일을 모두 합친 통합 long 데이터예요.")
-        wtable(df.sort_values(["gran", "metric", "segment", "sortkey"]).head(2000),
-                     width="stretch", height=420, dl_name="통합 데이터 · 다운로드")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.subheader("통합 워크북 다운로드")
-        st.caption("`첫구매_요약`(요약표·보고란·YoY 차트·채널표) + `월`·`주`(통합 데이터) 3개 시트")
-        if st.button("📥 엑셀 워크북 생성", key="wr_build"):
-            with st.spinner("워크북 생성 중…"):
-                xls = build_workbook(df, st.session_state.wr_texts,
-                                     ref_year, ref_month, chart_years)
-            st.download_button(
-                "다운로드 — 첫구매_주간보고.xlsx", xls,
-                file_name=f"첫구매_주간보고_{ref_year}{ref_month:02d}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-        csv = df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("통합 long 데이터 CSV", csv,
-                           f"통합데이터_{today_kst():%Y%m%d}.csv", "text/csv")
-
-    # ════════════ 07. 앱푸시 동의 현황 ════════════
-    elif page == "07. 앱푸시 동의 현황":
+    # ════════════ 04. 앱푸시 동의 현황 ════════════
+    elif page == "04. 앱푸시 동의 현황":
         render_push_page(df, ref_year, chart_years)
 
-    # ════════════ 08. 첫구매 고객 세그먼트 성과 ════════════
-    elif page == "08. 첫구매 고객 세그먼트 성과":
+    # ════════════ 05. 첫구매 고객 세그먼트 성과 ════════════
+    elif page == "05. 첫구매 고객 세그먼트 성과":
         st.markdown("## 첫구매 고객 세그먼트 성과")
         
         # 세그먼트 선택 필터 추가
@@ -5608,9 +5667,75 @@ def main():
             * **DAU (Daily Active Users)**: 하루 동안 서비스에 한 번 이상 방문해서 활동한 사용자 수예요.
             """)
 
-    # ════════════ 09. 조직·카테고리별 실적 ════════════
-    elif page == "09. 조직·카테고리별 실적":
+    # ════════════ 06. 조직·카테고리별 실적 ════════════
+    elif page == "06. 조직·카테고리별 실적":
         render_orgcat_page(odf, ddf)
+
+    # ════════════ 07. 통합 데이터·다운로드 ════════════
+    elif page == "07. 통합 데이터·다운로드":
+        st.markdown("## 통합 데이터 · 다운로드")
+        # 원천이 셋으로 늘었다(마스터 · 조직×카테고리 · 결제 원장). 예전엔 마스터만
+        # 보여 줘서 '원장을 올렸는데 어디 갔지'를 여기서 확인할 수가 없었다.
+        st.caption("올린 파일을 모두 합친 누적 데이터예요. 원천마다 따로 쌓여요.")
+        _stores = [("마스터 (지표 × 채널)", df, ["gran", "metric", "segment", "sortkey"]),
+                   ("조직×카테고리 (MICRO)", odf, ["gran", "metric"] + ORGCAT_LV),
+                   ("브랜드·상품 결제 원장", ddf, None)]
+        _cards = []
+        for _nm, _d, _ in _stores:
+            if _d is None or _d.empty:
+                _cards.append(f'<div class="kpi-card" style="flex:1"><div class="kpi-label">'
+                              f'{esc(_nm)}</div><div class="kpi-value">–</div>'
+                              f'<div class="kpi-delta na">아직 없어요</div></div>')
+                continue
+            _yr = (f"{int(_d['year'].min())}–{int(_d['year'].max())}년"
+                   if "year" in _d.columns and _d["year"].notna().any() else "")
+            _cards.append(f'<div class="kpi-card" style="flex:1"><div class="kpi-label">'
+                          f'{esc(_nm)}</div><div class="kpi-value">{len(_d):,}행</div>'
+                          f'<div class="kpi-delta">{esc(_yr)}</div></div>')
+        st.markdown('<div style="display:flex;gap:10px;align-items:stretch">'
+                    + "".join(_cards) + '</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader("미리보기")
+        _pv = [n for n, d, _ in _stores if d is not None and not d.empty]
+        if not _pv:
+            st.info("아직 쌓인 데이터가 없어요. 사이드바에서 원천 파일을 올려 주세요.")
+        else:
+            guard_select("wr_dl_src", _pv)
+            _pick = st.selectbox("원천", _pv, key="wr_dl_src")
+            _d, _sortby = next((d, s) for n, d, s in _stores if n == _pick)
+            _show = _d.sort_values([c for c in (_sortby or []) if c in _d.columns]) \
+                if _sortby else _d
+            st.caption(f"{len(_d):,}행 중 앞 2,000행이에요. 전체는 아래에서 받으세요.")
+            wtable(_show.head(2000), width="stretch", height=420,
+                   dl_name=f"{_pick} 미리보기")
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.subheader("내려받기")
+        # **누른 뒤에 만든다.** `st.download_button`은 data를 미리 받는 API라 그냥 넘기면
+        # 받지도 않는 리런마다 전체를 CSV로 찍는다(원장은 120만 행이라 그것만 몇 초다).
+        d1, d2 = st.columns(2)
+        with d1:
+            _sig = (len(df), len(odf) if odf is not None else 0,
+                    len(ddf) if ddf is not None else 0)
+            _go = lazy_download("wr_dl_master", "⬇ 마스터 long 데이터 (CSV)",
+                                f"통합데이터_{today_kst():%Y%m%d}.csv", "text/csv",
+                                sig=_sig, help="파일은 누른 뒤에 만들어요.")
+            if _go:
+                _go(lambda: df.to_csv(index=False).encode("utf-8-sig"))
+        with d2:
+            _gw = lazy_download("wr_dl_wb", "⬇ 엑셀 워크북 (첫구매_주간보고)",
+                                f"첫구매_주간보고_{ref_year}{ref_month:02d}.xlsx",
+                                "application/vnd.openxmlformats-officedocument."
+                                "spreadsheetml.sheet",
+                                sig=(_sig, ref_year, ref_month, tuple(chart_years)),
+                                help="`첫구매_요약`(요약표·보고란·YoY 차트·채널표) + "
+                                     "`월`·`주` 시트예요.")
+            if _gw:
+                _gw(lambda: build_workbook(df, st.session_state.wr_texts,
+                                           ref_year, ref_month, chart_years))
+        st.caption("원천별 개별 백업과 통합 ZIP은 **사이드바 「백업」**에 있어요 — "
+                   "재배포로 초기화돼도 그 ZIP으로 그대로 되살릴 수 있어요.")
 
 if st.runtime.exists():
     main()
