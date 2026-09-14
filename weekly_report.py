@@ -3380,6 +3380,9 @@ FUNNEL_ADDITIVE = ["비회원트래픽", "가입자수", "첫구매 고객수", 
 # 추이표·차트도 같은 규칙을 타야 페이지마다 숫자가 갈리지 않는다.
 # 화면 전체가 **이 하나**를 본다 — ①의 카드부터 ⑥의 앱 추이까지. 예전엔 위의
 # 「비교 기준」과 ②·⑤의 「기간 단위」가 따로 놀아 단위 하나 바꾸려고 세 군데를 눌러야 했다.
+# 「03」 차트에 기본으로 올릴 채널 — 여덟 줄을 다 켜면 엉켜서 안 읽힌다. 평소 맞대 보는
+# 넷만 켜 두고 나머지는 필요할 때 켠다(데이터에 없는 건 자동으로 빠진다).
+CHART_CH_DEFAULT = ["직접", "광고", "EP", "제휴"]
 # 일자별의 기본 조회 기간 — 하루는 퍼널이 비는 날이 흔하고, 3주면 주차별과 겹쳐 읽힌다.
 DAY_RANGE_DEFAULT = 21
 FUNNEL_GRAN_LABEL = {"일": "일자별", "주": "주차별", "월": "월별"}
@@ -3599,7 +3602,10 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
     with _cc:
         guard_multi("wr_ch_chart_ch", _chan_opts)
         if "wr_ch_chart_ch" not in st.session_state:
-            st.session_state["wr_ch_chart_ch"] = _chan_opts
+            # 전 채널을 다 켜면 선이 여덟 줄이라 엉킨다. 평소 맞대 보는 넷을 기본으로
+            # 두고 나머지는 켜서 본다(데이터에 없는 건 자동으로 빠진다).
+            _pre = [c for c in CHART_CH_DEFAULT if c in _chan_opts]
+            st.session_state["wr_ch_chart_ch"] = _pre or _chan_opts
         chart_ch = st.multiselect("차트에 올릴 채널", _chan_opts, key="wr_ch_chart_ch",
                                   help="표는 그대로 두고 차트만 좁혀 봐요. "
                                        "채널 색은 어느 걸 골라도 그대로예요.")
@@ -3673,21 +3679,29 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
     guard_select("wr_ch_xmet", mets)
     xmet = st.selectbox("표로 볼 지표", mets, key="wr_ch_xmet",
                         help="위 차트는 다 그리고, 이 표만 한 지표를 자세히 봐요.")
-    cap = FUNNEL_TREND_KEEP.get(gran, 12)
     # 차트에서 좁힌 채널은 **표에 안 옮긴다** — 표는 다 놓고 보면서 차트만 줄이는 게
     # 이 화면의 쓰임새다. 그래서 차트가 값 없는 칸을 뺀 `_x`가 아니라 `_x_all`을 쓴다.
-    keep_x = _x_all[-cap:]
-    xrows = []
+    # **자르지 않는다 — 올해 전체다.** 최근 N개만 보여 주면 '어느 기간부터 꺾였나'를
+    # 보려고 매번 엑셀을 받아야 한다(②·⑤와 같은 규칙).
+    keep_x = _x_all
+    xrows, xdlt = {}, {}
     for seg in segs:
-        s = report_series(df, gran, xmet, seg, cy, "final")
-        row = {"채널": "전체" if seg == "*TOTAL" else seg}
+        nm = "전체" if seg == "*TOTAL" else seg
+        cs = report_series(df, gran, xmet, seg, cy, "final")
+        ps = report_series(df, gran, xmet, seg, py, "final")
+        xrows[nm] = {}
+        xdlt[nm] = {}
         for lb in keep_x:
-            v = s.get(lb, np.nan)
-            row[month_trim(lb)] = fmt_value(xmet, v) if not pd.isna(v) else "–"
-        xrows.append(row)
-    wtable(pd.DataFrame(xrows).set_index("채널"), width="stretch",
+            v, pv = cs.get(lb, np.nan), ps.get(lb, np.nan)
+            xrows[nm][month_trim(lb)] = fmt_value(xmet, v) if not pd.isna(v) else "–"
+            xdlt[nm][f"{month_trim(lb)} 전년비"] = fmt_delta(xmet, v, pv) or "–"
+    # 실적을 다 놓고 전년비를 오른쪽에 몬다 — 위 표·②·⑤와 같은 얼굴이다
+    xtbl = pd.concat([pd.DataFrame(xrows).T, pd.DataFrame(xdlt).T], axis=1)
+    xtbl.index.name = "채널"
+    wtable(style_delta_cols(xtbl), width="stretch",
            dl_name=f"채널×기간 {xmet} ({cy}년)")
-    st.caption(f"최근 {len(keep_x)}개 기간이에요.")
+    st.caption(f"왼쪽은 {cy}년 실적, 오른쪽은 **{py}년 같은 기간 대비 전년비**예요. "
+               f"{cy}년 **{len(keep_x)}개 기간 전체**를 담았어요 — 옆으로 밀어서 보세요.")
 
 
 def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
@@ -4015,26 +4029,16 @@ def _render_funnel_trend(df, gran, cy, py):
     if tbl.empty:
         st.caption(f"{cy}년 «{FUNNEL_GRAN_LABEL.get(tg, tg)}» 값이 아직 없어요.")
         return
-    cap = FUNNEL_TREND_KEEP.get(tg, 12)
-    # **자를 땐 기간을 센다** — 증감 칸까지 섞어 `[-N:]`으로 집으면 보이는 기간이 반토막 난다.
-    # 자리는 `trend_table`이 이미 정했으니 **원래 순서 그대로 골라내기만** 한다.
-    # 여기서 값·증감을 새로 엮으면 배치를 정하는 데가 둘이 되고, `delta_side`를 바꿔도
-    # 화면이 안 따라온다(그렇게 짜 봤더니 버그를 심어도 검사가 못 잡았다).
-    _vals = [c for c in tbl.columns if not _is_delta_col(c)][-cap:]
-    _want = set(_vals) | {(c[0], f"{c[1]} 증감") for c in _vals}
-    keep = [c for c in tbl.columns if c in _want]
+    # **자르지 않는다 — 올해 전체를 그대로 놓는다.** 최근 N개만 보여 주면 '어느 기간부터
+    # 꺾였나'를 보려고 매번 엑셀을 받아야 한다. 표는 가로로 스크롤되니 폭은 문제가 아니다.
+    # (자를 땐 기간을 세야 한다는 옛 규칙은 자르는 표에만 남는다 — 03의 「채널 × 기간」.)
     _unit = {"일": "날", "주": "주차", "월": "월"}.get(tg, tg)
-    # **엑셀은 안 자른다 — 올해 전체를 담는다.** 화면을 자르는 건 눈이 감당 못 해서지
-    # 그 뒤가 필요 없어서가 아니다. 받아서 쓰는 쪽은 연중을 통째로 놓고 보므로, 화면은
-    # 최근 {cap}개 · 파일은 `tbl` 전체로 갈라 준다(`wtable(dl_data=)`).
-    _cut = len(tbl.columns) > len(keep)
+    _n = len([c for c in tbl.columns if not _is_delta_col(c)])
     st.caption(f"왼쪽은 {cy}년 실적, 오른쪽은 **전년 같은 {_unit} 대비 증감**을 모아 뒀어요. "
                f"비율 지표(가입율·당일가입 첫구매율)는 %p 차이예요. 전년에 그 {_unit}가 "
-               f"없으면 '–'로 둬요. 값은 전체(채널 합산) 기준이에요."
-               + (f" 화면은 최근 {cap}개 {_unit}만 보여 주고, **엑셀에는 {cy}년 전체**가 "
-                  "담겨요." if _cut else ""))
-    wtable(style_trend(tbl[keep], sel), width="stretch",
-           dl_data=style_trend(tbl, sel),
+               f"없으면 '–'로 둬요. 값은 전체(채널 합산) 기준이에요. "
+               f"{cy}년 **{_n}개 {_unit} 전체**를 담았어요 — 옆으로 밀어서 보세요.")
+    wtable(style_trend(tbl, sel), width="stretch",
            dl_name=f"퍼널 지표 {_unit}별 추이 ({cy}년)")
 
 
@@ -4545,6 +4549,28 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
                  "빈 눈금이 끼면 선이 괜히 끊겨 보여요.")
     _cap += " 값이 없는 기간은 **선을 끊어** 둬요 — 이어 버리면 그 사이에 데이터가 있는 것처럼 보여요."
     st.caption(_cap)
+
+    # ── 차트 아래 같은 값을 표로 — ②·03과 같은 얼굴(왼쪽 실적 · 오른쪽 증감) ──
+    # 차트는 흐름을, 표는 숫자를 준다. 선만 있으면 '9월 2주차가 정확히 얼마였나'를 못 읽어
+    # 결국 엑셀을 받아야 한다. 행=항목, 열=기간이라 ②(행=지표)와 축만 다르고 얼굴은 같다.
+    _trows, _drows = {}, {}
+    for nm, _pth in items:
+        _cv = {lb: view.get(_pth, met, cy, lb, "mtd") for lb in _lb}
+        _pv = {lb: view.get(_pth, met, py, lb, "mtd") for lb in _lb}
+        _trows[nm] = {month_trim(lb): fmt_value(met, _cv[lb]) for lb in _lb}
+        _drows[nm] = {f"{month_trim(lb)} 증감": (fmt_delta(met, _cv[lb], _pv[lb]) or "–")
+                      for lb in _lb}
+    if _trows:
+        _tt = pd.DataFrame(_trows).T
+        _dd = pd.DataFrame(_drows).T
+        # 실적을 다 놓고 증감을 오른쪽에 몬다 — 증감만 가로로 훑어야 어디서 꺾였나가 보인다
+        _tt = pd.concat([_tt, _dd], axis=1)
+        _tt.index.name = "항목"
+        wtable(style_delta_cols(_tt), width="stretch",
+               dl_name=f"{node_lbl} {met} {tg}별 추이 ({cy}년)")
+        st.caption(f"위 차트와 같은 값이에요. 왼쪽은 {cy}년 실적, 오른쪽은 **{py}년 같은 "
+                   f"기간 대비 증감**이에요. {cy}년 **{len(_lb)}개 기간 전체**를 담았어요 — "
+                   "옆으로 밀어서 보세요.")
 
 
 def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, prv_close):

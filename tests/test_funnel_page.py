@@ -45,10 +45,15 @@ WEEKS = range(1, 5)
 VALS = {
     2026: {"*TOTAL": dict(traffic=100_000, join=1_000, cust=500, rev=50_000_000),
            "직접":   dict(traffic=40_000, join=800, cust=300, rev=30_000_000),
-           "광고":   dict(traffic=60_000, join=200, cust=200, rev=20_000_000)},
+           "광고":   dict(traffic=60_000, join=200, cust=200, rev=20_000_000),
+           # `PUSH`는 **차트 기본값(`CHART_CH_DEFAULT`)에 없는** 채널이다 — 기본이
+           # '전 채널'로 되돌아가면 이 줄이 차트에 나타나 검사가 잡는다. 기본에 있는
+           # 채널만 심어 두면 기본을 어떻게 바꿔도 결과가 같아 규칙이 안 지켜진다.
+           "PUSH":   dict(traffic=25_000, join=150, cust=90, rev=9_000_000)},
     2025: {"*TOTAL": dict(traffic=80_000, join=500, cust=400, rev=32_000_000),
            "직접":   dict(traffic=30_000, join=400, cust=250, rev=20_000_000),
-           "광고":   dict(traffic=50_000, join=100, cust=150, rev=12_000_000)},
+           "광고":   dict(traffic=50_000, join=100, cust=150, rev=12_000_000),
+           "PUSH":   dict(traffic=20_000, join=120, cust=70, rev=7_000_000)},
 }
 FILE_RATE = 0.5           # 파일이 주는 가입율 — 계산값(1.00%)과 확연히 다르게
 DAILY_CR = 0.0725         # 당일가입CR — 역산이 불가능한 값이라 파일 값이 그대로 나와야
@@ -1730,34 +1735,50 @@ def _ftrend_tbl(at):
 
 
 @case
-def t_trend_excel_carries_the_whole_year_not_the_screen_slice():
-    """②의 엑셀은 **올해 전체**다 — 화면만 자른다.
+def t_trend_table_shows_the_whole_year_not_a_recent_slice():
+    """②의 추이표는 **올해 전체**다 — 최근 N개만 보여 주면 매번 엑셀을 받아야 한다.
 
-    화면을 자르는 건 눈이 감당 못 해서지 그 뒤가 필요 없어서가 아니다. 받아서 쓰는 쪽은
-    연중을 통째로 놓고 보므로, 화면은 최근 `FUNNEL_TREND_KEEP`개 · 파일은 안 자른 `tbl`로
-    갈라 준다(`wtable(dl_data=)`).
-
-    화면 쪽은 실제로 잘렸는지 렌더해서 세고, 파일 쪽은 `dl_data`가 **`keep`으로 자르지
-    않은** 표를 받는지 소스로 본다 — 지연 다운로드라 AppTest가 바이트를 못 만든다.
+    '어느 기간부터 꺾였나'를 보는 표라 앞이 잘리면 쓸 수가 없다. 표는 가로로 스크롤되니
+    폭은 문제가 아니다.
     """
     at = _open(unit="주")
     tbl = _ftrend_tbl(at)
     assert tbl is not None, "②의 추이표가 없어요"
     vals = [c for c in tbl.columns if not str(c[1]).endswith("증감")]
-    cap = W.FUNNEL_TREND_KEEP["주"]
-    assert len(vals) == cap, f"화면이 {cap}주로 안 잘렸어요 — {len(vals)}주"
+    want = len(W.labels_sorted(synth_store(), "주", [2026]))
+    assert want > W.FUNNEL_TREND_KEEP["주"], \
+        f"픽스처 주차가 {want}개뿐이라 잘림을 못 봐요 — 검사가 헛돌아요"
+    assert len(vals) == want, f"올해 전체 {want}주가 아니라 {len(vals)}주만 떠요"
+    # 증감은 여전히 오른쪽에 몰려 있어야 한다
+    cols = list(tbl.columns)
+    assert cols == vals + [c for c in cols if str(c[1]).endswith("증감")], \
+        f"값·증감이 섞였어요 — {cols[:4]}"
 
-    fn = next(n for n in ast.walk(ast.parse(pathlib.Path(APP).read_text(encoding="utf-8")))
-              if isinstance(n, ast.FunctionDef) and n.name == "_render_funnel_trend")
-    call = next((n for n in ast.walk(fn)
-                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "wtable"), None)
-    assert call is not None, "②가 wtable을 안 써요"
-    kw = {k.arg: k for k in call.keywords}
-    assert "dl_data" in kw, ("②의 엑셀이 화면과 같은 잘린 표예요. 안 자른 `tbl`을 "
-                             "`dl_data=`로 넘기세요.")
-    src = ast.unparse(kw["dl_data"].value)
-    assert "keep" not in src, f"`dl_data`가 화면 슬라이스를 받고 있어요 — {src}"
-    assert "tbl" in src, f"`dl_data`가 추이표를 안 받아요 — {src}"
+
+@case
+def t_orgcat_chart_comes_with_a_table_of_the_same_values():
+    """⑤도 **차트와 표를 같이** 낸다 — 선만 있으면 정확한 값을 못 읽는다.
+
+    행=항목·열=기간이라 ②(행=지표)와 축만 다르고 얼굴은 같다. 왼쪽 실적 · 오른쪽 증감.
+    """
+    at = _open()
+    sp = _trend_spec(at)
+    assert sp, "⑤ 연중 추이 차트를 못 찾았어요"
+    drawn = {str(t.get("name", "")).split(" (")[0] for t in sp.get("data", [])}
+
+    got = None
+    for f in _frames(at):
+        if f.index.name == "항목":
+            got = f
+    assert got is not None, ("⑤ 차트 아래 추이표가 없어요 — "
+                             f"본 표들: {[f.index.name for f in _frames(at)]}")
+    assert set(got.index) == drawn, f"표의 항목이 차트와 달라요 — 표 {set(got.index)} vs 차트 {drawn}"
+    cols = [str(c) for c in got.columns]
+    vals = [c for c in cols if not c.endswith("증감")]
+    dlts = [c for c in cols if c.endswith("증감")]
+    assert vals and dlts, f"실적·증감 두 벌이 있어야 해요 — {cols[:6]}"
+    assert cols == vals + dlts, f"값·증감이 섞였어요 — {cols[:4]}"
+    assert len(vals) == len(dlts), f"기간 수가 안 맞아요 — 실적 {len(vals)} vs 증감 {len(dlts)}"
 
 
 @case
@@ -1791,12 +1812,19 @@ def t_trend_block_draws_charts_and_a_yoy_table():
 
 @case
 def t_trend_counts_periods_not_columns():
-    """**자를 땐 기간을 센다.** 증감 칸까지 섞어 16칸을 집으면 보이는 주가 8주로 반토막 난다."""
+    """값 칸과 증감 칸의 **개수가 같아야** 한다 — 짝이 안 맞으면 어딘가 흘린 것이다.
+
+    예전엔 최근 16개로 자르면서 증감 칸까지 섞어 집어 보이는 주가 8주로 반토막 났다.
+    지금은 안 자르지만(올해 전체), 짝이 맞는지는 그대로 본다.
+    """
     at = _open()
     tbl = _ftrend_tbl(at)
     assert tbl is not None
     vals = [c for c in tbl.columns if "증감" not in c[1]]
-    assert len(vals) == W.FUNNEL_TREND_KEEP["주"], f"주차가 {len(vals)}개예요 — {vals}"
+    dlts = [c for c in tbl.columns if "증감" in c[1]]
+    assert len(vals) == len(dlts), f"값 {len(vals)}칸 vs 증감 {len(dlts)}칸 — 짝이 안 맞아요"
+    assert {c[1] for c in vals} == {c[1].replace(" 증감", "") for c in dlts}, \
+        "값과 증감이 서로 다른 기간을 가리켜요"
 
 
 @case
@@ -1926,12 +1954,13 @@ def t_unit_only_offers_what_the_data_has():
 
 @case
 def t_daily_trend_shows_a_month_of_days():
-    """일자별 추이표는 한 달치(`FUNNEL_TREND_KEEP['일']`)로 자른다 — 365칸은 못 읽는다."""
+    """일자별 추이표도 **올해 전체**다 — 단위마다 자르는 규칙이 다르면 오갈 때 헷갈린다."""
     at = _open(unit="일")
     tbl = _ftrend_tbl(at)
     assert tbl is not None, "일자별 추이표가 없어요"
     vals = [c for c in tbl.columns if "증감" not in c[1]]
-    assert len(vals) <= W.FUNNEL_TREND_KEEP["일"], len(vals)
+    want = len(W.labels_sorted(synth_store(), "일", [2026]))
+    assert len(vals) == want, f"올해 전체 {want}일이 아니라 {len(vals)}일만 떠요"
     assert all("/" in c[1] for c in vals), vals[:4]
 
 
@@ -2088,7 +2117,11 @@ def t_channel_chart_filters_channels_and_years():
     assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
     chans = list(ms[0].options)
     assert len(chans) >= 2, f"채널이 둘 이상이어야 검사가 서요 — {chans}"
-    assert set(ms[0].value) == set(chans), f"기본은 전체 채널이어야 해요 — {ms[0].value}"
+    # 기본은 «평소 넷»이라 전체가 아닐 수 있다(`t_channel_chart_opens_with_the_usual_four`).
+    # 넣고 빼는 걸 보려면 **전부 켜 놓고** 시작한다.
+    ms[0].set_value(chans); at.run()
+    assert not at.exception, at.exception[0].value
+    ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_ch_chart_ch"]
 
     _names = lambda a: {t.get("name") for sp in _ch_specs(a) for t in sp.get("data", [])}
     before, color = _names(at), _ch_color(at, chans[0])
@@ -2181,6 +2214,50 @@ def t_orgcat_chart_filters_items():
     assert not at.exception, at.exception[0].value
     assert any("항목을 하나도" in t for t in _texts(at)), \
         "항목을 다 뺐는데 왜 비었는지 안 말해요"
+
+
+@case
+def t_channel_by_period_table_is_whole_year_with_deltas():
+    """「채널 × 기간」도 **올해 전체 + 오른쪽 전년비**다 — 세 표가 같은 얼굴이어야 한다.
+
+    최근 N개만 보여 주면 '어느 기간부터 꺾였나'를 보려고 매번 엑셀을 받게 된다.
+    단위(일/주/월)마다 규칙이 다르면 오갈 때 헷갈리니 셋 다 전체다.
+    """
+    for unit in ("월", "주", "일"):
+        at = _open_page("03. 채널별 실적")
+        [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value(unit)
+        at.run()
+        assert not at.exception, (unit, at.exception[0].value)
+        # 위쪽 「채널별 실적」 표도 인덱스가 «채널»이다(열=지표) — 아래 「채널 × 기간」은
+        # **마지막** 것이다. 첫 번째를 집으면 지표 7칸을 기간으로 착각한다.
+        chans = [f for f in _frames(at) if f.index.name == "채널"]
+        assert len(chans) >= 2, (unit, [f.index.name for f in _frames(at)])
+        got = chans[-1]
+        cols = [str(c) for c in got.columns]
+        vals = [c for c in cols if not c.endswith("전년비")]
+        dlts = [c for c in cols if c.endswith("전년비")]
+        assert cols == vals + dlts, f"{unit}: 값·전년비가 섞였어요 — {cols[:4]}"
+        assert len(vals) == len(dlts), f"{unit}: 값 {len(vals)} vs 전년비 {len(dlts)}"
+        want = len(W.labels_sorted(synth_store(), unit, [2026]))
+        assert len(vals) == want, f"{unit}: 올해 전체 {want}개가 아니라 {len(vals)}개만 떠요"
+
+
+@case
+def t_channel_chart_opens_with_the_usual_four():
+    """차트 기본 채널은 **평소 맞대 보는 넷**이다 — 여덟 줄을 다 켜면 엉켜서 안 읽힌다.
+
+    표는 그대로 다 놓는다(차트만 좁힌다). 데이터에 없는 채널은 자동으로 빠진다.
+    """
+    at = _open_page("03. 채널별 실적")
+    ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_ch_chart_ch"]
+    assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
+    want = [c for c in W.CHART_CH_DEFAULT if c in ms[0].options]
+    assert want, f"픽스처에 기본 채널이 하나도 없어요 — {list(ms[0].options)}"
+    assert set(ms[0].value) == set(want), f"기본이 {ms[0].value} — {want}이어야 해요"
+    # 표는 안 좁아진다 — 사이드바가 고른 채널을 다 낸다
+    tb = next((f for f in _frames(at) if f.index.name == "채널"), None)
+    assert tb is not None and len(tb.index) > len(want), \
+        f"차트 기본값이 표까지 좁혔어요 — 표 {list(tb.index) if tb is not None else None}"
 
 
 @case
