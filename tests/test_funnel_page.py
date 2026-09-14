@@ -9,6 +9,7 @@
 로컬 실행:
     python tests/test_funnel_page.py
 """
+import ast
 import datetime
 import inspect
 import io
@@ -1726,6 +1727,37 @@ def _ftrend_tbl(at):
         if isinstance(f.columns, pd.MultiIndex):
             return f
     return None
+
+
+@case
+def t_trend_excel_carries_the_whole_year_not_the_screen_slice():
+    """②의 엑셀은 **올해 전체**다 — 화면만 자른다.
+
+    화면을 자르는 건 눈이 감당 못 해서지 그 뒤가 필요 없어서가 아니다. 받아서 쓰는 쪽은
+    연중을 통째로 놓고 보므로, 화면은 최근 `FUNNEL_TREND_KEEP`개 · 파일은 안 자른 `tbl`로
+    갈라 준다(`wtable(dl_data=)`).
+
+    화면 쪽은 실제로 잘렸는지 렌더해서 세고, 파일 쪽은 `dl_data`가 **`keep`으로 자르지
+    않은** 표를 받는지 소스로 본다 — 지연 다운로드라 AppTest가 바이트를 못 만든다.
+    """
+    at = _open(unit="주")
+    tbl = _ftrend_tbl(at)
+    assert tbl is not None, "②의 추이표가 없어요"
+    vals = [c for c in tbl.columns if not str(c[1]).endswith("증감")]
+    cap = W.FUNNEL_TREND_KEEP["주"]
+    assert len(vals) == cap, f"화면이 {cap}주로 안 잘렸어요 — {len(vals)}주"
+
+    fn = next(n for n in ast.walk(ast.parse(pathlib.Path(APP).read_text(encoding="utf-8")))
+              if isinstance(n, ast.FunctionDef) and n.name == "_render_funnel_trend")
+    call = next((n for n in ast.walk(fn)
+                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "wtable"), None)
+    assert call is not None, "②가 wtable을 안 써요"
+    kw = {k.arg: k for k in call.keywords}
+    assert "dl_data" in kw, ("②의 엑셀이 화면과 같은 잘린 표예요. 안 자른 `tbl`을 "
+                             "`dl_data=`로 넘기세요.")
+    src = ast.unparse(kw["dl_data"].value)
+    assert "keep" not in src, f"`dl_data`가 화면 슬라이스를 받고 있어요 — {src}"
+    assert "tbl" in src, f"`dl_data`가 추이표를 안 받아요 — {src}"
 
 
 @case

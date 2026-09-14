@@ -2553,7 +2553,7 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
         return None, f"생성 중 오류: {e}"
 
 # ══════════════════════════════════════════════════════
-# 06. 앱푸시 동의 현황 페이지
+# 04. 앱푸시 동의 현황 페이지
 # ══════════════════════════════════════════════════════
 def render_push_page(df, ref_year, chart_years):
     st.markdown("## 앱푸시 동의 현황")
@@ -3878,10 +3878,17 @@ def _render_funnel_trend(df, gran, cy, py):
     _want = set(_vals) | {(c[0], f"{c[1]} 증감") for c in _vals}
     keep = [c for c in tbl.columns if c in _want]
     _unit = {"일": "날", "주": "주차", "월": "월"}.get(tg, tg)
+    # **엑셀은 안 자른다 — 올해 전체를 담는다.** 화면을 자르는 건 눈이 감당 못 해서지
+    # 그 뒤가 필요 없어서가 아니다. 받아서 쓰는 쪽은 연중을 통째로 놓고 보므로, 화면은
+    # 최근 {cap}개 · 파일은 `tbl` 전체로 갈라 준다(`wtable(dl_data=)`).
+    _cut = len(tbl.columns) > len(keep)
     st.caption(f"왼쪽은 {cy}년 실적, 오른쪽은 **전년 같은 {_unit} 대비 증감**을 모아 뒀어요. "
                f"비율 지표(가입율·당일가입 첫구매율)는 %p 차이예요. 전년에 그 {_unit}가 "
-               f"없으면 '–'로 둬요. 값은 전체(채널 합산) 기준이에요.")
+               f"없으면 '–'로 둬요. 값은 전체(채널 합산) 기준이에요."
+               + (f" 화면은 최근 {cap}개 {_unit}만 보여 주고, **엑셀에는 {cy}년 전체**가 "
+                  "담겨요." if _cut else ""))
     wtable(style_trend(tbl[keep], sel), width="stretch",
+           dl_data=style_trend(tbl, sel),
            dl_name=f"퍼널 지표 {_unit}별 추이 ({cy}년)")
 
 
@@ -3974,7 +3981,7 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, p
     if base[(base["label"] == clabel) & (base["year"] == cy)].empty:
         st.info(f"조직×카테고리 데이터에 **{cy}년 {clabel}**이 없어요. "
                 "커버리지가 마스터와 달라서 그럴 수 있어요 — "
-                "「09. 조직·카테고리별 실적」에서 어느 기간이 있는지 볼 수 있어요.")
+                f"「{PAGE_ORGCAT}」에서 어느 기간이 있는지 볼 수 있어요.")
         return
 
     view = orgcat_view(base)
@@ -3991,7 +3998,7 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, p
                 _line + "\n\n두 값은 **원천이 달라요** — ①은 마스터 export, ④는 MICRO "
                 "조직×카테고리 export예요. 벌어지는 이유는 대개 셋 중 하나예요.\n"
                 "- **LFMS 포함 여부**가 다른 모집단을 가리켜요 (위에서 바꿔 볼 수 있어요)\n"
-                "- 두 export의 **커버리지**가 달라요 (「09. 조직·카테고리별 실적」에서 "
+                f"- 두 export의 **커버리지**가 달라요 (「{PAGE_ORGCAT}」에서 "
                 "어느 기간이 있는지 볼 수 있어요)\n"
                 "- 한쪽만 **최신 마감분**이 안 올라왔어요\n\n"
                 "조직·카테고리 **구성비와 증감**은 ⑤ 안에서 일관되니 그대로 읽어도 돼요. "
@@ -4252,7 +4259,7 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
     **색은 항목, 선 모양은 연도**다. 올해는 실선, 전년은 얇은 점선. 색을 연도에 쓰면
     항목이 셋만 넘어도 무엇이 무엇인지 못 짚는다. 항목 색은 **전체 자식 목록** 기준으로
     고정한다 — 그린 것만으로 색을 매기면 연도를 끄고 켤 때 색이 바뀐다
-    (「06. 앱푸시 동의 현황」의 `_ycolor`와 같은 이유).
+    (「04. 앱푸시 동의 현황」의 `_ycolor`와 같은 이유).
 
     연도는 체크로 넣고 뺀다. 항목이 많으면 두 해가 겹쳐 구분이 안 되므로, 전년을 꺼서
     올해 흐름만 보는 길을 열어 둔다.
@@ -4704,7 +4711,7 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
 
 
 def render_orgcat_page(odf, ddf=None):
-    """09. 조직·카테고리별 실적 — 개괄에서 이상한 데를 찾아 그 자리에서 파고드는 화면.
+    """06. 조직·카테고리별 실적 — 개괄에서 이상한 데를 찾아 그 자리에서 파고드는 화면.
 
     원천이 둘이다.
       · **MICRO 조직×카테고리**(구분06~09) — 조직 > 카테고리까지 온다. 값은 일평균.
