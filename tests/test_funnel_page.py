@@ -1734,10 +1734,16 @@ def t_trend_block_draws_charts_and_a_yoy_table():
     at = _open()
     txt = " ".join(_texts(at))
     assert "② 퍼널 지표 추이" in txt, "② 블록이 없어요"
-    ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_fn_ftrend_mets"]
-    assert ms, "추이 지표 선택이 없어요"
-    sel = list(ms[0].value)
-    assert len(sel) >= 4, sel
+    # **지표를 고르게 하지 않는다** — 있는 걸 다 그린다. 고르게 두면 매번 같은 걸 다시
+    # 켜야 하고, 퍼널은 앞단·뒷단을 같이 봐야 어디서 빠졌는지가 보인다.
+    assert not [m for m in at.multiselect
+                if getattr(m, "key", None) == "wr_fn_ftrend_mets"], \
+        "추이 지표 선택이 되살아났어요"
+    sel = [m for m in W.FUNNEL_STEPS if (synth_store()["metric"] == m).any()]
+    assert len(sel) >= 6, sel
+    # 지표마다 한 장씩 그린다(⑤ 연중 추이 한 장이 더 붙는다)
+    n_chart = len(at.get("plotly_chart"))
+    assert n_chart >= len(sel), f"차트가 {n_chart}장뿐이에요 — 지표 {len(sel)}종"
     tbl = _ftrend_tbl(at)
     assert tbl is not None, "추이표를 못 찾았어요"
     assert list(tbl.index) == sel, (list(tbl.index), sel)
@@ -1864,6 +1870,104 @@ def t_daily_trend_shows_a_month_of_days():
     vals = [c for c in tbl.columns if "증감" not in c[1]]
     assert len(vals) <= W.FUNNEL_TREND_KEEP["일"], len(vals)
     assert all("/" in c[1] for c in vals), vals[:4]
+
+
+# ── 페이지 재구성 · 03 채널별 실적 ──────────────────────────────────
+def _open_page(page, store=None, orgcat=None):
+    """임시 폴더에 스토어를 깔고 그 페이지로 이동."""
+    from streamlit.testing.v1 import AppTest
+    tmp = tempfile.mkdtemp()
+    shutil.copy(APP, os.path.join(tmp, "weekly_report.py"))
+    _te = ROOT / "table_export.py"
+    if _te.exists():
+        shutil.copy(_te, os.path.join(tmp, "table_export.py"))
+    (synth_store() if store is None else store).to_csv(
+        os.path.join(tmp, W.DATA_STORE), index=False, encoding="utf-8-sig")
+    oc = synth_orgcat() if orgcat is None else orgcat
+    if oc is not None and not oc.empty:
+        oc.to_csv(os.path.join(tmp, W.ORGCAT_STORE), index=False, encoding="utf-8-sig")
+    os.chdir(tmp)
+    at = AppTest.from_file(os.path.join(tmp, "weekly_report.py"), default_timeout=TIMEOUT)
+    at.run()
+    [r for r in at.sidebar.radio if r.label == "페이지"][0].set_value(page)
+    at.run()
+    assert not at.exception, at.exception[0].value
+    return at
+
+
+@case
+def t_pages_are_reordered_without_the_trend_pages():
+    """「월별 추이」·「주차별 추이」는 접었다 — 「02」가 같은 걸 보여 준다.
+
+    「통합 데이터·다운로드」는 보는 화면이 아니라 받아 가는 화면이라 맨 뒤로 옮겼다.
+    """
+    at = _open()
+    pages = list([r for r in at.sidebar.radio if r.label == "페이지"][0].options)
+    assert pages == ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적", "03. 채널별 실적",
+                     "04. 앱푸시 동의 현황", "05. 첫구매 고객 세그먼트 성과",
+                     "06. 조직·카테고리별 실적", "07. 통합 데이터·다운로드"], pages
+
+
+@case
+def t_trend_page_memos_moved_not_lost():
+    """03·04의 액션·이슈 메모는 **키를 그대로 둔 채** 「02」로 옮겼다.
+
+    키를 갈면 이미 써 둔 글이 파일엔 남는데 화면에서 영영 안 보인다.
+    """
+    src = APP.read_text(encoding="utf-8")
+    for key in ('f"wr_week_memo_{cy}_{clabel}"', 'f"wr_month_memo_{ref_year}_{ref_month}"'):
+        assert key in src, f"{key} 메모가 사라졌어요"
+    at = _open(unit="주")
+    assert any("액션·이슈" in t for t in _texts(at)), "주차 메모가 「02」에 안 보여요"
+    at2 = _open(unit="월")
+    assert any("액션·이슈" in t for t in _texts(at2)), "월 메모가 「02」에 안 보여요"
+
+
+@case
+def t_channel_page_has_one_unit_and_no_metric_picker():
+    """「03 채널별 실적」도 **지표를 안 고르고 다 그린다** — 월 고정도 풀었다."""
+    at = _open_page("03. 채널별 실적")
+    rd = [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"]
+    assert rd, [(r.label, getattr(r, "key", None)) for r in at.radio]
+    assert list(rd[0].options) == ["일자별", "주차별", "월별"], list(rd[0].options)
+    assert not [s for s in at.selectbox if s.label == "지표 선택"], "지표 선택이 남아 있어요"
+    mets = [m for m in W.METRICS7 if (synth_store()["metric"] == m).any()]
+    assert len(at.get("plotly_chart")) >= len(mets), \
+        f"차트 {len(at.get('plotly_chart'))}장 — 지표 {len(mets)}종을 다 그려야 해요"
+
+
+@case
+def t_channel_table_puts_deltas_on_the_right():
+    """「03」 표도 **왼쪽 실적 · 오른쪽 전년비**."""
+    for unit in ("일", "주", "월"):
+        at = _open_page("03. 채널별 실적")
+        [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value(unit)
+        at.run()
+        assert not at.exception, (unit, at.exception[0].value)
+        got = [f for f in _frames(at)
+               if any("전년비" in str(c) for c in f.columns)]
+        assert got, f"{unit}: 전년비 표가 없어요"
+        cols = list(got[0].columns)
+        vals = [c for c in cols if "전년비" not in str(c)]
+        dlts = [c for c in cols if "전년비" in str(c)]
+        assert cols == vals + dlts, f"{unit}: 값·전년비가 섞였어요 — {cols[:4]}"
+
+
+@case
+def t_download_page_builds_files_on_click():
+    """받아 가는 화면 — **누르기 전엔 안 만든다.**
+
+    `st.download_button`은 data를 미리 받는 API라 그냥 넘기면 받지도 않는 리런마다
+    전체를 CSV로 찍는다(원장 120만 행이면 그것만 몇 초다).
+    """
+    at = _open_page("07. 통합 데이터·다운로드")
+    labels = [b.label for b in at.button]
+    assert any("마스터" in l for l in labels), labels
+    assert any("워크북" in l for l in labels), labels
+    # 세 원천 카드가 뜬다
+    html = _html(at)
+    for nm in ("마스터", "조직×카테고리", "결제 원장"):
+        assert nm in html, f"«{nm}» 카드가 없어요"
 
 
 # ── ⑤ 합계 대사 ─────────────────────────────────────────────────────

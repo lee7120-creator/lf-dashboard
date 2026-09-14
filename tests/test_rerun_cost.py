@@ -23,6 +23,7 @@ Streamlit은 리런마다 스크립트 본문을 **통째로 다시 실행**한�
 """
 import ast
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -47,9 +48,58 @@ def _tree(name):
     return ast.parse((ROOT / name).read_text(encoding="utf-8"), filename=name)
 
 
-def _download_calls(tree):
-    """`st.download_button(...)` / `col.download_button(...)` 호출 전부."""
+_FUNC = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _scopes(tree):
+    """함수 하나(와 모듈 최상단)를 한 범위로 본다.
+
+    모듈 전체를 한 통으로 보면 **이름만 같은** 다른 함수의 지역변수가 걸려 오탐이 난다 —
+    실제로 `lazy_download`의 `data`(이미 만들어 둔 바이트)가 파서 함수의
+    `data = f.getvalue()`에 걸렸다.
+    """
     for node in ast.walk(tree):
+        if isinstance(node, (*_FUNC, ast.Module)):
+            yield node
+
+
+def _own_nodes(scope):
+    """그 범위가 **직접** 가진 노드들 — 중첩 함수 안으로는 안 들어간다."""
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        n = stack.pop()
+        yield n
+        if isinstance(n, _FUNC):
+            continue                                      # 중첩 함수는 자기 범위에서 본다
+        stack += list(ast.iter_child_nodes(n))
+
+
+def _eager_locals(scope):
+    """그 함수 안에서 `이름 = <직렬화 호출>` 로 담아 둔 것 → 어떤 호출이었나.
+
+    `data=`만 봐서는 **한 줄 위에서 미리 만든 것**을 못 잡는다:
+
+        csv = df.to_csv(index=False).encode("utf-8-sig")   # ← 리런마다 여기서 만든다
+        st.download_button("...", csv, ...)                # ← data=는 그냥 이름
+
+    실제로 「통합 데이터·다운로드」가 이 모양이라 검사를 통과한 채로 남아 있었다.
+    """
+    out = {}
+    for node in _own_nodes(scope):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        tgt = node.targets[0]
+        if not isinstance(tgt, ast.Name):
+            continue
+        hits = _eager_inside(node.value)
+        if hits:
+            out.setdefault(tgt.id, []).append((node.lineno, hits))
+    return out
+
+
+def _download_calls(scope):
+    """그 범위가 직접 부르는 `st.download_button(...)` / `col.download_button(...)`."""
+    for node in _own_nodes(scope):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "download_button"):
             yield node
@@ -86,13 +136,21 @@ def _eager_inside(expr):
 def t_download_data_is_made_on_click_not_every_rerun():
     bad = []
     for name in APPS:
-        for call in _download_calls(_tree(name)):
-            arg = _data_arg(call)
-            if arg is None:
-                continue
-            hits = _eager_inside(arg)
-            if hits:
-                bad.append(f"{name}:{call.lineno} — data= 안에서 {'/'.join(sorted(set(hits)))}()")
+        for scope in _scopes(_tree(name)):
+            eager = _eager_locals(scope)
+            for call in _download_calls(scope):
+                arg = _data_arg(call)
+                if arg is None:
+                    continue
+                hits = _eager_inside(arg)
+                if hits:
+                    bad.append(f"{name}:{call.lineno} — data= 안에서 "
+                               f"{'/'.join(sorted(set(hits)))}()")
+                elif isinstance(arg, ast.Name) and arg.id in eager:
+                    # 같은 함수 안 한 줄 위에서 미리 만든 것도 결국 매 리런 만든다
+                    _ln, _h = eager[arg.id][0]
+                    bad.append(f"{name}:{call.lineno} — data={arg.id} 인데 "
+                               f"{_ln}번 줄에서 {'/'.join(sorted(set(_h)))}()로 미리 만들었어요")
     assert not bad, (
         "누르지도 않은 다운로드를 매 리런 만들고 있어요. `data=`에 인자 없는 람다를 주세요:\n  "
         + "\n  ".join(bad))
@@ -162,6 +220,28 @@ def t_leaderboard_formats_in_the_browser_not_in_python():
     # 엑셀 내보내기(Styler 경로)는 살아 있어야 한다 — 숫자+표시형식 규칙이 거기 걸려 있다.
     labels = [b.label for b in at.get("download_button")]
     assert "⬇️ 엑셀" in labels, f"엑셀 버튼이 사라졌어요: {labels}"
+
+
+@case
+def t_pages_are_not_referenced_by_number():
+    """페이지를 **번호로** 가리키지 말 것 — 재정렬하면 조용히 끊긴다.
+
+    실제로 `page.startswith("09.")`로 박아 둔 '마스터 없이도 조직·카테고리는 열린다'
+    예외가, 페이지를 재정렬하자 안 열리게 됐다. 증상이 그냥 **빈 화면**이라 안 드러난다.
+    이름(`PAGE_ORGCAT` 같은 상수)으로 가리키면 번호가 바뀌어도 산다.
+    """
+    bad = []
+    for name in APPS:
+        for node in ast.walk(_tree(name)):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("startswith", "endswith")
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "page"):
+                for a in node.args:
+                    if isinstance(a, ast.Constant) and re.match(r"^\d{2}\.", str(a.value)):
+                        bad.append(f"{name}:{node.lineno} — page.{node.func.attr}({a.value!r})")
+    assert not bad, ("페이지를 번호로 가리키고 있어요. 이름 상수를 쓰세요:\n  "
+                     + "\n  ".join(bad))
 
 
 def main():
