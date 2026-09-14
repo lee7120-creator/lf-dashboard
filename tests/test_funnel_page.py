@@ -1487,13 +1487,13 @@ def t_orgcat_trend_drops_ticks_nothing_has():
     assert "12월 4주차" not in xs, f"빈 눈금이 축에 남았어요 — {xs[-3:]}"
     assert "12월 4주차" not in (spec["layout"]["xaxis"].get("categoryarray") or []), \
         "categoryarray에 빈 눈금이 남았어요"
-    # 그 결과 선 안쪽에 구멍이 없어야 한다
-    for tr in spec["data"]:
-        ys = tr["y"]
-        idx = [i for i, v in enumerate(ys) if v is not None]
-        assert idx, tr["name"]
-        holes = [i for i in range(idx[0], idx[-1] + 1) if ys[i] is None]
-        assert not holes, f"«{tr['name']}» 선 안에 구멍이 남았어요 — {holes[:5]}"
+    # 그리고 축에 남은 눈금은 **적어도 한 선에는 값이 있어야** 한다.
+    # 「선 안에 구멍이 없어야 한다」로 적으면 안 된다 — 한쪽 해에만 있는 기간
+    # (일별에서 파생된 5주차 등)은 **남겨서 끊는 게 규칙**이라 그 구멍은 정상이다
+    # (`t_orgcat_trend_keeps_one_sided_gaps`). 여기서 봐야 하는 건 «아무도 안 쓴 칸».
+    for j, lb in enumerate(xs):
+        assert any(tr["y"][j] is not None for tr in spec["data"]), \
+            f"«{lb}» 칸엔 아무 선도 값이 없어요 — 축에서 뺐어야 해요"
     assert any("축에서 뺐어요" in t for t in _texts(at)), "몇 개를 뺐는지 안 밝혀요"
 
 
@@ -2543,24 +2543,146 @@ def t_lfms_default_follows_the_master():
 
 @case
 def t_total_gap_against_the_master_is_announced():
-    """어긋나면 **얼마나·왜**를 화면에서 말한다. 조용히 나란히 두면 '뭐가 맞지'로 끝난다."""
+    """어긋나면 **얼마나·왜**를 화면에서 말한다. 조용히 나란히 두면 '뭐가 맞지'로 끝난다.
+
+    자리는 블록 **맨 아래, 접은 채로**다 — 표를 보러 온 화면인데 설명 상자가 위를 막으면
+    정작 숫자가 안 보인다. 차이는 **접이식 라벨**에 박아 펼치지 않아도 눈에 들어오게 한다.
+    """
     at = _open(orgcat=_two_lfms(scale_n=1.30, scale_y=1.60))
-    warn = [str(w.value) for w in at.warning if "합계 대사" in str(w.value)]
-    assert warn, f"차이가 30%인데 경고가 없어요 — {[str(w.value)[:60] for w in at.warning]}"
-    w = warn[0]
-    assert "+30.0%" in w, w[:160]
+    exps = [e for e in at.expander if "합계 대사" in str(e.label)]
+    assert exps, f"합계 대사 접이식이 없어요 — {[str(e.label) for e in at.expander]}"
+    e = exps[0]
+    assert not e.proto.expanded, "합계 대사가 펼쳐진 채로 떠 있어요"
+    assert "+30.0%" in str(e.label), f"라벨에 차이가 없어요 — {e.label}"
+    body = " ".join(str(m.value) for m in e.markdown)
     for why in ("LFMS", "커버리지", "마감분"):
-        assert why in w, f"«{why}» 안내가 없어요 — {w[:200]}"
+        assert why in body, f"«{why}» 안내가 없어요 — {body[:200]}"
+    # 위를 막던 경고 상자는 사라져야 한다
+    assert not [w for w in at.warning if "합계 대사" in str(w.value)], \
+        "아직 경고 상자로 떠 있어요"
 
 
 @case
 def t_matching_totals_do_not_shout():
-    """맞물릴 땐 경고를 띄우지 않는다 — 매번 ⚠가 뜨면 진짜 문제를 무시하게 된다."""
+    """맞물릴 땐 접이식도 안 만든다 — 매번 펼칠 거리가 아니라 캡션 한 줄이면 된다."""
     at = _open()                                          # 픽스처는 마스터와 일치
     assert not [w for w in at.warning if "합계 대사" in str(w.value)], \
         "맞는데도 경고가 떴어요"
+    assert not [e for e in at.expander if "합계 대사" in str(e.label)], \
+        "맞는데도 접이식이 생겼어요"
     cap = [str(c.value) for c in at.caption if "합계 대사" in str(c.value)]
     assert cap and "+0.0%" in cap[0], cap
+
+
+@case
+def t_pick_matches_the_scan():
+    """`pick`의 딕셔너리 인덱스가 **예전 풀스캔과 한 건도 다르지 않아야** 한다.
+
+    한 페이지 렌더에 200번 가까이 불리던 조회라 프레임 전체 마스킹을 걷어냈는데
+    (실측 184회 0.35초 → 0.0002초), 규칙이 한 칸이라도 어긋나면 화면 숫자가 통째로
+    틀어지고 증상은 '값이 좀 다르네'로만 보인다. 조직×카테고리의
+    `t_view_matches_the_scan`과 같은 자리다.
+
+    없는 라벨·없는 채널·없는 연도, 그리고 **여러 칸(기간) 조회**까지 같이 본다.
+    """
+    def scan(df, gran, metric, seg, year, label, prefer="final"):
+        labs = W.as_labels(label)
+        sub = df[(df["gran"] == gran) & (df["metric"] == metric)
+                 & (df["segment"] == seg) & (df["year"] == year)
+                 & (df["label"].astype(str).isin(labs))]
+        if sub.empty:
+            return np.nan
+        if len(labs) == 1:
+            for c in (["final", "mtd"] if prefer == "final" else ["mtd", "final"]):
+                v = sub[sub["close"] == c]["value"].dropna()
+                if len(v):
+                    return v.iloc[-1]
+            return np.nan
+        pref = ({"final": 0, "mtd": 1} if prefer == "final" else {"mtd": 0, "final": 1})
+        sub = sub.dropna(subset=["value"]).copy()
+        if sub.empty:
+            return np.nan
+        sub["_p"] = sub["close"].map(pref)
+        sub = sub.sort_values(["_p"], kind="stable").drop_duplicates("label", keep="first")
+        return sub["value"].mean()
+
+    df = synth_store()
+    grans = list(pd.unique(df["gran"]))
+    mets = list(pd.unique(df["metric"]))
+    segs = list(pd.unique(df["segment"])) + ["없는채널"]
+    yrs = [int(y) for y in pd.unique(df["year"])] + [1999]
+    n = 0
+    for g in grans:
+        labs = list(pd.unique(df[df["gran"] == g]["label"])) + ["없는라벨"]
+        for m in mets:
+            for sg in segs:
+                for y in yrs:
+                    for lb in labs:
+                        for pr in ("final", "mtd"):
+                            a, b = scan(df, g, m, sg, y, lb, pr), W.pick(df, g, m, sg, y, lb, pr)
+                            n += 1
+                            assert (pd.isna(a) and pd.isna(b)) or a == b, \
+                                f"{g}·{m}·{sg}·{y}·{lb}·{pr} — 스캔 {a} vs 인덱스 {b}"
+        # 여러 칸(기간) 조회 — 일평균 규칙까지 같이 본다
+        _all = list(pd.unique(df[df["gran"] == g]["label"]))
+        for m in mets[:6]:
+            for y in yrs[:2]:
+                for k in (2, 3, 5):
+                    if len(_all) < k:
+                        continue
+                    for pr in ("final", "mtd"):
+                        a = scan(df, g, m, "*TOTAL", y, _all[:k], pr)
+                        b = W.pick(df, g, m, "*TOTAL", y, _all[:k], pr)
+                        n += 1
+                        assert (pd.isna(a) and pd.isna(b)) or abs(a - b) < 1e-9, \
+                            f"{g}·{m}·{y}·{_all[:k]}·{pr} — 스캔 {a} vs 인덱스 {b}"
+    assert n > 10000, f"대조 건수가 너무 적어요 — {n}건"
+
+
+@case
+def t_pick_takes_the_last_row_for_a_duplicated_cell():
+    """같은 칸이 두 번 있으면 **뒤 행이 이긴다** — 예전 `.dropna().iloc[-1]`과 같다.
+
+    저장소는 `KEY_COLS`로 중복을 지우니 평소엔 안 생기지만, 그래서 스캔↔인덱스 대조
+    (`t_pick_matches_the_scan`)만으로는 이 규칙을 못 잡는다 — 실제로 «앞 행이 이기게»
+    바꿔 심었더니 대조는 통과했다. 규칙을 여기서 직접 못 박는다.
+    나중 행의 값이 **비어 있으면 앞의 유효값이 남는다**(빈 칸이 값을 지우지 않는다).
+    """
+    df = synth_store()
+    row = df[(df["gran"] == "월") & (df["close"] == "final")].iloc[0]
+    key = dict(gran="월", metric=row["metric"], seg=row["segment"],
+               year=int(row["year"]), label=str(row["label"]))
+    first = W.pick(df, key["gran"], key["metric"], key["seg"], key["year"], key["label"])
+    assert not pd.isna(first)
+
+    later = row.copy(); later["value"] = float(first) + 777.0
+    df2 = pd.concat([df, pd.DataFrame([later])], ignore_index=True)
+    got = W.pick(df2, key["gran"], key["metric"], key["seg"], key["year"], key["label"])
+    assert got == first + 777.0, f"뒤 행이 안 이겼어요 — {got} (앞 {first})"
+
+    blank = row.copy(); blank["value"] = np.nan
+    df3 = pd.concat([df, pd.DataFrame([blank])], ignore_index=True)
+    got3 = W.pick(df3, key["gran"], key["metric"], key["seg"], key["year"], key["label"])
+    assert got3 == first, f"빈 칸이 앞의 값을 지웠어요 — {got3} (앞 {first})"
+
+
+@case
+def t_pick_index_follows_a_new_frame():
+    """메모는 한 칸이라 **프레임이 바뀌면 다시 만들어야** 한다.
+
+    `id()`만 키로 쓰면 옛 프레임이 해제된 자리에 같은 길이의 새 프레임이 앉을 때
+    옛 값을 그대로 돌려준다 — 업로드가 행 수를 안 바꾸는 갱신이면 길이로도 못 가른다.
+    """
+    a = synth_store()
+    one = a[(a["gran"] == "월")].iloc[0]
+    got = W.pick(a, "월", one["metric"], one["segment"], int(one["year"]),
+                 str(one["label"]), one["close"])
+    assert not pd.isna(got), "기준값을 못 읽었어요"
+    b = a.copy()
+    b.loc[b.index[0] if b.index[0] == one.name else one.name, "value"] = got + 12345.0
+    got2 = W.pick(b, "월", one["metric"], one["segment"], int(one["year"]),
+                  str(one["label"]), one["close"])
+    assert got2 == got + 12345.0, f"새 프레임인데 옛 값을 줬어요 — {got2} (원래 {got})"
 
 
 def main():

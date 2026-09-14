@@ -301,6 +301,83 @@ def t_page_references_in_prose_match_the_real_pages():
                      "쓰세요:\n  " + "\n  ".join(bad))
 
 
+@case
+def t_derived_periods_never_reach_the_store():
+    """파생한 주·월은 **저장·백업에 안 실린다** — 담기면 다음 세션엔 '파일 값'이 된다.
+
+    파생은 파일이 있는 기간을 비켜 가므로, 한 번 저장되면 그 기간은 영영 안 갱신된다.
+    일별을 고쳐 다시 올려도 옛 파생이 그 자리를 차지한 채 남는다 — 증상이 '숫자가 안
+    바뀌네'로만 보여 원인이 안 드러난다.
+    """
+    tree = _tree("weekly_report.py")
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+    assert fn is not None, "main()을 못 찾았어요"
+    src = ast.unparse(fn)
+    assert "odf_raw = odf" in src and "orgcat_derive_periods(odf_raw)" in src, \
+        "파생 전 프레임을 따로 안 들고 있어요"
+    for call in ("save_orgcat_store(", "make_backup_zip("):
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call)
+                    and ast.unparse(node.func).endswith(call.rstrip("("))):
+                args = " ".join(ast.unparse(a) for a in node.args)
+                assert "odf_raw" in args or "odf" not in args.split(), \
+                    f"{call} 에 파생본(odf)을 넘겨요 — odf_raw여야 해요: {args[:80]}"
+
+
+@case
+def t_digit_parses_from_labels_are_guarded():
+    """선택지 라벨에서 숫자를 뽑을 땐 **None을 가드**한다.
+
+    `re.search(...).group()`은 매치가 없으면 `AttributeError`로 죽는다 — 주간보고
+    7페이지를 통째로 날린 사고가 정확히 이 모양이었다. 지금 라벨엔 다 숫자가 있어
+    안 터지지만, 라벨 문구는 자주 바뀌는 자리라 한 번 바꾸면 그 페이지가 죽는다.
+    """
+    bad = []
+    for name in APPS:
+        for node in ast.walk(_tree(name)):
+            if not (isinstance(node, ast.Attribute) and node.attr == "group"):
+                continue
+            inner = node.value
+            if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr in ("search", "match")
+                    and ast.unparse(inner.func.value) == "re"):
+                bad.append(f"{name}:{node.lineno} — {ast.unparse(node)[:60]}")
+    assert not bad, ("`re.search(...).group()`을 그대로 부르고 있어요. 매치가 없으면 "
+                     "페이지가 죽어요:\n  " + "\n  ".join(bad))
+
+
+@case
+def t_weekly_store_csvs_are_cached_by_file_signature():
+    """주간보고의 저장소 CSV는 **캐시 함수 안에서만** 읽는다.
+
+    주간보고는 저장소를 세션이 아니라 디스크에서 매번 읽는다(발송성과는 세션에 들고
+    있어 이 문제가 없다). 조직×카테고리 실파일이 70만 행이라, 캐시가 없으면 CSV 파싱
+    0.42초 + `orgcat_fill` 0.26초를 **조직×카테고리를 안 쓰는 페이지까지** 매 리런 낸다.
+    증상이 '전체적으로 좀 느리네'로만 보여 원인이 안 드러나는 종류다.
+
+    `pd.read_csv(<모듈 상수>)`만 본다 — 업로드 파일 파서는 `io.BytesIO(...)`라 안 걸린다.
+    """
+    tree = _tree("weekly_report.py")
+    def _cached(fn):
+        for d in fn.decorator_list:
+            if "cache_data" in ast.unparse(d) or "cache_resource" in ast.unparse(d):
+                return True
+        return False
+    bad = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, _FUNC) or _cached(fn):
+            continue
+        for n in _own_nodes(fn):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "read_csv" and n.args
+                    and isinstance(n.args[0], ast.Name)):
+                bad.append(f"{fn.name}():{n.lineno} — pd.read_csv({n.args[0].id})")
+    assert not bad, ("저장소 CSV를 캐시 밖에서 읽고 있어요. 파일 서명"
+                     "(`os.stat`의 mtime_ns·size)을 인자로 받는 `@st.cache_data` 함수로 "
+                     "옮겨 주세요:\n  " + "\n  ".join(bad))
+
+
 def main():
     fails = []
     for fn in CASES:

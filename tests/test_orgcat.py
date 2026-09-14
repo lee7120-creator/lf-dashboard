@@ -248,6 +248,99 @@ def _channel_grid():
     return rows + body
 
 
+def _daily_frame(days=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), vals=None):
+    """일별 조직×카테고리 한 벌 — 값을 날마다 다르게 심는다.
+
+    같은 값으로 심으면 평균을 내든 **아무 하루만 집든** 결과가 같아서, 파생이 하루치를
+    돌려주는 버그를 못 잡는다. 실제로 그 버그가 났다 — 조인 뒤 `sortkey`를 접미어 없는
+    쪽(일별 정렬키)으로 묶어 월 값이 그 달 1일 값 그대로였고, 실파일에서 최대 59% 어긋났다.
+    """
+    T = W.ORGCAT_TOTAL
+    rows = []
+    for i, d in enumerate(days):
+        # 비율이 날마다 **달라지게** 심는다 — rev/cus가 상수면 '평균을 냈는지 다시
+        # 만들었는지'가 같은 값이 되어 규칙을 깨도 안 잡힌다(처음에 그렇게 심었다).
+        rev, cus, uv = 100.0 + i * 10, 10.0 + i * i, 200.0 + i * 7
+        for node in ((T, T), ("e-영업1", T), ("e-영업1", "가방")):
+            f = 1.0 if node == (T, T) else 0.5
+            for met, v in (("첫구매 거래액", rev * f), ("첫구매 고객수", cus * f),
+                           ("상품UV", uv * f)):
+                rows.append(dict(gran="일", metric=met, org=node[0], cat=node[1],
+                                 brand="", item="", ch=W.ORGCAT_CH_ALL, lfms="N",
+                                 year=2026, label=f"1/{d}", close="final",
+                                 sortkey=20260100 + d, value=v))
+    return pd.DataFrame(rows)[W.ORGCAT_COLS]
+
+
+@case
+def t_weekly_and_monthly_are_derived_from_daily():
+    """일별만 있어도 **주·월이 나온다** — 같은 실적을 세 파일로 받아 올리지 않게.
+
+    실파일 대조 근거: 2025년 일별을 그 달 평균으로 묶으면 월별 파일과 **원 단위까지
+    같다**(거래액·고객수·상품UV·객단가·상품CR·거래액비중 13개월 전부 오차 0.00%).
+    고객수·상품UV가 기간 단위로 중복제거된 값이 아니라는 뜻이라 파생이 성립한다.
+    """
+    d = _daily_frame()
+    out = W.orgcat_derive_periods.__wrapped__(d)
+    assert (out["gran"] == "월").any(), "월이 안 만들어졌어요"
+    assert (out["gran"] == "주").any(), "주가 안 만들어졌어요"
+
+    def v(gran, met, org=W.ORGCAT_TOTAL, cat=W.ORGCAT_TOTAL):
+        r = out[(out["gran"] == gran) & (out["metric"] == met)
+                & (out["org"] == org) & (out["cat"] == cat)]
+        return None if r.empty else float(r["value"].iloc[0])
+
+    src = d[(d["metric"] == "첫구매 거래액") & (d["org"] == W.ORGCAT_TOTAL)
+            & (d["cat"] == W.ORGCAT_TOTAL)]["value"]
+    want = float(src.mean())
+    got = v("월", "첫구매 거래액")
+    assert abs(got - want) < 1e-6, f"월 거래액이 일평균이 아니에요 — {got} (기대 {want})"
+    assert abs(got - float(src.iloc[0])) > 1e-6, \
+        "월 값이 **첫날 값 그대로**예요 — 하루씩 따로 묶였어요"
+
+    # **비율은 평균이 아니라 다시 만든다** — 합÷합이라야 다른 화면과 규칙이 같다
+    rev = v("월", "첫구매 거래액"); cus = v("월", "첫구매 고객수")
+    aov = v("월", "첫구매 객단가")
+    assert aov is not None and abs(aov - rev / cus) < 1e-6, \
+        f"객단가가 거래액÷고객수가 아니에요 — {aov} vs {rev / cus}"
+    daily_aov = float((src.values / d[(d["metric"] == "첫구매 고객수")
+                                      & (d["org"] == W.ORGCAT_TOTAL)
+                                      & (d["cat"] == W.ORGCAT_TOTAL)]["value"].values).mean())
+    assert abs(aov - daily_aov) > 1e-9, "날마다의 객단가를 평균 냈어요"
+
+
+@case
+def t_uploaded_periods_beat_derived_ones():
+    """**파일이 준 값이 늘 이긴다** — 파생은 빈자리만 채운다.
+
+    주·월 파일을 올리던 방식이 그대로 살아야 한다. 파생이 덮으면 사용자가 올린 마감값이
+    조용히 사라지는데, 증상은 '숫자가 좀 다르네'로만 보인다.
+    """
+    d = _daily_frame()
+    mine = d.iloc[:1].copy()
+    mine["gran"], mine["label"], mine["sortkey"] = "월", "1월", 20260100
+    mine["value"] = 99_999.0
+    out = W.orgcat_derive_periods.__wrapped__(pd.concat([d, mine], ignore_index=True))
+    r = out[(out["gran"] == "월") & (out["metric"] == mine["metric"].iloc[0])
+            & (out["org"] == mine["org"].iloc[0]) & (out["cat"] == mine["cat"].iloc[0])]
+    assert len(r) == 1, f"같은 칸이 둘이에요 — {len(r)}"
+    assert float(r["value"].iloc[0]) == 99_999.0, \
+        f"파생이 파일 값을 덮었어요 — {r['value'].iloc[0]}"
+    # 그 기간은 '만들었다' 표식에서도 빠져야 한다
+    made = out.attrs.get("orgcat_derived", set())
+    assert ("월", 2026, "1월") not in made, f"파일이 채운 기간이 표식에 남았어요 — {made}"
+
+
+@case
+def t_derivation_is_a_noop_without_daily_rows():
+    """일별이 없으면 아무것도 안 만든다 — 주·월만 올리던 사용자에게 달라질 게 없어야 한다."""
+    d = _daily_frame()
+    only_m = d.copy()
+    only_m["gran"], only_m["label"] = "월", "1월"
+    out = W.orgcat_derive_periods.__wrapped__(only_m)
+    assert len(out) == len(only_m), f"행이 늘었어요 — {len(only_m)} → {len(out)}"
+
+
 @case
 def t_channel_axis_is_recognised_not_read_as_brand():
     """구분08이 **채널**로 오면 브랜드 레벨이 아니라 `ch` 축으로 받는다.
