@@ -9,6 +9,7 @@
 로컬 실행:
     python tests/test_funnel_page.py
 """
+import ast
 import datetime
 import inspect
 import io
@@ -1729,6 +1730,37 @@ def _ftrend_tbl(at):
 
 
 @case
+def t_trend_excel_carries_the_whole_year_not_the_screen_slice():
+    """②의 엑셀은 **올해 전체**다 — 화면만 자른다.
+
+    화면을 자르는 건 눈이 감당 못 해서지 그 뒤가 필요 없어서가 아니다. 받아서 쓰는 쪽은
+    연중을 통째로 놓고 보므로, 화면은 최근 `FUNNEL_TREND_KEEP`개 · 파일은 안 자른 `tbl`로
+    갈라 준다(`wtable(dl_data=)`).
+
+    화면 쪽은 실제로 잘렸는지 렌더해서 세고, 파일 쪽은 `dl_data`가 **`keep`으로 자르지
+    않은** 표를 받는지 소스로 본다 — 지연 다운로드라 AppTest가 바이트를 못 만든다.
+    """
+    at = _open(unit="주")
+    tbl = _ftrend_tbl(at)
+    assert tbl is not None, "②의 추이표가 없어요"
+    vals = [c for c in tbl.columns if not str(c[1]).endswith("증감")]
+    cap = W.FUNNEL_TREND_KEEP["주"]
+    assert len(vals) == cap, f"화면이 {cap}주로 안 잘렸어요 — {len(vals)}주"
+
+    fn = next(n for n in ast.walk(ast.parse(pathlib.Path(APP).read_text(encoding="utf-8")))
+              if isinstance(n, ast.FunctionDef) and n.name == "_render_funnel_trend")
+    call = next((n for n in ast.walk(fn)
+                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "wtable"), None)
+    assert call is not None, "②가 wtable을 안 써요"
+    kw = {k.arg: k for k in call.keywords}
+    assert "dl_data" in kw, ("②의 엑셀이 화면과 같은 잘린 표예요. 안 자른 `tbl`을 "
+                             "`dl_data=`로 넘기세요.")
+    src = ast.unparse(kw["dl_data"].value)
+    assert "keep" not in src, f"`dl_data`가 화면 슬라이스를 받고 있어요 — {src}"
+    assert "tbl" in src, f"`dl_data`가 추이표를 안 받아요 — {src}"
+
+
+@case
 def t_trend_block_draws_charts_and_a_yoy_table():
     """②는 차트와 표를 같이 낸다. 표는 기간마다 **바로 오른쪽**에 전년비 증감 칸."""
     at = _open()
@@ -1802,6 +1834,37 @@ def t_join_rate_is_the_same_metric_everywhere():
     assert abs(float(a.iloc[-1]) - FILE_AOV) < 1e-6, float(a.iloc[-1])
 
 
+@case
+def t_report_val_actually_honours_the_channel():
+    """`report_val`은 **고른 채널의 값**을 줘야 한다.
+
+    `funnel_val(g, met, seg="*TOTAL")`이 `g(met, seg)`로 부르기 때문에, 람다에 채널을
+    기본인자로 묶어 둬도 `seg`를 같이 넘기지 않으면 `*TOTAL`로 덮인다. 그러면 「03
+    채널별 실적」 표의 **모든 채널 줄이 전체와 같은 숫자**로 뜬다 — 화면은 멀쩡히 떠서
+    값을 세어 보지 않으면 안 드러난다(실제로 그 상태로 배포됐다).
+
+    셋(`pick`·`report_val`·`report_series`)이 같은 칸에서 같은 값을 줘야 한다.
+    """
+    d = synth_store()
+    seen = {}
+    for seg in ("*TOTAL", "직접", "광고"):
+        want = VALS[2026][seg]["traffic"]
+        pk = W.pick(d, "월", "비회원트래픽", seg, 2026, "1월", "mtd")
+        rv = W.report_val(d, "월", "비회원트래픽", seg, 2026, "1월", "mtd")
+        rs = W.report_series(d, "월", "비회원트래픽", seg, 2026, "mtd").get("1월")
+        assert pk == want, f"{seg}: pick {pk} ≠ {want}"
+        assert rv == want, f"«{seg}» report_val이 채널을 안 봐요 — {rv} (원값 {want})"
+        assert rs == want, f"«{seg}» report_series가 채널을 안 봐요 — {rs}"
+        seen[seg] = rv
+    assert len(set(seen.values())) == 3, f"채널마다 값이 갈려야 해요 — {seen}"
+    # 비율 칸도 채널마다 갈린다(전체 1.00% · 직접 2.00% · 광고 0.33%)
+    got = {seg: W.report_val(d, "월", "가입율", seg, 2026, "1월", "mtd")
+           for seg in ("*TOTAL", "직접", "광고")}
+    for seg, v in got.items():
+        want = VALS[2026][seg]["join"] / VALS[2026][seg]["traffic"]
+        assert abs(v - want) < 1e-9, f"«{seg}» 가입율 {v} ≠ {want} — {got}"
+
+
 # ── 기간 단위 — 화면 전체가 하나를 본다 ──────────────────────────────
 @case
 def t_one_granularity_switch_drives_the_page():
@@ -1827,10 +1890,10 @@ def t_daily_unit_renders_every_block():
     for mark in ("① ", "② ", "③ ", "④ ", "⑥ "):
         assert mark in txt, f"일자별에서 {mark} 블록이 안 보여요"
     assert _kpi(at, "비회원트래픽"), "일자별에서 퍼널 카드가 안 그려졌어요"
-    # 사이드바엔 일자 선택이 없으니 이 화면에서 고른다
-    day = [s for s in at.selectbox if s.label == "기준 일자"]
+    # 사이드바엔 일자 선택이 없으니 이 화면에서 고른다 — 하루가 아니라 **기간**으로
+    day = [x for x in at.get("select_slider") if getattr(x, "key", None) == "wr_fn_day"]
     assert day, [s.label for s in at.selectbox]
-    assert "/" in str(day[0].value), day[0].value
+    assert all("/" in str(v) for v in day[0].value), day[0].value
 
 
 @case
@@ -1873,6 +1936,25 @@ def t_daily_trend_shows_a_month_of_days():
 
 
 # ── 페이지 재구성 · 03 채널별 실적 ──────────────────────────────────
+def _ch_specs(at):
+    """「03」 채널별 추이 차트들의 figure JSON."""
+    out = []
+    for e in at.get("plotly_chart"):
+        sp = json.loads(e.proto.spec)
+        if sp.get("data"):
+            out.append(sp)
+    return out
+
+
+def _ch_color(at, seg):
+    """그 채널 선의 색 — 채널을 넣고 뺄 때 안 바뀌어야 한다."""
+    for sp in _ch_specs(at):
+        for t in sp.get("data", []):
+            if t.get("name") == seg:
+                return (t.get("line") or {}).get("color")
+    return None
+
+
 def _open_page(page, store=None, orgcat=None):
     """임시 폴더에 스토어를 깔고 그 페이지로 이동."""
     from streamlit.testing.v1 import AppTest
@@ -1934,6 +2016,171 @@ def t_channel_page_has_one_unit_and_no_metric_picker():
     mets = [m for m in W.METRICS7 if (synth_store()["metric"] == m).any()]
     assert len(at.get("plotly_chart")) >= len(mets), \
         f"차트 {len(at.get('plotly_chart'))}장 — 지표 {len(mets)}종을 다 그려야 해요"
+
+
+@case
+def t_daily_unit_asks_for_a_range_not_one_day():
+    """일자별은 **기준일 하나가 아니라 조회 기간**이다. 기본은 최근 3주.
+
+    하루치는 퍼널이 통째로 비는 날이 흔해 ①이 '데이터가 부족해요'로 끝난다. 기간으로
+    묶어야 화면이 선다.
+    """
+    for page, key in (("02", "wr_fn_day"), ("03", "wr_ch_day")):
+        at = _open(unit="일") if page == "02" else _open_page("03. 채널별 실적")
+        if page == "03":
+            [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value("일")
+            at.run()
+        assert not at.exception, (page, at.exception[0].value)
+        assert not [b for b in at.selectbox if b.label == "기준 일자"], \
+            f"{page}: 기준 일자 셀렉트가 남아 있어요"
+        sl = [x for x in at.get("select_slider") if getattr(x, "key", None) == key]
+        assert sl, f"{page}: 조회 기간 슬라이더가 없어요"
+        assert sl[0].label == "조회 기간", sl[0].label
+        opts = list(sl[0].options)
+        lo, hi = sl[0].value
+        span = opts.index(hi) - opts.index(lo) + 1
+        want = min(W.DAY_RANGE_DEFAULT, len(opts))
+        assert span == want, f"{page}: 기본이 {span}칸 — {want}칸이어야 해요"
+        assert hi == opts[-1], f"{page}: 기본이 최근에 안 붙어 있어요 — {hi} vs {opts[-1]}"
+
+
+@case
+def t_range_values_are_daily_averages_not_sums():
+    """기간을 묶어도 값은 **일평균**이다 — 합으로 묶으면 3주가 하루의 21배로 찍힌다.
+
+    합성 데이터는 날마다 같은 원값이라, 평균이면 하루치와 같고 합이면 배수로 뛴다.
+    """
+    one = W.pick(synth_store(), "일", "비회원트래픽", "*TOTAL", 2026, "1/1", "mtd")
+    labs = [f"{m}/{d}" for m in (1, 2) for d in DAILY_DAYS]
+    many = W.pick(synth_store(), "일", "비회원트래픽", "*TOTAL", 2026, labs, "mtd")
+    assert not pd.isna(one) and not pd.isna(many), (one, many)
+    assert abs(many - one) < 1e-6, f"기간 값이 일평균이 아니에요 — 하루 {one} vs {len(labs)}일 {many}"
+
+
+@case
+def t_range_aov_is_volume_weighted_not_a_mean_of_daily_aovs():
+    """기간의 객단가는 **거래액 합 ÷ 고객수 합**이다 — 날마다의 객단가를 평균 내면 안 된다.
+
+    거래가 적은 날이 많은 날과 같은 무게를 갖게 된다(가입율을 계산으로 되돌린 것과 같은
+    이유). 픽스처는 파일 객단가(111,111)와 계산 객단가(100,000)를 **일부러 다르게** 심어
+    둬서, 한 칸이면 파일 값이·기간이면 계산 값이 나와야 한다.
+    """
+    d = synth_store()
+    one = W.report_val(d, "일", "첫구매 객단가", "*TOTAL", 2026, "1/1", "mtd")
+    assert abs(one - FILE_AOV) < 1, f"한 칸은 파일 값이어야 해요 — {one}"
+    labs = [f"{m}/{dd}" for m in (1, 2) for dd in DAILY_DAYS]
+    many = W.report_val(d, "일", "첫구매 객단가", "*TOTAL", 2026, labs, "mtd")
+    want = VALS[2026]["*TOTAL"]["rev"] / VALS[2026]["*TOTAL"]["cust"]
+    assert abs(many - want) < 1, \
+        f"기간 객단가가 파일 값 평균이에요 — {many} (계산값 {want}이어야)"
+
+
+@case
+def t_channel_chart_filters_channels_and_years():
+    """「03」 차트는 **채널을 넣고 빼고**, **전년도 켤 수 있다**.
+
+    표는 다 놓고 보면서 차트만 두세 채널로 좁혀 맞대는 게 이 화면의 쓰임새라, 사이드바
+    선택을 그대로 따라가면 표까지 같이 좁아진다. 색은 채널·선 모양은 연도라, 채널을
+    빼도 남은 선의 색이 바뀌지 않는다.
+    """
+    at = _open_page("03. 채널별 실적")
+    ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_ch_chart_ch"]
+    assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
+    chans = list(ms[0].options)
+    assert len(chans) >= 2, f"채널이 둘 이상이어야 검사가 서요 — {chans}"
+    assert set(ms[0].value) == set(chans), f"기본은 전체 채널이어야 해요 — {ms[0].value}"
+
+    _names = lambda a: {t.get("name") for sp in _ch_specs(a) for t in sp.get("data", [])}
+    before, color = _names(at), _ch_color(at, chans[0])
+    assert set(chans) <= before, f"채널 선이 다 안 그려졌어요 — {before}"
+
+    # 채널 하나를 빼면 그 선만 사라지고, 남은 선의 색은 그대로다
+    ms[0].set_value([chans[0]]); at.run()
+    assert not at.exception, at.exception[0].value
+    after = _names(at)
+    assert chans[1] not in after, f"«{chans[1]}»를 뺐는데 남아 있어요 — {after}"
+    assert chans[0] in after, f"«{chans[0]}»가 사라졌어요 — {after}"
+    assert _ch_color(at, chans[0]) == color, "채널을 뺐더니 남은 선의 색이 바뀌었어요"
+
+    # 전년을 켜면 얇은 점선이 붙는다
+    cb = [c for c in at.checkbox if getattr(c, "key", None) == "wr_ch_chart_py"]
+    assert cb, [(c.label, getattr(c, "key", None)) for c in at.checkbox]
+    cb[0].set_value(True); at.run()
+    assert not at.exception, at.exception[0].value
+    dots = [t for sp in _ch_specs(at) for t in sp.get("data", [])
+            if (t.get("line") or {}).get("dash") == "dot"]
+    assert dots, "전년을 켰는데 점선이 없어요"
+    assert all(str(2025) in str(t.get("name", "")) for t in dots), \
+        f"전년 선 이름에 연도가 없어요 — {[t.get('name') for t in dots]}"
+    # 없는 데이터를 이어 그리지 않는다
+    assert all(t.get("connectgaps") is False
+               for sp in _ch_specs(at) for t in sp.get("data", [])), \
+        "빈 기간을 직선으로 이어요 — connectgaps=False 여야 해요"
+
+    # 둘 다 끄면 왜 비었는지 말한다
+    [c for c in at.checkbox if getattr(c, "key", None) == "wr_ch_chart_cy"][0].set_value(False)
+    cb2 = [c for c in at.checkbox if getattr(c, "key", None) == "wr_ch_chart_py"]
+    cb2[0].set_value(False); at.run()
+    assert not at.exception, at.exception[0].value
+    assert any("연도를 골라" in t for t in _texts(at)), \
+        "연도를 다 껐는데 왜 비었는지 안 말해요"
+
+
+@case
+def t_orgcat_chart_sits_with_the_table_not_below_the_factor_block():
+    """⑤도 **표 바로 뒤에 차트**다 — 위 채널별과 같은 얼굴.
+
+    표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 예전엔 연중
+    추이가 요인 분해 뒤로 밀려 있어서 표와 같이 못 봤다.
+    """
+    src = inspect.getsource(W._render_funnel_orgcat)
+    assert "_funnel_orgcat_trend(" in src, \
+        "⑤ 블록이 연중 추이를 아예 안 그려요 — 표만 있으면 흐름을 못 본다"
+    i_ch = src.index("_funnel_orgcat_trend(")
+    i_fb = src.index('"어디에서 빠졌나')
+    assert i_ch < i_fb, "연중 추이가 아직 요인 분해 뒤에 있어요"
+    i_tb = src.index('key="wr_fn_orgsel"')
+    assert i_tb < i_ch, "연중 추이가 조직 표보다 먼저 나와요"
+
+
+@case
+def t_orgcat_chart_filters_items():
+    """⑤ 연중 추이도 **항목을 넣고 뺀다** — 조직이 많으면 선이 엉킨다.
+
+    색은 **전체 목록** 기준으로 굳혀야 한다 — 빼는 순간 남은 선의 색이 바뀌면 맞대던
+    걸 다시 찾아야 한다(순서로 색을 매기니 먼저 좁히면 색이 밀린다).
+    """
+    at = _open()
+    ms = [m for m in at.multiselect
+          if str(getattr(m, "key", "")).startswith("wr_fn_trend_items_")]
+    assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
+    items = list(ms[0].options)
+    assert len(items) >= 2, f"항목이 둘 이상이어야 검사가 서요 — {items}"
+    assert set(ms[0].value) == set(items), f"기본은 전체 항목이어야 해요 — {ms[0].value}"
+
+    sp = _trend_spec(at)
+    assert sp, "⑤ 연중 추이 차트를 못 찾았어요"
+    _color = lambda spec, nm: next(
+        ((t.get("line") or {}).get("color") for t in spec.get("data", [])
+         if str(t.get("name", "")).startswith(nm)), None)
+    keep, drop = items[0], items[1]
+    c0 = _color(sp, keep)
+    assert c0, f"«{keep}» 선이 없어요 — {[t.get('name') for t in sp.get('data', [])]}"
+
+    ms[0].set_value([keep]); at.run()
+    assert not at.exception, at.exception[0].value
+    sp2 = _trend_spec(at)
+    names = [str(t.get("name", "")) for t in sp2.get("data", [])]
+    assert not any(n.startswith(drop) for n in names), f"«{drop}»를 뺐는데 남아 있어요 — {names}"
+    assert _color(sp2, keep) == c0, "항목을 뺐더니 남은 선의 색이 바뀌었어요"
+
+    # 하나도 안 고르면 왜 비었는지 말한다
+    ms2 = [m for m in at.multiselect
+           if str(getattr(m, "key", "")).startswith("wr_fn_trend_items_")]
+    ms2[0].set_value([]); at.run()
+    assert not at.exception, at.exception[0].value
+    assert any("항목을 하나도" in t for t in _texts(at)), \
+        "항목을 다 뺐는데 왜 비었는지 안 말해요"
 
 
 @case

@@ -244,6 +244,63 @@ def t_pages_are_not_referenced_by_number():
                      + "\n  ".join(bad))
 
 
+def _page_map(name):
+    """앱이 실제로 내거는 **페이지 → 하위탭** 표를 모은다.
+
+    주간보고는 `PAGES` 리스트(하위탭 없음), 발송성과는 그룹 dict(키=페이지, 값=하위탭)다.
+    어느 쪽이든 **번호로 시작하는 문자열**이라 모양으로 찾는다 — 변수명을 박으면 이름을
+    바꿀 때 검사가 조용히 빈 표를 보고 통과한다.
+    """
+    pages = {}
+    for node in ast.walk(_tree(name)):
+        if isinstance(node, ast.Dict):
+            got = {k.value: {c.value for c in v.elts
+                             if isinstance(c, ast.Constant) and isinstance(c.value, str)}
+                   for k, v in zip(node.keys, node.values)
+                   if (isinstance(k, ast.Constant) and isinstance(k.value, str)
+                       and re.match(r"^\d+\.\s", k.value) and isinstance(v, ast.List))}
+        elif isinstance(node, ast.List):
+            got = {c.value: set() for c in node.elts
+                   if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                   and re.match(r"^\d+\.\s", c.value)}
+        else:
+            continue
+        if len(got) >= 3:                # 페이지 목록이라고 볼 만한 덩어리만
+            for k, v in got.items():
+                pages.setdefault(k, set()).update(v)
+    return pages
+
+
+@case
+def t_page_references_in_prose_match_the_real_pages():
+    """안내 문구가 가리키는 「NN. 페이지 › 하위탭」이 **실제로 있어야** 한다.
+
+    번호 참조를 금지하면 정확한 참조(`「12. 회원UV·거래액」`)까지 죽는다. 금지가 아니라
+    **대조**라야 썩은 것만 잡힌다.
+
+    실제로 페이지를 9→7로 줄인 뒤 「09. 조직·카테고리별 실적」이라고 안내하는 문구가 둘
+    남아, **없는 페이지 번호로 사람을 보내고 있었다**. `page.startswith` 검사는 제어
+    흐름만 봐서 이걸 못 봤고, 증상은 화면이 멀쩡히 떠서 눈으로도 안 잡힌다.
+    """
+    _norm = lambda t: re.sub(r"\s+", " ", t).strip()
+    bad = []
+    for name in APPS:
+        pages = _page_map(name)
+        assert pages, f"{name}에서 페이지 목록을 못 찾았어요 — 검사가 헛돌고 있어요."
+        for node in ast.walk(_tree(name)):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            for ref in re.findall(r"「(\d+\.\s*[^」]+)」", node.value):
+                head, *rest = [_norm(x) for x in ref.split("›")]
+                if head not in pages:
+                    bad.append(f"{name}:{node.lineno} — 「{ref}」 (그런 페이지가 없어요)")
+                elif rest and pages[head] and rest[0] not in pages[head]:
+                    bad.append(f"{name}:{node.lineno} — 「{ref}」 "
+                               f"({head}에 그런 하위탭이 없어요)")
+    assert not bad, ("없는 페이지를 가리키는 안내 문구예요. 번호를 고치거나 이름 상수를 "
+                     "쓰세요:\n  " + "\n  ".join(bad))
+
+
 def main():
     fails = []
     for fn in CASES:
