@@ -2210,7 +2210,7 @@ def yoy_summary_table(df, ref_year, ref_month, metrics):
     return pd.DataFrame(rows).set_index("구분"), (pm_y, pm_m)
 
 def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None,
-                delta_side="inline"):
+                delta_side="inline", win=None):
     """추이표: 행=지표, 열=(연도, 기간)
 
     `delta_year`를 주면 그 해의 각 기간에 전년 같은 기간 대비 증감 칸을 붙인다.
@@ -2224,10 +2224,16 @@ def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None,
 
     비교 대상은 **화면에 그린 연도와 무관하게** `delta_year - 1`을 직접 조회한다.
     전년을 안 그리고 있어도 증감은 나와야 한다.
+
+    `win`을 주면 **그 기간만** 낸다(화면 위 「조회 기간」). 안 주면 그 해 전체다 —
+    기간을 좁혀 놓고 추이만 연중으로 남으면 위아래가 다른 기간을 말하게 된다.
     """
+    _win = None if win is None else set(as_labels(win))
     spec, tail = [], []             # (연도, 표시 라벨, 조회 라벨, 비교 연도 or None)
     for y in years:
         for lb in labels_sorted(df, gran, [y]):
+            if _win is not None and str(lb) not in _win:
+                continue
             sub = df[(df["gran"] == gran) & (df["year"] == y) & (df["label"] == lb) &
                      df["value"].notna()]
             if sub.empty: continue
@@ -2300,13 +2306,17 @@ def base_layout(h=300, ysuffix="", title=""):
                    tickfont=dict(color="#64748b", size=10), ticksuffix=ysuffix),
     )
 
-def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
+def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300, win=None):
+    """`win`을 주면 그 기간만 그린다 — 화면 위 「조회 기간」을 따라가는 자리."""
     unit, div = METRIC_UNIT.get(metric, ("", 1))
     if metric in PCT_METRICS: div, unit = 0.01, "%"
     if gran == "월":
         x_all = [month_label(i) for i in range(1, 13)]
     else:
         x_all = labels_sorted(df, gran, years)
+    if win is not None:
+        _w = set(as_labels(win))
+        x_all = [x for x in x_all if str(x) in _w]
     fig = go.Figure()
     for i, y in enumerate(sorted(years)):
         # 연도마다 없는 주차(5주차 등)는 건너뛰고 선을 잇는다
@@ -3416,12 +3426,13 @@ def gran_ref(df, gran, ref_year, ref_month, wy, wlabel, metrics, daykey, box=Non
         if not wlabel:
             st.info("주차 데이터가 없어요. 다른 기간 단위를 골라 주세요.")
             return None
-        return dict(clabel=wlabel, cy=wy, py=wy - 1,
+        return dict(clabel=wlabel, win=None, cy=wy, py=wy - 1,
                     period_lbl=week_disp(wy, wlabel), base_lbl="전년 동주",
                     base_tag="전년동주", prv_close="final",
                     x_prv=f"{wy - 1}년", x_cur=f"{wy}년")
     if gran == "월":
-        return dict(clabel=month_label(ref_month), cy=ref_year, py=ref_year - 1,
+        return dict(clabel=month_label(ref_month), win=None,
+                    cy=ref_year, py=ref_year - 1,
                     period_lbl=f"{ref_year}년 {ref_month}월 누적(MTD)",
                     base_lbl="전년 동월 MTD", base_tag="전년동월",
                     # 전년 동월도 동일기간(MTD)으로 잘린 값 우선 — 「01」 요약 표와 같은 기준
@@ -3448,7 +3459,9 @@ def gran_ref(df, gran, ref_year, ref_month, wy, wlabel, metrics, daykey, box=Non
     i, j = days.index(lo), days.index(hi)
     clabel = days[min(i, j):max(i, j) + 1]
     disp = lbl_disp(clabel)
-    return dict(clabel=clabel, cy=ref_year, py=ref_year - 1,
+    # **고른 기간이 곧 아래 추이의 창이다.** 위에서 3주를 골라 놓고 아래 차트만 연중이면
+    # 같은 화면이 두 기간을 말하게 된다. 주·월은 범위 선택이 없어 `win=None`(연중)이다.
+    return dict(clabel=clabel, win=list(clabel), cy=ref_year, py=ref_year - 1,
                 period_lbl=f"{ref_year}년 {disp}",
                 base_lbl="전년 같은 기간" if len(clabel) > 1 else "전년 같은 날",
                 base_tag="전년동일", prv_close="final",
@@ -3627,6 +3640,9 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
     # 그 라벨은 *모든 지표·모든 채널*이 쓴 것이라 지금 보는 것과 무관한 칸이 섞이고,
     # 그 자리에서 모든 선이 나란히 끊겨 데이터가 빠진 것처럼 보인다.
     _x_all = labels_sorted(df, gran, [cy])
+    if ref.get("win") is not None:
+        _w = set(as_labels(ref["win"]))
+        _x_all = [x for x in _x_all if str(x) in _w]
     if not _x_all:
         st.info(f"{cy}년 «{FUNNEL_GRAN_LABEL[gran]}» 값이 없어요.")
         return
@@ -3728,6 +3744,7 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     clabel, cy, py = ref["clabel"], ref["cy"], ref["py"]
     period_lbl, base_lbl, base_tag = ref["period_lbl"], ref["base_lbl"], ref["base_tag"]
     prv_close, x_prv, x_cur = ref["prv_close"], ref["x_prv"], ref["x_cur"]
+    win = ref.get("win")          # 「조회 기간」 — 아래 추이 전부가 이 창을 본다
 
     def gcur(met, seg="*TOTAL"):
         return pick(df, gran, met, seg, cy, clabel, "mtd")
@@ -3801,7 +3818,7 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     st.subheader("② 퍼널 지표 추이")
     st.caption("①이 한 기간의 사진이라면 여기는 흐름이에요. 이상한 구간을 찾으면 "
                "사이드바에서 그 기간으로 옮겨 다시 보세요.")
-    _render_funnel_trend(df, gran, cy, py)
+    _render_funnel_trend(df, gran, cy, py, win)
 
     # ── ③ 채널별 퍼널 ──────────────────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -3958,7 +3975,8 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     # ── ⑤ 조직·카테고리별 첫구매 ────────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.subheader("⑤ 조직·카테고리별 첫구매")
-    _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_close)
+    _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
+                          prv_close, win)
 
     # ── ⑥ 신규회원 앱 설치·수신동의 ─────────────────────
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -3988,7 +4006,7 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
                     focus=f"{ref_year}년 {ref_month}월 액션·이슈 및 인사이트", memo=memo))
 
 
-def _render_funnel_trend(df, gran, cy, py):
+def _render_funnel_trend(df, gran, cy, py, win=None):
     """② 퍼널 지표 추이 — ①의 한 장면이 흐름 위 어디쯤인지.
 
     ①은 한 기간의 **사진**이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 같은 퍼널
@@ -4020,12 +4038,13 @@ def _render_funnel_trend(df, gran, cy, py):
     for i in range(0, len(sel), 3):
         for _col, _met in zip(st.columns(3), sel[i:i + 3]):
             with _col:
-                st.plotly_chart(yoy_chart(df, tg, _met, _yrs, h=280), width="stretch")
+                st.plotly_chart(yoy_chart(df, tg, _met, _yrs, h=280, win=win),
+                                width="stretch")
 
     # ── 표 — 기간마다 오른쪽에 전년 대비 증감 ──
     # 값을 왼쪽에 모으고 **증감은 오른쪽에 몰아**둔다 — 증감만 가로로 훑어야
     # '어느 기간부터 꺾였나'가 보인다. 03·04는 기간마다 끼우는 배치 그대로다.
-    tbl = trend_table(df, tg, sel, [cy], delta_year=cy, delta_side="right")
+    tbl = trend_table(df, tg, sel, [cy], delta_year=cy, delta_side="right", win=win)
     if tbl.empty:
         st.caption(f"{cy}년 «{FUNNEL_GRAN_LABEL.get(tg, tg)}» 값이 아직 없어요.")
         return
@@ -4088,7 +4107,8 @@ def _orgcat_master_gap(df, view, gran, met, cy, clabel):
     return float(m), float(o), (float(o) - float(m)) / abs(float(m))
 
 
-def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, prv_close):
+def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
+                          prv_close, win=None):
     """⑤ 조직 > 카테고리 — MICRO 조직×카테고리 export를 퍼널과 같은 기간으로 자른다.
 
     이 원천엔 **채널 축이 없다.** 그래서 ③의 채널 상세와 교차하지 않고 나란히 놓는다 —
@@ -4213,7 +4233,7 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, p
     # **표 바로 뒤에 차트를 둔다.** 표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런
     # 건지'를 못 본다. 예전엔 요인 분해 뒤로 밀려 있어서 표와 같이 못 봤다 — 위 채널별과
     # 같은 얼굴(표 → 차트)로 맞춘다.
-    _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran)
+    _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win)
 
     # 위에서 고른 게 있을 때만 펼친다 — 고르기 전엔 조직 표에 집중하게 둔다.
     # `expanded`는 리런마다 다시 먹으므로 행을 누르면 그 자리에서 열린다.
@@ -4401,7 +4421,7 @@ def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
            dl_name=f"요인 분해 {node_lbl} ({period_lbl})")
 
 
-def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
+def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win=None):
     """⑤ 하단 — 지금 보고 있는 자리의 **하위 항목별** 연중 흐름.
 
     표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 여기서
@@ -4483,6 +4503,11 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
     # 정작 올해 흐름이 눌린다. 전년은 같은 라벨끼리 맞대진다.
     _lb = (sub[sub["year"] == cy][["label", "sortkey"]].drop_duplicates()
            .sort_values("sortkey")["label"].astype(str).tolist())
+    # 화면 위 「조회 기간」을 따라간다 — 위에서 좁혀 놓고 여기만 연중이면 같은 화면이
+    # 두 기간을 말하게 된다.
+    if win is not None:
+        _w = set(as_labels(win))
+        _lb = [x for x in _lb if x in _w]
     if not _lb:
         st.caption(f"{cy}년 «{tg}» 데이터가 없어요.")
         return

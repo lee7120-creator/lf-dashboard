@@ -131,9 +131,13 @@ def synth_orgcat():
         # 거래액과 고객수를 서로 다른 비율로 흔들어 객단가도 같이 움직이게 한다 —
         # 둘이 같은 배수면 객단가가 고정돼 요인 분해가 한 요인만 가리킨다
         kr, kc = (1.0, 1.0) if y == 2026 else (0.8, 0.9)
+        # **일자별도 심는다.** 없으면 ⑤의 연중 추이가 일자별에서 아예 안 그려져,
+        # 「조회 기간」이 ⑤ 차트까지 좁히는지를 검사가 못 본다(실제로 못 잡았다).
         for gran, labels in (("월", [(f"{m}월", m * 100) for m in MONTHS]),
                              ("주", [(f"{m:02d}월 {w}주차", m * 100 + w)
-                                     for m in MONTHS for w in WEEKS])):
+                                     for m in MONTHS for w in WEEKS]),
+                             ("일", [(f"{m}/{d}", m * 100 + d)
+                                     for m in MONTHS for d in DAILY_DAYS])):
             for label, sk in labels:
                 sv = y * 10000 + sk
                 node(gran, label, sv, y, "*TOTAL", "*TOTAL", 50e6 * kr, 500 * kc)
@@ -1954,13 +1958,22 @@ def t_unit_only_offers_what_the_data_has():
 
 @case
 def t_daily_trend_shows_a_month_of_days():
-    """일자별 추이표도 **올해 전체**다 — 단위마다 자르는 규칙이 다르면 오갈 때 헷갈린다."""
+    """일자별 추이표는 **「조회 기간」만큼**이다 — 그 창이 화면 전체의 기간이라서다.
+
+    주·월은 범위 선택이 없어 연중 전체다(`t_trend_table_shows_the_whole_year…`).
+    단위마다 답이 다른 게 아니라, **창이 있으면 창을 따른다**는 한 규칙이다.
+    """
     at = _open(unit="일")
     tbl = _ftrend_tbl(at)
     assert tbl is not None, "일자별 추이표가 없어요"
     vals = [c for c in tbl.columns if "증감" not in c[1]]
-    want = len(W.labels_sorted(synth_store(), "일", [2026]))
-    assert len(vals) == want, f"올해 전체 {want}일이 아니라 {len(vals)}일만 떠요"
+    sl = [x for x in at.get("select_slider") if getattr(x, "key", None) == "wr_fn_day"]
+    opts = list(sl[0].options)
+    lo, hi = sl[0].value
+    want = opts[opts.index(lo):opts.index(hi) + 1]
+    assert [c[1] for c in vals] == want, f"창({len(want)}일)과 표({len(vals)}일)가 달라요"
+    assert len(want) == min(W.DAY_RANGE_DEFAULT, len(opts)), \
+        f"기본 창이 {len(want)}일이에요 — {W.DAY_RANGE_DEFAULT}일이어야 해요"
     assert all("/" in c[1] for c in vals), vals[:4]
 
 
@@ -2217,6 +2230,44 @@ def t_orgcat_chart_filters_items():
 
 
 @case
+def t_period_filter_scopes_the_trends_below():
+    """「조회 기간」을 좁히면 **아래 추이도 같이 좁아진다.**
+
+    위에서 3주를 골라 놓고 아래 차트·표만 연중으로 남으면 같은 화면이 두 기간을 말하게
+    된다. ②의 차트·표, ⑤의 연중 추이가 전부 이 창을 본다.
+
+    주·월은 범위 선택이 없어 연중 그대로다(`win=None`) — 그건 다른 검사가 본다.
+    """
+    at = _open(unit="일")
+    sl = [x for x in at.get("select_slider") if getattr(x, "key", None) == "wr_fn_day"]
+    assert sl, "조회 기간 슬라이더가 없어요"
+    opts = list(sl[0].options)
+    assert len(opts) >= 6, f"날짜가 6개는 있어야 검사가 서요 — {opts}"
+    lo, hi = opts[0], opts[2]           # 앞의 세 칸만 남긴다
+    sl[0].set_value((lo, hi)); at.run()
+    assert not at.exception, at.exception[0].value
+
+    tbl = _ftrend_tbl(at)
+    assert tbl is not None, "②의 추이표가 없어요"
+    vals = [str(c[1]) for c in tbl.columns if not str(c[1]).endswith("증감")]
+    assert vals == opts[:3], f"②의 표가 창을 안 따라가요 — {vals}"
+
+    # **추이 차트만** 본다 — 워터폴(기여 분해)은 x축이 기간이 아니라 항목이다.
+    seen = 0
+    for e in at.get("plotly_chart"):
+        spec = json.loads(e.proto.spec)
+        title = str((spec.get("layout", {}).get("title") or {}).get("text", ""))
+        if "추이" not in title:
+            continue
+        seen += 1
+        for t in spec.get("data", []):
+            xs = [str(x) for x in (t.get("x") or [])]
+            extra = [x for x in xs if x not in {W.month_trim(o) for o in opts[:3]}]
+            assert not extra, f"«{title}»가 창 밖을 그려요 — {extra[:4]}"
+    assert seen >= 2, f"추이 차트를 {seen}장밖에 못 찾았어요 — ②·⑤가 다 있어야 해요"
+
+
+@case
 def t_channel_by_period_table_is_whole_year_with_deltas():
     """「채널 × 기간」도 **올해 전체 + 오른쪽 전년비**다 — 세 표가 같은 얼굴이어야 한다.
 
@@ -2238,8 +2289,17 @@ def t_channel_by_period_table_is_whole_year_with_deltas():
         dlts = [c for c in cols if c.endswith("전년비")]
         assert cols == vals + dlts, f"{unit}: 값·전년비가 섞였어요 — {cols[:4]}"
         assert len(vals) == len(dlts), f"{unit}: 값 {len(vals)} vs 전년비 {len(dlts)}"
-        want = len(W.labels_sorted(synth_store(), unit, [2026]))
-        assert len(vals) == want, f"{unit}: 올해 전체 {want}개가 아니라 {len(vals)}개만 떠요"
+        # 일자별엔 「조회 기간」이 있어 그 창만큼이고, 주·월은 연중 전체다.
+        if unit == "일":
+            sl = [x for x in at.get("select_slider")
+                  if getattr(x, "key", None) == "wr_ch_day"]
+            assert sl, "일자별인데 조회 기간 슬라이더가 없어요"
+            o = list(sl[0].options)
+            lo, hi = sl[0].value
+            want = o.index(hi) - o.index(lo) + 1
+        else:
+            want = len(W.labels_sorted(synth_store(), unit, [2026]))
+        assert len(vals) == want, f"{unit}: {want}개가 아니라 {len(vals)}개가 떠요"
 
 
 @case
