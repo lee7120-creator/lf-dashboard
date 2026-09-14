@@ -103,29 +103,35 @@ def synth_store(with_push=True):
 # 「가방」은 **두 조직이 나눠 갖는다** — 조직 합산 경로를 실제로 밟게 하려고 그렇다.
 # 한 조직에만 있는 카테고리뿐이면 합산을 빼먹어도 값이 안 변해 검사가 무의미해진다.
 TREE = {"e-영업1": ["가방", "지갑"], "e-영업2": ["슈즈", "가방"]}
+# 조직×카테고리 export의 **채널 축**(구분08). 「채널별 첫구매 상세」가 쓰고, ⑤·「조직·
+# 카테고리별 실적」은 `*TOTAL`만 봐야 한다. 하나는 `CHART_CH_DEFAULT`에 없는 걸 넣어
+# (PUSH) 기본 선택 규칙도 같이 검증되게 한다.
+ORGCAT_CHS = ["직접", "광고", "PUSH"]
+# 합이 1이 **아니게** 둔다 — `*TOTAL`을 채널 합으로 대체해 버리면 값이 달라진다.
+ORGCAT_CH_SHARE = [0.5, 0.3, 0.4]
 
 
 def synth_orgcat():
     """조직 > 카테고리 2단 — 브랜드·상품 칸은 지금 실제 export처럼 비워 둔다."""
     rows = []
 
-    def add(gran, label, sortkey, year, org, cat, met, v):
+    def add(gran, label, sortkey, year, org, cat, met, v, ch=W.ORGCAT_CH_ALL):
         rows.append({"gran": gran, "metric": met, "org": org, "cat": cat,
-                     "brand": "", "item": "", "lfms": "N", "year": year,
+                     "brand": "", "item": "", "ch": ch, "lfms": "N", "year": year,
                      "label": label, "close": "final", "sortkey": sortkey,
                      "value": float(v)})
-    def node(gran, label, sk, y, org, cat, rev, cust):
+    def node(gran, label, sk, y, org, cat, rev, cust, ch=W.ORGCAT_CH_ALL):
         """한 노드에 다섯 지표를 다 심는다.
 
         `거래액 = 상품UV × 상품CR × 객단가`가 **정확히** 성립하게 만든다 — 실파일에서
         오차 0.000%로 맞는 항등식이라, 여기서 깨 두면 요인 분해 테스트가 아무것도 못 잡는다.
         """
         uv, cr = cust * 20.0, 0.05
-        add(gran, label, sk, y, org, cat, "첫구매 거래액", rev)
-        add(gran, label, sk, y, org, cat, "첫구매 고객수", cust)
-        add(gran, label, sk, y, org, cat, "첫구매 객단가", rev / cust)
-        add(gran, label, sk, y, org, cat, "상품UV", uv)
-        add(gran, label, sk, y, org, cat, "상품CR", cr)
+        add(gran, label, sk, y, org, cat, "첫구매 거래액", rev, ch)
+        add(gran, label, sk, y, org, cat, "첫구매 고객수", cust, ch)
+        add(gran, label, sk, y, org, cat, "첫구매 객단가", rev / cust, ch)
+        add(gran, label, sk, y, org, cat, "상품UV", uv, ch)
+        add(gran, label, sk, y, org, cat, "상품CR", cr, ch)
 
     for y in YEARS:
         # 거래액과 고객수를 서로 다른 비율로 흔들어 객단가도 같이 움직이게 한다 —
@@ -148,6 +154,20 @@ def synth_orgcat():
                     for cat in cats:
                         node(gran, label, sv, y, org, cat, part * kr, 150 * kc)
                     base = 20e6
+                # ── 채널 축 ──
+                # 새 export는 구분08에 채널을 실어 온다. **채널 합이 `*TOTAL`과 다르게**
+                # 심어 둔다 — 화면이 `*TOTAL`만 봐야 하는 자리에서 채널을 같이 세면
+                # 값이 대번에 달라져 검사가 잡는다. 같게 심으면 규칙을 깨도 안 잡힌다.
+                for i, c in enumerate(ORGCAT_CHS):
+                    f = ORGCAT_CH_SHARE[i]
+                    node(gran, label, sv, y, "*TOTAL", "*TOTAL",
+                         50e6 * kr * f, 500 * kc * f, c)
+                    for org, cats in TREE.items():
+                        node(gran, label, sv, y, org, "*TOTAL",
+                             30e6 * kr * f, 300 * kc * f, c)
+                        for cat in cats:
+                            node(gran, label, sv, y, org, cat,
+                                 10e6 * kr * f, 150 * kc * f, c)
     return pd.DataFrame(rows)[W.ORGCAT_COLS]
 
 
@@ -421,7 +441,9 @@ def t_orgcat_lists_orgs_with_rowclick_hint():
 def t_org_row_opens_its_categories():
     """행을 누른 뒤 나오는 표 — 화면이 부르는 것과 같은 헬퍼로 값을 대조한다."""
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     kids = view.live(("e-영업1",))[0]
     assert set(kids) == set(TREE["e-영업1"]), kids
@@ -824,7 +846,9 @@ def t_rollup_cr_matches_the_identity():
     CR이 두 배로 부풀어 이 검사에 걸린다.
     """
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     cat = next(c for c in {c for v in TREE.values() for c in v}
                if sum(c in v for v in TREE.values()) > 1)
@@ -1239,7 +1263,9 @@ def t_tables_open_with_a_total_row():
     자식 합이 상위를 넘고(실파일 +2.4%·+33%), 객단가·상품CR은 애초에 더할 수 없다.
     """
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     orgs = view.live(())[0]
     tbl = W._funnel_level_table(view, [], orgs, "조직", "첫구매 거래액", 2026, 2025,
@@ -1312,7 +1338,9 @@ def t_factor_block_shows_customer_count_without_double_counting():
 def t_customer_count_equals_uv_times_cr():
     """`고객수 = 상품UV × 상품CR` — 이 항등식이 깨지면 위 표가 거짓말이 된다."""
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     seen = 0
     for path in [(), ("e-영업1",), ("e-영업1", "가방"), ("e-영업2",)]:
@@ -1508,7 +1536,9 @@ def t_orgcat_trend_uses_year_colors_when_single_item():
     회색으로 눌려 한눈에 안 들어온다.
     """
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     org = W.orgcat_view(sub).live(())[0][0]
 
     at = _open()
@@ -1560,7 +1590,9 @@ def t_orgcat_trend_follows_the_drilldown():
     (표 클릭은 AppTest가 흉내 못 내지만 선택 상태는 세션으로 넣을 수 있다).
     """
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     orgs = view.live(())[0]
     lbs = (sub[sub["year"] == 2026][["label", "sortkey"]].drop_duplicates()
@@ -2027,9 +2059,10 @@ def t_pages_are_reordered_without_the_trend_pages():
     """
     at = _open()
     pages = list([r for r in at.sidebar.radio if r.label == "페이지"][0].options)
-    assert pages == ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적", "03. 채널별 실적",
-                     "04. 앱푸시 동의 현황", "05. 첫구매 고객 세그먼트 성과",
-                     "06. 조직·카테고리별 실적", "07. 통합 데이터·다운로드"], pages
+    assert pages == ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적",
+                     "03. 조직·카테고리·채널별 첫구매 상세", "04. 채널별 실적",
+                     "05. 앱푸시 동의 현황", "06. 첫구매 고객 세그먼트 성과",
+                     "07. 조직·카테고리별 실적", "08. 통합 데이터·다운로드"], pages
 
 
 @case
@@ -2050,7 +2083,7 @@ def t_trend_page_memos_moved_not_lost():
 @case
 def t_channel_page_has_one_unit_and_no_metric_picker():
     """「03 채널별 실적」도 **지표를 안 고르고 다 그린다** — 월 고정도 풀었다."""
-    at = _open_page("03. 채널별 실적")
+    at = _open_page("04. 채널별 실적")
     rd = [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"]
     assert rd, [(r.label, getattr(r, "key", None)) for r in at.radio]
     assert list(rd[0].options) == ["일자별", "주차별", "월별"], list(rd[0].options)
@@ -2068,7 +2101,7 @@ def t_daily_unit_asks_for_a_range_not_one_day():
     묶어야 화면이 선다.
     """
     for page, key in (("02", "wr_fn_day"), ("03", "wr_ch_day")):
-        at = _open(unit="일") if page == "02" else _open_page("03. 채널별 실적")
+        at = _open(unit="일") if page == "02" else _open_page("04. 채널별 실적")
         if page == "03":
             [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value("일")
             at.run()
@@ -2125,7 +2158,7 @@ def t_channel_chart_filters_channels_and_years():
     선택을 그대로 따라가면 표까지 같이 좁아진다. 색은 채널·선 모양은 연도라, 채널을
     빼도 남은 선의 색이 바뀌지 않는다.
     """
-    at = _open_page("03. 채널별 실적")
+    at = _open_page("04. 채널별 실적")
     ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_ch_chart_ch"]
     assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
     chans = list(ms[0].options)
@@ -2268,6 +2301,85 @@ def t_period_filter_scopes_the_trends_below():
 
 
 @case
+def t_orgcat_blocks_read_only_the_all_channel_rows():
+    """⑤와 「조직·카테고리별 실적」은 **전 채널(`*TOTAL`) 행만** 본다.
+
+    새 export가 채널로도 쪼개 오는데 여기서 섞으면 같은 조직이 채널 수만큼 중복돼
+    합계가 통째로 부풀어 오른다. 픽스처는 채널 합이 `*TOTAL`과 **다르게** 심어 뒀으니,
+    거르지 않으면 값이 대번에 달라진다.
+    """
+    oc = synth_orgcat()
+    assert set(ORGCAT_CHS) <= set(oc["ch"].unique()), \
+        f"픽스처에 채널 행이 없어요 — {sorted(oc['ch'].unique())}"
+    at = _open()
+    met = [b for b in at.selectbox if getattr(b, "key", None) == "wr_fn_ocmet"][0].value
+    got = next((f for f in _frames(at)
+                if "조직" in [str(c) for c in f.columns]), None)
+    assert got is not None, [list(f.columns)[:3] for f in _frames(at)]
+
+    def _v(ch, year):
+        r = oc[(oc["gran"] == "주") & (oc["ch"] == ch) & (oc["org"] == "*TOTAL")
+               & (oc["cat"] == "*TOTAL") & (oc["metric"] == met) & (oc["year"] == year)]
+        return None if r.empty else W.fmt_value(met, r["value"].iloc[0])
+
+    cells = [str(v) for v in got.iloc[0].tolist()]      # 맨 윗줄 = 합계
+    want = _v(W.ORGCAT_CH_ALL, 2026)
+    assert want in cells, f"⑤ 합계가 전 채널 값이 아니에요 — {want} 없음, {cells}"
+    # 채널을 안 거르면 뷰가 **마지막 채널 행**을 돌려준다(같은 키를 뒤 행이 이긴다)
+    bad = _v(ORGCAT_CHS[-1], 2026)
+    assert bad != want and bad not in cells, \
+        f"⑤가 채널 행을 집었어요 — «{ORGCAT_CHS[-1]}» 값 {bad}"
+
+
+@case
+def t_channel_page_crosses_orgs_with_channels():
+    """새 화면은 **행=조직 · 열=채널**이고 채널을 복수로 고른다.
+
+    「조직·카테고리별 실적」은 채널을 안 가르고 조직을 깊이 파고드는 화면이고, 여기는
+    조직 × 채널 교차가 주인공이다. 축이 셋이라 한 화면에 다 넣으면 표가 안 읽힌다.
+    """
+    at = _open_page("03. 조직·카테고리·채널별 첫구매 상세")
+    assert not at.exception, at.exception[0].value
+    ms = [m for m in at.multiselect if getattr(m, "key", None) == "occ_chs"]
+    assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
+    opts = list(ms[0].options)
+    assert set(opts) == set(ORGCAT_CHS), f"채널 선택지가 달라요 — {opts}"
+    # 기본은 「채널별 실적」 차트와 같은 넷 — 픽스처엔 직접·광고만 그 안에 있다
+    want = [c for c in W.CHART_CH_DEFAULT if c in opts]
+    assert set(ms[0].value) == set(want), f"기본이 {ms[0].value} — {want}이어야 해요"
+
+    got = next((f for f in _frames(at) if "조직" in [str(c) for c in f.columns]), None)
+    assert got is not None, [list(f.columns)[:3] for f in _frames(at)]
+    cols = [str(c) for c in got.columns if str(c) != "조직"]
+    vals = [c for c in cols if not c.endswith("전년비")]
+    assert vals[0] == "전체", f"첫 열이 «전체»여야 해요 — {vals[:3]}"
+    assert vals[1:] == want, f"열이 고른 채널을 안 따라가요 — {vals}"
+    assert cols == vals + [f"{c} 전년비" for c in vals], f"값·전년비가 섞였어요 — {cols}"
+
+    # 채널을 하나 빼면 그 열이 사라진다
+    ms[0].set_value([want[0]]); at.run()
+    assert not at.exception, at.exception[0].value
+    got2 = next((f for f in _frames(at) if "조직" in [str(c) for c in f.columns]), None)
+    c2 = [str(c) for c in got2.columns]
+    assert want[1] not in c2, f"«{want[1]}»를 뺐는데 남아 있어요 — {c2}"
+    assert want[0] in c2 and "전체" in c2, c2
+
+
+@case
+def t_channel_page_says_why_when_there_is_no_channel_axis():
+    """채널 축이 없는 export만 올렸으면 **왜 못 보는지** 말한다.
+
+    빈 화면으로 두면 '데이터를 올렸는데 왜 안 나오지'로만 보인다.
+    """
+    oc = synth_orgcat()
+    oc = oc[oc["ch"] == W.ORGCAT_CH_ALL]
+    at = _open_page("03. 조직·카테고리·채널별 첫구매 상세", orgcat=oc)
+    assert not at.exception, at.exception[0].value
+    txt = " ".join(_texts(at))
+    assert "채널 축이 없어요" in txt, f"왜 비었는지 안 말해요 — {txt[:200]}"
+
+
+@case
 def t_channel_by_period_table_is_whole_year_with_deltas():
     """「채널 × 기간」도 **올해 전체 + 오른쪽 전년비**다 — 세 표가 같은 얼굴이어야 한다.
 
@@ -2275,7 +2387,7 @@ def t_channel_by_period_table_is_whole_year_with_deltas():
     단위(일/주/월)마다 규칙이 다르면 오갈 때 헷갈리니 셋 다 전체다.
     """
     for unit in ("월", "주", "일"):
-        at = _open_page("03. 채널별 실적")
+        at = _open_page("04. 채널별 실적")
         [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value(unit)
         at.run()
         assert not at.exception, (unit, at.exception[0].value)
@@ -2308,7 +2420,7 @@ def t_channel_chart_opens_with_the_usual_four():
 
     표는 그대로 다 놓는다(차트만 좁힌다). 데이터에 없는 채널은 자동으로 빠진다.
     """
-    at = _open_page("03. 채널별 실적")
+    at = _open_page("04. 채널별 실적")
     ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_ch_chart_ch"]
     assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
     want = [c for c in W.CHART_CH_DEFAULT if c in ms[0].options]
@@ -2324,7 +2436,7 @@ def t_channel_chart_opens_with_the_usual_four():
 def t_channel_table_puts_deltas_on_the_right():
     """「03」 표도 **왼쪽 실적 · 오른쪽 전년비**."""
     for unit in ("일", "주", "월"):
-        at = _open_page("03. 채널별 실적")
+        at = _open_page("04. 채널별 실적")
         [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value(unit)
         at.run()
         assert not at.exception, (unit, at.exception[0].value)
@@ -2344,7 +2456,7 @@ def t_download_page_builds_files_on_click():
     `st.download_button`은 data를 미리 받는 API라 그냥 넘기면 받지도 않는 리런마다
     전체를 CSV로 찍는다(원장 120만 행이면 그것만 몇 초다).
     """
-    at = _open_page("07. 통합 데이터·다운로드")
+    at = _open_page("08. 통합 데이터·다운로드")
     labels = [b.label for b in at.button]
     assert any("마스터" in l for l in labels), labels
     assert any("워크북" in l for l in labels), labels

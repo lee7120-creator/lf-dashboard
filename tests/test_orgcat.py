@@ -211,6 +211,89 @@ def case(fn):
     return fn
 
 
+def _channel_grid():
+    """구분08에 **채널**이 실린 export 한 벌 — 실파일과 같은 모양.
+
+    실파일(2026 일별)은 구분06=조직 · 구분07=카테고리 · **구분08=채널**(직접·광고·EP·
+    PUSH·제휴·브랜드광고·미디어커머스) · 구분09~11은 전부 `-`다. 채널 합이 그 위
+    `*TOTAL`과 오차 0.00%로 맞는 걸 확인했다.
+    """
+    CH = ["직접", "광고", "PUSH"]
+    rows = [[None] * 10 for _ in range(4)]
+    rows[0][7] = 2026                       # 연도(병합셀)
+    rows[1][7] = "Y"                        # LFMS(병합셀)
+    rows[2][1:7] = ["구분06", "구분07", "구분08", "구분09", "구분10", "구분11"]
+    rows[2][7], rows[2][8] = "1월", "2월"
+    rows[3][7], rows[3][8] = "월마감", "월마감"
+    body, v = [], 100.0
+    for org in ("*TOTAL", "e-영업1"):
+        for cat in ("*TOTAL", "가방"):
+            if org == "*TOTAL" and cat == "가방":
+                continue
+            for ci, ch in enumerate([None] + CH):     # None = 채널 합계(*TOTAL)
+                r = [None] * 10
+                if ci == 0:
+                    # **채널 칸을 비워 둔다.** 지금 실파일은 여기에 `*TOTAL`을 명시하지만,
+                    # 병합셀이라 비워 오는 판이 언제든 생긴다(브랜드 칸이 실제로 그렇게
+                    # 온다). 안 비우면 앞 카테고리의 마지막 채널이 조직 합계 행에 그대로
+                    # 따라붙어 값만 조용히 틀어진다.
+                    r[1], r[2] = org, cat
+                else:
+                    r[3] = ch
+                r[4] = r[5] = r[6] = "-"
+                r[7], r[8] = v, v * 2
+                v += 10
+                body.append(r)
+    body[0][0] = "일평균거래액"
+    return rows + body
+
+
+@case
+def t_channel_axis_is_recognised_not_read_as_brand():
+    """구분08이 **채널**로 오면 브랜드 레벨이 아니라 `ch` 축으로 받는다.
+
+    그대로 브랜드로 받으면 조직>카테고리>«직접» 뎁스가 생겨 파고들기가 뭉개진다.
+    파일명·시트명은 둘 다 「전체관점 …」이라 근거가 안 되니 **값만 보고** 가른다.
+    화면은 멀쩡히 떠서 눈으로는 안 잡히는 종류다.
+    """
+    d = W.parse_orgcat_grid(_channel_grid())
+    assert not d.empty, "채널 export를 못 읽었어요"
+    assert set(d["ch"].unique()) == {W.ORGCAT_CH_ALL, "직접", "광고", "PUSH"}, \
+        sorted(d["ch"].unique())
+    assert set(d["brand"].unique()) == {W.ORGCAT_NONE}, \
+        f"채널이 브랜드 칸에 들어갔어요 — {sorted(d['brand'].unique())}"
+    # 채널 행도 조직·카테고리를 그대로 이어받아야 한다(병합셀)
+    got = set(map(tuple, d[["org", "cat", "ch"]].drop_duplicates().values))
+    assert ("*TOTAL", "*TOTAL", "직접") in got, sorted(got)
+    assert ("e-영업1", "가방", "PUSH") in got, sorted(got)
+
+
+@case
+def t_channel_axis_resets_when_the_category_changes():
+    """카테고리가 새로 찍히면 채널은 **전 채널로 초기화**된다.
+
+    병합셀이라 안 비우면 앞 카테고리의 마지막 채널이 따라붙어, 그 조직의 합계 행이
+    조용히 «PUSH» 값이 된다 — 값만 틀리고 화면은 멀쩡하다.
+    """
+    d = W.parse_orgcat_grid(_channel_grid())
+    r = d[(d["org"] == "e-영업1") & (d["cat"] == "*TOTAL") & (d["ch"] == W.ORGCAT_CH_ALL)]
+    assert not r.empty, ("조직 합계 행이 전 채널로 안 잡혔어요 — "
+                         f"{sorted(set(map(tuple, d[['org','cat','ch']].values)))}")
+
+
+@case
+def t_old_backup_without_a_channel_column_reads_as_all_channels():
+    """채널 칸이 없던 백업은 **전 채널**로 읽힌다.
+
+    빈 칸으로 두면 화면이 `*TOTAL`만 보는 순간 옛 데이터가 통째로 안 잡혀 빈 화면이
+    된다 — 증상이 '데이터가 없다'로만 보인다.
+    """
+    d = synth_orgcat_df().drop(columns=["ch"])
+    back = W.orgcat_fill(d)
+    assert (back["ch"] == W.ORGCAT_CH_ALL).all(), sorted(back["ch"].unique())
+
+
+
 # ── 파싱 ────────────────────────────────────────────────────────────
 @case
 def t_detects_and_parses_all_grans():
@@ -368,7 +451,7 @@ def t_store_csv_roundtrip():
 
 # ── 화면 ────────────────────────────────────────────────────────────
 @contextlib.contextmanager
-def _run(page="06. 조직·카테고리별 실적", orgcat=None, master=True):
+def _run(page="07. 조직·카테고리별 실적", orgcat=None, master=True):
     """페이지를 연 AppTest를 넘겨준다. 블록 안에서 at.run()을 더 불러도 되도록
     (위젯을 바꿔 다시 그리는 테스트가 있다) 임시 앱 디렉터리를 블록이 끝날 때 치운다."""
     from streamlit.testing.v1 import AppTest
@@ -613,7 +696,7 @@ def hand_frame(spec):
                 "첫구매 고객수": uv * cr, "첫구매 거래액": uv * cr * aov}
         for met, v in vals.items():
             rec.append(dict(gran="월", metric=met, org=org, cat=cat,
-                            brand="", item="", lfms="N",
+                            brand="", item="", ch=W.ORGCAT_CH_ALL, lfms="N",
                             year=year, label="1월", close="final",
                             sortkey=year * 10000 + 100, value=float(v)))
     return pd.DataFrame(rec)[W.ORGCAT_COLS]
@@ -854,7 +937,8 @@ def _adversarial():
 
     def add(node, met, y, lab, close, val):
         R.append(dict(zip(W.ORGCAT_LV, list(node) + [T] * (4 - len(node))),
-                      gran="월", metric=met, lfms="N", year=y, label=lab,
+                      gran="월", metric=met, ch=W.ORGCAT_CH_ALL, lfms="N",
+                      year=y, label=lab,
                       sortkey=y * 10000 + int(lab[:-1]) * 100, close=close, value=val))
 
     for y in (2025, 2026):
@@ -879,7 +963,8 @@ def _adversarial():
     add(("큰조직",), "첫구매 고객수", 2026, "1월", "final", 222.0)
     # ③ 중간이 빈 행 — 어떤 경로로도 잡히면 안 된다
     R.append(dict(zip(W.ORGCAT_LV, ["큰조직", N, "유령브랜드", T]),
-                  gran="월", metric="첫구매 거래액", lfms="N", year=2026, label="1월",
+                  gran="월", metric="첫구매 거래액", ch=W.ORGCAT_CH_ALL, lfms="N",
+                  year=2026, label="1월",
                   sortkey=20260100, close="final", value=777_777.0))
     # 값이 비어 있는 행 — final이 NaN이면 mtd로 내려가야 한다
     add(("큰조직", "다"), "첫구매 거래액", 2026, "1월", "final", float("nan"))
@@ -954,7 +1039,8 @@ def t_lookup_does_not_rescan_the_frame():
                 for met in ("첫구매 거래액", "첫구매 고객수", "첫구매 객단가"):
                     for j, nd in enumerate(nodes):
                         rows.append(dict(zip(W.ORGCAT_LV, nd), gran="월", metric=met,
-                                         lfms="N", year=y, label=f"{per}월",
+                                         ch=W.ORGCAT_CH_ALL, lfms="N",
+                                         year=y, label=f"{per}월",
                                          sortkey=y * 10000 + per * 100, close="final",
                                          value=float((j + 1) * 1000 + per)))
     sub = pd.DataFrame(rows, columns=W.ORGCAT_COLS)
