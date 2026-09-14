@@ -3116,6 +3116,27 @@ def guard_multi(key, opts):
             st.session_state[key] = keep
 
 
+def follow_options(key, opts):
+    """«전체 선택»으로 시작하는 다중선택이 **데이터를 따라가게** 한다.
+
+    `key`가 붙은 위젯은 `default=`가 최초 1회만 먹는다. 그래서 전체로 시작한 필터는
+    새 항목이 생겨도 옛 목록을 계속 써서 **그 항목이 화면에서 통째로 사라진다**
+    (기간 필터에서 겪은 것과 같은 자리 — 증상이 'F5 누르면 보인다'로만 나타난다).
+
+    직전 옵션 전체를 같이 기억해 두고 **세션값이 그것과 같으면**(=손을 안 댄 필터면)
+    새 전체 목록으로 갱신한다. 직접 좁혀 둔 선택은 경계 안으로만 자르고 안 건드린다.
+    """
+    seen = f"_{key}__opts"
+    cur, prev = st.session_state.get(key), st.session_state.get(seen)
+    if not isinstance(cur, (list, tuple)):
+        st.session_state[key] = list(opts)
+    elif prev is not None and set(cur) == set(prev):
+        st.session_state[key] = list(opts)
+    else:
+        st.session_state[key] = [v for v in cur if v in opts]
+    st.session_state[seen] = list(opts)
+
+
 # 조직·카테고리 목록엔 실적이 사실상 없는 행이 섞여 온다 — 미매칭·기타·라움워치·리빙사업부·
 # PROJECT-C·e-Corner·SPACE-R. 실파일 전 기간을 다 더해도 수천 원이라, 살아 있는 조직(15~33%)과
 # 수만 배 차이다. 표·차트·히트맵 자리만 차지하면서 아무것도 말해 주지 않는다.
@@ -3153,6 +3174,10 @@ class OrgcatView:
     """
 
     __slots__ = ("_final", "_mtd", "_kids", "_rev", "depth")
+
+    # 카테고리를 좁혀 본 상태인가. 파일 값을 그대로 쓰는 원본은 늘 False다
+    # (`_CatFilteredView`가 True로 덮는다) — 화면 문구가 이걸로 갈린다.
+    narrowed = False
 
     def __init__(self, sub):
         self._final, self._mtd, self._kids, self._rev = {}, {}, {}, {}
@@ -3242,6 +3267,97 @@ def orgcat_view(sub):
     _OCVIEW_LAST[0], _OCVIEW_LAST[1] = sub, v
     return v
 
+
+
+# 상위 값을 «고른 카테고리»에서 다시 만들 때 쓰는 축. 화면 지표 다섯을 이 셋으로 덮는다.
+_CATFIX_BASE = ("첫구매 거래액", "첫구매 고객수", "상품UV")
+
+
+class _CatFilteredView:
+    """카테고리 몇 개만 남기고 본 조회 뷰 — 상위 값을 **다시 만든다**.
+
+    "전년에 슈즈에서 잘 팔리던 브랜드가 올해 빠졌다" 같은 일이 생기면 그 카테고리를
+    빼고 나머지를 봐야 한다. 그런데 **뺀 뒤의 조직 합계·전체 합계는 파일에 없다** —
+    파일 값을 그대로 두면 뺀 카테고리가 그 안에 그대로 들어 있어 표가 스스로 모순된다.
+
+    그래서 상위 값은 고른 카테고리에서 다시 만든다. 규칙은 카테고리 합산 표
+    (`_funnel_cat_rollup`)와 **같은 것**이다 — 거래액·고객수·상품UV는 더하고,
+    객단가 = 거래액합 ÷ 고객수합, 상품CR = 고객수합 ÷ 상품UV합
+    (`거래액 = 상품UV × 상품CR × 객단가`와 `거래액 = 고객수 × 객단가`에서 나오는
+    항등식이다). 고객수·상품UV는 유니크 값이라 합이 조금 부풀려지는 것까지 같다 —
+    지어내지 않고 화면에 밝힌다.
+
+    카테고리 «아래»(브랜드·상품)와 카테고리 자신은 손대지 않고 그대로 넘긴다.
+    """
+
+    narrowed = True
+
+    def __init__(self, view, cats):
+        self._v = view
+        self._cs = set(cats)
+        self._memo = {}
+        self.depth = getattr(view, "depth", 0)
+
+    def children(self, path):
+        kids = self._v.children(path)
+        return [k for k in kids if k in self._cs] if len(tuple(path)) == 1 else kids
+
+    def live(self, path=()):
+        path = tuple(path)
+        live, hidden = self._v.live(path)
+        if len(path) == 1:
+            return [k for k in live if k in self._cs], hidden
+        if not path:
+            # 고른 카테고리를 하나도 안 가진 조직은 뺀다 — 빈 줄만 남는다
+            return [o for o in live
+                    if any(c in self._cs for c in self._v.live((o,))[0])], hidden
+        return live, hidden
+
+    def _cats(self, path):
+        """이 노드 아래에서 값을 모을 (조직, 카테고리) 목록."""
+        path = tuple(path)
+        if len(path) == 1:
+            return [path + (c,) for c in self._v.live(path)[0] if c in self._cs]
+        return [(o, c) for o in self._v.live(())[0]
+                for c in self._v.live((o,))[0] if c in self._cs]
+
+    def get(self, path, metric, year, label, prefer="final"):
+        path = tuple(path)
+        if len(path) >= 2:                                # 카테고리 이하는 그대로
+            return self._v.get(path, metric, year, label, prefer)
+        key = (path, str(metric), year, tuple(as_labels(label)), prefer)
+        if key in self._memo:
+            return self._memo[key]
+        acc = {k: np.nan for k in _CATFIX_BASE}
+        for node in self._cats(path):
+            for k in _CATFIX_BASE:
+                v = self._v.get(node, k, year, label, prefer)
+                if not pd.isna(v):
+                    acc[k] = v if pd.isna(acc[k]) else acc[k] + v
+        rev, cust, uv = (acc[k] for k in _CATFIX_BASE)
+        if metric == "첫구매 객단가":
+            out = (rev / cust if not (pd.isna(rev) or pd.isna(cust) or not cust)
+                   else np.nan)
+        elif metric == "상품CR":
+            out = (cust / uv if not (pd.isna(cust) or pd.isna(uv) or not uv)
+                   else np.nan)
+        else:
+            out = acc.get({"첫구매 고객수": "첫구매 고객수",
+                           "상품UV": "상품UV"}.get(str(metric), "첫구매 거래액"), np.nan)
+        self._memo[key] = out
+        return out
+
+
+def cat_filtered_view(view, cats, all_cats):
+    """고른 카테고리가 전체와 같으면 **원본을 그대로** 돌려준다.
+
+    손을 안 댄 화면이 예전과 한 글자도 달라지지 않게 하려는 것이다 — 전체일 땐
+    상위 값이 파일 값 그대로여야 하고(다시 만들면 고객수가 살짝 부풀려진다),
+    괜한 재계산 비용도 없다.
+    """
+    if not cats or set(cats) >= set(all_cats):
+        return view
+    return _CatFilteredView(view, cats)
 
 def orgcat_node(sub, path, depth=None):
     """path(선택한 값들)가 가리키는 **합계 행**만 남긴 마스크.
@@ -4421,10 +4537,41 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
     # 위를 막고 있으면 정작 숫자가 안 보인다. 차이 자체는 접이식 라벨에 박아 둬서
     # 펼치지 않아도 눈에 들어온다(그게 신호고, 본문은 이유 설명이라 접어도 된다).
     _gap = _orgcat_master_gap(df, view, gran, met, cy, clabel)
-    orgs = view.live(())[0]
-    if not orgs:
+    _orgs_all = view.live(())[0]
+    if not _orgs_all:
         st.info("조직 항목이 없어요.")
         return
+
+    # ── 볼 카테고리 — **⑤ 블록 전체가 이 하나를 본다** ─────────────────
+    # 전년에 잘 팔리던 브랜드가 올해 빠지면 그 카테고리 하나가 전년비를 통째로 끌어내려
+    # 나머지가 안 보인다. 그럴 땐 빼고 봐야 한다. 표만 거르고 합계·차트·요인 분해를
+    # 그대로 두면 같은 화면이 두 모집단을 말하게 되므로 **아래 전부**에 같이 건다.
+    _cats_all = []
+    for _o in _orgs_all:
+        for _c in view.live((_o,))[0]:
+            if _c not in _cats_all:
+                _cats_all.append(_c)
+    if len(_cats_all) > 1:
+        follow_options("wr_fn_cats", _cats_all)
+        _cat_sel = st.multiselect(
+            "볼 카테고리", _cats_all, key="wr_fn_cats",
+            help="뺀 카테고리는 아래 표·차트·요인 분해에서 다 빠져요. 조직 합계와 "
+                 "전체 합계도 남은 카테고리에서 다시 만들어요.")
+        if not _cat_sel:
+            st.info("볼 카테고리를 하나도 안 골랐어요. 위에서 골라 주세요.")
+            return
+    else:
+        _cat_sel = _cats_all
+    view = cat_filtered_view(view, _cat_sel, _cats_all)
+    orgs = view.live(())[0]
+    if not orgs:
+        st.info("고른 카테고리를 가진 조직이 없어요.")
+        return
+    if view.narrowed:
+        st.caption(f"카테고리 {len(_cats_all)}개 중 **{len(_cat_sel)}개**만 보고 있어요. "
+                   "조직 합계·전체 합계는 파일 값이 아니라 **남은 카테고리에서 다시 "
+                   "만든 값**이에요 — 고객수·상품UV는 같은 사람이 여러 조직에 잡혀 "
+                   "합이 조금 부풀려져요.")
     # 상위와 합이 맞는 지표는 거래액 하나뿐이다 — 나머지는 유니크 값이라 비중을 붙이면
     # 거짓말이 된다(같은 사람이 여러 조직에 잡혀 합이 전체를 넘는다).
     additive = met in ORGCAT_ADDITIVE
@@ -4441,9 +4588,12 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
     ev = wtable(_hl_row(_org_sty, _pre), width="stretch", key="wr_fn_orgsel",
                 on_select="rerun", selection_mode="single-cell", hide_index=True,
                 dl_name=f"조직별 {met} ({period_lbl})", dl_data=_org_sty)
-    st.caption("맨 윗줄은 **합계**예요(파일이 준 전체 값이라 아래 합과 꼭 같진 않아요). "
-               "조직 한 줄에서 **아무 칸이나 누르면** 그 줄에 색이 들어오고 아래에 그 "
-               "조직의 카테고리가 열려요. 합계 줄을 누르면 다시 닫혀요.")
+    st.caption("맨 윗줄은 **합계**예요"
+               + ("(남은 카테고리에서 다시 만든 값이에요)."
+                  if view.narrowed else
+                  "(파일이 준 전체 값이라 아래 합과 꼭 같진 않아요).")
+               + " 조직 한 줄에서 **아무 칸이나 누르면** 그 줄에 색이 들어오고 아래에 그 "
+                 "조직의 카테고리가 열려요. 합계 줄을 누르면 다시 닫혀요.")
 
     picked = _picked_child(ev, orgs)
 
@@ -4478,7 +4628,8 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
     # **표 바로 뒤에 차트를 둔다.** 표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런
     # 건지'를 못 본다. 예전엔 요인 분해 뒤로 밀려 있어서 표와 같이 못 봤다 — 위 채널별과
     # 같은 얼굴(표 → 차트)로 맞춘다.
-    _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win)
+    _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win,
+                         cats=_cat_sel, cats_all=_cats_all)
 
     # 위에서 고른 게 있을 때만 펼친다 — 고르기 전엔 조직 표에 집중하게 둔다.
     # `expanded`는 리런마다 다시 먹으므로 행을 누르면 그 자리에서 열린다.
@@ -4495,7 +4646,11 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
                    "구멍이 여기서 드러나요.")
         _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl,
                            prv_close)
-    _orgcat_gap_note(_gap, met)
+    if view.narrowed:
+        st.caption("카테고리를 좁혀 놓아서 ① 전체 퍼널과의 「합계 대사」는 건너뛰었어요 "
+                   "— 모집단이 달라 맞대도 알 수 있는 게 없어요.")
+    else:
+        _orgcat_gap_note(_gap, met)
 
 
 # 표 맨 위에 두는 기준 행의 이름. 합계가 없으면 개별 값이 큰지 작은지 가늠이 안 된다.
@@ -4667,7 +4822,8 @@ def _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
            dl_name=f"요인 분해 {node_lbl} ({period_lbl})")
 
 
-def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win=None):
+def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win=None,
+                         cats=None, cats_all=None):
     """⑤ 하단 — 지금 보고 있는 자리의 **하위 항목별** 연중 흐름.
 
     표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런 건지'를 못 본다. 여기서
@@ -4712,6 +4868,10 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win=None)
     if "lfms" in base.columns and len(base):
         sub = sub[sub["lfms"] == base["lfms"].iloc[0]]
     view = orgcat_view(sub)
+    # 위에서 고른 카테고리를 여기도 그대로 건다 — 표만 좁히고 차트를 그대로 두면
+    # 같은 화면이 두 모집단을 말하게 된다. `tg`가 달라 뷰를 새로 만들지만 규칙은 같다.
+    if cats is not None and cats_all is not None:
+        view = cat_filtered_view(view, cats, cats_all)
     # 그릴 대상 — 한 단계 아래 항목 전부. 더 내려갈 데가 없으면 그 노드 자신.
     kids = view.live(tuple(path))[0]
     items = ([(k, tuple(path) + (k,)) for k in kids] if kids
@@ -4826,8 +4986,13 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win=None)
     # ── 차트 아래 같은 값을 표로 — ②·03과 같은 얼굴(왼쪽 실적 · 오른쪽 증감) ──
     # 차트는 흐름을, 표는 숫자를 준다. 선만 있으면 '9월 2주차가 정확히 얼마였나'를 못 읽어
     # 결국 엑셀을 받아야 한다. 행=항목, 열=기간이라 ②(행=지표)와 축만 다르고 얼굴은 같다.
+    # **맨 위에 합계 행을 둔다** — 기준점이 없으면 'e-영업1 201명'이 큰지 작은지
+    # 가늠이 안 된다. 값은 지금 보고 있는 노드(자식들의 상위)의 **파일 값 그대로**지
+    # 자식 합이 아니다 — 고객수·상품UV는 유니크라 합이 상위를 넘고 객단가·상품CR은
+    # 애초에 더할 수 없다(위 레벨 표·합산 표와 같은 규칙).
     _trows, _drows = {}, {}
-    for nm, _pth in items:
+    _rows_src = ([(TOTAL_ROW, tuple(path))] if kids else []) + list(items)
+    for nm, _pth in _rows_src:
         _cv = {lb: view.get(_pth, met, cy, lb, "mtd") for lb in _lb}
         _pv = {lb: view.get(_pth, met, py, lb, "mtd") for lb in _lb}
         _trows[nm] = {month_trim(lb): fmt_value(met, _cv[lb]) for lb in _lb}
@@ -4841,9 +5006,13 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win=None)
         _tt.index.name = "항목"
         wtable(style_delta_cols(_tt), width="stretch",
                dl_name=f"{node_lbl} {met} {tg}별 추이 ({cy}년)")
-        st.caption(f"위 차트와 같은 값이에요. 왼쪽은 {cy}년 실적, 오른쪽은 **{py}년 같은 "
-                   f"기간 대비 증감**이에요. {cy}년 **{len(_lb)}개 기간 전체**를 담았어요 — "
-                   "옆으로 밀어서 보세요.")
+        _tcap = (f"위 차트와 같은 값이에요. 왼쪽은 {cy}년 실적, 오른쪽은 **{py}년 같은 "
+                 f"기간 대비 증감**이에요. {cy}년 **{len(_lb)}개 기간 전체**를 담았어요 — "
+                 "옆으로 밀어서 보세요.")
+        if kids:
+            _tcap += (f" 맨 윗줄 **합계**는 «{esc(node_lbl)}»의 파일 값이라 아래 항목 "
+                      "합과 꼭 같진 않아요. 차트엔 안 그려요.")
+        st.caption(_tcap)
 
 
 def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, prv_close):
@@ -4925,8 +5094,9 @@ def _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl, pr
             "상품CR": "더할 수 없는 지표라 **고객수 합 ÷ 상품UV 합**으로 다시 만들었어요 "
                     "(`거래액 = 상품UV × 상품CR × 객단가`에서 나오는 항등식이에요). "
                     "중복이 분자·분모에 같이 들어가 상품UV 단독보다는 왜곡이 작아요."}
-    st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)} · 맨 윗줄 **합계**는 파일이 "
-               f"준 전체 값이라 아래 카테고리 합과 꼭 같진 않아요. {_why.get(met, '')}")
+    st.caption(f"{period_lbl} vs {base_lbl} · {esc(met)} · 맨 윗줄 **합계**는 "
+               f"{'고른 카테고리에서 다시 만든 값' if view.narrowed else '파일이 준 전체 값'}"
+               f"이라 아래 카테고리 합과 꼭 같진 않아요. {_why.get(met, '')}")
     wtable(style_delta_cols(tbl), width="stretch",
            dl_name=f"카테고리 전체 {met} ({period_lbl})")
 

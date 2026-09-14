@@ -1823,7 +1823,9 @@ def t_orgcat_chart_comes_with_a_table_of_the_same_values():
             got = f
     assert got is not None, ("⑤ 차트 아래 추이표가 없어요 — "
                              f"본 표들: {[f.index.name for f in _frames(at)]}")
-    assert set(got.index) == drawn, f"표의 항목이 차트와 달라요 — 표 {set(got.index)} vs 차트 {drawn}"
+    assert got.index[0] == W.TOTAL_ROW, f"맨 윗줄이 합계가 아니에요 — {list(got.index)[:3]}"
+    assert set(got.index) - {W.TOTAL_ROW} == drawn, \
+        f"표의 항목이 차트와 달라요 — 표 {set(got.index)} vs 차트 {drawn}"
     cols = [str(c) for c in got.columns]
     vals = [c for c in cols if not c.endswith("증감")]
     dlts = [c for c in cols if c.endswith("증감")]
@@ -2683,6 +2685,161 @@ def t_pick_index_follows_a_new_frame():
     got2 = W.pick(b, "월", one["metric"], one["segment"], int(one["year"]),
                   str(one["label"]), one["close"])
     assert got2 == got + 12345.0, f"새 프레임인데 옛 값을 줬어요 — {got2} (원래 {got})"
+
+
+@case
+def t_orgcat_trend_table_opens_with_a_total_row():
+    """⑤ 추이표도 **맨 위에 합계 행**을 둔다 — 기준점이 없으면 크기를 못 가늠한다.
+
+    값은 지금 보고 있는 노드의 **파일 값 그대로**지 자식 합이 아니다. 고객수·상품UV는
+    유니크라 자식 합이 상위를 넘고(실파일 +2.4%·+33%) 객단가·상품CR은 애초에 더할 수
+    없다 — 레벨 표·합산 표와 같은 규칙이다. 자식 합을 적으면 화면은 멀쩡히 뜨고
+    숫자만 틀린다.
+    """
+    at = _open()
+    got = None
+    for f in _frames(at):
+        if f.index.name == "항목":
+            got = f
+    assert got is not None, f"⑤ 추이표가 없어요 — {[f.index.name for f in _frames(at)]}"
+    assert got.index[0] == W.TOTAL_ROW, f"맨 윗줄이 합계가 아니에요 — {list(got.index)[:3]}"
+
+    # 합계 칸이 파일이 준 «전체» 값인지 — 자식 합과 «다르게» 나오는 지표로 본다.
+    sp = _trend_spec(at)
+    lbls = [str(x) for x in sp["data"][0]["x"]]
+    sub = synth_orgcat()
+    sub = sub[(sub["gran"] == "주") & (sub["lfms"] == "N")
+              & (sub["ch"] == W.ORGCAT_CH_ALL)]
+    view = W.orgcat_view(sub)
+    met = str(_sel_oc(at).value)
+    kids = view.live(())[0]
+    col = next(c for c in got.columns if not str(c).endswith("증감"))
+    raw = next(lb for lb in
+               sub[sub["year"] == 2026]["label"].astype(str).unique()
+               if W.month_trim(lb) == str(col))
+    want = W.fmt_value(met, view.get((), met, 2026, raw, "mtd"))
+    kid_sum = sum(view.get((k,), met, 2026, raw, "mtd") for k in kids)
+    assert want != W.fmt_value(met, kid_sum), (
+        "픽스처에서 전체 값과 자식 합이 같아요 — 규칙을 깨도 안 잡혀요")
+    assert got.loc[W.TOTAL_ROW, col] == want, \
+        f"합계가 파일 값이 아니에요 — {got.loc[W.TOTAL_ROW, col]} (파일 {want})"
+    assert str(col) in " ".join(lbls), f"표 열이 차트 축과 달라요 — {col} vs {lbls[:3]}"
+
+
+def _cat_pick(at):
+    got = [m for m in at.multiselect if m.label == "볼 카테고리"]
+    assert got, [m.label for m in at.multiselect]
+    return got[0]
+
+
+def _rollup_frame(at):
+    fr = [f for f in _frames(at) if f.index.name == "카테고리"]
+    assert fr, f"합산 표가 없어요 — {[f.index.name for f in _frames(at)]}"
+    return fr[0]
+
+
+@case
+def t_orgcat_block_filters_categories():
+    """⑤는 **볼 카테고리를 고른다** — 뺀 카테고리는 블록 «전체»에서 빠진다.
+
+    전년에 잘 팔리던 브랜드가 올해 빠지면 그 카테고리 하나가 전년비를 통째로
+    끌어내려 나머지가 안 보인다. 표만 거르고 합계·차트를 그대로 두면 같은 화면이
+    두 모집단을 말하게 되므로 아래 전부에 같이 걸려야 한다.
+    """
+    at = _open(unit="월")
+    cats = sorted({c for v in TREE.values() for c in v})
+    assert len(cats) >= 3, cats
+    ms = _cat_pick(at)
+    assert set(ms.value) == set(cats), f"기본이 전체가 아니에요 — {ms.value}"
+
+    drop = cats[0]
+    ms.set_value([c for c in cats if c != drop]); at.run()
+    assert not at.exception, at.exception[0].value
+    assert drop not in set(_rollup_frame(at).index), \
+        f"«{drop}»를 뺐는데 합산 표에 남아 있어요 — {list(_rollup_frame(at).index)}"
+
+    # 차트·표도 같이 좁아진다 — 그 카테고리를 가진 조직으로 파고들어 확인한다
+    org = next(o for o, v in TREE.items() if drop in v)
+    at.session_state["wr_fn_orgsel"] = {
+        "selection": {"cells": [[1 + sorted(TREE).index(org), "조직"]], "rows": []}}
+    at.run()
+    assert not at.exception, at.exception[0].value
+    trend = [f for f in _frames(at) if f.index.name == "항목"]
+    assert trend, "⑤ 추이표가 없어요"
+    assert drop not in set(trend[-1].index), \
+        f"«{drop}»를 뺐는데 추이표에 남아 있어요 — {list(trend[-1].index)}"
+
+
+@case
+def t_narrowed_totals_are_rebuilt_not_file_values():
+    """카테고리를 빼면 **합계도 남은 것에서 다시 만든다**.
+
+    파일이 준 조직 합계·전체 합계엔 뺀 카테고리가 그대로 들어 있다. 그걸 그냥 두면
+    '슈즈를 빼고 봤다'는 화면인데 합계만 슈즈를 품고 있어 표가 스스로 모순된다.
+    증상이 '합계가 좀 크네'로만 보여서 눈으로는 안 잡힌다.
+    """
+    at = _open(unit="월")
+    cats = sorted({c for v in TREE.values() for c in v})
+    drop, keep = cats[0], [c for c in cats if c != cats[0]]
+    _cat_pick(at).set_value(keep); at.run()
+    assert not at.exception, at.exception[0].value
+
+    sub = synth_orgcat()
+    sub = sub[(sub["gran"] == "월") & (sub["lfms"] == "N")
+              & (sub["ch"] == W.ORGCAT_CH_ALL)]
+    raw = W.orgcat_view(sub)
+    met = str(_sel_oc(at).value)
+    lbl = _period_of(at)
+    want = sum(raw.get((o, c), met, 2026, lbl, "mtd")
+               for o in raw.live(())[0] for c in raw.live((o,))[0] if c in keep)
+    file_total = raw.get((), met, 2026, lbl, "mtd")
+    assert abs(want - file_total) > 1e-9, "픽스처에서 둘이 같아요 — 규칙을 깨도 안 잡혀요"
+
+    org_tbl = next(f for f in _org_frames(at))
+    got = org_tbl.loc[org_tbl["조직"] == W.TOTAL_ROW, "2026년"].iloc[0]
+    assert got == W.fmt_value(met, want), \
+        f"합계가 다시 만든 값이 아니에요 — {got} (남은 카테고리 합 {W.fmt_value(met, want)}, " \
+        f"파일 값 {W.fmt_value(met, file_total)})"
+    assert drop not in set(_rollup_frame(at).index)
+
+
+def _period_of(at):
+    """화면이 보고 있는 기준 기간 라벨 — 사이드바 선택을 **앱과 같은 꼴**로 만든다.
+
+    「기준 월」은 정수(9)를 돌려준다. 그대로 쓰면 저장된 라벨('9월')과 안 맞아
+    조회가 전부 NaN이 되고, 검사는 '둘이 같다'로 조용히 통과해 버린다.
+    """
+    m = [x for x in at.selectbox if x.label == "기준 월"]
+    if m:
+        return W.month_label(int(m[0].value))
+    w = [x for x in at.selectbox if x.label == "기준 주차"]
+    assert w, [x.label for x in at.selectbox]
+    return str(w[0].value)
+
+
+@case
+def t_untouched_filter_follows_new_options():
+    """**손 안 댄 전체 선택은 새 항목을 따라간다** (`follow_options`).
+
+    `key`가 붙은 위젯은 `default=`가 최초 1회만 먹어서, 전체로 시작한 필터는 새
+    카테고리가 생겨도 옛 목록을 계속 쓴다 — 그 항목이 화면에서 통째로 사라지고
+    증상은 'F5 누르면 보인다'로만 나타난다. 직접 좁힌 선택은 그대로 둔다.
+    """
+    import streamlit as _st
+    _st.session_state.clear()
+    k = "_t_follow"
+    W.follow_options(k, ["가", "나"])
+    assert _st.session_state[k] == ["가", "나"], _st.session_state[k]
+    W.follow_options(k, ["가", "나", "다"])
+    assert _st.session_state[k] == ["가", "나", "다"], \
+        f"손 안 댄 필터가 새 항목을 안 따라갔어요 — {_st.session_state[k]}"
+    _st.session_state[k] = ["가"]                      # 사용자가 직접 좁혔다
+    W.follow_options(k, ["가", "나", "다", "라"])
+    assert _st.session_state[k] == ["가"], \
+        f"좁혀 둔 선택을 덮었어요 — {_st.session_state[k]}"
+    W.follow_options(k, ["나", "다"])                   # 고른 값이 사라지면 잘라낸다
+    assert _st.session_state[k] == [], _st.session_state[k]
+    _st.session_state.clear()
 
 
 def main():
