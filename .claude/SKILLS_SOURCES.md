@@ -21,8 +21,9 @@ All source projects are **MIT licensed**. See each upstream repo for full text.
 | [obra/superpowers](https://github.com/obra/superpowers) | — | 14 skills | `SessionStart` hook (not auto-enabled) |
 | [luongnv89/claude-howto](https://github.com/luongnv89/claude-howto) | 2.1.x | 6 skills + 9 subagents + 8 slash commands | tutorial modules, `06-hooks/`, `07-plugins/` |
 | Notion "claude 프롬프트+스킬 모음" 배치 (아래 표 참고) | — | 40 skills | 중복/대량 번들/dead repo 제외 |
+| [epoko77-ai/im-not-ai](https://github.com/epoko77-ai/im-not-ai) | 2.3.2 | 3 skills (`humanize-korean`·`humanize`·`humanize-redo`) + 4 agents | 개발용 에이전트 5개(업스트림 `install.sh` 기본값과 같음 — 전역 풀에 두면 윤문과 무관한 작업에서 잘못 호출된다) |
 
-**Totals:** 107 skills · 27 agents · 8 commands
+**Totals:** 110 skills · 31 agents · 8 commands
 
 ### 2026-08 정리 — 24개 제거
 
