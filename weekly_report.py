@@ -1748,15 +1748,53 @@ def wtable(data, *args, dl=True, dl_name=None, dl_data=None, **kw):
 # ══════════════════════════════════════════════════════
 # 조회 헬퍼 — mtd(당월/당주 일마감) vs final 선택
 # ══════════════════════════════════════════════════════
+# ── 기준 기간은 **한 칸일 수도, 여러 칸일 수도** 있다 ──────────────────
+# 일자별은 하루가 너무 성겨서(퍼널이 통째로 비는 날이 흔하다) 조회 기간으로 고른다.
+# 주·월은 지금대로 한 칸이다. 아래 두 헬퍼가 그 차이를 한 군데서 흡수한다 — 소비처마다
+# `isinstance(list)`를 흩뿌리면 한 곳을 빠뜨렸을 때 그 화면만 조용히 옛 동작으로 남는다.
+def as_labels(label):
+    """기준 기간을 **라벨 튜플**로. 한 칸이면 길이 1."""
+    if isinstance(label, (list, tuple, set, pd.Index, np.ndarray)):
+        return tuple(str(x) for x in label)
+    return (str(label),)
+
+
+def is_range(label):
+    """기준 기간이 여러 칸인가 — 값 규칙이 갈리는 자리에서 본다."""
+    return len(as_labels(label)) > 1
+
+
+def lbl_disp(label):
+    """화면에 찍을 기준 기간 — 여러 칸이면 `8/23~9/12`."""
+    ls = as_labels(label)
+    return ls[0] if len(ls) == 1 else f"{ls[0]}~{ls[-1]}"
+
+
 def pick(df, gran, metric, seg, year, label, prefer="final"):
+    """한 칸의 값. `label`이 여러 개면 그 기간의 **일평균**(칸별 값의 평균)이다.
+
+    이 앱의 값은 전부 일평균이라, 3주를 골라도 하루를 골라도 **단위가 같아야** 나란히
+    읽힌다. 합으로 묶으면 3주가 하루의 21배로 찍혀 전년비도 카드도 통째로 뒤집힌다.
+    """
+    labs = as_labels(label)
     sub = df[(df["gran"] == gran) & (df["metric"] == metric) &
-             (df["segment"] == seg) & (df["year"] == year) & (df["label"] == label)]
+             (df["segment"] == seg) & (df["year"] == year) &
+             (df["label"].astype(str).isin(labs))]
     if sub.empty: return np.nan
-    order = ["final", "mtd"] if prefer == "final" else ["mtd", "final"]
-    for c in order:
-        s = sub[sub["close"] == c]["value"].dropna()
-        if len(s): return s.iloc[-1]
-    return np.nan
+    if len(labs) == 1:
+        order = ["final", "mtd"] if prefer == "final" else ["mtd", "final"]
+        for c in order:
+            s = sub[sub["close"] == c]["value"].dropna()
+            if len(s): return s.iloc[-1]
+        return np.nan
+    # 칸마다 close 우선순위로 하나씩 고른 뒤 평균 — 같은 라벨이 final·mtd 둘 다 있으면
+    # 둘 다 세어 그 날만 두 번 반영되는 걸 막는다.
+    pref = {"final": 0, "mtd": 1} if prefer == "final" else {"mtd": 0, "final": 1}
+    sub = sub.dropna(subset=["value"]).copy()
+    if sub.empty: return np.nan
+    sub["_p"] = sub["close"].map(pref)
+    sub = sub.sort_values(["_p"]).drop_duplicates("label", keep="first")
+    return sub["value"].mean()
 
 def series_by_label(df, gran, metric, seg, year, prefer="final"):
     """한 연도의 기간라벨 → 값 Series (sortkey 순)"""
@@ -1786,14 +1824,19 @@ FUNNEL_DERIVED = {"가입율": ("가입자수", "비회원트래픽"),
 FUNNEL_FILE_FIRST = {"첫구매 객단가"}
 
 
-def funnel_val(g, met, seg="*TOTAL"):
+def funnel_val(g, met, seg="*TOTAL", file_first=True):
     """한 칸의 값. `g(metric, segment)`가 원값을 돌려주는 함수다.
 
     비율 칸은 되도록 **두 카운트에서 만든다** — 채널로 쪼갤 때 합계와 같은 규칙으로
     나와야 해서다. 당일가입CR만은 분자(당일가입 첫구매 고객수)가 데이터에 없어 늘 파일
     값이고, 채널별 파일이 없으면 그 칸은 빈다.
+
+    **여러 날을 묶어 볼 땐 `file_first=False`다.** 객단가를 파일 값으로 읽으면 날마다의
+    객단가를 그냥 평균 내게 되는데, 그러면 거래가 적은 날이 많은 날과 같은 무게를 갖는다
+    (가입율을 계산으로 되돌린 것과 같은 이유). 두 카운트에서 만들면 거래액 합 ÷ 고객수 합이
+    되어 무게가 맞는다. 한 칸일 땐 둘이 같은 값이라 예전 동작 그대로다.
     """
-    if met in FUNNEL_FILE_FIRST:
+    if file_first and met in FUNNEL_FILE_FIRST:
         v = g(met, seg)
         if not pd.isna(v):
             return v
@@ -1809,8 +1852,15 @@ def report_val(df, gran, metric, seg, year, label, prefer="final"):
     """한 칸의 값 — **보고서 규칙**으로 읽는다(`funnel_val`을 기간 조회에 얹은 껍데기).
 
     `pick`을 그대로 쓰면 파일의 가입율(일별 비율의 평균)이 나와 ①·② 카드와 갈린다.
+
+    기준 기간이 여러 칸이면 파일 우선 규칙을 끈다 — 위 `funnel_val` 주석 참고.
     """
-    return funnel_val(lambda m, s=seg: pick(df, gran, m, s, year, label, prefer), metric)
+    # **`seg`를 `funnel_val`에도 넘겨야 한다.** 람다에 기본인자로 묶어 둬도 `funnel_val`이
+    # `g(met, seg)`로 부르면서 자기 기본값 `*TOTAL`로 덮어써, 채널을 뭘 넣든 전체 값이
+    # 나왔다. 증상은 표의 **모든 채널 줄이 전체와 같은 숫자**로 뜨는 것 — 화면은 멀쩡히
+    # 떠서 눈으로 세어 보지 않으면 안 드러난다.
+    return funnel_val(lambda m, s=seg: pick(df, gran, m, s, year, label, prefer),
+                      metric, seg, file_first=not is_range(label))
 
 
 def report_series(df, gran, metric, seg, year, prefer="final"):
@@ -2944,6 +2994,22 @@ def guard_select(key, opts, default=None):
         st.session_state[key] = default
 
 
+def guard_range(key, opts, default):
+    """select_slider(범위)용 가드 — `guard_select`의 두 칸짜리 판.
+
+    옵션이 바뀌면(파일을 새로 올려 날짜가 늘거나 줄면) 세션에 남은 옛 경계가 목록 밖이
+    되어 위젯이 예외로 죽는다. **손 안 댄 쪽은 새 범위로 따라가고, 직접 좁힌 쪽은 새
+    경계 안으로 clamp**한다 — 기간 필터의 세션 처리와 같은 규칙이다.
+
+    돌려주는 값을 `value=`로 넘긴다. 세션값이 성하면 그대로라 사용자가 고른 걸 안 덮는다.
+    """
+    cur = st.session_state.get(key)
+    if isinstance(cur, (list, tuple)) and len(cur) == 2 and all(v in opts for v in cur):
+        return tuple(cur)
+    st.session_state.pop(key, None)
+    return tuple(default)
+
+
 def guard_multi(key, opts):
     """multiselect용 가드 — 사라진 값이 세션에 남으면 위젯이 예외로 죽는다."""
     cur = st.session_state.get(key)
@@ -3026,12 +3092,21 @@ class OrgcatView:
             (self._final if cl[i] == "final" else self._mtd)[k] = v   # 같은 키는 뒤 행 우선
 
     def get(self, path, metric, year, label, prefer="final"):
+        """값 하나. `label`이 여러 개면 그 기간의 **일평균** — `pick`과 같은 규칙이다.
+
+        ⑤가 ①과 다른 기간을 보면 두 원천 비교(합계 대사)가 통째로 헛돈다.
+        """
         y = pd.to_numeric(pd.Series([year]), errors="coerce").iloc[0]
-        k = (str(metric), (int(y) if y == y else None), str(label), tuple(path))
+        y = int(y) if y == y else None
         a, b = ((self._final, self._mtd) if prefer == "final"
                 else (self._mtd, self._final))
-        v = a.get(k, b.get(k))
-        return np.nan if v is None else v
+        node, met = tuple(path), str(metric)
+        got = []
+        for lb in as_labels(label):
+            v = a.get((met, y, lb, node), b.get((met, y, lb, node)))
+            if v is not None and v == v:
+                got.append(v)
+        return float(np.mean(got)) if got else np.nan
 
     def children(self, path):
         return list(self._kids.get(tuple(path), ()))
@@ -3305,6 +3380,8 @@ FUNNEL_ADDITIVE = ["비회원트래픽", "가입자수", "첫구매 고객수", 
 # 추이표·차트도 같은 규칙을 타야 페이지마다 숫자가 갈리지 않는다.
 # 화면 전체가 **이 하나**를 본다 — ①의 카드부터 ⑥의 앱 추이까지. 예전엔 위의
 # 「비교 기준」과 ②·⑤의 「기간 단위」가 따로 놀아 단위 하나 바꾸려고 세 군데를 눌러야 했다.
+# 일자별의 기본 조회 기간 — 하루는 퍼널이 비는 날이 흔하고, 3주면 주차별과 겹쳐 읽힌다.
+DAY_RANGE_DEFAULT = 21
 FUNNEL_GRAN_LABEL = {"일": "일자별", "주": "주차별", "월": "월별"}
 FUNNEL_GRAN_ORDER = ["일", "주", "월"]
 # 번호는 재정렬될 수 있으니 **이름**으로 가리킨다. 예전엔 `page.startswith("09.")`로
@@ -3355,15 +3432,24 @@ def gran_ref(df, gran, ref_year, ref_month, wy, wlabel, metrics, daykey, box=Non
     if not days:
         st.info(f"{ref_year}년은 일자별 데이터가 없어요. 다른 기간 단위를 골라 주세요.")
         return None
-    guard_select(daykey, days, default=days[-1])
+    # **하루가 아니라 기간으로 고른다.** 하루치는 퍼널이 통째로 비는 날이 흔해서
+    # (①이 '데이터가 부족해요'로 끝난다) 기준일 하나로는 화면이 안 선다. 기본은
+    # **최근 3주**(`DAY_RANGE_DEFAULT`) — 주차별과 겹쳐 보기 좋은 길이다.
+    lo, hi = guard_range(daykey, days,
+                         default=(days[max(0, len(days) - DAY_RANGE_DEFAULT)], days[-1]))
     _box = box if box is not None else st
-    clabel = _box.selectbox("기준 일자", days[::-1], key=daykey,
-                            help="사이드바엔 일자 선택이 없어서 여기서 골라요. "
-                                 "가장 최근 날이 기본이에요.")
+    lo, hi = _box.select_slider("조회 기간", options=days, value=(lo, hi), key=daykey,
+                                help="사이드바엔 일자 선택이 없어서 여기서 골라요. "
+                                     f"기본은 최근 {DAY_RANGE_DEFAULT}일이에요. "
+                                     "값은 고른 기간의 일평균이에요.")
+    i, j = days.index(lo), days.index(hi)
+    clabel = days[min(i, j):max(i, j) + 1]
+    disp = lbl_disp(clabel)
     return dict(clabel=clabel, cy=ref_year, py=ref_year - 1,
-                period_lbl=f"{ref_year}년 {clabel}", base_lbl="전년 같은 날",
+                period_lbl=f"{ref_year}년 {disp}",
+                base_lbl="전년 같은 기간" if len(clabel) > 1 else "전년 같은 날",
                 base_tag="전년동일", prv_close="final",
-                x_prv=f"{ref_year - 1}년 {clabel}", x_cur=f"{ref_year}년 {clabel}")
+                x_prv=f"{ref_year - 1}년 {disp}", x_cur=f"{ref_year}년 {disp}")
 
 
 # ② 추이에 기본으로 올릴 지표 — 퍼널을 앞에서 뒤로 훑는 순서 그대로다. 객단가는 빼 뒀다
@@ -3495,12 +3581,54 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
            dl_name=f"채널별 실적 ({ref['period_lbl']})")
 
     # ── 차트 — 지표마다 한 장, 선 = 채널 ──
+    # **차트에서 채널을 넣고 뺀다.** 사이드바 선택만 따라가면 표까지 같이 좁혀지는데,
+    # 표는 다 놓고 보면서 차트만 두세 채널로 줄여 맞대고 싶은 경우가 대부분이다.
+    # **연도도 켜고 끈다** — 전년 선이 있어야 '이번이 낮은 건지 원래 그런 건지'가 갈린다.
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader(f"채널별 {FUNNEL_GRAN_LABEL[gran]} 추이 — {cy}년")
-    st.caption("지표를 고르지 않고 다 그려요. 채널은 사이드바 「채널 선택」을 따라가요.")
-    _x = labels_sorted(df, gran, [cy])
-    if not _x:
+    st.subheader(f"채널별 {FUNNEL_GRAN_LABEL[gran]} 추이")
+    # **값이 실제로 있는 채널만** 올린다 — 눌러도 아무 선이 안 생기는 선택지는 '왜 안
+    # 그려지지'만 남긴다(기간 단위를 데이터 있는 것만 올리는 것과 같은 규칙).
+    _live_ch = set(df[(df["gran"] == gran) & df["metric"].isin(mets)
+                      & df["value"].notna()]["segment"].astype(str))
+    _chan_opts = [c for c in CHANNELS if c in ch_sel and c in _live_ch]
+    if not _chan_opts:
+        st.info("이 기간 단위에 채널별 값이 없어요. 사이드바에서 채널을 고르거나 "
+                "다른 단위를 골라 주세요.")
+        return
+    _cc, _yc = st.columns([2.4, 1])
+    with _cc:
+        guard_multi("wr_ch_chart_ch", _chan_opts)
+        if "wr_ch_chart_ch" not in st.session_state:
+            st.session_state["wr_ch_chart_ch"] = _chan_opts
+        chart_ch = st.multiselect("차트에 올릴 채널", _chan_opts, key="wr_ch_chart_ch",
+                                  help="표는 그대로 두고 차트만 좁혀 봐요. "
+                                       "채널 색은 어느 걸 골라도 그대로예요.")
+    with _yc:
+        st.caption("연도")
+        _y1 = st.checkbox(f"{cy}년", value=True, key="wr_ch_chart_cy")
+        _has_p = not df[(df["gran"] == gran) & (df["year"] == py)].empty
+        _y2 = (st.checkbox(f"{py}년", value=False, key="wr_ch_chart_py",
+                           help="전년은 얇은 점선이에요.") if _has_p else False)
+    chart_yrs = [y for y, on in ((py, _y2), (cy, _y1)) if on]
+    if not chart_ch or not chart_yrs:
+        st.info("차트에 올릴 " + ("채널을" if not chart_ch else "연도를") + " 골라 주세요.")
+        return
+    st.caption("지표를 고르지 않고 다 그려요. **색은 채널, 선 모양은 연도**예요 — "
+               f"{cy}년은 실선, 전년은 얇은 점선이에요. "
+               + ("전년 데이터가 없어서 올해만 그려요." if not _has_p else ""))
+
+    # x축은 **올해 라벨**로 세운다. 다만 고른 채널·연도 어디에도 값이 없는 칸은 뺀다 —
+    # 그 라벨은 *모든 지표·모든 채널*이 쓴 것이라 지금 보는 것과 무관한 칸이 섞이고,
+    # 그 자리에서 모든 선이 나란히 끊겨 데이터가 빠진 것처럼 보인다.
+    _x_all = labels_sorted(df, gran, [cy])
+    if not _x_all:
         st.info(f"{cy}년 «{FUNNEL_GRAN_LABEL[gran]}» 값이 없어요.")
+        return
+    _ser = {(met, seg, yr): report_series(df, gran, met, seg, yr, "final").reindex(_x_all)
+            for met in mets for seg in chart_ch for yr in chart_yrs}
+    _x = [lb for lb in _x_all if any(not pd.isna(v.get(lb, np.nan)) for v in _ser.values())]
+    if not _x:
+        st.info("고른 채널·연도에 값이 없어요.")
         return
     for i in range(0, len(mets), 3):
         for _col, met in zip(st.columns(3), mets[i:i + 3]):
@@ -3509,15 +3637,25 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
                 if met in PCT_METRICS:
                     div, unit = 0.01, "%"
                 fig = go.Figure()
-                for seg in [c for c in CHANNELS if c in ch_sel]:
-                    s = report_series(df, gran, met, seg, cy, "final").reindex(_x).dropna()
-                    if s.empty:
-                        continue
-                    fig.add_trace(go.Scatter(
-                        x=[month_trim(v) for v in s.index], y=(s / div).tolist(),
-                        mode="lines+markers", name=seg,
-                        line=dict(color=clr(CHANNEL_PAL.get(seg, "blue")), width=1.8),
-                        marker=dict(size=4)))
+                for seg in chart_ch:
+                    for yr in chart_yrs:
+                        s = _ser[(met, seg, yr)].reindex(_x)
+                        if s.dropna().empty:
+                            continue
+                        _cur = yr == cy
+                        # 한쪽 해에만 없는 칸은 남겨서 선을 끊는다 — 이으면 없는 데이터를
+                        # 지어낸다(`connectgaps=False`).
+                        fig.add_trace(go.Scatter(
+                            x=[month_trim(v) for v in s.index],
+                            y=[None if pd.isna(v) else v / div for v in s],
+                            mode="lines+markers",
+                            name=seg if _cur else f"{seg} ({yr})",
+                            connectgaps=False,
+                            legendgroup=seg,
+                            line=dict(color=clr(CHANNEL_PAL.get(seg, "blue")),
+                                      width=1.8 if _cur else 1.1,
+                                      dash=None if _cur else "dot"),
+                            marker=dict(size=4 if _cur else 3)))
                 ly = base_layout(300, ysuffix=unit if unit == "%" else "",
                                  title=f"{met} ({unit})")
                 ly["xaxis"]["categoryorder"] = "array"
@@ -3536,7 +3674,9 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
     xmet = st.selectbox("표로 볼 지표", mets, key="wr_ch_xmet",
                         help="위 차트는 다 그리고, 이 표만 한 지표를 자세히 봐요.")
     cap = FUNNEL_TREND_KEEP.get(gran, 12)
-    keep_x = _x[-cap:]
+    # 차트에서 좁힌 채널은 **표에 안 옮긴다** — 표는 다 놓고 보면서 차트만 줄이는 게
+    # 이 화면의 쓰임새다. 그래서 차트가 값 없는 칸을 뺀 `_x`가 아니라 `_x_all`을 쓴다.
+    keep_x = _x_all[-cap:]
     xrows = []
     for seg in segs:
         s = report_series(df, gran, xmet, seg, cy, "final")
@@ -3581,13 +3721,19 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     def gprv(met, seg="*TOTAL"):
         return pick(df, gran, met, seg, py, clabel, prv_close)
 
+    # 기간을 묶어 볼 땐 파일 우선을 끈다 — 객단가를 날마다 평균 내면 거래가 적은 날이
+    # 많은 날과 같은 무게를 갖는다(`funnel_val` 주석 참고). 한 칸일 땐 값이 같다.
+    _ff = not is_range(clabel)
+
     def vcur(met, seg="*TOTAL"):
-        return funnel_val(gcur, met, seg)
+        return funnel_val(gcur, met, seg, file_first=_ff)
 
     def vprv(met, seg="*TOTAL"):
-        return funnel_val(gprv, met, seg)
+        return funnel_val(gprv, met, seg, file_first=_ff)
 
-    st.caption(f"{period_lbl} vs {base_lbl} · 값은 모두 **일평균**이에요.")
+    st.caption(f"{period_lbl} vs {base_lbl} · 값은 모두 **일평균**이에요."
+               + (f" {len(as_labels(clabel))}일치를 묶은 값이에요."
+                  if is_range(clabel) else ""))
 
     # ── ① 전체 퍼널 ────────────────────────────────────
     st.subheader("① 전체 퍼널")
@@ -3649,7 +3795,7 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     st.caption("어느 채널이 **어느 단계에서** 빠지는지 한 표로 훑어요.")
     chans = [c for c in CHANNELS
              if not df[(df["gran"] == gran) & (df["segment"] == c)
-                       & (df["label"] == clabel)].empty]
+                       & (df["label"].astype(str).isin(as_labels(clabel)))].empty]
     if not chans:
         st.info("이 기간은 채널별 데이터가 없어요. 전체 값만 있어요.")
     else:
@@ -3978,8 +4124,9 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, p
     with f2:
         guard_select("wr_fn_ocmet", mets)
         met = st.selectbox("지표", mets, key="wr_fn_ocmet")
-    if base[(base["label"] == clabel) & (base["year"] == cy)].empty:
-        st.info(f"조직×카테고리 데이터에 **{cy}년 {clabel}**이 없어요. "
+    if base[base["label"].astype(str).isin(as_labels(clabel))
+            & (base["year"] == cy)].empty:
+        st.info(f"조직×카테고리 데이터에 **{cy}년 {lbl_disp(clabel)}**이 없어요. "
                 "커버리지가 마스터와 달라서 그럴 수 있어요 — "
                 f"「{PAGE_ORGCAT}」에서 어느 기간이 있는지 볼 수 있어요.")
         return
@@ -4059,6 +4206,11 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, p
             if _c2 is not None:
                 path, node_lbl = [picked, _c2], f"{picked} › {_c2}"
 
+    # **표 바로 뒤에 차트를 둔다.** 표는 한 기간의 사진이라 '이번이 낮은 건지 원래 그런
+    # 건지'를 못 본다. 예전엔 요인 분해 뒤로 밀려 있어서 표와 같이 못 봤다 — 위 채널별과
+    # 같은 얼굴(표 → 차트)로 맞춘다.
+    _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran)
+
     # 위에서 고른 게 있을 때만 펼친다 — 고르기 전엔 조직 표에 집중하게 둔다.
     # `expanded`는 리런마다 다시 먹으므로 행을 누르면 그 자리에서 열린다.
     _drilled = bool(path)
@@ -4068,7 +4220,6 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl, p
                        "지금은 **전체** 기준이에요.")
         _funnel_factor_block(view, path, node_lbl, cy, py, clabel, prv_close,
                              period_lbl, base_lbl)
-    _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran)
     with st.expander("카테고리별 (조직 합산)", expanded=False):
         st.caption("조직을 안 고르고 **카테고리만 가로질러** 봐요 — 같은 카테고리를 "
                    "여러 조직이 나눠 갖고 있어서, 조직을 하나씩 들어가면 안 보이는 "
@@ -4293,13 +4444,36 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
     kids = view.live(tuple(path))[0]
     items = ([(k, tuple(path) + (k,)) for k in kids] if kids
              else [(node_lbl, tuple(path))])
-    # 색은 **전체 목록** 기준으로 미리 굳힌다 — 연도를 끄고 켜도 안 바뀌게.
+    # **차트에서 항목을 넣고 뺀다** — 조직이 열 곳 넘으면 선이 엉켜 정작 보려던 게 안
+    # 보인다. 표는 다 놓고 차트만 두세 곳으로 좁혀 맞대는 게 이 화면의 쓰임새다.
+    # 키를 **경로마다 갈라 둔다** — 한 키를 쓰면 조직을 파고들었을 때 옛 조직 이름이
+    # 세션에 남아 항목이 통째로 비어 보인다(카테고리 표의 `_ckey`와 같은 이유).
+    _all_nm = [nm for nm, _p in items]
+    if len(_all_nm) > 1:
+        _ikey = "wr_fn_trend_items_" + "/".join(path)
+        guard_multi(_ikey, _all_nm)
+        if _ikey not in st.session_state:
+            st.session_state[_ikey] = _all_nm
+        _pick = st.multiselect("차트에 올릴 항목", _all_nm, key=_ikey,
+                               help="표는 그대로 두고 차트만 좁혀 봐요. "
+                                    "항목 색은 어느 걸 골라도 그대로예요.")
+        if not _pick:
+            st.caption("차트에 올릴 항목을 하나도 안 골랐어요. 위에서 골라 주세요.")
+            return
+    else:
+        _pick = _all_nm
+    # 색은 **전체 목록** 기준으로 미리 굳힌다 — 연도를 끄고 켜도, 항목을 빼도 안 바뀌게.
     # 항목이 하나뿐이면(말단 노드) 색을 **연도**에 쓴다. 그게 앱의 다른 추이 차트와
     # 같은 얼굴이고, 항목이 하나면 색으로 가를 게 연도밖에 없다.
     # 연도 색은 `yoy_chart`와 같은 규칙 — **오래된 해부터** YEAR_PAL 순서라 올해가 파랑이다.
     ycolor = {y: YEAR_PAL[i % len(YEAR_PAL)] for i, y in enumerate(sorted({cy, py}))}
     icolor = {nm: ORGCAT_PAL[i % len(ORGCAT_PAL)] for i, (nm, _p) in enumerate(items)}
-    by_item = len(items) > 1
+    # 색을 굳힌 **뒤에** 좁힌다 — 순서로 색을 매기니 먼저 좁히면 뺄 때마다 색이 밀린다.
+    items = [(nm, _p) for nm, _p in items if nm in set(_pick)]
+    # 색을 항목에 쓸지 연도에 쓸지는 **있는 항목 수**로 정한다. 그린 것 수로 정하면
+    # 필터로 하나만 남겼을 때 색이 연도 색으로 뒤집혀, 맞대던 선을 다시 찾아야 한다.
+    # (말단 노드라 애초에 항목이 하나뿐이면 그땐 색으로 가를 게 연도밖에 없다.)
+    by_item = len(_all_nm) > 1
 
     # x축은 **올해 라벨**로 세운다 — 전년에만 있는 기간까지 그리면 축이 늘어져
     # 정작 올해 흐름이 눌린다. 전년은 같은 라벨끼리 맞대진다.
@@ -4479,9 +4653,10 @@ def _funnel_app_trend(df, gran, cy, clabel):
         return
     per = (src[["year", "label", "sortkey"]].drop_duplicates()
            .sort_values("sortkey").tail(APP_TREND_N.get(gran, 6)))
-    _here = ((per["year"] == cy) & (per["label"].astype(str) == str(clabel))).any()
+    _cur = as_labels(clabel)
+    _here = ((per["year"] == cy) & (per["label"].astype(str).isin(_cur))).any()
     if not _here:
-        _pp = period_parts(gran, cy, str(clabel))
+        _pp = period_parts(gran, cy, _cur[-1])
         if _pp:
             per = pd.concat([per, pd.DataFrame([{"year": cy, "label": _pp[0],
                                                  "sortkey": _pp[1]}])], ignore_index=True)
@@ -4500,7 +4675,7 @@ def _funnel_app_trend(df, gran, cy, clabel):
         ag, aa = got["앱푸시수신동의"], got["앱푸시동의_앱무관"]
         rows.append({
             "기간": f"{y}년 {month_trim(lb)}"
-                    + (" ◀" if (y == cy and lb == str(clabel)) else ""),
+                    + (" ◀" if (y == cy and lb in _cur) else ""),
             "가입자수": fmt_value("가입자수", jn),
             "앱 신규설치": fmt_value("앱설치", ins),
             "_동의_앱무관": fmt_value("앱푸시동의_앱무관", aa),
@@ -4551,14 +4726,14 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
     _need = APP_STEPS + ["앱푸시동의_앱무관", "앱푸시대상_앱무관"]
     cur = {m: _one(m, cy, "mtd") for m in _need}
     prv = {m: _one(m, py, prv_close) for m in _need}
-    _, approx, n_push = push_period_avg(df, cy, clabel)
+    _, approx, n_push = push_period_avg(df, cy, as_labels(clabel)[-1])
     # '원천이 아예 없다'와 '이 기간에만 없다'는 다른 문제다 — 뒤엣것은 커버리지 이야기라
     # 어디까지 들어왔는지 같이 말해 줘야 '업로드가 실패했나'로 안 읽힌다.
     _cv = df[(df["metric"] == "앱설치") & (df["gran"] == gran)
              & (df["segment"] == "*TOTAL") & df["value"].notna()]
     if pd.isna(cur["앱설치"]) and not _cv.empty:
         _last = _cv.sort_values("sortkey").iloc[-1]
-        st.warning(f"**{period_lbl or clabel}에는 앱 데이터가 없어요.** 앱 원천은 "
+        st.warning(f"**{period_lbl or lbl_disp(clabel)}에는 앱 데이터가 없어요.** 앱 원천은 "
                    f"**{int(_last['year'])}년 {_last['label']}**까지 들어와 있어요 — "
                    "마스터(가입자수·거래액)보다 며칠 늦게 끝나요. 아래 추이에서 "
                    "값이 있는 기간을 보세요.")
