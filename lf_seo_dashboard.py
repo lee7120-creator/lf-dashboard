@@ -357,8 +357,14 @@ def render_naver_live():
         st.caption("검색량 0 제외. 로그 축 토글로 롱테일 분포를 확인하세요.")
         c1, c2 = st.columns([1, 3])
         with c1:
-            topn = st.slider("상위 N개", 10, min(100, matched), min(30, matched),
-                             step=5, key="nv_topn")
+            # 검색량 보유 키워드가 10개 이하이면 슬라이더 min(10) >= max가 되어
+            # StreamlitInvalidMinMaxError가 발생하므로, 이 경우 전체를 그대로 표시한다.
+            if matched > 10:
+                topn = st.slider("상위 N개", 10, min(100, matched), min(30, matched),
+                                 step=5, key="nv_topn")
+            else:
+                topn = max(matched, 1)
+                st.caption(f"검색량 보유 키워드 {matched}개 — 전체 표시")
             use_log = st.checkbox("로그 축", value=False, key="nv_log")
         dv = df[df["네이버검색량"] > 0].sort_values("네이버검색량", ascending=False).head(topn)
         dv_bar = dv.sort_values("네이버검색량")
