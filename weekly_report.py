@@ -3436,6 +3436,10 @@ FUNNEL_ADDITIVE = ["비회원트래픽", "가입자수", "첫구매 고객수", 
 # 「03」 차트에 기본으로 올릴 채널 — 여덟 줄을 다 켜면 엉켜서 안 읽힌다. 평소 맞대 보는
 # 넷만 켜 두고 나머지는 필요할 때 켠다(데이터에 없는 건 자동으로 빠진다).
 CHART_CH_DEFAULT = ["직접", "광고", "EP", "제휴"]
+# 첫구매 고객 세그먼트 — 「05」가 채널별과 **같은 함수**를 쓴다(축만 다르다).
+# 색은 목록 순서로 굳힌다 — 고르고 빼도 남은 선의 색이 안 바뀌어야 맞댈 수 있다.
+SEGMENTS = ["1_신규", "1_당월신규", "2_기가입신규", "3_기존"]
+SEG_PAL = {s: ORGCAT_PAL[i % len(ORGCAT_PAL)] for i, s in enumerate(SEGMENTS)}
 # 일자별의 기본 조회 기간 — 하루는 퍼널이 비는 날이 흔하고, 3주면 주차별과 겹쳐 읽힌다.
 DAY_RANGE_DEFAULT = 21
 FUNNEL_GRAN_LABEL = {"일": "일자별", "주": "주차별", "월": "월별"}
@@ -3588,16 +3592,29 @@ def _fn_rate_cell(label, cur, prv, tag):
 
 
 def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
-    """채널별 실적 — 지표를 고르지 않고 **있는 걸 다 본다**.
+    """04. 채널별 실적 — 축이 채널인 판."""
+    render_axis_page(df, ref_year, ref_month, wy, wlabel,
+                     title="채널별 실적", axis="채널", kp="wr_ch",
+                     opts=[c for c in CHANNELS if c in ch_sel],
+                     pal=CHANNEL_PAL, dft=CHART_CH_DEFAULT)
 
-    예전엔 지표 셀렉트 하나에 월 고정이었다. 지표를 하나씩 갈아 끼우며 보게 되니 채널
-    사이의 이야기가 안 이어졌고, 주·일 단위로는 아예 볼 수 없었다.
 
-    구성은 「02」와 같은 얼굴이다 — **기간 단위 하나**(일/주/월)를 위에 두고,
-    표는 **왼쪽 실적 · 오른쪽 전년비**, 차트는 지표마다 한 장씩(선 = 채널).
+def render_axis_page(df, ref_year, ref_month, wy, wlabel, *,
+                     title, axis, kp, opts, pal, dft, mets=None):
+    """축(채널·세그먼트) 하나를 놓고 **지표를 고르지 않고 다 보는** 화면.
+
+    예전엔 두 화면이 따로 짜여 있었다 — 채널별은 지표 셀렉트 하나에 월 고정, 세그먼트는
+    주·월 표 두 개가 박혀 있었다. 지표를 갈아 끼우며 보게 되니 항목 사이의 이야기가 안
+    이어졌고, 두 화면의 얼굴이 달라 오갈 때마다 다시 찾아야 했다.
+
+    구성은 「02」와 같다 — **기간 단위 하나**(일/주/월), 표는 **왼쪽 실적 · 오른쪽
+    전년비**, 차트는 지표마다 한 장씩(선 = 축 항목). **한 구현을 둘이 나눠 쓴다** —
+    복사해 두면 한쪽만 고쳐져 조용히 갈린다.
+
+    `kp`가 위젯 키 접두어다 — 화면마다 달라야 서로의 선택을 안 덮는다.
     """
-    st.markdown("## 채널별 실적")
-    mets = [m for m in METRICS7 if (df["metric"] == m).any()]
+    st.markdown(f"## {title}")
+    mets = [m for m in (mets or METRICS7) if (df["metric"] == m).any()]
     if not mets:
         st.info("실적 지표가 없어요. 실적 파일을 올려 주세요.")
         return
@@ -3607,75 +3624,75 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
         return
     gsel, dsel = st.columns([1.3, 1.7])
     with gsel:
-        guard_select("wr_ch_gran", gr_avail,
+        guard_select(f"{kp}_gran", gr_avail,
                      default="월" if "월" in gr_avail else gr_avail[-1])
-        gran = st.radio("기간 단위", gr_avail, horizontal=True, key="wr_ch_gran",
+        gran = st.radio("기간 단위", gr_avail, horizontal=True, key=f"{kp}_gran",
                         format_func=lambda g: FUNNEL_GRAN_LABEL[g],
                         help="표와 차트가 같이 이 단위를 따라가요.")
     ref = gran_ref(df, gran, ref_year, ref_month, wy, wlabel, mets,
-                   "wr_ch_day", box=dsel)
+                   f"{kp}_day", box=dsel)
     if ref is None:
         return
     clabel, cy, py = ref["clabel"], ref["cy"], ref["py"]
-    segs = ["*TOTAL"] + [c for c in CHANNELS if c in ch_sel]
+    segs = ["*TOTAL"] + list(opts)
 
     # ── 표 — 왼쪽 실적 · 오른쪽 전년비 ──
-    st.subheader(f"채널별 실적 — {ref['period_lbl']}")
+    st.subheader(f"{title} — {ref['period_lbl']}")
     st.caption(f"{ref['base_lbl']} 대비예요. 왼쪽에 실적, 오른쪽에 전년비를 모아 뒀어요 — "
-               "전년비만 가로로 훑으면 어느 채널이 빠지는지 한눈에 보여요. "
+               f"전년비만 가로로 훑으면 어느 {axis}이 빠지는지 한눈에 보여요. "
                "비율 지표(가입율·당일가입CR)는 %p 차이예요.")
     rows = []
     for seg in segs:
-        row = {"채널": "전체" if seg == "*TOTAL" else seg}
+        row = {axis: "전체" if seg == "*TOTAL" else seg}
         for met in mets:
             cv = report_val(df, gran, met, seg, cy, clabel, "mtd")
             pv = report_val(df, gran, met, seg, py, clabel, ref["prv_close"])
             row[met] = fmt_value(met, cv)
             row[f"{met} 전년비"] = fmt_delta(met, cv, pv) or "–"
         rows.append(row)
-    tbl = pd.DataFrame(rows).set_index("채널")
+    tbl = pd.DataFrame(rows).set_index(axis)
     # 실적을 다 놓고 전년비를 오른쪽에 몬다 (「02」 ②와 같은 규칙)
     tbl = tbl[[m for m in mets] + [f"{m} 전년비" for m in mets]]
     wtable(style_delta_cols(tbl), width="stretch",
-           dl_name=f"채널별 실적 ({ref['period_lbl']})")
+           dl_name=f"{title} ({ref['period_lbl']})")
 
-    # ── 차트 — 지표마다 한 장, 선 = 채널 ──
-    # **차트에서 채널을 넣고 뺀다.** 사이드바 선택만 따라가면 표까지 같이 좁혀지는데,
-    # 표는 다 놓고 보면서 차트만 두세 채널로 줄여 맞대고 싶은 경우가 대부분이다.
+    # ── 차트 — 지표마다 한 장, 선 = 축 항목 ──
+    # **차트에서 항목을 넣고 뺀다.** 사이드바 선택만 따라가면 표까지 같이 좁혀지는데,
+    # 표는 다 놓고 보면서 차트만 두셋으로 줄여 맞대고 싶은 경우가 대부분이다.
     # **연도도 켜고 끈다** — 전년 선이 있어야 '이번이 낮은 건지 원래 그런 건지'가 갈린다.
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader(f"채널별 {FUNNEL_GRAN_LABEL[gran]} 추이")
-    # **값이 실제로 있는 채널만** 올린다 — 눌러도 아무 선이 안 생기는 선택지는 '왜 안
+    st.subheader(f"{axis}별 {FUNNEL_GRAN_LABEL[gran]} 추이")
+    # **값이 실제로 있는 항목만** 올린다 — 눌러도 아무 선이 안 생기는 선택지는 '왜 안
     # 그려지지'만 남긴다(기간 단위를 데이터 있는 것만 올리는 것과 같은 규칙).
     _live_ch = set(df[(df["gran"] == gran) & df["metric"].isin(mets)
                       & df["value"].notna()]["segment"].astype(str))
-    _chan_opts = [c for c in CHANNELS if c in ch_sel and c in _live_ch]
+    _chan_opts = [c for c in opts if c in _live_ch]
     if not _chan_opts:
-        st.info("이 기간 단위에 채널별 값이 없어요. 사이드바에서 채널을 고르거나 "
-                "다른 단위를 골라 주세요.")
+        st.info(f"이 기간 단위엔 {axis}별 값이 없어요. 다른 단위를 골라 주세요.")
         return
     _cc, _yc = st.columns([2.4, 1])
     with _cc:
-        guard_multi("wr_ch_chart_ch", _chan_opts)
-        if "wr_ch_chart_ch" not in st.session_state:
-            # 전 채널을 다 켜면 선이 여덟 줄이라 엉킨다. 평소 맞대 보는 넷을 기본으로
-            # 두고 나머지는 켜서 본다(데이터에 없는 건 자동으로 빠진다).
-            _pre = [c for c in CHART_CH_DEFAULT if c in _chan_opts]
-            st.session_state["wr_ch_chart_ch"] = _pre or _chan_opts
-        chart_ch = st.multiselect("차트에 올릴 채널", _chan_opts, key="wr_ch_chart_ch",
+        guard_multi(f"{kp}_chart_ch", _chan_opts)
+        if f"{kp}_chart_ch" not in st.session_state:
+            # 전부 켜면 선이 여덟 줄이라 엉킨다. 평소 맞대 보는 것만 기본으로 두고
+            # 나머지는 켜서 본다(데이터에 없는 건 자동으로 빠진다).
+            _pre = [c for c in dft if c in _chan_opts]
+            st.session_state[f"{kp}_chart_ch"] = _pre or _chan_opts
+        chart_ch = st.multiselect(f"차트에 올릴 {axis}", _chan_opts,
+                                  key=f"{kp}_chart_ch",
                                   help="표는 그대로 두고 차트만 좁혀 봐요. "
-                                       "채널 색은 어느 걸 골라도 그대로예요.")
+                                       f"{axis} 색은 어느 걸 골라도 그대로예요.")
     with _yc:
         st.caption("연도")
-        _y1 = st.checkbox(f"{cy}년", value=True, key="wr_ch_chart_cy")
+        _y1 = st.checkbox(f"{cy}년", value=True, key=f"{kp}_chart_cy")
         _has_p = not df[(df["gran"] == gran) & (df["year"] == py)].empty
-        _y2 = (st.checkbox(f"{py}년", value=False, key="wr_ch_chart_py",
+        _y2 = (st.checkbox(f"{py}년", value=False, key=f"{kp}_chart_py",
                            help="전년은 얇은 점선이에요.") if _has_p else False)
     chart_yrs = [y for y, on in ((py, _y2), (cy, _y1)) if on]
     if not chart_ch or not chart_yrs:
-        st.info("차트에 올릴 " + ("채널을" if not chart_ch else "연도를") + " 골라 주세요.")
+        st.info(f"차트에 올릴 {axis if not chart_ch else '연도'}를 골라 주세요.")
         return
-    st.caption("지표를 고르지 않고 다 그려요. **색은 채널, 선 모양은 연도**예요 — "
+    st.caption(f"지표를 고르지 않고 다 그려요. **색은 {axis}, 선 모양은 연도**예요 — "
                f"{cy}년은 실선, 전년은 얇은 점선이에요. "
                + ("전년 데이터가 없어서 올해만 그려요." if not _has_p else ""))
 
@@ -3717,7 +3734,7 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
                             name=seg if _cur else f"{seg} ({yr})",
                             connectgaps=False,
                             legendgroup=seg,
-                            line=dict(color=clr(CHANNEL_PAL.get(seg, "blue")),
+                            line=dict(color=clr(pal.get(seg, "blue")),
                                       width=1.8 if _cur else 1.1,
                                       dash=None if _cur else "dot"),
                             marker=dict(size=4 if _cur else 3)))
@@ -3734,11 +3751,11 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
 
     # ── 채널 × 기간 표 ──
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-    st.subheader(f"채널 × 기간 — {cy}년")
-    guard_select("wr_ch_xmet", mets)
-    xmet = st.selectbox("표로 볼 지표", mets, key="wr_ch_xmet",
+    st.subheader(f"{axis} × 기간 — {cy}년")
+    guard_select(f"{kp}_xmet", mets)
+    xmet = st.selectbox("표로 볼 지표", mets, key=f"{kp}_xmet",
                         help="위 차트는 다 그리고, 이 표만 한 지표를 자세히 봐요.")
-    # 차트에서 좁힌 채널은 **표에 안 옮긴다** — 표는 다 놓고 보면서 차트만 줄이는 게
+    # 차트에서 좁힌 항목은 **표에 안 옮긴다** — 표는 다 놓고 보면서 차트만 줄이는 게
     # 이 화면의 쓰임새다. 그래서 차트가 값 없는 칸을 뺀 `_x`가 아니라 `_x_all`을 쓴다.
     # **자르지 않는다 — 올해 전체다.** 최근 N개만 보여 주면 '어느 기간부터 꺾였나'를
     # 보려고 매번 엑셀을 받아야 한다(②·⑤와 같은 규칙).
@@ -3756,9 +3773,9 @@ def render_channel_page(df, ref_year, ref_month, wy, wlabel, ch_sel):
             xdlt[nm][f"{month_trim(lb)} 전년비"] = fmt_delta(xmet, v, pv) or "–"
     # 실적을 다 놓고 전년비를 오른쪽에 몬다 — 위 표·②·⑤와 같은 얼굴이다
     xtbl = pd.concat([pd.DataFrame(xrows).T, pd.DataFrame(xdlt).T], axis=1)
-    xtbl.index.name = "채널"
+    xtbl.index.name = axis
     wtable(style_delta_cols(xtbl), width="stretch",
-           dl_name=f"채널×기간 {xmet} ({cy}년)")
+           dl_name=f"{axis}×기간 {xmet} ({cy}년)")
     st.caption(f"왼쪽은 {cy}년 실적, 오른쪽은 **{py}년 같은 기간 대비 전년비**예요. "
                f"{cy}년 **{len(keep_x)}개 기간 전체**를 담았어요 — 옆으로 밀어서 보세요.")
 
@@ -6024,142 +6041,39 @@ def main():
         render_push_page(df, ref_year, chart_years)
 
     # ════════════ 06. 첫구매 고객 세그먼트 성과 ════════════
+    # 예전엔 주·월 표 두 개가 박혀 있고 세그먼트를 하나씩 갈아 끼워야 했다 — 일 단위는
+    # 아예 못 봤고, 세그먼트 사이의 이야기가 안 이어졌다. 「채널별 실적」과 **같은 함수**를
+    # 쓴다(`render_axis_page`) — 축만 채널→세그먼트로 바뀐다. 복사해 두면 한쪽만 고쳐져
+    # 조용히 갈린다.
     elif page == "06. 첫구매 고객 세그먼트 성과":
-        st.markdown("## 첫구매 고객 세그먼트 성과")
-        
-        # 세그먼트 선택 필터 추가
-        all_segs = ["1_신규", "1_당월신규", "2_기가입신규", "3_기존"]
-        
-        # 데이터프레임에 존재하는 세그먼트만 추출
-        available_segs = []
-        for s in all_segs:
-            if not df[df["segment"] == s].empty:
-                available_segs.append(s)
-                
-        if not available_segs:
-            available_segs = all_segs
-            
-        sel_seg = st.selectbox("세그먼트 선택", available_segs)
-        segs = [sel_seg]
-        
-        def wow_segment_table(wy, wlabel):
-            df_gran = df[df["gran"] == "주"]
-            # 해당 세그먼트에 존재하는 모든 지표 추출 (순서 유지)
-            metrics = df_gran[df_gran["segment"] == sel_seg]["metric"].dropna().unique().tolist()
-            if not metrics:
-                metrics = ["거래액", "고객수", "객단가", "CR"]
-                
-            py, plb = prev_label(df, "주", wy, wlabel)
-            cols = [week_disp(py, plb), week_disp(wy, wlabel), "전주비",
-                    week_disp(wy - 1, wlabel), "전년비"]
-            rows = []
-            
-            def _get_val(yr, lb, c, seg, met):
-                v = pick(df, "주", met, seg, yr, lb, c)
-                if pd.isna(v) and "객단가" in met:
-                    # Fallback
-                    rev_m = next((m for m in metrics if "거래액" in m and "비중" not in m), None)
-                    cus_m = next((m for m in metrics if "고객수" in m and "비중" not in m), None)
-                    if rev_m and cus_m:
-                        rev = pick(df, "주", rev_m, seg, yr, lb, c)
-                        cus = pick(df, "주", cus_m, seg, yr, lb, c)
-                        if pd.notna(rev) and pd.notna(cus) and cus > 0:
-                            v = rev / cus
-                return v
-
-            for seg in segs:
-                if not df_gran[df_gran["segment"] == seg].empty:
-                    for met in metrics:
-                        cur = _get_val(wy, wlabel, "mtd", seg, met)
-                        prv = _get_val(py, plb, "final", seg, met) if plb else np.nan
-                        yoy = _get_val(wy - 1, wlabel, "final", seg, met)
-                        rows.append({
-                            "지표": met,
-                            cols[0]: fmt_value(met, prv), cols[1]: fmt_value(met, cur),
-                            cols[2]: fmt_delta(met, cur, prv) or "-",
-                            cols[3]: fmt_value(met, yoy), cols[4]: fmt_delta(met, cur, yoy) or "-",
-                        })
-            if rows:
-                return pd.DataFrame(rows).set_index("지표")
-            return pd.DataFrame(columns=["지표"] + cols).set_index("지표")
-            
-        def yoy_segment_table(ry, rm):
-            df_gran = df[df["gran"] == "월"]
-            metrics = df_gran[df_gran["segment"] == sel_seg]["metric"].dropna().unique().tolist()
-            if not metrics:
-                metrics = ["거래액", "고객수", "객단가", "CR"]
-                
-            pm_y, pm_m = (ry, rm - 1) if rm > 1 else (ry - 1, 12)
-            cols = [f"{pm_y-1}년 {pm_m}월", f"{pm_y}년 {pm_m}월", "전년비 (전월)",
-                    f"{ry-1}년 {rm}월", f"{ry}년 {rm}월", "전년비 (당월)"]
-            rows = []
-            
-            def _get_val(yr, m, c, seg, met):
-                lb = month_label(m)
-                v = pick(df, "월", met, seg, yr, lb, c)
-                if pd.isna(v) and "객단가" in met:
-                    rev_m = next((m2 for m2 in metrics if "거래액" in m2 and "비중" not in m2), None)
-                    cus_m = next((m2 for m2 in metrics if "고객수" in m2 and "비중" not in m2), None)
-                    if rev_m and cus_m:
-                        rev = pick(df, "월", rev_m, seg, yr, lb, c)
-                        cus = pick(df, "월", cus_m, seg, yr, lb, c)
-                        if pd.notna(rev) and pd.notna(cus) and cus > 0:
-                            v = rev / cus
-                return v
-                
-            for seg in segs:
-                if not df_gran[df_gran["segment"] == seg].empty:
-                    for met in metrics:
-                        pm_prev = _get_val(pm_y - 1, pm_m, "final", seg, met)
-                        pm_cur  = _get_val(pm_y, pm_m, "final", seg, met)
-                        cm_prev = _get_val(ry - 1, rm, "mtd", seg, met)
-                        cm_cur  = _get_val(ry, rm, "mtd", seg, met)
-                        rows.append({
-                            "지표": met,
-                            cols[0]: fmt_value(met, pm_prev), cols[1]: fmt_value(met, pm_cur),
-                            cols[2]: fmt_delta(met, pm_cur, pm_prev) or "-",
-                            cols[3]: fmt_value(met, cm_prev), cols[4]: fmt_value(met, cm_cur),
-                            cols[5]: fmt_delta(met, cm_cur, cm_prev) or "-",
-                        })
-            if rows:
-                return pd.DataFrame(rows).set_index("지표"), (pm_y, pm_m)
-            return pd.DataFrame(columns=["지표"] + cols).set_index("지표"), (pm_y, pm_m)
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        wy, wlabel = week_ref(df, ref_year, ref_week)
-        
-        if wlabel:
-            st.subheader(f"실적 요약 (전주비)")
-            st.caption(f"기준 주차: {week_disp(wy, wlabel)} — 전주·전년 동주 대비")
-            tbl1 = wow_segment_table(wy, wlabel)
-            if not tbl1.empty:
-                wtable(style_delta_cols(tbl1), width="stretch", dl_name="실적 요약 (전주비)")
-            else:
-                st.info("이 주차 데이터가 없어요.")
-            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            
-        st.subheader(f"실적 요약 (전년비)")
-        tbl2, (pm_y, pm_m) = yoy_segment_table(ref_year, ref_month)
-        st.caption(f"전월({pm_m}월) 마감 및 당월({ref_month}월·MTD) 기준 동일기간 비교")
-        if not tbl2.empty:
-            wtable(style_delta_cols(tbl2), width="stretch", dl_name="실적 요약 (전년비)")
+        _swy, _swlabel = week_ref(df, ref_year, ref_week)
+        _segs = [x for x in SEGMENTS if (df["segment"] == x).any()]
+        if not _segs:
+            st.markdown("## 첫구매 고객 세그먼트 성과")
+            st.info("세그먼트 데이터가 없어요. 세그먼트별 실적 파일을 올려 주세요.")
+            st.caption("세그먼트는 " + " · ".join(SEGMENTS) + "예요.")
         else:
-            st.info("이 달 데이터가 없어요.")
+            # 세그먼트 원천은 지표 이름이 마스터와 달라(거래액·고객수·객단가·CR·유입율)
+            # `METRICS7`로 고정하면 표가 통째로 빈다 — **데이터가 준 지표**를 쓴다.
+            _smets = (df[df["segment"].isin(_segs) & df["value"].notna()]
+                      ["metric"].dropna().astype(str).unique().tolist())
+            render_axis_page(df, ref_year, ref_month, _swy, _swlabel,
+                             title="첫구매 고객 세그먼트 성과", axis="세그먼트",
+                             kp="wr_sg", opts=_segs, pal=SEG_PAL,
+                             dft=_segs, mets=_smets)
+            with st.expander("📊 지표 산출식 및 용어 설명", expanded=False):
+                st.markdown("""
+**산출식**
+* **거래액비중**: 첫구매 거래액 ÷ 전체 거래액
+* **고객비중**: 첫구매 고객수 ÷ 전체 고객수
+* **첫구매 객단가**: 첫구매 거래액 ÷ 첫구매 고객수
+* **유입율**: DAU ÷ 유효회원수
+* **CR (전환율)**: 첫구매 고객수 ÷ DAU
 
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        with st.expander("📊 지표 산출식 및 용어 설명 (클릭하여 펼치기)", expanded=False):
-            st.markdown("""
-            **산출식**
-            * **거래액비중**: 첫구매 거래액 ÷ 전체 거래액
-            * **고객비중**: 첫구매 고객수 ÷ 전체 고객수
-            * **첫구매 객단가**: 첫구매 거래액 ÷ 첫구매 고객수
-            * **유입율**: DAU ÷ 유효회원수
-            * **CR (전환율)**: 첫구매 고객수 ÷ DAU
-            
-            **용어 설명**
-            * **유효회원수**: 서비스에 정상적으로 가입해서 활동할 수 있는 전체 회원 수예요.
-            * **DAU (Daily Active Users)**: 하루 동안 서비스에 한 번 이상 방문해서 활동한 사용자 수예요.
-            """)
+**용어 설명**
+* **유효회원수**: 서비스에 정상적으로 가입해서 활동할 수 있는 전체 회원 수예요.
+* **DAU (Daily Active Users)**: 하루 동안 서비스에 한 번 이상 방문해서 활동한 사용자 수예요.
+""")
 
     # ════════════ 07. 조직·카테고리별 실적 ════════════
     elif PAGE_ORGCAT in page:

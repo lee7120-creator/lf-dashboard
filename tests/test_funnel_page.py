@@ -59,6 +59,10 @@ FILE_RATE = 0.5           # 파일이 주는 가입율 — 계산값(1.00%)과 �
 DAILY_CR = 0.0725         # 당일가입CR — 역산이 불가능한 값이라 파일 값이 그대로 나와야
 FILE_AOV = 111_111        # 파일이 주는 객단가 — 거래액/고객수(100,000원)와 다르게
 PUSH_DAILY = {1: 100.0, 8: 200.0, 15: 300.0, 22: 400.0}    # 일평균 250
+# 첫구매 고객 세그먼트 — 「05」가 「04 채널별」과 같은 함수를 쓴다. **지표 이름이 마스터와
+# 다르다**(거래액·고객수·CR) — `METRICS7`로 고정하면 표가 통째로 비므로 그걸 검증한다.
+SEG_ROWS = ["1_신규", "2_기가입신규", "3_기존"]
+SEG_METS = {"거래액": 1_000_000.0, "고객수": 100.0, "CR": 0.03}
 DAILY_DAYS = (1, 8, 15, 22)        # 일자별 퍼널을 심을 날 — 주·월과 같은 원값
 
 
@@ -91,6 +95,17 @@ def synth_store(with_push=True):
             # 주·월과 같은 원값이라 카드·추이 값이 단위와 무관하게 같아야 한다.
             for dd in DAILY_DAYS:
                 rows += _rows_for("일", f"{mo}/{dd}", y * 10000 + mo * 100 + dd, y)
+            # 세그먼트 행 — 마스터와 **다른 지표 이름**을 쓴다(위 주석 참고)
+            for si, sg in enumerate(SEG_ROWS):
+                for gran, lab, sk in ([("월", f"{mo}월", mo * 100)]
+                                      + [("주", f"{mo:02d}월 {w}주차", mo * 100 + w)
+                                         for w in WEEKS]):
+                    for met, v0 in SEG_METS.items():
+                        rows.append(dict(gran=gran, metric=met, segment=sg, year=y,
+                                         label=lab, close="final",
+                                         sortkey=y * 10000 + sk,
+                                         value=float(v0 * (si + 1)
+                                                     * (1.0 if y == 2026 else 0.8))))
             if with_push:
                 # 앱푸시 수신동의는 원천이 일자 헤더 표라 **일별로만** 쌓인다
                 for dd, v in PUSH_DAILY.items():
@@ -2377,6 +2392,42 @@ def t_channel_page_says_why_when_there_is_no_channel_axis():
     assert not at.exception, at.exception[0].value
     txt = " ".join(_texts(at))
     assert "채널 축이 없어요" in txt, f"왜 비었는지 안 말해요 — {txt[:200]}"
+
+
+@case
+def t_segment_page_shares_the_channel_face():
+    """「05 세그먼트」는 「04 채널별」과 **같은 함수**를 쓴다 — 축만 다르다.
+
+    예전엔 주·월 표 두 개가 박혀 있고 세그먼트를 하나씩 갈아 끼워야 했다. 일 단위는
+    아예 못 봤고 세그먼트 사이의 이야기가 안 이어졌다. 복사해 두면 한쪽만 고쳐져
+    조용히 갈리므로 **한 구현을 둘이 나눠 쓴다**.
+    """
+    src = inspect.getsource(W)
+    assert src.count("def render_axis_page(") == 1, "축 페이지 구현이 하나여야 해요"
+    for fn in ("render_channel_page",):
+        body = inspect.getsource(getattr(W, fn))
+        assert "render_axis_page(" in body, f"{fn}이 공용 구현을 안 써요"
+    assert "render_axis_page(" in src[src.index("첫구매 고객 세그먼트 성과"):], \
+        "세그먼트 페이지가 공용 구현을 안 써요"
+
+    at = _open_page("06. 첫구매 고객 세그먼트 성과")
+    assert not at.exception, at.exception[0].value
+    # 기간 단위 라디오 하나 — 일/주/월
+    rd = [r for r in at.radio if getattr(r, "key", None) == "wr_sg_gran"]
+    assert rd, [(r.label, getattr(r, "key", None)) for r in at.radio]
+    assert set(rd[0].options) <= {"일자별", "주차별", "월별"}, list(rd[0].options)
+    # 옛 화면의 세그먼트 셀렉트는 없어야 한다
+    assert not [b for b in at.selectbox if b.label == "세그먼트 선택"], \
+        "옛 세그먼트 셀렉트가 남아 있어요"
+    # 표는 왼쪽 실적 · 오른쪽 전년비
+    got = next((f for f in _frames(at) if f.index.name == "세그먼트"), None)
+    assert got is not None, [f.index.name for f in _frames(at)]
+    cols = [str(c) for c in got.columns]
+    vals = [c for c in cols if "전년비" not in c]
+    assert cols == vals + [c for c in cols if "전년비" in c], f"값·전년비가 섞였어요 — {cols[:4]}"
+    assert set(SEG_ROWS) <= set(map(str, got.index)), list(got.index)
+    # 차트도 그려진다(지표를 안 고른다)
+    assert at.get("plotly_chart"), "세그먼트 추이 차트가 없어요"
 
 
 @case
