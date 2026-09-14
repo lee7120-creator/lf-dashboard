@@ -1368,15 +1368,26 @@ KEY_COLS = ["gran", "metric", "segment", "year", "label", "close"]
 STORE_COLS = KEY_COLS + ["sortkey", "value"]
 
 def load_store() -> pd.DataFrame:
-    if os.path.exists(DATA_STORE):
-        try:
-            d = pd.read_csv(DATA_STORE, encoding="utf-8-sig")
-            if set(STORE_COLS) <= set(d.columns):
-                # 과거 버전이 요일 헤더 행을 '채널' 세그먼트(전부 NaN)로 오파싱해 저장한 쓰레기 제거
-                d = d[~((d["segment"] == "채널") & d["value"].isna())]
-                return d[STORE_COLS]
-        except Exception:
-            pass
+    """누적 마스터. **파일 서명으로 캐시한다** — 안 하면 리런마다 CSV를 다시 판다.
+
+    저장하면 mtime이 바뀌어 캐시가 저절로 갈린다. 원장(`load_detail_store`)과 같은 규칙.
+    """
+    if not os.path.exists(DATA_STORE):
+        return pd.DataFrame()
+    stt = os.stat(DATA_STORE)
+    return _read_store(DATA_STORE, stt.st_mtime_ns, stt.st_size)
+
+
+@st.cache_data(show_spinner=False)
+def _read_store(path, mtime, size):
+    try:
+        d = pd.read_csv(path, encoding="utf-8-sig")
+        if set(STORE_COLS) <= set(d.columns):
+            # 과거 버전이 요일 헤더 행을 '채널' 세그먼트(전부 NaN)로 오파싱해 저장한 쓰레기 제거
+            d = d[~((d["segment"] == "채널") & d["value"].isna())]
+            return d[STORE_COLS]
+    except Exception:
+        pass
     return pd.DataFrame()
 
 def save_store(df: pd.DataFrame):
@@ -1396,13 +1407,25 @@ def _is_orgcat_csv(cols):
 
 
 def load_orgcat_store() -> pd.DataFrame:
-    if os.path.exists(ORGCAT_STORE):
-        try:
-            d = pd.read_csv(ORGCAT_STORE, encoding="utf-8-sig")
-            if _is_orgcat_csv(d.columns):
-                return orgcat_fill(d)
-        except Exception:
-            pass
+    """누적 조직×카테고리. 실파일이 70만 행이라 **파일 서명으로 캐시한다**.
+
+    캐시가 없으면 CSV 파싱 0.4초 + `orgcat_fill`의 문자열 변환 0.26초를 **어느 페이지를
+    보든 매 리런** 낸다 — 조직×카테고리를 안 쓰는 페이지까지 같이 느려진다.
+    """
+    if not os.path.exists(ORGCAT_STORE):
+        return pd.DataFrame(columns=ORGCAT_COLS)
+    stt = os.stat(ORGCAT_STORE)
+    return _read_orgcat_store(ORGCAT_STORE, stt.st_mtime_ns, stt.st_size)
+
+
+@st.cache_data(show_spinner=False)
+def _read_orgcat_store(path, mtime, size):
+    try:
+        d = pd.read_csv(path, encoding="utf-8-sig")
+        if _is_orgcat_csv(d.columns):
+            return orgcat_fill(d)
+    except Exception:
+        pass
     return pd.DataFrame(columns=ORGCAT_COLS)
 
 
@@ -1809,6 +1832,35 @@ def lbl_disp(label):
     return ls[0] if len(ls) == 1 else f"{ls[0]}~{ls[-1]}"
 
 
+# ── `pick` 조회 인덱스 ────────────────────────────────────────────────
+# 한 페이지 렌더에 `pick`이 200번 가까이 불리는데, 예전엔 그때마다 프레임 전체에
+# 마스크를 다섯 번 씌우고 `label`을 통째로 문자열로 바꿨다(실측 184회 0.35초).
+# **값 규칙은 그대로 두고 조회만** 딕셔너리로 바꾼다(184회 0.0002초, 구축 0.03초).
+#
+# 메모는 한 칸이고 **프레임 객체 자체를 들고 `is`로 비교한다.** `id()`만 키로 쓰면
+# 옛 프레임이 해제된 자리에 새 프레임이 앉을 때 옛 인덱스를 그대로 주고, 업로드가
+# 행 수를 안 바꾸는 갱신이면 길이로도 못 가른다. 참조를 들고 있으면 그 자리가
+# 재사용될 수 없어서 애초에 생기지 않는 문제다.
+_PICK_MEMO = {"df": None, "map": None}
+_PICK_NEED = ("gran", "metric", "segment", "year", "label", "close", "value")
+
+
+def _pick_map(df):
+    """`(gran, metric, segment, year, label, close)` → 그 칸의 **마지막 유효값**.
+
+    뒤 행이 앞 행을 덮는 게 곧 예전 `sub[...]["value"].dropna().iloc[-1]`이다.
+    """
+    if _PICK_MEMO["df"] is not df:
+        m = {}
+        if all(c in getattr(df, "columns", ()) for c in _PICK_NEED):
+            d = df.dropna(subset=["value"])
+            for k, v in zip(zip(d["gran"], d["metric"], d["segment"], d["year"],
+                                d["label"].astype(str), d["close"]), d["value"]):
+                m[k] = v
+        _PICK_MEMO["df"], _PICK_MEMO["map"] = df, m
+    return _PICK_MEMO["map"]
+
+
 def pick(df, gran, metric, seg, year, label, prefer="final"):
     """한 칸의 값. `label`이 여러 개면 그 기간의 **일평균**(칸별 값의 평균)이다.
 
@@ -1816,24 +1868,20 @@ def pick(df, gran, metric, seg, year, label, prefer="final"):
     읽힌다. 합으로 묶으면 3주가 하루의 21배로 찍혀 전년비도 카드도 통째로 뒤집힌다.
     """
     labs = as_labels(label)
-    sub = df[(df["gran"] == gran) & (df["metric"] == metric) &
-             (df["segment"] == seg) & (df["year"] == year) &
-             (df["label"].astype(str).isin(labs))]
-    if sub.empty: return np.nan
-    if len(labs) == 1:
-        order = ["final", "mtd"] if prefer == "final" else ["mtd", "final"]
+    m = _pick_map(df)
+    order = ("final", "mtd") if prefer == "final" else ("mtd", "final")
+    # 칸마다 close 우선순위로 **하나씩만** 고른다 — 같은 라벨이 final·mtd 둘 다 있을 때
+    # 둘 다 세면 그 날만 두 번 반영된다.
+    vals = []
+    for lb in labs:
         for c in order:
-            s = sub[sub["close"] == c]["value"].dropna()
-            if len(s): return s.iloc[-1]
+            v = m.get((gran, metric, seg, year, lb, c))
+            if v is not None:
+                vals.append(v)
+                break
+    if not vals:
         return np.nan
-    # 칸마다 close 우선순위로 하나씩 고른 뒤 평균 — 같은 라벨이 final·mtd 둘 다 있으면
-    # 둘 다 세어 그 날만 두 번 반영되는 걸 막는다.
-    pref = {"final": 0, "mtd": 1} if prefer == "final" else {"mtd": 0, "final": 1}
-    sub = sub.dropna(subset=["value"]).copy()
-    if sub.empty: return np.nan
-    sub["_p"] = sub["close"].map(pref)
-    sub = sub.sort_values(["_p"]).drop_duplicates("label", keep="first")
-    return sub["value"].mean()
+    return vals[0] if len(labs) == 1 else float(np.mean(vals))
 
 def series_by_label(df, gran, metric, seg, year, prefer="final"):
     """한 연도의 기간라벨 → 값 Series (sortkey 순)"""

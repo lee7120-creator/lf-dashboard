@@ -347,6 +347,37 @@ def t_digit_parses_from_labels_are_guarded():
                      "페이지가 죽어요:\n  " + "\n  ".join(bad))
 
 
+@case
+def t_weekly_store_csvs_are_cached_by_file_signature():
+    """주간보고의 저장소 CSV는 **캐시 함수 안에서만** 읽는다.
+
+    주간보고는 저장소를 세션이 아니라 디스크에서 매번 읽는다(발송성과는 세션에 들고
+    있어 이 문제가 없다). 조직×카테고리 실파일이 70만 행이라, 캐시가 없으면 CSV 파싱
+    0.42초 + `orgcat_fill` 0.26초를 **조직×카테고리를 안 쓰는 페이지까지** 매 리런 낸다.
+    증상이 '전체적으로 좀 느리네'로만 보여 원인이 안 드러나는 종류다.
+
+    `pd.read_csv(<모듈 상수>)`만 본다 — 업로드 파일 파서는 `io.BytesIO(...)`라 안 걸린다.
+    """
+    tree = _tree("weekly_report.py")
+    def _cached(fn):
+        for d in fn.decorator_list:
+            if "cache_data" in ast.unparse(d) or "cache_resource" in ast.unparse(d):
+                return True
+        return False
+    bad = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, _FUNC) or _cached(fn):
+            continue
+        for n in _own_nodes(fn):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "read_csv" and n.args
+                    and isinstance(n.args[0], ast.Name)):
+                bad.append(f"{fn.name}():{n.lineno} — pd.read_csv({n.args[0].id})")
+    assert not bad, ("저장소 CSV를 캐시 밖에서 읽고 있어요. 파일 서명"
+                     "(`os.stat`의 mtime_ns·size)을 인자로 받는 `@st.cache_data` 함수로 "
+                     "옮겨 주세요:\n  " + "\n  ".join(bad))
+
+
 def main():
     fails = []
     for fn in CASES:

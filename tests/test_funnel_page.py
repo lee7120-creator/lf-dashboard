@@ -2574,6 +2574,117 @@ def t_matching_totals_do_not_shout():
     assert cap and "+0.0%" in cap[0], cap
 
 
+@case
+def t_pick_matches_the_scan():
+    """`pick`의 딕셔너리 인덱스가 **예전 풀스캔과 한 건도 다르지 않아야** 한다.
+
+    한 페이지 렌더에 200번 가까이 불리던 조회라 프레임 전체 마스킹을 걷어냈는데
+    (실측 184회 0.35초 → 0.0002초), 규칙이 한 칸이라도 어긋나면 화면 숫자가 통째로
+    틀어지고 증상은 '값이 좀 다르네'로만 보인다. 조직×카테고리의
+    `t_view_matches_the_scan`과 같은 자리다.
+
+    없는 라벨·없는 채널·없는 연도, 그리고 **여러 칸(기간) 조회**까지 같이 본다.
+    """
+    def scan(df, gran, metric, seg, year, label, prefer="final"):
+        labs = W.as_labels(label)
+        sub = df[(df["gran"] == gran) & (df["metric"] == metric)
+                 & (df["segment"] == seg) & (df["year"] == year)
+                 & (df["label"].astype(str).isin(labs))]
+        if sub.empty:
+            return np.nan
+        if len(labs) == 1:
+            for c in (["final", "mtd"] if prefer == "final" else ["mtd", "final"]):
+                v = sub[sub["close"] == c]["value"].dropna()
+                if len(v):
+                    return v.iloc[-1]
+            return np.nan
+        pref = ({"final": 0, "mtd": 1} if prefer == "final" else {"mtd": 0, "final": 1})
+        sub = sub.dropna(subset=["value"]).copy()
+        if sub.empty:
+            return np.nan
+        sub["_p"] = sub["close"].map(pref)
+        sub = sub.sort_values(["_p"], kind="stable").drop_duplicates("label", keep="first")
+        return sub["value"].mean()
+
+    df = synth_store()
+    grans = list(pd.unique(df["gran"]))
+    mets = list(pd.unique(df["metric"]))
+    segs = list(pd.unique(df["segment"])) + ["없는채널"]
+    yrs = [int(y) for y in pd.unique(df["year"])] + [1999]
+    n = 0
+    for g in grans:
+        labs = list(pd.unique(df[df["gran"] == g]["label"])) + ["없는라벨"]
+        for m in mets:
+            for sg in segs:
+                for y in yrs:
+                    for lb in labs:
+                        for pr in ("final", "mtd"):
+                            a, b = scan(df, g, m, sg, y, lb, pr), W.pick(df, g, m, sg, y, lb, pr)
+                            n += 1
+                            assert (pd.isna(a) and pd.isna(b)) or a == b, \
+                                f"{g}·{m}·{sg}·{y}·{lb}·{pr} — 스캔 {a} vs 인덱스 {b}"
+        # 여러 칸(기간) 조회 — 일평균 규칙까지 같이 본다
+        _all = list(pd.unique(df[df["gran"] == g]["label"]))
+        for m in mets[:6]:
+            for y in yrs[:2]:
+                for k in (2, 3, 5):
+                    if len(_all) < k:
+                        continue
+                    for pr in ("final", "mtd"):
+                        a = scan(df, g, m, "*TOTAL", y, _all[:k], pr)
+                        b = W.pick(df, g, m, "*TOTAL", y, _all[:k], pr)
+                        n += 1
+                        assert (pd.isna(a) and pd.isna(b)) or abs(a - b) < 1e-9, \
+                            f"{g}·{m}·{y}·{_all[:k]}·{pr} — 스캔 {a} vs 인덱스 {b}"
+    assert n > 10000, f"대조 건수가 너무 적어요 — {n}건"
+
+
+@case
+def t_pick_takes_the_last_row_for_a_duplicated_cell():
+    """같은 칸이 두 번 있으면 **뒤 행이 이긴다** — 예전 `.dropna().iloc[-1]`과 같다.
+
+    저장소는 `KEY_COLS`로 중복을 지우니 평소엔 안 생기지만, 그래서 스캔↔인덱스 대조
+    (`t_pick_matches_the_scan`)만으로는 이 규칙을 못 잡는다 — 실제로 «앞 행이 이기게»
+    바꿔 심었더니 대조는 통과했다. 규칙을 여기서 직접 못 박는다.
+    나중 행의 값이 **비어 있으면 앞의 유효값이 남는다**(빈 칸이 값을 지우지 않는다).
+    """
+    df = synth_store()
+    row = df[(df["gran"] == "월") & (df["close"] == "final")].iloc[0]
+    key = dict(gran="월", metric=row["metric"], seg=row["segment"],
+               year=int(row["year"]), label=str(row["label"]))
+    first = W.pick(df, key["gran"], key["metric"], key["seg"], key["year"], key["label"])
+    assert not pd.isna(first)
+
+    later = row.copy(); later["value"] = float(first) + 777.0
+    df2 = pd.concat([df, pd.DataFrame([later])], ignore_index=True)
+    got = W.pick(df2, key["gran"], key["metric"], key["seg"], key["year"], key["label"])
+    assert got == first + 777.0, f"뒤 행이 안 이겼어요 — {got} (앞 {first})"
+
+    blank = row.copy(); blank["value"] = np.nan
+    df3 = pd.concat([df, pd.DataFrame([blank])], ignore_index=True)
+    got3 = W.pick(df3, key["gran"], key["metric"], key["seg"], key["year"], key["label"])
+    assert got3 == first, f"빈 칸이 앞의 값을 지웠어요 — {got3} (앞 {first})"
+
+
+@case
+def t_pick_index_follows_a_new_frame():
+    """메모는 한 칸이라 **프레임이 바뀌면 다시 만들어야** 한다.
+
+    `id()`만 키로 쓰면 옛 프레임이 해제된 자리에 같은 길이의 새 프레임이 앉을 때
+    옛 값을 그대로 돌려준다 — 업로드가 행 수를 안 바꾸는 갱신이면 길이로도 못 가른다.
+    """
+    a = synth_store()
+    one = a[(a["gran"] == "월")].iloc[0]
+    got = W.pick(a, "월", one["metric"], one["segment"], int(one["year"]),
+                 str(one["label"]), one["close"])
+    assert not pd.isna(got), "기준값을 못 읽었어요"
+    b = a.copy()
+    b.loc[b.index[0] if b.index[0] == one.name else one.name, "value"] = got + 12345.0
+    got2 = W.pick(b, "월", one["metric"], one["segment"], int(one["year"]),
+                  str(one["label"]), one["close"])
+    assert got2 == got + 12345.0, f"새 프레임인데 옛 값을 줬어요 — {got2} (원래 {got})"
+
+
 def main():
     fails, cwd = [], os.getcwd()
     for fn in CASES:
