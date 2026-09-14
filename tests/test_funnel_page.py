@@ -2543,22 +2543,33 @@ def t_lfms_default_follows_the_master():
 
 @case
 def t_total_gap_against_the_master_is_announced():
-    """어긋나면 **얼마나·왜**를 화면에서 말한다. 조용히 나란히 두면 '뭐가 맞지'로 끝난다."""
+    """어긋나면 **얼마나·왜**를 화면에서 말한다. 조용히 나란히 두면 '뭐가 맞지'로 끝난다.
+
+    자리는 블록 **맨 아래, 접은 채로**다 — 표를 보러 온 화면인데 설명 상자가 위를 막으면
+    정작 숫자가 안 보인다. 차이는 **접이식 라벨**에 박아 펼치지 않아도 눈에 들어오게 한다.
+    """
     at = _open(orgcat=_two_lfms(scale_n=1.30, scale_y=1.60))
-    warn = [str(w.value) for w in at.warning if "합계 대사" in str(w.value)]
-    assert warn, f"차이가 30%인데 경고가 없어요 — {[str(w.value)[:60] for w in at.warning]}"
-    w = warn[0]
-    assert "+30.0%" in w, w[:160]
+    exps = [e for e in at.expander if "합계 대사" in str(e.label)]
+    assert exps, f"합계 대사 접이식이 없어요 — {[str(e.label) for e in at.expander]}"
+    e = exps[0]
+    assert not e.proto.expanded, "합계 대사가 펼쳐진 채로 떠 있어요"
+    assert "+30.0%" in str(e.label), f"라벨에 차이가 없어요 — {e.label}"
+    body = " ".join(str(m.value) for m in e.markdown)
     for why in ("LFMS", "커버리지", "마감분"):
-        assert why in w, f"«{why}» 안내가 없어요 — {w[:200]}"
+        assert why in body, f"«{why}» 안내가 없어요 — {body[:200]}"
+    # 위를 막던 경고 상자는 사라져야 한다
+    assert not [w for w in at.warning if "합계 대사" in str(w.value)], \
+        "아직 경고 상자로 떠 있어요"
 
 
 @case
 def t_matching_totals_do_not_shout():
-    """맞물릴 땐 경고를 띄우지 않는다 — 매번 ⚠가 뜨면 진짜 문제를 무시하게 된다."""
+    """맞물릴 땐 접이식도 안 만든다 — 매번 펼칠 거리가 아니라 캡션 한 줄이면 된다."""
     at = _open()                                          # 픽스처는 마스터와 일치
     assert not [w for w in at.warning if "합계 대사" in str(w.value)], \
         "맞는데도 경고가 떴어요"
+    assert not [e for e in at.expander if "합계 대사" in str(e.label)], \
+        "맞는데도 접이식이 생겼어요"
     cap = [str(c.value) for c in at.caption if "합계 대사" in str(c.value)]
     assert cap and "+0.0%" in cap[0], cap
 

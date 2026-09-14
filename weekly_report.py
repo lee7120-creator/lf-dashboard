@@ -4167,6 +4167,35 @@ def _orgcat_master_gap(df, view, gran, met, cy, clabel):
     return float(m), float(o), (float(o) - float(m)) / abs(float(m))
 
 
+def _orgcat_gap_note(gap, met):
+    """합계 대사를 **블록 맨 아래에 접어서** 낸다.
+
+    차이는 접이식 **라벨**에 박는다 — 펼치지 않아도 몇 %인지 보이고, 본문(왜 다를 수
+    있는지)은 필요할 때만 편다. 예전엔 표 위에 큰 경고 상자로 있어서, 숫자를 보러 온
+    화면인데 설명이 먼저 자리를 먹었다.
+    맞물릴 땐(`ORGCAT_GAP_WARN` 미만) 캡션 한 줄로만 둔다 — 매번 펼칠 거리가 아니다.
+    """
+    if not gap:
+        return
+    mv, ov, rel = gap
+    line = (f"① 전체 퍼널 `{fmt_value(met, mv)}` vs ⑤ 파일 합계 `{fmt_value(met, ov)}`"
+            f" · 차이 **{rel * 100:+.1f}%**")
+    st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+    if abs(rel) < ORGCAT_GAP_WARN:
+        st.caption("합계 대사 — " + line + " · 두 원천이 맞물려요.")
+        return
+    with st.expander(f"합계 대사 — ①과 차이 {rel * 100:+.1f}%", expanded=False):
+        st.markdown(
+            line + "\n\n두 값은 **원천이 달라요** — ①은 마스터 export, ⑤는 MICRO "
+            "조직×카테고리 export예요. 벌어지는 이유는 대개 셋 중 하나예요.\n"
+            "- **LFMS 포함 여부**가 다른 모집단을 가리켜요 (위에서 바꿔 볼 수 있어요)\n"
+            f"- 두 export의 **커버리지**가 달라요 (「{esc(PAGE_ORGCAT)}」에서 "
+            "어느 기간이 있는지 볼 수 있어요)\n"
+            "- 한쪽만 **최신 마감분**이 안 올라왔어요\n\n"
+            "조직·카테고리 **구성비와 증감**은 ⑤ 안에서 일관되니 그대로 읽어도 돼요. "
+            "총량은 ①을 기준으로 보세요.")
+
+
 def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
                           prv_close, win=None):
     """⑤ 조직 > 카테고리 — MICRO 조직×카테고리 export를 퍼널과 같은 기간으로 자른다.
@@ -4219,26 +4248,13 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
         return
 
     view = orgcat_view(base)
-    # ── 합계 대사 — ①과 ④는 원천이 다르다 ──
+    # ── 합계 대사 — ①과 ⑤는 원천이 다르다 ──
     # 같은 기간·같은 지표를 두 파일에서 읽으니 어긋날 수 있다. 조용히 나란히 두면
-    # '어느 쪽이 맞나'로 끝나므로, 얼마나 다른지와 왜 다를 수 있는지를 여기서 밝힌다.
+    # '어느 쪽이 맞나'로 끝나므로 얼마나 다른지와 왜 다를 수 있는지를 밝힌다.
+    # **자리는 블록 «맨 아래», 접은 채로** 둔다 — 표를 보러 온 화면인데 설명 상자가
+    # 위를 막고 있으면 정작 숫자가 안 보인다. 차이 자체는 접이식 라벨에 박아 둬서
+    # 펼치지 않아도 눈에 들어온다(그게 신호고, 본문은 이유 설명이라 접어도 된다).
     _gap = _orgcat_master_gap(df, view, gran, met, cy, clabel)
-    if _gap:
-        _mv, _ov, _rel = _gap
-        _line = (f"**합계 대사** — ① 전체 퍼널 `{fmt_value(met, _mv)}` vs "
-                 f"⑤ 파일 합계 `{fmt_value(met, _ov)}` · 차이 **{_rel * 100:+.1f}%**")
-        if abs(_rel) >= ORGCAT_GAP_WARN:
-            st.warning(
-                _line + "\n\n두 값은 **원천이 달라요** — ①은 마스터 export, ④는 MICRO "
-                "조직×카테고리 export예요. 벌어지는 이유는 대개 셋 중 하나예요.\n"
-                "- **LFMS 포함 여부**가 다른 모집단을 가리켜요 (위에서 바꿔 볼 수 있어요)\n"
-                f"- 두 export의 **커버리지**가 달라요 (「{PAGE_ORGCAT}」에서 "
-                "어느 기간이 있는지 볼 수 있어요)\n"
-                "- 한쪽만 **최신 마감분**이 안 올라왔어요\n\n"
-                "조직·카테고리 **구성비와 증감**은 ⑤ 안에서 일관되니 그대로 읽어도 돼요. "
-                "총량은 ①을 기준으로 보세요.")
-        else:
-            st.caption(_line + " · 두 원천이 맞물려요.")
     orgs = view.live(())[0]
     if not orgs:
         st.info("조직 항목이 없어요.")
@@ -4313,6 +4329,7 @@ def _render_funnel_orgcat(df, odf, gran, cy, py, clabel, period_lbl, base_lbl,
                    "구멍이 여기서 드러나요.")
         _funnel_cat_rollup(view, orgs, met, cy, py, clabel, period_lbl, base_lbl,
                            prv_close)
+    _orgcat_gap_note(_gap, met)
 
 
 # 표 맨 위에 두는 기준 행의 이름. 합계가 없으면 개별 값이 큰지 작은지 가늠이 안 된다.
