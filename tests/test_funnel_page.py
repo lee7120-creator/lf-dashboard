@@ -45,15 +45,24 @@ WEEKS = range(1, 5)
 VALS = {
     2026: {"*TOTAL": dict(traffic=100_000, join=1_000, cust=500, rev=50_000_000),
            "직접":   dict(traffic=40_000, join=800, cust=300, rev=30_000_000),
-           "광고":   dict(traffic=60_000, join=200, cust=200, rev=20_000_000)},
+           "광고":   dict(traffic=60_000, join=200, cust=200, rev=20_000_000),
+           # `PUSH`는 **차트 기본값(`CHART_CH_DEFAULT`)에 없는** 채널이다 — 기본이
+           # '전 채널'로 되돌아가면 이 줄이 차트에 나타나 검사가 잡는다. 기본에 있는
+           # 채널만 심어 두면 기본을 어떻게 바꿔도 결과가 같아 규칙이 안 지켜진다.
+           "PUSH":   dict(traffic=25_000, join=150, cust=90, rev=9_000_000)},
     2025: {"*TOTAL": dict(traffic=80_000, join=500, cust=400, rev=32_000_000),
            "직접":   dict(traffic=30_000, join=400, cust=250, rev=20_000_000),
-           "광고":   dict(traffic=50_000, join=100, cust=150, rev=12_000_000)},
+           "광고":   dict(traffic=50_000, join=100, cust=150, rev=12_000_000),
+           "PUSH":   dict(traffic=20_000, join=120, cust=70, rev=7_000_000)},
 }
 FILE_RATE = 0.5           # 파일이 주는 가입율 — 계산값(1.00%)과 확연히 다르게
 DAILY_CR = 0.0725         # 당일가입CR — 역산이 불가능한 값이라 파일 값이 그대로 나와야
 FILE_AOV = 111_111        # 파일이 주는 객단가 — 거래액/고객수(100,000원)와 다르게
 PUSH_DAILY = {1: 100.0, 8: 200.0, 15: 300.0, 22: 400.0}    # 일평균 250
+# 첫구매 고객 세그먼트 — 「05」가 「04 채널별」과 같은 함수를 쓴다. **지표 이름이 마스터와
+# 다르다**(거래액·고객수·CR) — `METRICS7`로 고정하면 표가 통째로 비므로 그걸 검증한다.
+SEG_ROWS = ["1_신규", "2_기가입신규", "3_기존"]
+SEG_METS = {"거래액": 1_000_000.0, "고객수": 100.0, "CR": 0.03}
 DAILY_DAYS = (1, 8, 15, 22)        # 일자별 퍼널을 심을 날 — 주·월과 같은 원값
 
 
@@ -86,6 +95,17 @@ def synth_store(with_push=True):
             # 주·월과 같은 원값이라 카드·추이 값이 단위와 무관하게 같아야 한다.
             for dd in DAILY_DAYS:
                 rows += _rows_for("일", f"{mo}/{dd}", y * 10000 + mo * 100 + dd, y)
+            # 세그먼트 행 — 마스터와 **다른 지표 이름**을 쓴다(위 주석 참고)
+            for si, sg in enumerate(SEG_ROWS):
+                for gran, lab, sk in ([("월", f"{mo}월", mo * 100)]
+                                      + [("주", f"{mo:02d}월 {w}주차", mo * 100 + w)
+                                         for w in WEEKS]):
+                    for met, v0 in SEG_METS.items():
+                        rows.append(dict(gran=gran, metric=met, segment=sg, year=y,
+                                         label=lab, close="final",
+                                         sortkey=y * 10000 + sk,
+                                         value=float(v0 * (si + 1)
+                                                     * (1.0 if y == 2026 else 0.8))))
             if with_push:
                 # 앱푸시 수신동의는 원천이 일자 헤더 표라 **일별로만** 쌓인다
                 for dd, v in PUSH_DAILY.items():
@@ -98,37 +118,47 @@ def synth_store(with_push=True):
 # 「가방」은 **두 조직이 나눠 갖는다** — 조직 합산 경로를 실제로 밟게 하려고 그렇다.
 # 한 조직에만 있는 카테고리뿐이면 합산을 빼먹어도 값이 안 변해 검사가 무의미해진다.
 TREE = {"e-영업1": ["가방", "지갑"], "e-영업2": ["슈즈", "가방"]}
+# 조직×카테고리 export의 **채널 축**(구분08). 「채널별 첫구매 상세」가 쓰고, ⑤·「조직·
+# 카테고리별 실적」은 `*TOTAL`만 봐야 한다. 하나는 `CHART_CH_DEFAULT`에 없는 걸 넣어
+# (PUSH) 기본 선택 규칙도 같이 검증되게 한다.
+ORGCAT_CHS = ["직접", "광고", "PUSH"]
+# 합이 1이 **아니게** 둔다 — `*TOTAL`을 채널 합으로 대체해 버리면 값이 달라진다.
+ORGCAT_CH_SHARE = [0.5, 0.3, 0.4]
 
 
 def synth_orgcat():
     """조직 > 카테고리 2단 — 브랜드·상품 칸은 지금 실제 export처럼 비워 둔다."""
     rows = []
 
-    def add(gran, label, sortkey, year, org, cat, met, v):
+    def add(gran, label, sortkey, year, org, cat, met, v, ch=W.ORGCAT_CH_ALL):
         rows.append({"gran": gran, "metric": met, "org": org, "cat": cat,
-                     "brand": "", "item": "", "lfms": "N", "year": year,
+                     "brand": "", "item": "", "ch": ch, "lfms": "N", "year": year,
                      "label": label, "close": "final", "sortkey": sortkey,
                      "value": float(v)})
-    def node(gran, label, sk, y, org, cat, rev, cust):
+    def node(gran, label, sk, y, org, cat, rev, cust, ch=W.ORGCAT_CH_ALL):
         """한 노드에 다섯 지표를 다 심는다.
 
         `거래액 = 상품UV × 상품CR × 객단가`가 **정확히** 성립하게 만든다 — 실파일에서
         오차 0.000%로 맞는 항등식이라, 여기서 깨 두면 요인 분해 테스트가 아무것도 못 잡는다.
         """
         uv, cr = cust * 20.0, 0.05
-        add(gran, label, sk, y, org, cat, "첫구매 거래액", rev)
-        add(gran, label, sk, y, org, cat, "첫구매 고객수", cust)
-        add(gran, label, sk, y, org, cat, "첫구매 객단가", rev / cust)
-        add(gran, label, sk, y, org, cat, "상품UV", uv)
-        add(gran, label, sk, y, org, cat, "상품CR", cr)
+        add(gran, label, sk, y, org, cat, "첫구매 거래액", rev, ch)
+        add(gran, label, sk, y, org, cat, "첫구매 고객수", cust, ch)
+        add(gran, label, sk, y, org, cat, "첫구매 객단가", rev / cust, ch)
+        add(gran, label, sk, y, org, cat, "상품UV", uv, ch)
+        add(gran, label, sk, y, org, cat, "상품CR", cr, ch)
 
     for y in YEARS:
         # 거래액과 고객수를 서로 다른 비율로 흔들어 객단가도 같이 움직이게 한다 —
         # 둘이 같은 배수면 객단가가 고정돼 요인 분해가 한 요인만 가리킨다
         kr, kc = (1.0, 1.0) if y == 2026 else (0.8, 0.9)
+        # **일자별도 심는다.** 없으면 ⑤의 연중 추이가 일자별에서 아예 안 그려져,
+        # 「조회 기간」이 ⑤ 차트까지 좁히는지를 검사가 못 본다(실제로 못 잡았다).
         for gran, labels in (("월", [(f"{m}월", m * 100) for m in MONTHS]),
                              ("주", [(f"{m:02d}월 {w}주차", m * 100 + w)
-                                     for m in MONTHS for w in WEEKS])):
+                                     for m in MONTHS for w in WEEKS]),
+                             ("일", [(f"{m}/{d}", m * 100 + d)
+                                     for m in MONTHS for d in DAILY_DAYS])):
             for label, sk in labels:
                 sv = y * 10000 + sk
                 node(gran, label, sv, y, "*TOTAL", "*TOTAL", 50e6 * kr, 500 * kc)
@@ -139,6 +169,20 @@ def synth_orgcat():
                     for cat in cats:
                         node(gran, label, sv, y, org, cat, part * kr, 150 * kc)
                     base = 20e6
+                # ── 채널 축 ──
+                # 새 export는 구분08에 채널을 실어 온다. **채널 합이 `*TOTAL`과 다르게**
+                # 심어 둔다 — 화면이 `*TOTAL`만 봐야 하는 자리에서 채널을 같이 세면
+                # 값이 대번에 달라져 검사가 잡는다. 같게 심으면 규칙을 깨도 안 잡힌다.
+                for i, c in enumerate(ORGCAT_CHS):
+                    f = ORGCAT_CH_SHARE[i]
+                    node(gran, label, sv, y, "*TOTAL", "*TOTAL",
+                         50e6 * kr * f, 500 * kc * f, c)
+                    for org, cats in TREE.items():
+                        node(gran, label, sv, y, org, "*TOTAL",
+                             30e6 * kr * f, 300 * kc * f, c)
+                        for cat in cats:
+                            node(gran, label, sv, y, org, cat,
+                                 10e6 * kr * f, 150 * kc * f, c)
     return pd.DataFrame(rows)[W.ORGCAT_COLS]
 
 
@@ -412,7 +456,9 @@ def t_orgcat_lists_orgs_with_rowclick_hint():
 def t_org_row_opens_its_categories():
     """행을 누른 뒤 나오는 표 — 화면이 부르는 것과 같은 헬퍼로 값을 대조한다."""
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     kids = view.live(("e-영업1",))[0]
     assert set(kids) == set(TREE["e-영업1"]), kids
@@ -815,7 +861,9 @@ def t_rollup_cr_matches_the_identity():
     CR이 두 배로 부풀어 이 검사에 걸린다.
     """
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     cat = next(c for c in {c for v in TREE.values() for c in v}
                if sum(c in v for v in TREE.values()) > 1)
@@ -1230,7 +1278,9 @@ def t_tables_open_with_a_total_row():
     자식 합이 상위를 넘고(실파일 +2.4%·+33%), 객단가·상품CR은 애초에 더할 수 없다.
     """
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     orgs = view.live(())[0]
     tbl = W._funnel_level_table(view, [], orgs, "조직", "첫구매 거래액", 2026, 2025,
@@ -1303,7 +1353,9 @@ def t_factor_block_shows_customer_count_without_double_counting():
 def t_customer_count_equals_uv_times_cr():
     """`고객수 = 상품UV × 상품CR` — 이 항등식이 깨지면 위 표가 거짓말이 된다."""
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "월") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     seen = 0
     for path in [(), ("e-영업1",), ("e-영업1", "가방"), ("e-영업2",)]:
@@ -1499,7 +1551,9 @@ def t_orgcat_trend_uses_year_colors_when_single_item():
     회색으로 눌려 한눈에 안 들어온다.
     """
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     org = W.orgcat_view(sub).live(())[0][0]
 
     at = _open()
@@ -1551,7 +1605,9 @@ def t_orgcat_trend_follows_the_drilldown():
     (표 클릭은 AppTest가 흉내 못 내지만 선택 상태는 세션으로 넣을 수 있다).
     """
     oc = synth_orgcat()
-    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")]
+    # 화면과 **같은 축**으로 읽는다 — ⑤는 전 채널(`*TOTAL`)만 본다.
+    sub = oc[(oc["gran"] == "주") & (oc["lfms"] == "N")
+             & (oc["ch"] == W.ORGCAT_CH_ALL)]
     view = W.orgcat_view(sub)
     orgs = view.live(())[0]
     lbs = (sub[sub["year"] == 2026][["label", "sortkey"]].drop_duplicates()
@@ -1730,34 +1786,50 @@ def _ftrend_tbl(at):
 
 
 @case
-def t_trend_excel_carries_the_whole_year_not_the_screen_slice():
-    """②의 엑셀은 **올해 전체**다 — 화면만 자른다.
+def t_trend_table_shows_the_whole_year_not_a_recent_slice():
+    """②의 추이표는 **올해 전체**다 — 최근 N개만 보여 주면 매번 엑셀을 받아야 한다.
 
-    화면을 자르는 건 눈이 감당 못 해서지 그 뒤가 필요 없어서가 아니다. 받아서 쓰는 쪽은
-    연중을 통째로 놓고 보므로, 화면은 최근 `FUNNEL_TREND_KEEP`개 · 파일은 안 자른 `tbl`로
-    갈라 준다(`wtable(dl_data=)`).
-
-    화면 쪽은 실제로 잘렸는지 렌더해서 세고, 파일 쪽은 `dl_data`가 **`keep`으로 자르지
-    않은** 표를 받는지 소스로 본다 — 지연 다운로드라 AppTest가 바이트를 못 만든다.
+    '어느 기간부터 꺾였나'를 보는 표라 앞이 잘리면 쓸 수가 없다. 표는 가로로 스크롤되니
+    폭은 문제가 아니다.
     """
     at = _open(unit="주")
     tbl = _ftrend_tbl(at)
     assert tbl is not None, "②의 추이표가 없어요"
     vals = [c for c in tbl.columns if not str(c[1]).endswith("증감")]
-    cap = W.FUNNEL_TREND_KEEP["주"]
-    assert len(vals) == cap, f"화면이 {cap}주로 안 잘렸어요 — {len(vals)}주"
+    want = len(W.labels_sorted(synth_store(), "주", [2026]))
+    assert want > W.FUNNEL_TREND_KEEP["주"], \
+        f"픽스처 주차가 {want}개뿐이라 잘림을 못 봐요 — 검사가 헛돌아요"
+    assert len(vals) == want, f"올해 전체 {want}주가 아니라 {len(vals)}주만 떠요"
+    # 증감은 여전히 오른쪽에 몰려 있어야 한다
+    cols = list(tbl.columns)
+    assert cols == vals + [c for c in cols if str(c[1]).endswith("증감")], \
+        f"값·증감이 섞였어요 — {cols[:4]}"
 
-    fn = next(n for n in ast.walk(ast.parse(pathlib.Path(APP).read_text(encoding="utf-8")))
-              if isinstance(n, ast.FunctionDef) and n.name == "_render_funnel_trend")
-    call = next((n for n in ast.walk(fn)
-                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "wtable"), None)
-    assert call is not None, "②가 wtable을 안 써요"
-    kw = {k.arg: k for k in call.keywords}
-    assert "dl_data" in kw, ("②의 엑셀이 화면과 같은 잘린 표예요. 안 자른 `tbl`을 "
-                             "`dl_data=`로 넘기세요.")
-    src = ast.unparse(kw["dl_data"].value)
-    assert "keep" not in src, f"`dl_data`가 화면 슬라이스를 받고 있어요 — {src}"
-    assert "tbl" in src, f"`dl_data`가 추이표를 안 받아요 — {src}"
+
+@case
+def t_orgcat_chart_comes_with_a_table_of_the_same_values():
+    """⑤도 **차트와 표를 같이** 낸다 — 선만 있으면 정확한 값을 못 읽는다.
+
+    행=항목·열=기간이라 ②(행=지표)와 축만 다르고 얼굴은 같다. 왼쪽 실적 · 오른쪽 증감.
+    """
+    at = _open()
+    sp = _trend_spec(at)
+    assert sp, "⑤ 연중 추이 차트를 못 찾았어요"
+    drawn = {str(t.get("name", "")).split(" (")[0] for t in sp.get("data", [])}
+
+    got = None
+    for f in _frames(at):
+        if f.index.name == "항목":
+            got = f
+    assert got is not None, ("⑤ 차트 아래 추이표가 없어요 — "
+                             f"본 표들: {[f.index.name for f in _frames(at)]}")
+    assert set(got.index) == drawn, f"표의 항목이 차트와 달라요 — 표 {set(got.index)} vs 차트 {drawn}"
+    cols = [str(c) for c in got.columns]
+    vals = [c for c in cols if not c.endswith("증감")]
+    dlts = [c for c in cols if c.endswith("증감")]
+    assert vals and dlts, f"실적·증감 두 벌이 있어야 해요 — {cols[:6]}"
+    assert cols == vals + dlts, f"값·증감이 섞였어요 — {cols[:4]}"
+    assert len(vals) == len(dlts), f"기간 수가 안 맞아요 — 실적 {len(vals)} vs 증감 {len(dlts)}"
 
 
 @case
@@ -1791,12 +1863,19 @@ def t_trend_block_draws_charts_and_a_yoy_table():
 
 @case
 def t_trend_counts_periods_not_columns():
-    """**자를 땐 기간을 센다.** 증감 칸까지 섞어 16칸을 집으면 보이는 주가 8주로 반토막 난다."""
+    """값 칸과 증감 칸의 **개수가 같아야** 한다 — 짝이 안 맞으면 어딘가 흘린 것이다.
+
+    예전엔 최근 16개로 자르면서 증감 칸까지 섞어 집어 보이는 주가 8주로 반토막 났다.
+    지금은 안 자르지만(올해 전체), 짝이 맞는지는 그대로 본다.
+    """
     at = _open()
     tbl = _ftrend_tbl(at)
     assert tbl is not None
     vals = [c for c in tbl.columns if "증감" not in c[1]]
-    assert len(vals) == W.FUNNEL_TREND_KEEP["주"], f"주차가 {len(vals)}개예요 — {vals}"
+    dlts = [c for c in tbl.columns if "증감" in c[1]]
+    assert len(vals) == len(dlts), f"값 {len(vals)}칸 vs 증감 {len(dlts)}칸 — 짝이 안 맞아요"
+    assert {c[1] for c in vals} == {c[1].replace(" 증감", "") for c in dlts}, \
+        "값과 증감이 서로 다른 기간을 가리켜요"
 
 
 @case
@@ -1926,12 +2005,22 @@ def t_unit_only_offers_what_the_data_has():
 
 @case
 def t_daily_trend_shows_a_month_of_days():
-    """일자별 추이표는 한 달치(`FUNNEL_TREND_KEEP['일']`)로 자른다 — 365칸은 못 읽는다."""
+    """일자별 추이표는 **「조회 기간」만큼**이다 — 그 창이 화면 전체의 기간이라서다.
+
+    주·월은 범위 선택이 없어 연중 전체다(`t_trend_table_shows_the_whole_year…`).
+    단위마다 답이 다른 게 아니라, **창이 있으면 창을 따른다**는 한 규칙이다.
+    """
     at = _open(unit="일")
     tbl = _ftrend_tbl(at)
     assert tbl is not None, "일자별 추이표가 없어요"
     vals = [c for c in tbl.columns if "증감" not in c[1]]
-    assert len(vals) <= W.FUNNEL_TREND_KEEP["일"], len(vals)
+    sl = [x for x in at.get("select_slider") if getattr(x, "key", None) == "wr_fn_day"]
+    opts = list(sl[0].options)
+    lo, hi = sl[0].value
+    want = opts[opts.index(lo):opts.index(hi) + 1]
+    assert [c[1] for c in vals] == want, f"창({len(want)}일)과 표({len(vals)}일)가 달라요"
+    assert len(want) == min(W.DAY_RANGE_DEFAULT, len(opts)), \
+        f"기본 창이 {len(want)}일이에요 — {W.DAY_RANGE_DEFAULT}일이어야 해요"
     assert all("/" in c[1] for c in vals), vals[:4]
 
 
@@ -1985,9 +2074,10 @@ def t_pages_are_reordered_without_the_trend_pages():
     """
     at = _open()
     pages = list([r for r in at.sidebar.radio if r.label == "페이지"][0].options)
-    assert pages == ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적", "03. 채널별 실적",
-                     "04. 앱푸시 동의 현황", "05. 첫구매 고객 세그먼트 성과",
-                     "06. 조직·카테고리별 실적", "07. 통합 데이터·다운로드"], pages
+    assert pages == ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적",
+                     "03. 조직·카테고리·채널별 첫구매 상세", "04. 채널별 실적",
+                     "05. 앱푸시 동의 현황", "06. 첫구매 고객 세그먼트 성과",
+                     "07. 조직·카테고리별 실적", "08. 통합 데이터·다운로드"], pages
 
 
 @case
@@ -2008,7 +2098,7 @@ def t_trend_page_memos_moved_not_lost():
 @case
 def t_channel_page_has_one_unit_and_no_metric_picker():
     """「03 채널별 실적」도 **지표를 안 고르고 다 그린다** — 월 고정도 풀었다."""
-    at = _open_page("03. 채널별 실적")
+    at = _open_page("04. 채널별 실적")
     rd = [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"]
     assert rd, [(r.label, getattr(r, "key", None)) for r in at.radio]
     assert list(rd[0].options) == ["일자별", "주차별", "월별"], list(rd[0].options)
@@ -2026,7 +2116,7 @@ def t_daily_unit_asks_for_a_range_not_one_day():
     묶어야 화면이 선다.
     """
     for page, key in (("02", "wr_fn_day"), ("03", "wr_ch_day")):
-        at = _open(unit="일") if page == "02" else _open_page("03. 채널별 실적")
+        at = _open(unit="일") if page == "02" else _open_page("04. 채널별 실적")
         if page == "03":
             [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value("일")
             at.run()
@@ -2083,12 +2173,16 @@ def t_channel_chart_filters_channels_and_years():
     선택을 그대로 따라가면 표까지 같이 좁아진다. 색은 채널·선 모양은 연도라, 채널을
     빼도 남은 선의 색이 바뀌지 않는다.
     """
-    at = _open_page("03. 채널별 실적")
+    at = _open_page("04. 채널별 실적")
     ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_ch_chart_ch"]
     assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
     chans = list(ms[0].options)
     assert len(chans) >= 2, f"채널이 둘 이상이어야 검사가 서요 — {chans}"
-    assert set(ms[0].value) == set(chans), f"기본은 전체 채널이어야 해요 — {ms[0].value}"
+    # 기본은 «평소 넷»이라 전체가 아닐 수 있다(`t_channel_chart_opens_with_the_usual_four`).
+    # 넣고 빼는 걸 보려면 **전부 켜 놓고** 시작한다.
+    ms[0].set_value(chans); at.run()
+    assert not at.exception, at.exception[0].value
+    ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_ch_chart_ch"]
 
     _names = lambda a: {t.get("name") for sp in _ch_specs(a) for t in sp.get("data", [])}
     before, color = _names(at), _ch_color(at, chans[0])
@@ -2184,10 +2278,216 @@ def t_orgcat_chart_filters_items():
 
 
 @case
+def t_period_filter_scopes_the_trends_below():
+    """「조회 기간」을 좁히면 **아래 추이도 같이 좁아진다.**
+
+    위에서 3주를 골라 놓고 아래 차트·표만 연중으로 남으면 같은 화면이 두 기간을 말하게
+    된다. ②의 차트·표, ⑤의 연중 추이가 전부 이 창을 본다.
+
+    주·월은 범위 선택이 없어 연중 그대로다(`win=None`) — 그건 다른 검사가 본다.
+    """
+    at = _open(unit="일")
+    sl = [x for x in at.get("select_slider") if getattr(x, "key", None) == "wr_fn_day"]
+    assert sl, "조회 기간 슬라이더가 없어요"
+    opts = list(sl[0].options)
+    assert len(opts) >= 6, f"날짜가 6개는 있어야 검사가 서요 — {opts}"
+    lo, hi = opts[0], opts[2]           # 앞의 세 칸만 남긴다
+    sl[0].set_value((lo, hi)); at.run()
+    assert not at.exception, at.exception[0].value
+
+    tbl = _ftrend_tbl(at)
+    assert tbl is not None, "②의 추이표가 없어요"
+    vals = [str(c[1]) for c in tbl.columns if not str(c[1]).endswith("증감")]
+    assert vals == opts[:3], f"②의 표가 창을 안 따라가요 — {vals}"
+
+    # **추이 차트만** 본다 — 워터폴(기여 분해)은 x축이 기간이 아니라 항목이다.
+    seen = 0
+    for e in at.get("plotly_chart"):
+        spec = json.loads(e.proto.spec)
+        title = str((spec.get("layout", {}).get("title") or {}).get("text", ""))
+        if "추이" not in title:
+            continue
+        seen += 1
+        for t in spec.get("data", []):
+            xs = [str(x) for x in (t.get("x") or [])]
+            extra = [x for x in xs if x not in {W.month_trim(o) for o in opts[:3]}]
+            assert not extra, f"«{title}»가 창 밖을 그려요 — {extra[:4]}"
+    assert seen >= 2, f"추이 차트를 {seen}장밖에 못 찾았어요 — ②·⑤가 다 있어야 해요"
+
+
+@case
+def t_orgcat_blocks_read_only_the_all_channel_rows():
+    """⑤와 「조직·카테고리별 실적」은 **전 채널(`*TOTAL`) 행만** 본다.
+
+    새 export가 채널로도 쪼개 오는데 여기서 섞으면 같은 조직이 채널 수만큼 중복돼
+    합계가 통째로 부풀어 오른다. 픽스처는 채널 합이 `*TOTAL`과 **다르게** 심어 뒀으니,
+    거르지 않으면 값이 대번에 달라진다.
+    """
+    oc = synth_orgcat()
+    assert set(ORGCAT_CHS) <= set(oc["ch"].unique()), \
+        f"픽스처에 채널 행이 없어요 — {sorted(oc['ch'].unique())}"
+    at = _open()
+    met = [b for b in at.selectbox if getattr(b, "key", None) == "wr_fn_ocmet"][0].value
+    got = next((f for f in _frames(at)
+                if "조직" in [str(c) for c in f.columns]), None)
+    assert got is not None, [list(f.columns)[:3] for f in _frames(at)]
+
+    def _v(ch, year):
+        r = oc[(oc["gran"] == "주") & (oc["ch"] == ch) & (oc["org"] == "*TOTAL")
+               & (oc["cat"] == "*TOTAL") & (oc["metric"] == met) & (oc["year"] == year)]
+        return None if r.empty else W.fmt_value(met, r["value"].iloc[0])
+
+    cells = [str(v) for v in got.iloc[0].tolist()]      # 맨 윗줄 = 합계
+    want = _v(W.ORGCAT_CH_ALL, 2026)
+    assert want in cells, f"⑤ 합계가 전 채널 값이 아니에요 — {want} 없음, {cells}"
+    # 채널을 안 거르면 뷰가 **마지막 채널 행**을 돌려준다(같은 키를 뒤 행이 이긴다)
+    bad = _v(ORGCAT_CHS[-1], 2026)
+    assert bad != want and bad not in cells, \
+        f"⑤가 채널 행을 집었어요 — «{ORGCAT_CHS[-1]}» 값 {bad}"
+
+
+@case
+def t_channel_page_crosses_orgs_with_channels():
+    """새 화면은 **행=조직 · 열=채널**이고 채널을 복수로 고른다.
+
+    「조직·카테고리별 실적」은 채널을 안 가르고 조직을 깊이 파고드는 화면이고, 여기는
+    조직 × 채널 교차가 주인공이다. 축이 셋이라 한 화면에 다 넣으면 표가 안 읽힌다.
+    """
+    at = _open_page("03. 조직·카테고리·채널별 첫구매 상세")
+    assert not at.exception, at.exception[0].value
+    ms = [m for m in at.multiselect if getattr(m, "key", None) == "occ_chs"]
+    assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
+    opts = list(ms[0].options)
+    assert set(opts) == set(ORGCAT_CHS), f"채널 선택지가 달라요 — {opts}"
+    # 기본은 「채널별 실적」 차트와 같은 넷 — 픽스처엔 직접·광고만 그 안에 있다
+    want = [c for c in W.CHART_CH_DEFAULT if c in opts]
+    assert set(ms[0].value) == set(want), f"기본이 {ms[0].value} — {want}이어야 해요"
+
+    got = next((f for f in _frames(at) if "조직" in [str(c) for c in f.columns]), None)
+    assert got is not None, [list(f.columns)[:3] for f in _frames(at)]
+    cols = [str(c) for c in got.columns if str(c) != "조직"]
+    vals = [c for c in cols if not c.endswith("전년비")]
+    assert vals[0] == "전체", f"첫 열이 «전체»여야 해요 — {vals[:3]}"
+    assert vals[1:] == want, f"열이 고른 채널을 안 따라가요 — {vals}"
+    assert cols == vals + [f"{c} 전년비" for c in vals], f"값·전년비가 섞였어요 — {cols}"
+
+    # 채널을 하나 빼면 그 열이 사라진다
+    ms[0].set_value([want[0]]); at.run()
+    assert not at.exception, at.exception[0].value
+    got2 = next((f for f in _frames(at) if "조직" in [str(c) for c in f.columns]), None)
+    c2 = [str(c) for c in got2.columns]
+    assert want[1] not in c2, f"«{want[1]}»를 뺐는데 남아 있어요 — {c2}"
+    assert want[0] in c2 and "전체" in c2, c2
+
+
+@case
+def t_channel_page_says_why_when_there_is_no_channel_axis():
+    """채널 축이 없는 export만 올렸으면 **왜 못 보는지** 말한다.
+
+    빈 화면으로 두면 '데이터를 올렸는데 왜 안 나오지'로만 보인다.
+    """
+    oc = synth_orgcat()
+    oc = oc[oc["ch"] == W.ORGCAT_CH_ALL]
+    at = _open_page("03. 조직·카테고리·채널별 첫구매 상세", orgcat=oc)
+    assert not at.exception, at.exception[0].value
+    txt = " ".join(_texts(at))
+    assert "채널 축이 없어요" in txt, f"왜 비었는지 안 말해요 — {txt[:200]}"
+
+
+@case
+def t_segment_page_shares_the_channel_face():
+    """「05 세그먼트」는 「04 채널별」과 **같은 함수**를 쓴다 — 축만 다르다.
+
+    예전엔 주·월 표 두 개가 박혀 있고 세그먼트를 하나씩 갈아 끼워야 했다. 일 단위는
+    아예 못 봤고 세그먼트 사이의 이야기가 안 이어졌다. 복사해 두면 한쪽만 고쳐져
+    조용히 갈리므로 **한 구현을 둘이 나눠 쓴다**.
+    """
+    src = inspect.getsource(W)
+    assert src.count("def render_axis_page(") == 1, "축 페이지 구현이 하나여야 해요"
+    for fn in ("render_channel_page",):
+        body = inspect.getsource(getattr(W, fn))
+        assert "render_axis_page(" in body, f"{fn}이 공용 구현을 안 써요"
+    assert "render_axis_page(" in src[src.index("첫구매 고객 세그먼트 성과"):], \
+        "세그먼트 페이지가 공용 구현을 안 써요"
+
+    at = _open_page("06. 첫구매 고객 세그먼트 성과")
+    assert not at.exception, at.exception[0].value
+    # 기간 단위 라디오 하나 — 일/주/월
+    rd = [r for r in at.radio if getattr(r, "key", None) == "wr_sg_gran"]
+    assert rd, [(r.label, getattr(r, "key", None)) for r in at.radio]
+    assert set(rd[0].options) <= {"일자별", "주차별", "월별"}, list(rd[0].options)
+    # 옛 화면의 세그먼트 셀렉트는 없어야 한다
+    assert not [b for b in at.selectbox if b.label == "세그먼트 선택"], \
+        "옛 세그먼트 셀렉트가 남아 있어요"
+    # 표는 왼쪽 실적 · 오른쪽 전년비
+    got = next((f for f in _frames(at) if f.index.name == "세그먼트"), None)
+    assert got is not None, [f.index.name for f in _frames(at)]
+    cols = [str(c) for c in got.columns]
+    vals = [c for c in cols if "전년비" not in c]
+    assert cols == vals + [c for c in cols if "전년비" in c], f"값·전년비가 섞였어요 — {cols[:4]}"
+    assert set(SEG_ROWS) <= set(map(str, got.index)), list(got.index)
+    # 차트도 그려진다(지표를 안 고른다)
+    assert at.get("plotly_chart"), "세그먼트 추이 차트가 없어요"
+
+
+@case
+def t_channel_by_period_table_is_whole_year_with_deltas():
+    """「채널 × 기간」도 **올해 전체 + 오른쪽 전년비**다 — 세 표가 같은 얼굴이어야 한다.
+
+    최근 N개만 보여 주면 '어느 기간부터 꺾였나'를 보려고 매번 엑셀을 받게 된다.
+    단위(일/주/월)마다 규칙이 다르면 오갈 때 헷갈리니 셋 다 전체다.
+    """
+    for unit in ("월", "주", "일"):
+        at = _open_page("04. 채널별 실적")
+        [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value(unit)
+        at.run()
+        assert not at.exception, (unit, at.exception[0].value)
+        # 위쪽 「채널별 실적」 표도 인덱스가 «채널»이다(열=지표) — 아래 「채널 × 기간」은
+        # **마지막** 것이다. 첫 번째를 집으면 지표 7칸을 기간으로 착각한다.
+        chans = [f for f in _frames(at) if f.index.name == "채널"]
+        assert len(chans) >= 2, (unit, [f.index.name for f in _frames(at)])
+        got = chans[-1]
+        cols = [str(c) for c in got.columns]
+        vals = [c for c in cols if not c.endswith("전년비")]
+        dlts = [c for c in cols if c.endswith("전년비")]
+        assert cols == vals + dlts, f"{unit}: 값·전년비가 섞였어요 — {cols[:4]}"
+        assert len(vals) == len(dlts), f"{unit}: 값 {len(vals)} vs 전년비 {len(dlts)}"
+        # 일자별엔 「조회 기간」이 있어 그 창만큼이고, 주·월은 연중 전체다.
+        if unit == "일":
+            sl = [x for x in at.get("select_slider")
+                  if getattr(x, "key", None) == "wr_ch_day"]
+            assert sl, "일자별인데 조회 기간 슬라이더가 없어요"
+            o = list(sl[0].options)
+            lo, hi = sl[0].value
+            want = o.index(hi) - o.index(lo) + 1
+        else:
+            want = len(W.labels_sorted(synth_store(), unit, [2026]))
+        assert len(vals) == want, f"{unit}: {want}개가 아니라 {len(vals)}개가 떠요"
+
+
+@case
+def t_channel_chart_opens_with_the_usual_four():
+    """차트 기본 채널은 **평소 맞대 보는 넷**이다 — 여덟 줄을 다 켜면 엉켜서 안 읽힌다.
+
+    표는 그대로 다 놓는다(차트만 좁힌다). 데이터에 없는 채널은 자동으로 빠진다.
+    """
+    at = _open_page("04. 채널별 실적")
+    ms = [m for m in at.multiselect if getattr(m, "key", None) == "wr_ch_chart_ch"]
+    assert ms, [(m.label, getattr(m, "key", None)) for m in at.multiselect]
+    want = [c for c in W.CHART_CH_DEFAULT if c in ms[0].options]
+    assert want, f"픽스처에 기본 채널이 하나도 없어요 — {list(ms[0].options)}"
+    assert set(ms[0].value) == set(want), f"기본이 {ms[0].value} — {want}이어야 해요"
+    # 표는 안 좁아진다 — 사이드바가 고른 채널을 다 낸다
+    tb = next((f for f in _frames(at) if f.index.name == "채널"), None)
+    assert tb is not None and len(tb.index) > len(want), \
+        f"차트 기본값이 표까지 좁혔어요 — 표 {list(tb.index) if tb is not None else None}"
+
+
+@case
 def t_channel_table_puts_deltas_on_the_right():
     """「03」 표도 **왼쪽 실적 · 오른쪽 전년비**."""
     for unit in ("일", "주", "월"):
-        at = _open_page("03. 채널별 실적")
+        at = _open_page("04. 채널별 실적")
         [r for r in at.radio if getattr(r, "key", None) == "wr_ch_gran"][0].set_value(unit)
         at.run()
         assert not at.exception, (unit, at.exception[0].value)
@@ -2207,7 +2507,7 @@ def t_download_page_builds_files_on_click():
     `st.download_button`은 data를 미리 받는 API라 그냥 넘기면 받지도 않는 리런마다
     전체를 CSV로 찍는다(원장 120만 행이면 그것만 몇 초다).
     """
-    at = _open_page("07. 통합 데이터·다운로드")
+    at = _open_page("08. 통합 데이터·다운로드")
     labels = [b.label for b in at.button]
     assert any("마스터" in l for l in labels), labels
     assert any("워크북" in l for l in labels), labels
