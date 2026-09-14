@@ -2151,17 +2151,23 @@ def yoy_summary_table(df, ref_year, ref_month, metrics):
         })
     return pd.DataFrame(rows).set_index("구분"), (pm_y, pm_m)
 
-def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None):
+def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None,
+                delta_side="inline"):
     """추이표: 행=지표, 열=(연도, 기간)
 
-    `delta_year`를 주면 그 해의 각 기간 **바로 옆에** 전년 같은 기간 대비 증감 칸을
-    끼운다. 표가 넓어지지만 눈이 두 해 사이를 오갈 필요가 없어진다 — 2025년 1월과
-    2026년 1월이 열두 칸 떨어져 있어서 그냥은 못 맞댄다.
+    `delta_year`를 주면 그 해의 각 기간에 전년 같은 기간 대비 증감 칸을 붙인다.
+    2025년 1월과 2026년 1월이 열두 칸 떨어져 있어서 그냥은 못 맞대기 때문이다.
+
+    `delta_side`가 자리를 정한다:
+      - `"inline"` — 기간 **바로 오른쪽**에 끼운다(03·04가 쓰는 배치).
+        한 기간의 값과 증감을 붙여 읽기 좋다.
+      - `"right"` — 값을 다 놓고 **증감을 오른쪽에 몰아**둔다.
+        증감만 가로로 훑어 '어느 달부터 꺾였나'를 보기 좋다.
 
     비교 대상은 **화면에 그린 연도와 무관하게** `delta_year - 1`을 직접 조회한다.
     전년을 안 그리고 있어도 증감은 나와야 한다.
     """
-    spec = []                       # (연도, 표시 라벨, 조회 라벨, 비교 연도 or None)
+    spec, tail = [], []             # (연도, 표시 라벨, 조회 라벨, 비교 연도 or None)
     for y in years:
         for lb in labels_sorted(df, gran, [y]):
             sub = df[(df["gran"] == gran) & (df["year"] == y) & (df["label"] == lb) &
@@ -2169,7 +2175,9 @@ def trend_table(df, gran, metrics, years, seg="*TOTAL", delta_year=None):
             if sub.empty: continue
             spec.append((y, lb, lb, None))
             if delta_year is not None and y == delta_year:
-                spec.append((y, f"{lb} 증감", lb, y - 1))
+                (tail if delta_side == "right" else spec).append(
+                    (y, f"{lb} 증감", lb, y - 1))
+    spec += tail
     if not spec:
         return pd.DataFrame()
     # 값은 **보고서 규칙**으로 읽는다(`report_series`) — 파일의 가입율은 일별 비율의
@@ -2251,12 +2259,15 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300):
             line=dict(color=clr(YEAR_PAL[i % len(YEAR_PAL)]), width=2),
             marker=dict(size=5),
         ))
-    gname = "월별" if gran == "월" else "주차별"
+    gname = {"일": "일자별", "주": "주차별", "월": "월별"}.get(gran, gran)
     ly = base_layout(h, ysuffix=unit if unit == "%" else "",
                      title=f"{metric} {gname} 추이 ({unit})")
     ly["xaxis"]["categoryorder"] = "array"
     ly["xaxis"]["categoryarray"] = [month_trim(v) for v in x_all]
-    if gran == "주": ly["xaxis"]["tickangle"] = -45; ly["xaxis"]["nticks"] = 20
+    # 일별은 라벨이 한 해 365개라 그대로 두면 축이 새까매진다 — 눈금 수를 묶는다.
+    if gran in ("주", "일"):
+        ly["xaxis"]["tickangle"] = -45
+        ly["xaxis"]["nticks"] = 20 if gran == "주" else 14
     fig.update_layout(**ly)
     return fig
 
@@ -3284,12 +3295,16 @@ FUNNEL_ROLLUP_METS = ["첫구매 거래액", "첫구매 고객수", "첫구매 �
 FUNNEL_ADDITIVE = ["비회원트래픽", "가입자수", "첫구매 고객수", "첫구매 거래액"]
 # 값 규칙(FUNNEL_DERIVED·FUNNEL_FILE_FIRST·funnel_val)은 조회 계층 옆으로 옮겼다 —
 # 추이표·차트도 같은 규칙을 타야 페이지마다 숫자가 갈리지 않는다.
+# 화면 전체가 **이 하나**를 본다 — ①의 카드부터 ⑥의 앱 추이까지. 예전엔 위의
+# 「비교 기준」과 ②·⑤의 「기간 단위」가 따로 놀아 단위 하나 바꾸려고 세 군데를 눌러야 했다.
+FUNNEL_GRAN_LABEL = {"일": "일자별", "주": "주차별", "월": "월별"}
+FUNNEL_GRAN_ORDER = ["일", "주", "월"]
 # ② 추이에 기본으로 올릴 지표 — 퍼널을 앞에서 뒤로 훑는 순서 그대로다. 객단가는 빼 뒀다
 # (거래액·고객수가 이미 있어 셋을 다 켜면 차트가 여덟 장이 된다). 필요하면 골라서 켠다.
 FUNNEL_TREND_DEFAULT = ["비회원트래픽", "가입율", "가입자수", "당일가입CR",
                         "첫구매 고객수", "첫구매 거래액"]
-# 표에 보일 기간 수 — 주차는 넉 달치, 월은 한 해치
-FUNNEL_TREND_KEEP = {"주": 16, "월": 12}
+# 표에 보일 기간 수 — 일은 한 달치, 주차는 넉 달치, 월은 한 해치
+FUNNEL_TREND_KEEP = {"일": 31, "주": 16, "월": 12}
 # 하단 앱 블록 — 앱설치는 아직 원천이 안 올라와서, 없으면 '–'로 비우고 왜인지 밝힌다
 APP_STEPS = ["가입자수", "앱설치", "앱푸시수신동의"]
 # 원천이 일자 헤더 표라 `gran='일'`로만 쌓이는 지표 — 주·월은 일평균으로 묶어야 한다
@@ -3363,24 +3378,57 @@ def _fn_rate_cell(label, cur, prv, tag):
 def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
     """02. 첫구매 퍼널별 상세 실적 — 퍼널 한 줄을 끝까지 따라가며 진단하는 화면."""
     st.markdown("## 첫구매 퍼널별 상세 실적")
-    cmp_mode = st.radio("비교 기준", ["주간 — 전년 동주", "월누적(MTD) — 전년 동월"],
-                        horizontal=True, key="wr_fn_cmp")
-    weekly = cmp_mode.startswith("주간")
-    if weekly and not wlabel:
-        st.info("주차 데이터가 없어요. 월누적(MTD) 비교를 골라 주세요.")
+    # ── 기간 단위 — 이 화면의 유일한 단위 스위치 ──
+    # 퍼널 지표가 **실제로 있는** 단위만 올린다. `gran=="일"`만 보면 앱푸시 수신동의가
+    # 늘 일별로 쌓이는 탓에 퍼널 데이터가 없는데도 일자별이 켜진다.
+    _isfn = df["metric"].isin(FUNNEL_STEPS) & df["value"].notna()
+    gr_avail = [g for g in FUNNEL_GRAN_ORDER if (_isfn & (df["gran"] == g)).any()]
+    if not gr_avail:
+        st.info("퍼널 지표 데이터가 없어요. 실적 파일을 올려 주세요.")
         return
-    if weekly:
-        gran, clabel, cy = "주", wlabel, wy
+    gsel, dsel = st.columns([1.3, 1.7])
+    with gsel:
+        guard_select("wr_fn_gran", gr_avail,
+                     default="주" if "주" in gr_avail else gr_avail[-1])
+        gran = st.radio("기간 단위", gr_avail, horizontal=True, key="wr_fn_gran",
+                        format_func=lambda g: FUNNEL_GRAN_LABEL[g],
+                        help="이 화면 전체가 이 단위를 따라가요 — 카드·추이·채널·조직·앱까지.")
+
+    if gran == "주":
+        if not wlabel:
+            st.info("주차 데이터가 없어요. 다른 기간 단위를 골라 주세요.")
+            return
+        clabel, cy = wlabel, wy
         period_lbl, base_lbl, base_tag = week_disp(wy, wlabel), "전년 동주", "전년동주"
         x_prv, x_cur = f"{wy - 1}년", f"{wy}년"
         prv_close = "final"
-    else:
-        gran, clabel, cy = "월", month_label(ref_month), ref_year
+    elif gran == "월":
+        clabel, cy = month_label(ref_month), ref_year
         period_lbl = f"{ref_year}년 {ref_month}월 누적(MTD)"
         base_lbl, base_tag = "전년 동월 MTD", "전년동월"
         x_prv, x_cur = f"{ref_year - 1}년 {ref_month}월", f"{ref_year}년 {ref_month}월"
         # 전년 동월도 동일기간(MTD)으로 잘린 값 우선 — 「01」 실적 요약 표와 같은 기준
         prv_close = "mtd"
+    else:
+        # 사이드바 「기준 기간」엔 연·월·주차뿐이라 **일자만 여기서 고른다**.
+        # 단위를 바꿀 때 누르는 건 여전히 위 라디오 하나다.
+        _days = (df[(df["gran"] == "일") & _isfn & (df["year"] == ref_year)]
+                 [["label", "sortkey"]].drop_duplicates()
+                 .sort_values("sortkey")["label"].tolist())
+        if not _days:
+            st.info(f"{ref_year}년은 일자별 퍼널 데이터가 없어요. "
+                    "다른 기간 단위를 골라 주세요.")
+            return
+        with dsel:
+            guard_select("wr_fn_day", _days, default=_days[-1])
+            clabel = st.selectbox("기준 일자", _days[::-1], key="wr_fn_day",
+                                  help="사이드바엔 일자 선택이 없어서 여기서 골라요. "
+                                       "가장 최근 날이 기본이에요.")
+        cy = ref_year
+        period_lbl = f"{ref_year}년 {clabel}"
+        base_lbl, base_tag = "전년 같은 날", "전년동일"
+        x_prv, x_cur = f"{ref_year - 1}년 {clabel}", f"{ref_year}년 {clabel}"
+        prv_close = "final"
     py = cy - 1
 
     def gcur(met, seg="*TOTAL"):
@@ -3630,29 +3678,19 @@ def _render_funnel_trend(df, gran, cy, py):
     반토막 난다(04에서 실제로 8주로 줄었다). 기간을 N개 고른 뒤 짝이 되는 증감 칸을
     딸려 보낸다.
 
-    기간 단위는 여기서 따로 고른다(위 비교 기준과 별개) — ④의 연중 추이와 같은 이유로,
-    주차로 흐름을 보다 월로 묶어 추세만 보는 왕복이 잦다.
+    **기간 단위는 화면 위 「기간 단위」 하나를 따라간다.** 예전엔 여기에 자체 라디오가
+    있어서, 단위를 바꾸려면 위와 여기를 따로 눌러야 했다(⑤까지 세 군데였다).
     """
-    _grans = [g for g in ("주", "월") if (df["gran"] == g).any()]
-    if not _grans:
-        st.info("추이를 그릴 주·월 데이터가 없어요.")
-        return
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        _gk = "wr_fn_ftrend_gran"
-        guard_select(_gk, _grans, default=gran if gran in _grans else _grans[-1])
-        tg = st.radio("기간 단위", _grans, key=_gk, horizontal=True,
-                      format_func=lambda g: "주차별" if g == "주" else "월별")
+    tg = gran
     avail = [m for m in FUNNEL_STEPS
              if ((df["gran"] == tg) & (df["metric"] == m)).any()]
     if not avail:
-        st.info(f"«{'주차' if tg == '주' else '월'}» 단위에 퍼널 지표가 없어요.")
+        st.info(f"«{FUNNEL_GRAN_LABEL.get(tg, tg)}» 단위에 퍼널 지표가 없어요.")
         return
-    with c2:
-        # 라벨을 '지표'로 두면 ③·④의 지표 셀렉트와 섞인다 — 위젯 종류도 다르게 둔다.
-        _dft = [m for m in FUNNEL_TREND_DEFAULT if m in avail] or avail[:4]
-        sel = st.multiselect("추이에 올릴 지표", avail, default=_dft,
-                             key="wr_fn_ftrend_mets")
+    # 라벨을 '지표'로 두면 ③·④의 지표 셀렉트와 섞인다 — 위젯 종류도 다르게 둔다.
+    _dft = [m for m in FUNNEL_TREND_DEFAULT if m in avail] or avail[:4]
+    sel = st.multiselect("추이에 올릴 지표", avail, default=_dft,
+                         key="wr_fn_ftrend_mets")
     if not sel:
         st.caption("지표를 하나도 안 골랐어요. 위에서 골라 주세요.")
         return
@@ -3665,20 +3703,22 @@ def _render_funnel_trend(df, gran, cy, py):
                 st.plotly_chart(yoy_chart(df, tg, _met, _yrs, h=280), width="stretch")
 
     # ── 표 — 기간마다 오른쪽에 전년 대비 증감 ──
-    tbl = trend_table(df, tg, sel, [cy], delta_year=cy)
+    # 값을 왼쪽에 모으고 **증감은 오른쪽에 몰아**둔다 — 증감만 가로로 훑어야
+    # '어느 기간부터 꺾였나'가 보인다. 03·04는 기간마다 끼우는 배치 그대로다.
+    tbl = trend_table(df, tg, sel, [cy], delta_year=cy, delta_side="right")
     if tbl.empty:
-        st.caption(f"{cy}년 «{'주차' if tg == '주' else '월'}» 값이 아직 없어요.")
+        st.caption(f"{cy}년 «{FUNNEL_GRAN_LABEL.get(tg, tg)}» 값이 아직 없어요.")
         return
-    cap = FUNNEL_TREND_KEEP[tg]
-    _all = set(tbl.columns)
-    keep = []
-    for _c in [c for c in tbl.columns if not _is_delta_col(c)][-cap:]:
-        keep.append(_c)
-        _d = (_c[0], f"{_c[1]} 증감")
-        if _d in _all:
-            keep.append(_d)
-    _unit = "주차" if tg == "주" else "월"
-    st.caption(f"{cy}년 {_unit}마다 오른쪽에 **전년 같은 {_unit} 대비 증감**을 붙였어요. "
+    cap = FUNNEL_TREND_KEEP.get(tg, 12)
+    # **자를 땐 기간을 센다** — 증감 칸까지 섞어 `[-N:]`으로 집으면 보이는 기간이 반토막 난다.
+    # 자리는 `trend_table`이 이미 정했으니 **원래 순서 그대로 골라내기만** 한다.
+    # 여기서 값·증감을 새로 엮으면 배치를 정하는 데가 둘이 되고, `delta_side`를 바꿔도
+    # 화면이 안 따라온다(그렇게 짜 봤더니 버그를 심어도 검사가 못 잡았다).
+    _vals = [c for c in tbl.columns if not _is_delta_col(c)][-cap:]
+    _want = set(_vals) | {(c[0], f"{c[1]} 증감") for c in _vals}
+    keep = [c for c in tbl.columns if c in _want]
+    _unit = {"일": "날", "주": "주차", "월": "월"}.get(tg, tg)
+    st.caption(f"왼쪽은 {cy}년 실적, 오른쪽은 **전년 같은 {_unit} 대비 증감**을 모아 뒀어요. "
                f"비율 지표(가입율·당일가입 첫구매율)는 %p 차이예요. 전년에 그 {_unit}가 "
                f"없으면 '–'로 둬요. 값은 전체(채널 합산) 기준이에요.")
     wtable(style_trend(tbl[keep], sel), width="stretch",
@@ -4057,26 +4097,23 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran):
     연도는 체크로 넣고 뺀다. 항목이 많으면 두 해가 겹쳐 구분이 안 되므로, 전년을 꺼서
     올해 흐름만 보는 길을 열어 둔다.
 
-    기간 단위는 여기서 따로 고른다(위 비교 기준과 별개) — 주차로 흐름을 보다가
-    월로 묶어 추세만 보는 왕복이 잦다. 있는 단위만 선택지에 올린다.
+    **기간 단위는 화면 위 「기간 단위」 하나를 따라간다** — 예전엔 여기에도 자체 라디오가
+    있어서 단위 하나 바꾸는 데 세 군데를 눌러야 했다. 그 단위가 이 원천에 없으면
+    왜 못 그리는지 말하고 물러난다(커버리지가 마스터와 다를 수 있다).
     """
-    _grans = [g for g in ("주", "월") if (odf["gran"] == g).any()]
-    if not _grans:
+    tg = gran
+    if not (odf["gran"] == tg).any():
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.caption(f"조직×카테고리 원천엔 «{FUNNEL_GRAN_LABEL.get(tg, tg)}» 단위가 없어서 "
+                   "연중 추이는 못 그려요.")
         return
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
     st.markdown(f"###### 연중 추이 — {esc(node_lbl)} · {esc(met)}")
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        _gk = "wr_fn_trend_gran"
-        guard_select(_gk, _grans, default=gran if gran in _grans else _grans[-1])
-        tg = st.radio("기간 단위", _grans, key=_gk, horizontal=True,
-                      format_func=lambda g: "주차별" if g == "주" else "월별")
-    with c2:
-        st.markdown("**차트에 올릴 연도**")
-        y1, y2 = st.columns(2)
-        show_cy = y1.checkbox(f"{cy}년", value=True, key="wr_fn_trend_cy")
-        show_py = y2.checkbox(f"{py}년", value=True, key="wr_fn_trend_py",
-                              help="항목이 많아 겹쳐 보이면 꺼서 올해만 봐요.")
+    st.markdown("**차트에 올릴 연도**")
+    y1, y2, _y3 = st.columns([1, 1, 4])
+    show_cy = y1.checkbox(f"{cy}년", value=True, key="wr_fn_trend_cy")
+    show_py = y2.checkbox(f"{py}년", value=True, key="wr_fn_trend_py",
+                          help="항목이 많아 겹쳐 보이면 꺼서 올해만 봐요.")
     yrs = [y for y, on in ((cy, show_cy), (py, show_py)) if on]
     if not yrs:
         st.caption("차트에 올릴 연도를 하나도 안 골랐어요. 위에서 연도를 켜 주세요.")
@@ -4264,7 +4301,7 @@ def _funnel_app_one(df, gran, met, year, label, close):
 
 # 최근 몇 개 기간을 나란히 — 카드 한 장으로는 '이번이 낮은 건지 원래 그런 건지'를 못 본다.
 # 단위는 화면 위 비교 기준(주간/월누적)을 그대로 따라간다.
-APP_TREND_N = {"주": 8, "월": 6}
+APP_TREND_N = {"일": 14, "주": 8, "월": 6}
 
 
 def _funnel_app_trend(df, gran, cy, clabel):
