@@ -2875,30 +2875,30 @@ def main():
             return np.nan
 
     # ── 캐시 래퍼 (무거운 파싱 1회만) ──
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=4)
     def cached_perf(b): return parse_perf_bytes(b)
 
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=4)
     def cached_plan(b): return parse_plan_bytes(b)
 
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=4)
     def cached_mtd(b): return parse_mtd_bytes(b)
 
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=4)
     def cached_promo(b): return parse_promo_bytes(b)
 
     # (기획 시트 파싱은 캐시하지 않는다 — 「기획 문구 가져오기」는 '지금 시트를 다시 읽어라'는
     #  명시적 사용자 액션인데, 캐시하면 시트 문구를 수정하고 다시 눌러도 최대 1시간 옛 값이
     #  반환돼 기능 의도를 정면으로 해친다. 매 클릭 fresh 로드.)
 
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=4)
     def cached_classify(b): return classify_upload("", b)
 
     # compute_mtd에 파생 칼럼을 더하면 이 표식도 같이 올릴 것 — 캐시 키는 래퍼 함수의
     # 소스와 인자만 보고 compute_mtd 변경은 모른다 (prepare_raw의 TAGSET_VER와 같은 이유).
     MTDSET_VER = "uniq1"
 
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=2)
     def cached_compute_mtd(mtd_df, ver=MTDSET_VER):
         """compute_mtd 캐시 — 어느 페이지에서든 매 rerun마다 groupby 4회+회귀 5회를
         다시 돌던 것을 데이터가 같으면 건너뛴다."""
@@ -2908,11 +2908,11 @@ def main():
     # _ver 에 불용어·토큰 규칙 시그니처를 넣어 규칙 변경 시 캐시가 무효화되게 한다.
     _KWVER = hashlib.md5((TOKEN_RE.pattern + "|".join(sorted(STOPWORDS))).encode()).hexdigest()[:10]
 
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=8)
     def cached_keyword_perf(d, metric_col, min_n, top, _ver=_KWVER):
         return keyword_perf(d, metric_col, min_n=min_n, top=top, with_sig=True)
 
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=8)
     def cached_emoji_perf(d, metric_col, min_n, top, _ver=_KWVER):
         return emoji_perf(d, metric_col, min_n=min_n, top=top, with_sig=True)
 
@@ -2923,7 +2923,7 @@ def main():
                   .hexdigest()[:12] + "|" + "|".join(TAG_BOOLS) + "|이모지수v1"
                   + "|brand:" + BRANDSET_VER + "|hour:norm1" + "|prio:g1")
 
-    @st.cache_data(show_spinner=False)
+    @st.cache_data(show_spinner=False, max_entries=2)
     def prepare_raw(work_df, tagset_ver):
         """파생 재계산 + 타입정리 + 문구 태깅을 1회만 — 필터·페이지 이동 때 재계산 방지(성능 핵심).
         입력 work_df 가 동일하면(저장 데이터만 볼 때) 캐시 히트하여 무거운 태깅을 건너뛴다."""

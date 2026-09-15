@@ -616,7 +616,7 @@ def parse_orgcat_grid(rows):
     return pd.DataFrame(records, columns=ORGCAT_COLS) if records else pd.DataFrame()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=4)
 def parse_orgcat_file(name, data: bytes) -> pd.DataFrame:
     """업로드 1건 → 조직×카테고리 long DF. 이 형식이 아니면 빈 DF.
 
@@ -812,7 +812,7 @@ def detail_fill(d):
     return d[DETAIL_COLS]
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=4)
 def parse_detail_file(name, data: bytes) -> pd.DataFrame:
     """업로드 1건 → 결제 원장 long DF. 이 형식이 아니면 빈 DF."""
     if name.lower().endswith(".csv") and not name.lower().endswith(".csv.gz"):
@@ -1269,7 +1269,7 @@ def parse_appinstall_grid(rows):
     return out
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=4)
 def parse_appinstall_file(name, data: bytes) -> pd.DataFrame:
     """라우팅·인식목록·누적 병합 세 군데서 같은 파일을 물어보므로 캐시해 둔다."""
     try:
@@ -1312,7 +1312,7 @@ def route_push(n, b):
         if not pf.empty: return pf, None
     return None, None
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2)
 def combine_files(file_tuples) -> pd.DataFrame:
     """업로드 파일들 → 통합 long DF. 동일 키는 마지막 파일 우선"""
     frames = []
@@ -1378,7 +1378,7 @@ def load_store() -> pd.DataFrame:
     return _read_store(DATA_STORE, stt.st_mtime_ns, stt.st_size)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1)
 def _read_store(path, mtime, size):
     try:
         d = pd.read_csv(path, encoding="utf-8-sig")
@@ -1418,7 +1418,7 @@ def load_orgcat_store() -> pd.DataFrame:
     return _read_orgcat_store(ORGCAT_STORE, stt.st_mtime_ns, stt.st_size)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1)
 def _read_orgcat_store(path, mtime, size):
     try:
         d = pd.read_csv(path, encoding="utf-8-sig")
@@ -1441,7 +1441,7 @@ def merge_orgcat(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
             .drop_duplicates(subset=ORGCAT_KEY, keep="last"))
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2)
 def combine_orgcat(file_tuples) -> pd.DataFrame:
     """업로드 파일들 중 조직×카테고리 형식만 모아 하나로 — 같은 키는 마지막 파일 우선"""
     frames = []
@@ -1469,7 +1469,7 @@ def load_detail_store() -> pd.DataFrame:
     return _read_detail_store(DETAIL_STORE, stt.st_mtime_ns, stt.st_size)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1)
 def _read_detail_store(path, mtime, size):
     try:
         d = pd.read_csv(path, encoding="utf-8-sig")   # .gz는 pandas가 알아서 푼다
@@ -1495,7 +1495,7 @@ def merge_detail(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
             .drop_duplicates(subset=DETAIL_KEY, keep="last"))
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2)
 def combine_detail(file_tuples) -> pd.DataFrame:
     """업로드 파일들 중 결제 원장 형식만 모아 하나로 — 같은 키는 마지막 파일 우선"""
     frames = [d for d in (parse_detail_file(n, b) for n, b in file_tuples) if not d.empty]
@@ -1516,7 +1516,7 @@ def upload_diff(stored, df_new):
     return len(nc - oc), len(nc & oc)
 
 # ── 백업/업로드 고도화 헬퍼 ────────────────────────────────
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2)
 def classify_uploads(file_tuples):
     """업로드된 각 파일이 무엇으로 인식됐는지 (파일명, 인식결과, 행수) 목록.
     미인식 파일을 눈에 보이게 해 조용한 누락을 방지한다."""
@@ -3435,7 +3435,7 @@ def _won_m(v, digits=1):
 
 
 # ── 결제 원장 → 화면이 그대로 읽는 조직×카테고리 큐브 ──────────────────
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=8)
 def detail_periods(dates, gran):
     """고유 일자 → (year, label, sortkey, nd, close) 표. 기간 규칙은 여기 한 곳뿐이다.
 
@@ -3494,7 +3494,7 @@ ORGCAT_DERIVE_RATIO = {"첫구매 객단가": ("첫구매 거래액", "첫구매
 ORGCAT_DERIVE_SHARE = {"거래액비중": "첫구매 거래액", "고객비중": "첫구매 고객수"}
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1)
 def orgcat_derive_periods(df):
     """일별 행에서 주·월 행을 만들어 **빈자리만** 채운다.
 
@@ -3625,7 +3625,7 @@ def detail_stamp(ddf, gran):
     return d
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=16)
 def detail_level(sdf, gran, axis, restrict, depth):
     """원장 → 특정 뎁스 한 겹의 ORGCAT_COLS 행들. `restrict`로 그 위 경로에 가둔다.
 

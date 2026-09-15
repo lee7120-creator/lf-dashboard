@@ -378,6 +378,35 @@ def t_weekly_store_csvs_are_cached_by_file_signature():
                      "옮겨 주세요:\n  " + "\n  ".join(bad))
 
 
+@case
+def t_caches_are_bounded():
+    """`@st.cache_data`엔 **`max_entries`(또는 `ttl`)를 반드시 준다.**
+
+    기본이 **무제한**이라, 키가 하나 늘 때마다 결과 프레임이 그대로 남는다. 저장소
+    읽기는 `(path, mtime, size)`가 키라서 **저장할 때마다 새 항목이 생기고 옛 70만 행·
+    120만 행 프레임이 안 버려진다** — 실측으로 저장 한 번에 평균 +273MB씩 올라가
+    564MB → 1,657MB가 됐다. 한도를 넘으면 Streamlit이 컨테이너를 죽이고 화면엔
+    **「Oh no. Error running app.」** 만 뜬다. 리런하면 살아나서 원인이 안 드러난다.
+
+    상한은 쓰임새에 맞춰 준다 — 파일 서명 캐시는 1(가장 최근 한 벌만 쓸모가 있다),
+    업로드 묶음은 2, 파일별 파서는 4쯤.
+    """
+    bad = []
+    for name in APPS:
+        for node in ast.walk(_tree(name)):
+            if not isinstance(node, _FUNC):
+                continue
+            for d in node.decorator_list:
+                if not (isinstance(d, ast.Call)
+                        and "cache_data" in ast.unparse(d.func)):
+                    continue
+                kw = {k.arg for k in d.keywords}
+                if not ({"max_entries", "ttl"} & kw):
+                    bad.append(f"{name}:{node.lineno} — {node.name}()")
+    assert not bad, ("한도 없는 `@st.cache_data`가 있어요. 키가 늘수록 결과가 그대로 "
+                     "쌓여 OOM으로 앱이 죽어요:\n  " + "\n  ".join(bad))
+
+
 def main():
     fails = []
     for fn in CASES:
