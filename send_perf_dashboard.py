@@ -674,6 +674,11 @@ MTD_LABELS = {
 # 기존 purchaseRate는 분모가 '발송 고객수'라 '보낸 사람 중 산 비율'이고,
 # uniq_cr은 '들어온 사람 중 산 비율'이라 답하는 질문이 다르다.
 MTD_DERIVED = ["purchaseRate", "rpc", "ctr_send", "uniq_cr", "rev_per_uniq", "inflow_dup"]
+# 화면이 실제로 기대는 지표. 이게 비면 차트·카드가 빈 채로 뜨므로 **사이드바로 알린다**.
+# 나머지(인당방문횟수·구매건수·건단가·적립M 등)는 파일마다 있고 없고가 갈리는 부가
+# 지표라, 없다고 매번 ⚠를 띄우면 진짜 문제를 무시하게 된다 — 파싱 로그에만 남긴다.
+MTD_CORE = ["perSend", "revenue", "totalSend", "customers", "ctr",
+            "uniqueInflow", "totalInflow", "purchaseCust", "avgOrderVal"]
 MTD_STORE = "send_perf_mtd_store.csv"
 MTD_STORE_COLS = ["date"] + list(MTD_METRICS)
 
@@ -728,20 +733,54 @@ def parse_mtd_bytes(file_bytes):
         except Exception:
             dates.append(pd.NaT)
     metric_col = ws.iloc[3:, 0].astype(str).str.strip()
+    _key = metric_col.str.replace(" ", "", regex=False)
 
-    def get_m(keys):
-        for kw in keys:
-            match = metric_col[metric_col.str.replace(" ", "") == kw.replace(" ", "")]
-            if not match.empty:
-                vals = ws.iloc[match.index[0], start:start + len(dates)].values
-                return pd.to_numeric(vals, errors="coerce")
-        return np.full(len(dates), np.nan)
+    # **정확 일치를 전부 먼저 잡고, 남은 행에서만 접두어 일치를 본다.** 순서를 섞으면
+    # `유니크유입`이 `유니크유입고객수` 행을 먼저 집어 가 엉뚱한 값이 붙는다.
+    # 접두어까지 보는 이유: 지표 이름 뒤에 단위·꼬리말이 붙어 오는 판이 있는데
+    # (`유니크유입수`·`유니크 유입UV`), 정확 일치만 보면 그 지표가 **통째로 NaN이 되고
+    # 화면엔 선이 안 그려지는 것으로만 보인다** — 원인이 안 드러난다.
+    # 부분 일치(contains)로 넓히면 `거래액`이 `발송건당거래액`·`M당거래액`까지 먹으니
+    # 접두어까지만 허용한다.
+    taken, rows, guessed = set(), {}, {}
+    for _k, _kws in MTD_METRICS.items():
+        for _kw in _kws:
+            hit = _key[_key == _kw.replace(" ", "")]
+            if not hit.empty:
+                rows[_k] = hit.index[0]
+                taken.add(hit.index[0])
+                break
+    for _k, _kws in MTD_METRICS.items():
+        if _k in rows:
+            continue
+        for _kw in _kws:
+            _kk = _kw.replace(" ", "")
+            hit = [i for i in _key.index if i not in taken and _key[i].startswith(_kk)]
+            if hit:
+                rows[_k] = hit[0]
+                taken.add(hit[0])
+                guessed[_k] = str(metric_col[hit[0]])
+                break
 
-    data = {k: get_m(v) for k, v in MTD_METRICS.items()}
+    def get_m(k):
+        i = rows.get(k)
+        if i is None:
+            return np.full(len(dates), np.nan)
+        return pd.to_numeric(ws.iloc[i, start:start + len(dates)].values, errors="coerce")
+
+    data = {k: get_m(k) for k in MTD_METRICS}
     data["date"] = dates
     df = pd.DataFrame(data).dropna(subset=["perSend", "revenue"]).copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    # **못 찾은 지표는 세어서 들고 나간다.** 조용히 NaN으로 두면 화면엔 '선이 안
+    # 그려진다'로만 보여 원인이 안 드러난다(AF코드 탈락과 같은 자리). `attrs`는
+    # merge·concat에서 사라지니 **파싱 직후에** 읽을 것.
+    _gone = [k for k in MTD_METRICS if k not in rows]
+    df.attrs["mtd_missing"] = [MTD_LABELS.get(k, k) for k in _gone if k in MTD_CORE]
+    df.attrs["mtd_missing_minor"] = [MTD_LABELS.get(k, k) for k in _gone if k not in MTD_CORE]
+    df.attrs["mtd_guessed"] = {MTD_LABELS.get(k, k): v for k, v in guessed.items()}
+    df.attrs["mtd_rows"] = [x for x in metric_col.tolist() if x and x != "nan"]
     return df
 
 
@@ -3583,6 +3622,7 @@ def main():
     mtd_new = None
     if mtd_files:
         mframes = []
+        _mt_miss, _mt_guess, _mt_rows = {}, {}, []
         for nm, b in expand_uploads(mtd_files):
             if b is None:
                 continue
@@ -3590,9 +3630,30 @@ def main():
                 md = cached_mtd(b)
                 if len(md):
                     mframes.append(md[[c for c in MTD_STORE_COLS if c in md]])
+                # 못 찾은 지표는 **파싱 직후에** 읽는다 — concat이 attrs를 지운다
+                for _lb in md.attrs.get("mtd_missing", []):
+                    _mt_miss.setdefault(_lb, []).append(nm[:22])
+                _mt_guess.update(md.attrs.get("mtd_guessed", {}))
+                _mt_rows = md.attrs.get("mtd_rows", []) or _mt_rows
                 parse_log.append(f"· [MTD] {nm[:22]} — {len(md)}일")
+                _minor = md.attrs.get("mtd_missing_minor", [])
+                if _minor:
+                    parse_log.append("· [MTD] 파일에 없는 부가 지표 — " + ", ".join(_minor))
             except Exception as e:
                 parse_log.append(f"· [MTD] {nm[:22]} — 실패: {e}")
+        if _mt_guess:
+            st.sidebar.caption("MTD 지표 이름이 조금 달라서 **비슷한 행으로 읽었어요** — "
+                               + " · ".join(f"{k} ← {v}" for k, v in _mt_guess.items()))
+        if _mt_miss:
+            # 접힌 파싱 로그에만 두면 '선이 안 그려지네'로만 보인다. 실제 행 이름을
+            # 같이 띄워야 이름이 바뀐 건지 아예 없는 건지 눈으로 가른다.
+            st.sidebar.warning(
+                "⚠️ MTD 파일에서 **못 찾은 지표**가 있어요: "
+                + ", ".join(f"**{k}**" for k in _mt_miss)
+                + ". 그 지표는 화면에서 빈 채로 나와요.\n\n"
+                + ("파일의 지표 행 이름: " + " · ".join(_mt_rows[:14])
+                   + ("…" if len(_mt_rows) > 14 else "") if _mt_rows else ""))
+            parse_log.append("· [MTD] 못 찾은 지표 — " + ", ".join(_mt_miss))
         if mframes:
             mtd_new = pd.concat(mframes, ignore_index=True)
     if mtd_new is not None and len(mtd_new):
