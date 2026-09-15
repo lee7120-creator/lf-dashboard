@@ -267,6 +267,111 @@ def t_labels_exist_for_derived():
         assert k in S.MTD_DERIVED, f"{k}가 MTD_DERIVED에 없어요"
 
 
+# ── MTD 파일의 «지표 행 이름» 읽기 ───────────────────────────────────
+# 실파일은 지표 이름 뒤에 단위·꼬리말이 붙어 오는 판이 있다(`유니크유입수` 등).
+# 정확 일치만 보면 그 지표가 통째로 NaN이 되는데, 화면엔 **선이 안 그려지는 것**
+# 으로만 보여 원인이 안 드러난다 — AF코드 탈락과 같은 자리다.
+_MTD_ROWS = ["인당발송건수", "거래액", "발송건당거래액", "총발송건수", "유니크발송고객수",
+             "CTR", "유니크유입", "총유입", "구매고객수", "객단가", "M당거래액"]
+
+
+def _mtd_xlsx(labels, n=5):
+    """전사 MTD 발송상세와 같은 모양 — 1행 날짜, 4행부터 지표."""
+    dates = pd.date_range("2026-08-01", periods=n)
+    rows = [[None] * (n + 1), [None] + list(dates), [None] * (n + 1)]
+    for i, lb in enumerate(labels):
+        rows.append([lb] + [100 + i * 10 + j for j in range(n)])
+    b = io.BytesIO()
+    pd.DataFrame(rows).to_excel(b, header=False, index=False)
+    return b.getvalue()
+
+
+@case
+def t_metric_row_with_a_suffix_is_still_read():
+    """지표 이름 뒤에 꼬리말이 붙어도 읽는다 — 그리고 **추정했다고 밝힌다**."""
+    for tail in ("수", "UV", "고객수"):
+        labels = [l.replace("유니크유입", "유니크유입" + tail) for l in _MTD_ROWS]
+        out = S.parse_mtd_bytes(_mtd_xlsx(labels))
+        got = out["uniqueInflow"].tolist()
+        assert not any(pd.isna(v) for v in got), \
+            f"«유니크유입{tail}» 행을 못 읽었어요 — {got}"
+        assert "유니크 유입" in out.attrs["mtd_guessed"], \
+            f"비슷한 이름으로 읽었으면 밝혀야 해요 — {out.attrs['mtd_guessed']}"
+
+
+@case
+def t_prefix_match_does_not_steal_another_metric():
+    """접두어까지만 본다 — 부분 일치로 넓히면 `거래액`이 다른 행을 먹는다.
+
+    `발송건당거래액`·`M당거래액`이 같은 파일에 있어서, contains로 찾으면 거래액이
+    엉뚱한 행을 집어 간다. 화면은 멀쩡히 뜨고 값만 틀려서 눈으로는 안 잡힌다.
+    """
+    out = S.parse_mtd_bytes(_mtd_xlsx(_MTD_ROWS))
+    rev, rps, mrev = (out[c].iloc[0] for c in ("revenue", "rps", "mRevenue"))
+    assert rev != rps and rev != mrev and rps != mrev, \
+        f"거래액 계열이 같은 행을 집었어요 — 거래액 {rev} · 건당 {rps} · M당 {mrev}"
+    assert not out.attrs["mtd_guessed"], \
+        f"정확 일치인데 추정으로 읽었어요 — {out.attrs['mtd_guessed']}"
+
+    # **정확 일치가 다 잡힌 파일로는 이 규칙을 못 깬다** — 접두어 패스가 아예 안 돈다.
+    # 그래서 그 지표의 정확한 행을 빼고, 이름을 «품은» 다른 행만 남겨 둔다.
+    # `평균객단가`는 객단가로 시작하지 않으니 접두어 규칙에선 안 잡히고,
+    # 부분 일치로 넓히면 그 행을 객단가로 읽어 버린다.
+    labels = [l for l in _MTD_ROWS if l != "객단가"] + ["평균객단가"]
+    out2 = S.parse_mtd_bytes(_mtd_xlsx(labels))
+    assert pd.isna(out2["avgOrderVal"].iloc[0]), \
+        f"«평균객단가» 행을 객단가로 읽었어요 — {out2['avgOrderVal'].iloc[0]}"
+    assert "객단가" in out2.attrs["mtd_missing"], \
+        f"못 찾았으면 알려야 해요 — {out2.attrs['mtd_missing']}"
+
+
+@case
+def t_exact_match_wins_over_a_longer_row():
+    """정확 일치를 **전부 먼저** 잡는다. 순서를 섞으면 `유니크유입`이
+    `유니크유입고객수` 행을 먼저 집어 가 엉뚱한 값이 붙는다."""
+    out = S.parse_mtd_bytes(_mtd_xlsx(_MTD_ROWS + ["유니크유입고객수"]))
+    want = S.parse_mtd_bytes(_mtd_xlsx(_MTD_ROWS))["uniqueInflow"].iloc[0]
+    assert out["uniqueInflow"].iloc[0] == want, \
+        f"긴 이름 행을 집었어요 — {out['uniqueInflow'].iloc[0]} (정확 일치 {want})"
+    assert not out.attrs["mtd_guessed"], out.attrs["mtd_guessed"]
+
+
+@case
+def t_missing_core_metric_is_announced_minor_is_not():
+    """**핵심 지표가 없으면 알리고, 부가 지표는 로그로만** 남긴다.
+
+    조용히 NaN으로 두면 '선이 안 그려지네'로만 보인다. 반대로 파일마다 있고 없고가
+    갈리는 부가 지표까지 매번 ⚠로 띄우면 진짜 문제를 무시하게 된다.
+    """
+    out = S.parse_mtd_bytes(_mtd_xlsx([l for l in _MTD_ROWS if l != "유니크유입"]))
+    assert "유니크 유입" in out.attrs["mtd_missing"], \
+        f"핵심 지표가 빠졌는데 안 알려요 — {out.attrs['mtd_missing']}"
+    ok = S.parse_mtd_bytes(_mtd_xlsx(_MTD_ROWS))
+    assert ok.attrs["mtd_missing"] == [], \
+        f"멀쩡한 파일에 경고가 떠요 — {ok.attrs['mtd_missing']}"
+    assert ok.attrs["mtd_missing_minor"], "부가 지표 누락은 로그로 남겨야 해요"
+    assert ok.attrs["mtd_rows"], "파일의 실제 행 이름을 안 들고 나왔어요"
+
+
+@case
+def t_unique_inflow_is_offered_in_the_fatigue_chart():
+    """「피로도 시계열」 기준 지표에 **유니크 유입**이 있어야 한다."""
+    at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    at.session_state["camp_store"] = synth_store(weeks=10)
+    at.session_state["mtd_store_df"] = synth_mtd(days=200)
+    at.run()
+    at.sidebar.radio[0].set_value("6. 효율·피로도"); at.run()
+    [r for r in at.radio if r.label != "페이지"][0].set_value("피로도 시계열"); at.run()
+    assert not at.exception, at.exception[0].value
+    bar = [s for s in at.selectbox if s.label == "기준 지표(좌·막대)"]
+    assert bar, [s.label for s in at.selectbox]
+    opts = list(bar[0].options)
+    for want in ("유니크 유입 (일평균)", "유니크 유입 (기간 합계)"):
+        assert want in opts, f"«{want}»가 선택지에 없어요 — {opts}"
+    bar[0].set_value("유니크 유입 (일평균)"); at.run()
+    assert not at.exception, at.exception[0].value
+
+
 def main():
     fails = []
     for fn in CASES:
