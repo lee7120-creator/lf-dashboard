@@ -5296,12 +5296,15 @@ def main():
         _typ = {p: _aggfull(_yoy_ps(p, _unit)) for p in _tps}
         _has_py = any(v is not None for v in _typ.values())
 
-        _TDEF = ["발송", "CTR", "거래액"]
-        guard_multi("wr_trend_mets", METS)
-        _tmets = st.multiselect("추이에 올릴 지표", METS, default=_TDEF,
-                                key="wr_trend_mets",
-                                help="고른 지표마다 차트 한 장이에요. 아래 표는 전 지표를 다 담아요.")
-        _tmets = _tmets or _TDEF
+        # 칩으로 켜고 끈다 — 위 「비교」와 같은 모양이다. 태그를 넣고 빼는 multiselect는
+        # **고른 것만** 보여서 뭘 더 켤 수 있는지가 안 보인다. 칩은 전 목록이 늘 떠 있고
+        # 안 고른 건 회색으로 남는다.
+        _TDEF = ["발송", "UV", "주문건수", "거래액", "CTR", "주문CR"]
+        guard_multi("wr_trend_pills", METS)
+        _tmets = st.pills("추이에 올릴 지표", METS, selection_mode="multi", default=_TDEF,
+                          key="wr_trend_pills",
+                          help="고른 지표마다 차트 한 장이에요. 아래 표는 전 지표를 다 담아요.")
+        _tmets = list(_tmets or _TDEF)
 
         if len(_tps) < 2:
             st.info("추이를 그리려면 완결된 기간이 2개 이상 필요해요. 실적을 더 쌓거나 "

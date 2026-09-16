@@ -312,6 +312,27 @@ def t_screen_value_matches_a_direct_sum():
 
 
 @case
+def t_trend_metric_picker_is_chips_not_a_tag_box():
+    """「추이에 올릴 지표」는 **칩 버튼**이다 — 태그를 넣고 빼는 multiselect가 아니다.
+
+    multiselect는 **고른 것만** 보여서 뭘 더 켤 수 있는지가 화면에 안 남는다. 칩은
+    전 목록이 늘 떠 있고 안 고른 건 회색으로 남아, 한 번에 보인다. 위 「비교」와도
+    같은 모양이라 화면이 한 가지로 읽힌다."""
+    at = _open()
+    LB = "추이에 올릴 지표"
+    assert LB not in [m.label for m in at.multiselect], \
+        "태그 상자(multiselect)로 되돌아갔어요 — 칩이어야 해요"
+    chips = [b for b in at.get("button_group") if str(getattr(b, "label", "")) == LB]
+    assert chips, f"칩을 못 찾았어요 — {[getattr(b, 'label', None) for b in at.get('button_group')]}"
+    c = chips[0]
+    # 전 지표가 칩으로 다 떠 있어야 '뭘 더 켤 수 있나'가 보인다
+    assert list(c.options) == ["캠페인수", "발송", "UV", "주문건수", "거래액",
+                               "CTR", "주문CR", "RPS", "객단가"], list(c.options)
+    assert set(c.value) == {"발송", "UV", "주문건수", "거래액", "CTR", "주문CR"}, \
+        f"기본으로 켜 둘 지표가 달라요 — {list(c.value)}"
+
+
+@case
 def t_trend_values_match_a_direct_sum():
     """추이 표의 값도 그 기간을 직접 센 합과 같아야 한다.
 
