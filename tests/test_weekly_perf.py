@@ -15,9 +15,9 @@
     python tests/test_weekly_perf.py
 """
 import pathlib
+import re
 import sys
 
-import numpy as np
 import pandas as pd
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -309,6 +309,28 @@ def t_screen_value_matches_a_direct_sum():
     cur = [c for c in t.columns if str(c).startswith("기준 월")][0]
     got = _num(t[t["지표"] == "발송"][cur].iloc[0])
     assert abs(got - want) < 1.0, f"화면 {got:,.0f} vs 직접 합 {want:,.0f}"
+
+
+@case
+def t_trend_values_match_a_direct_sum():
+    """추이 표의 값도 그 기간을 직접 센 합과 같아야 한다.
+
+    추이는 카드·표와 **다른 경로**로 값을 읽는다 — 기간별 `groupby`를 한 번 만들어
+    거기서 집는다. 그 인덱스가 한 칸만 어긋나도 추이 숫자가 통째로 밀리는데, 위 카드는
+    멀쩡하니 눈으로는 안 잡힌다. 기준 기간만 대조하는 검사로는 실제로 못 잡았다."""
+    t = _trend(_open("일별"))
+    labs = [c[1] for c in t.columns if c[0] == "실적"]
+    assert len(labs) >= 3, labs
+    d = STORE.copy()
+    d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d")
+    for lb in (labs[0], labs[len(labs) // 2], labs[-1]):
+        m = re.match(r"(\d{4})년 (\d{1,2})/(\d{1,2})", lb)
+        assert m, f"일별 라벨 모양이 바뀌었어요 — {lb}"
+        day = pd.Timestamp(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        want = float(d[d["dt"] == day]["send"].sum())
+        assert want > 0, f"{lb}: 픽스처에 그날 발송이 없어 규칙을 반증하지 못해요"
+        got = _num(t.loc["발송", ("실적", lb)])
+        assert abs(got - want) < 1.0, f"{lb}: 화면 {got:,.0f} vs 직접 합 {want:,.0f}"
 
 
 @case
