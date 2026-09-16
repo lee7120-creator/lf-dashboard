@@ -224,15 +224,75 @@ def t_trend_table_puts_actuals_left_and_yoy_right():
 
 @case
 def t_trend_window_follows_the_control():
-    """「추이 구간」이 차트·표가 보는 기간 수를 정한다."""
+    """「추이 구간」이 차트·표가 보는 기간 수를 정한다.
+
+    「최근 N」은 **단위마다 다르다** — 13으로 고정하면 일 단위가 13일뿐이라 추세가
+    안 보인다. 라벨에 적힌 개수와 실제로 그린 개수가 같아야 한다."""
+    for unit, u, want in (("일별", "일", 30), ("주별", "주", 13), ("월별", "월", 13)):
+        at = _open(unit)
+        got = len({c[1] for c in _trend(at).columns})
+        assert got == want, f"{unit}: 최근 구간이 {got}개예요 (기대 {want})"
+        chips = [b for b in at.get("button_group")
+                 if str(getattr(b, "label", "")) == "추이 구간"]
+        assert chips and str(chips[0].value).startswith(f"최근 {want}"), \
+            f"{unit}: 라벨과 개수가 달라요 — {chips[0].value if chips else None}"
     n13 = len({c[1] for c in _trend(_open("주별")).columns})
-    assert n13 == 13, f"기본은 최근 13기간이어야 해요 — {n13}"
     tall = _trend(_open("주별", **{"wr_twin_주": "전체"}))
     nall = len({c[1] for c in tall.columns})
     assert nall > n13, f"'전체'가 13개 이하예요 — {nall}"
     tyr = _trend(_open("주별", **{"wr_twin_주": "올해 전체"}))
     years = {lb.split("년")[0] for _b, lb in tyr.columns}
     assert len(years) == 1, f"'올해 전체'에 다른 해가 섞였어요 — {sorted(years)}"
+
+
+@case
+def t_year_window_uses_the_iso_year_of_the_label():
+    """「올해 전체」는 **라벨에 찍힌 연도**로 거른다 — 주는 ISO 기준연도다.
+
+    달력 연도로 거르면 연초 주가 조용히 빠진다: 2026년 1주차의 월요일은 2025-12-29라
+    `p.year`가 2025다. 증상은 '추이가 2주차부터 시작하네'뿐이라 눈으로는 안 잡히고,
+    9월에서 끝나는 픽스처로는 이 경계를 아예 안 밟는다."""
+    _END = "2026-01-18"                       # 연말·연초를 품도록 끝을 1월로 민다
+    d = STORE.copy()
+    dt = pd.to_datetime(d["date"], format="%Y%m%d")
+    d["date"] = (dt + (pd.Timestamp(_END) - dt.max())).dt.strftime("%Y%m%d")
+    at = _open(camp=d)
+    at.session_state["wr_unit"] = "주별"
+    at.run()
+    labs = [s_.label for s_ in at.selectbox if str(s_.label).startswith("기준 ")]
+    assert labs, [s_.label for s_ in at.selectbox]
+    # 2026년 1주차(월요일 2025-12-29)가 목록에 있어야 규칙을 반증할 수 있다
+    opts = [s_ for s_ in at.selectbox if str(s_.label).startswith("기준 ")][0].options
+    assert any(o.startswith("2026년 1주차") for o in opts), \
+        f"픽스처가 연초 주를 안 품어 규칙을 반증하지 못해요 — {opts[:4]}"
+    at.session_state["wr_twin_주"] = "올해 전체"
+    at.run()
+    assert not at.exception, at.exception[0].value
+    got = {lb for _b, lb in _trend(at).columns}
+    assert any(lb.startswith("2026년 1주차") for lb in got), \
+        f"2026년 1주차가 「올해 전체」에서 빠졌어요 — {sorted(got)[:5]}"
+    assert all(lb.startswith("2026년") for lb in got), \
+        f"다른 해가 섞였어요 — {sorted(got)[:5]}"
+
+
+@case
+def t_report_note_is_keyed_to_the_week_whatever_the_unit():
+    """보고란은 **늘 주 단위**로 저장한다.
+
+    기준 기간의 첫날을 키로 쓰면 단위마다 칸이 갈려, 주로 써 둔 글이 일·월로 바꾸는
+    순간 화면에서 사라진다(파일엔 남는다). 왜 없어졌는지가 안 드러나는 모양이다."""
+    keys = {}
+    for unit in ("일별", "주별", "월별"):
+        at = _open(unit)
+        # 자동 생성 버튼의 키가 곧 저장 키다 (btn_r_kpi_<YYYYMMDD>)
+        hit = [b for b in at.button if "btn_r_kpi_" in str(b.proto.id)]
+        assert hit, f"{unit}: 보고란 자동 생성 버튼을 못 찾았어요"
+        keys[unit] = str(hit[0].proto.id).split("btn_r_kpi_")[1][:8]
+    for unit, k in keys.items():
+        assert pd.Timestamp(k).weekday() == 0, \
+            f"{unit}: 저장 키 {k}가 월요일이 아니에요 (주 단위 앵커여야 해요)"
+    assert keys["일별"] == keys["주별"], \
+        f"일·주가 다른 칸을 열어요 — {keys} (주로 써 둔 글이 일에서 안 보여요)"
 
 
 @case
