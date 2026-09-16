@@ -392,6 +392,12 @@ def t_trend_metric_picker_is_chips_not_a_tag_box():
         f"기본으로 켜 둘 지표가 달라요 — {list(c.value)}"
 
 
+def _fig_traces(at, idx=0):
+    """추이 차트 한 장의 트레이스 목록 (figure JSON에서 읽는다)."""
+    import json
+    return json.loads(at.get("plotly_chart")[idx].proto.spec).get("data", [])
+
+
 def _trend_traces(at, name="올해"):
     """추이 차트의 트레이스 — AppTest는 plotly에 `.value`를 안 주므로 figure JSON을 읽는다."""
     import json
@@ -466,6 +472,49 @@ def t_tooltip_delta_compares_the_real_previous_period():
     got = (tr.get("customdata") or [])[nxt[0]][0]
     assert got == "–", \
         f"빈 날 다음 점의 '전일 대비'가 '{got}'예요 — 직전 날이 없으니 '–'여야 해요"
+
+
+@case
+def t_prior_year_line_runs_to_the_end_of_the_year():
+    """「올해 전체」에선 **전년 선을 그 해 끝까지** 그린다.
+
+    올해가 아직 안 온 칸도 전년 값이 있으면 x자리를 세운다 — '남은 기간에 전년은
+    어땠나'(계절성)를 보려고 여는 화면이라서다. 데이터에 있는 기간만 모으면 전년 선이
+    올해와 같은 지점에서 잘려 그 뒤를 못 본다.
+
+    표는 **올해 실적이 있는 기간만** 담는다. 뒷칸은 실적·전년비가 둘 다 '–'라 넣으면
+    빈 칼럼만 늘어난다."""
+    at = _open("주별", **{"wr_twin_주": "올해 전체"})
+    trs = {n: t for n, t in
+           ((tr.get("name"), tr) for tr in _fig_traces(at))}
+    assert "올해" in trs and "전년" in trs, sorted(trs)
+    cy, py = trs["올해"], trs["전년"]
+    xs = list(cy["x"])
+    _last_cur = max(i for i, v in enumerate(cy["y"]) if v is not None)
+    _last_py = max(i for i, v in enumerate(py["y"]) if v is not None)
+    assert _last_py > _last_cur, (
+        f"전년 선이 올해와 같은 지점에서 끊겼어요 — 올해 {xs[_last_cur]} · "
+        f"전년 {xs[_last_py]} (픽스처가 전년 뒷기간을 안 품었을 수도 있어요)")
+    assert len(xs) > _last_cur + 1, "올해 뒤로 x자리가 안 생겼어요"
+    # 표는 올해 실적이 있는 기간까지만
+    tb = {c[1] for c in _trend(at).columns}
+    assert xs[_last_cur] in tb, f"표에 마지막 실적 기간이 없어요 — {sorted(tb)[-2:]}"
+    assert xs[_last_py] not in tb, \
+        f"실적이 없는 기간이 표에 들어왔어요 — {xs[_last_py]} ('–'만 늘어선 칼럼)"
+
+
+@case
+def t_recent_window_is_not_stretched_for_the_prior_year():
+    """「최근 N」은 사용자가 일부러 좁힌 창이라 전년 때문에 늘리지 않는다."""
+    at = _open("주별")
+    for tr in _fig_traces(at):
+        if tr.get("name") == "올해":
+            assert len(tr["x"]) == 13, f"최근 13주가 {len(tr['x'])}칸으로 늘었어요"
+            assert all(v is not None for v in tr["y"]), \
+                "최근 창에 올해 값이 빈 칸이 생겼어요"
+            break
+    else:
+        raise AssertionError("올해 트레이스를 못 찾았어요")
 
 
 @case

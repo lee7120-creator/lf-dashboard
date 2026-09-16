@@ -4848,6 +4848,21 @@ def main():
             except ValueError:
                 return ps - pd.Timedelta(days=364)
 
+        def _year_grid(y, u):
+            """그 해의 **전 기간** 시작일 — 라벨에 찍히는 연도(주는 ISO) 기준.
+
+            추이에서 전년 선을 그 해 끝까지 그리려면 올해가 아직 안 온 칸에도 x자리가
+            있어야 한다. 데이터에 있는 기간만 모으면 그 자리가 아예 안 생긴다."""
+            if u == "월":
+                return [pd.Timestamp(y, m, 1) for m in range(1, 13)]
+            if u == "일":
+                return list(pd.date_range(f"{y}-01-01", f"{y}-12-31", freq="D"))
+            out, d = [], pd.Timestamp(datetime.date.fromisocalendar(y, 1, 1))
+            while int(d.isocalendar()[0]) == y:
+                out.append(d)
+                d += pd.Timedelta(days=7)
+            return out
+
         def _cmp_starts(ps, u):
             """비교 3종의 시작일 — 순서는 _CMPSPEC과 같다."""
             ps = pd.Timestamp(ps)
@@ -5279,14 +5294,9 @@ def main():
         _drop_ref = (_partial and len(_ps_upto) >= 2 and _ps_upto[-1] == ref_ps)
         if _drop_ref:
             _ps_upto = _ps_upto[:-1]
-        if _twin == "recent":
-            _tps = _ps_upto[-_TWN:]
-        elif _twin == "year":
-            _ry = _pyear(ref_ps, _unit)
-            _tps = [p for p in _ps_upto if _pyear(p, _unit) == _ry] or _ps_upto[-_TWN:]
-        else:
-            _tps = list(_ps_upto)
-        _tlab = [_plab(p, _unit) for p in _tps]
+        # 마지막 완결 기간 — 이보다 뒤 칸은 올해 값이 없다(전년 선만 그린다)
+        _cut = _ps_upto[-1] if _ps_upto else ref_ps
+        _have = set(_ps_upto)
 
         # 기간별 합계를 **groupby 한 번**으로 만든다. 기간마다 _slice를 부르면 프레임
         # 전체에 마스크를 씌우는 일이 기간 수만큼 반복된다 — '전체' 구간을 일 단위로 보면
@@ -5309,7 +5319,25 @@ def main():
                     "RPS": (a / s if s else np.nan), "객단가": (a / o if o else np.nan),
                     "_days": _plen(ps, _unit)}
 
-        _tagg = {p: _aggfull(p) for p in _tps}
+        # 추이에 세울 기간. **전년 선은 그 해 전체를 그린다** — 올해가 아직 안 온 칸도
+        # 전년 값이 있으면 x자리를 세운다. '남은 기간에 전년은 어땠나'(계절성)를 보려고
+        # 여는 화면이라서다. 두 해 모두 값이 없는 칸은 뺀다 — 그 자리는 아무 선도 없어
+        # 데이터가 빠진 것처럼 보인다. 「최근 N」은 사용자가 일부러 좁힌 창이라 안 늘린다.
+        def _ylast(p):
+            return _aggfull(_yoy_ps(p, _unit)) is not None
+
+        if _twin == "recent":
+            _tps = _ps_upto[-_TWN:]
+        elif _twin == "year":
+            _ry = _pyear(ref_ps, _unit)
+            _tps = [p for p in _year_grid(_ry, _unit) if p in _have or _ylast(p)]
+            _tps = _tps or _ps_upto[-_TWN:]
+        else:
+            _tps = list(_ps_upto) + [p for p in _year_grid(_pyear(ref_ps, _unit), _unit)
+                                     if p > _cut and _ylast(p)]
+        _tlab = [_plab(p, _unit) for p in _tps]
+
+        _tagg = {p: (_aggfull(p) if p in _have else None) for p in _tps}
         _typ = {p: _aggfull(_yoy_ps(p, _unit)) for p in _tps}
         _has_py = any(v is not None for v in _typ.values())
         # 툴팁의 '직전 대비'는 **달력상 직전 기간**과 맞댄다 — 선 위의 앞 점이 아니다.
@@ -5379,13 +5407,16 @@ def main():
         # 표는 **왼쪽에 실적 · 오른쪽에 전년비**로 모은다 — 증감만 가로로 훑어야
         # '어느 기간부터 꺾였나'가 보인다. 기간을 잘라 보여 주지 않는 건 위 「추이 구간」이
         # 이미 고르게 해서다.
+        # 표는 **올해 실적이 있는 기간만** 담는다. 차트가 전년을 위해 세운 뒷칸은
+        # 실적·전년비가 둘 다 '–'라, 넣으면 빈 칼럼만 늘어 표가 넓어진다.
+        _ttp = [(p, lb) for p, lb in zip(_tps, _tlab) if _tagg[p] is not None]
         _tt = {}
         for _met in METS:
             _row = {}
-            for _p, _lb in zip(_tps, _tlab):
+            for _p, _lb in _ttp:
                 _row[("실적", _lb)] = _fmt(_met, _dv(_tagg[_p], _met))
             if _has_py:
-                for _p, _lb in zip(_tps, _tlab):
+                for _p, _lb in _ttp:
                     _row[("전년비", _lb)] = _dlt(_met, _dv(_tagg[_p], _met),
                                                 _dv(_typ[_p], _met))
             _tt[_met] = _row
@@ -5399,7 +5430,11 @@ def main():
                 _tsty = _tsty.map(_clr, subset=pd.IndexSlice[:, _dsub])
             table(_tsty, width="stretch", height=38 + 35 * len(_tdf),
                   dl_name="주요 지표 추이")
-        _tnote = [f"{len(_tps)}개 {_UNAME}"]
+        _ahead = len(_tps) - len(_ttp)
+        _tnote = [f"{len(_ttp)}개 {_UNAME}"]
+        if _ahead:
+            _tnote.append(f"차트는 전년 선을 그 해 끝까지 그려요(아직 안 온 {_ahead}개 "
+                          f"{_UNAME}는 실적이 없어 표에선 빼요)")
         if _drop_ref:
             _tnote.append("진행 중이거나 실적이 덜 찬 기준 기간은 뺐어요")
         if not _has_py:
