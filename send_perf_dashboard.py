@@ -4762,53 +4762,221 @@ def main():
     elif "주간보고" in page:
         import calendar
         st.title("주간보고")
-        st.caption("기준 주차(월\~일)를 전주·전월 동주·전년 동주와 비교해요. 월 누계는 전월·전년 같은 "
-                   "기간과 맞대요. 모든 값은 합산 기준이에요. 사이드바 필터는 반영되지만 '최소 발송수'는 빼고 "
-                   "봐요.")
+        st.caption("기준 기간을 직전·전년과 맞대요. 위 필터에서 기간 단위나 값 기준을 바꾸면 "
+                   "아래 카드·표·차트가 다 같이 따라가요.")
         g0 = dff_all.dropna(subset=["dt"]).copy()
         g0 = g0[g0["send"].fillna(0) > 0]
         if len(g0) < 3:
             st.info("데이터가 부족해요. 실적 파일을 더 올려 주세요."); st.stop()
-        g0["주"] = g0["dt"].dt.to_period("W").dt.start_time
 
-        # 기준 주차 목록 — 발송 실적은 과거만 가능하므로 '오늘이 속한 주'보다 이후(미래) 주는
-        # 제외한다. 업로드 파일에 오타난 미래 날짜(예: 2025→2027)가 섞여도 미래 주차가
-        # 드롭다운에 뜨지 않게 한다. 진행 중인 이번 주는 포함(부분 주 로직이 처리).
-        _today = today_kst()
-        _this_mon = pd.Timestamp(_today) - pd.Timedelta(days=_today.weekday())
-        _wks_raw = sorted(g0["주"].unique(), reverse=True)
-        _wks_all = [w for w in _wks_raw if pd.Timestamp(w) <= _this_mon]
-        _n_future = len(_wks_raw) - len(_wks_all)
-        if not _wks_all:                              # 전부 미래면(비정상) 최소한 표시는 되게 원본 유지
-            _wks_all, _n_future = _wks_raw, 0
+        # ══ 기간 단위 — 화면 전체가 이 하나를 본다 ════════════════════════════
+        # 예전엔 주 고정이라 「이번 달은 어땠나」·「어제는 어땠나」를 여기서 못 봤다.
+        # 기준 기간·비교 3종·추이·증감 분해가 전부 이 단위에서 따라 나온다
+        # (주간보고 앱 「02. 첫구매 퍼널별 상세 실적」과 같은 얼굴).
+        _UNITS = {"일별": "일", "주별": "주", "월별": "월"}
+        _DOW_KO = ["월", "화", "수", "목", "금", "토", "일"]
+
+        def _pstart(ts, u):
+            """그 날짜가 속한 기간의 첫날."""
+            ts = pd.Timestamp(ts).normalize()
+            if u == "일":
+                return ts
+            if u == "주":
+                return ts - pd.Timedelta(days=int(ts.weekday()))
+            return ts.replace(day=1)
+
+        def _pend(ps, u):
+            """기간의 마지막 날."""
+            ps = pd.Timestamp(ps)
+            if u == "일":
+                return ps
+            if u == "주":
+                return ps + pd.Timedelta(days=6)
+            return ps + pd.offsets.MonthEnd(0)
+
+        def _plen(ps, u):
+            """기간의 달력 일수 — 달마다 28~31일로 갈리니 값으로 센다."""
+            return int((_pend(ps, u) - pd.Timestamp(ps)).days) + 1
+
+        def _plab(ps, u):
+            """사람이 읽는 기간 라벨."""
+            ps = pd.Timestamp(ps)
+            if u == "일":
+                return f"{ps.year}년 {ps.month}/{ps.day}({_DOW_KO[ps.weekday()]})"
+            if u == "월":
+                return f"{ps.year}년 {ps.month}월"
+            iy, iw, _ = ps.isocalendar()
+            return (f"{iy}년 {iw}주차 ({ps.strftime('%m/%d')}~"
+                    f"{(ps + pd.Timedelta(days=6)).strftime('%m/%d')})")
 
         def _wklab(ws):
-            ws = pd.Timestamp(ws)
-            iy, iw, _ = ws.isocalendar()
-            return (f"{iy}년 {iw}주차 ({ws.strftime('%m/%d')}~"
-                    f"{(ws + pd.Timedelta(days=6)).strftime('%m/%d')})")
-        _wlabs = [_wklab(w) for w in _wks_all]
-        guard_select("wr_week", _wlabs)
-        ref_sel = st.selectbox("기준 주차", _wlabs, index=0, key="wr_week",
-                               help="보고 기준이 되는 주(월~일)예요. 최신 주가 위에 있어요.")
-        if _n_future:
-            st.caption(f"⚠️ 미래 날짜로 기록된 {_n_future}개 주는 기준 주차 목록에서 제외했어요 — "
-                       "발송 실적은 과거만 가능하니 업로드 파일의 날짜(연도 오타 등)를 확인해 보세요.")
-        ref_ws = pd.Timestamp(_wks_all[_wlabs.index(ref_sel)])
-        ref_we = ref_ws + pd.Timedelta(days=6)
+            """주 라벨 — 주로만 쌓이는 원천(앱푸시 수신동의)이 그대로 쓴다."""
+            return _plab(ws, "주")
+
+        def _prev_ps(ps, u, n=1):
+            """n기간 전의 시작일."""
+            ps = pd.Timestamp(ps)
+            if u == "일":
+                return ps - pd.Timedelta(days=n)
+            if u == "주":
+                return ps - pd.Timedelta(days=7 * n)
+            return pd.Timestamp((ps - pd.DateOffset(months=n)).replace(day=1))
+
+        def _yoy_ps(ps, u):
+            """전년 같은 기간의 시작일.
+
+            주는 **ISO 주차**를 맞추고, 전년에 그 주가 없으면(53주차) **364일 전**
+            (=정확히 52주)으로 폴백한다 — 요일이 보존된다. 일도 같은 이유로 364일이다
+            (그냥 1년을 빼면 요일이 어긋나 발송 패턴 자체가 달라진다)."""
+            ps = pd.Timestamp(ps)
+            if u == "일":
+                return ps - pd.Timedelta(days=364)
+            if u == "월":
+                return pd.Timestamp(ps.replace(year=ps.year - 1, day=1))
+            try:
+                _iy, _iw, _ = ps.isocalendar()
+                return pd.Timestamp(datetime.date.fromisocalendar(int(_iy) - 1, int(_iw), 1))
+            except ValueError:
+                return ps - pd.Timedelta(days=364)
+
+        def _cmp_starts(ps, u):
+            """비교 3종의 시작일 — 순서는 _CMPSPEC과 같다."""
+            ps = pd.Timestamp(ps)
+            if u == "일":
+                return [ps - pd.Timedelta(days=1), ps - pd.Timedelta(days=7), _yoy_ps(ps, u)]
+            if u == "월":
+                return [_prev_ps(ps, u, 1), _prev_ps(ps, u, 2), _yoy_ps(ps, u)]
+            # 주 — 전주 · 전월 동주 · 전년 동주.
+            # 전월 동주는 기준주 '한가운데(목요일)'의 한 달 전 날짜가 속한 주(월~일)다.
+            # 시작일(월요일) 앵커를 쓰면 한 달 전 날짜가 그 주의 꼬리(토·일)에 걸릴 때 한 주
+            # 이른 주가 선택된다 (예: 기준주 7/6~7/12 → 6/6(토) → 6/1~6/7, 35일 전).
+            # 목요일 앵커는 '4주 전'·'월내 같은 주차 순번' 두 관례와 일치 (→ 6/8~6/14).
+            # ISO 주차가 목요일로 주의 소속을 정하는 것과 같은 원리.
+            _pm = pd.Timestamp(((ps + pd.Timedelta(days=3)) - pd.DateOffset(months=1))
+                               .to_period("W").start_time)
+            return [ps - pd.Timedelta(days=7), _pm, _yoy_ps(ps, u)]
+
+        # ══ 상단 필터 바 ══════════════════════════════════════════════════════
+        # 기간·값 기준·비교·추이 구간을 한 줄에 모은다. 예전엔 기준 주차만 맨 위에 있고
+        # 추이 지표 셀렉트는 페이지 맨 아래에 따로 있어서 화면을 오르내려야 했다.
+        _bar = st.container(border=True)
+        with _bar:
+            _b1, _b2, _b3, _b4 = st.columns([1.5, 2.2, 0.9, 1.3])
+        with _b1:
+            _ulab = st.segmented_control(
+                "기간 단위", list(_UNITS), default="주별", key="wr_unit",
+                help="고른 단위를 이 화면 전체가 따라가요. 비교 기준도 같이 바뀌어요.")
+        _unit = _UNITS.get(_ulab or "주별", "주")
+        _UNAME = {"일": "일자", "주": "주차", "월": "월"}[_unit]
+        _CMPSPEC = {
+            "일": [("전일비", "전일"), ("전주비", "전주 같은 요일"), ("전년비", "전년 같은 날")],
+            "주": [("전주비", "전주"), ("전월비", "전월 동주"), ("전년비", "전년 동주")],
+            "월": [("전월비", "전월"), ("전전월비", "전전월"), ("전년비", "전년 동월")],
+        }[_unit]
+
+        # 기간 목록 — 발송 실적은 과거만 가능하므로 '오늘이 속한 기간'보다 뒤(미래)는
+        # 제외한다. 업로드 파일에 오타난 미래 날짜(예: 2025→2027)가 섞여도 미래 기간이
+        # 드롭다운에 뜨지 않게 한다. 진행 중인 이번 기간은 포함(부분 기간 로직이 처리).
+        _today = today_kst()
+        if _unit == "일":
+            g0["_ps"] = g0["dt"].dt.normalize()
+        elif _unit == "주":
+            g0["_ps"] = g0["dt"].dt.to_period("W").dt.start_time
+        else:
+            g0["_ps"] = g0["dt"].dt.to_period("M").dt.start_time
+        g0["주"] = g0["dt"].dt.to_period("W").dt.start_time
+        _ps_raw = sorted(g0["_ps"].unique(), reverse=True)
+        _ps_all = [p for p in _ps_raw if pd.Timestamp(p) <= _pstart(_today, _unit)]
+        _n_future = len(_ps_raw) - len(_ps_all)
+        if not _ps_all:                               # 전부 미래면(비정상) 최소한 표시는 되게
+            _ps_all, _n_future = _ps_raw, 0
+        _plabs = [_plab(p, _unit) for p in _ps_all]
+        # 단위마다 키를 갈라 둔다 — 한 키를 쓰면 단위를 오갈 때마다 선택이 초기화된다
+        _pkey = f"wr_period_{_unit}"
+
+        def _jump_recent():
+            # 위젯 세션값은 on_click 콜백에서만 바꾼다 (위젯을 만든 뒤 대입하면 예외)
+            st.session_state[_pkey] = _plabs[0]
+        with _b2:
+            guard_select(_pkey, _plabs)
+            ref_sel = st.selectbox(f"기준 {_UNAME}", _plabs, key=_pkey,
+                                   help="보고 기준이 되는 기간이에요. 최신이 위에 있어요.")
+        with _b3:
+            # 옆 위젯들의 라벨 높이만큼 내려 버튼 윗선을 맞춘다
+            st.markdown('<div style="height:27px"></div>', unsafe_allow_html=True)
+            st.button("↩ 최근으로", key=f"wr_recent_{_unit}", width="stretch",
+                      on_click=_jump_recent, help="가장 최근 기간으로 되돌려요.")
+        with _b4:
+            _vlab = st.segmented_control(
+                "값 기준", ["누계", "일평균"], default="누계", key="wr_valmode",
+                help="일평균은 가산 지표(캠페인수·발송·UV·주문건수·거래액)를 그 기간 일수로 "
+                     "나눠요. CTR·주문CR·RPS·객단가는 이미 나눈 값이라 그대로예요.")
+        _avg = (_vlab == "일평균")
+
+        with _bar:
+            _b5, _b6 = st.columns([1.6, 2.4])
+        with _b5:
+            _TWIN = {"최근 13기간": "13", "올해 전체": "year", "전체": "all"}
+            _twlab = st.segmented_control(
+                "추이 구간", list(_TWIN), default="최근 13기간", key=f"wr_twin_{_unit}",
+                help="아래 「주요 지표 추이」의 차트·표가 볼 구간이에요.")
+            _twin = _TWIN.get(_twlab or "최근 13기간", "13")
+        with _b6:
+            _cmp_sel = st.pills("비교", [c[0] for c in _CMPSPEC], selection_mode="multi",
+                                default=[c[0] for c in _CMPSPEC], key=f"wr_cmp_{_unit}",
+                                help="KPI 카드와 「주요 지표 현황」 표에 띄울 비교예요.")
+        # 하나도 안 고르면 비교가 통째로 사라져 화면이 무의미해진다 — 전체로 되돌린다
+        _cmp_on = set(_cmp_sel or ()) or {c[0] for c in _CMPSPEC}
+        with _bar:
+            if _n_future:
+                st.caption(f"⚠️ 미래 날짜로 기록된 {_n_future}개 기간은 목록에서 뺐어요. "
+                           "발송 실적은 과거만 가능하니 업로드 파일의 날짜(연도 오타 등)를 "
+                           "확인해 보세요.")
+            st.caption(("🎛 사이드바 활성 필터: " + " · ".join(_active_flt) + " — "
+                        if _active_flt else "")
+                       + "사이드바 필터는 이 화면에도 그대로 적용돼요. '최소 발송수'만 빼고 봐요.")
+
+        ref_ps = pd.Timestamp(_ps_all[_plabs.index(ref_sel)])
+        ref_pe = _pend(ref_ps, _unit)
 
         # ── 기간 집계 헬퍼 (합산 기준 — 주간보고 관행) ──
         def _slice(d0, d1):
             return g0[(g0["dt"] >= pd.Timestamp(d0)) &
                       (g0["dt"] < pd.Timestamp(d1) + pd.Timedelta(days=1))]
 
-        def _agg(d):
+        def _agg(d, days=1):
+            """그 구간의 합산 집계. `days`는 구간의 달력 일수 — 값은 **합산 그대로** 두고
+            화면에 찍을 때만 `_dv`가 일평균으로 나눈다. 여기서 미리 나누면 z검정에 쓰는
+            원 카운트(발송·UV·주문)가 사라진다."""
             s, u, o, a = d["send"].sum(), d["uv"].sum(), d["oc"].sum(), d["amt"].sum()
             return {"캠페인수": float(len(d)), "발송": s, "UV": u, "주문건수": o, "거래액": a,
                     "CTR": (u / s if s else np.nan), "주문CR": (o / u if u else np.nan),
-                    "RPS": (a / s if s else np.nan), "객단가": (a / o if o else np.nan)}
+                    "RPS": (a / s if s else np.nan), "객단가": (a / o if o else np.nan),
+                    "_days": max(int(days or 1), 1)}
 
         RATE = {"CTR", "주문CR"}
+        # 더할 수 있는 지표 — 「일평균」에서 기간 일수로 나눈다. 나머지(CTR·주문CR·RPS·
+        # 객단가)는 이미 나눈 값이라 그대로 둔다.
+        ADDV = ("캠페인수", "발송", "UV", "주문건수", "거래액")
+
+        def _dvn(met, v, days):
+            """이미 뽑아 둔 숫자 하나를 화면 값 기준에 맞춘다 (집계 dict가 아닌 자리)."""
+            if _avg and met in ADDV and days:
+                return v / days
+            return v
+
+        def _dv(agg, met):
+            """화면에 찍을 값 — 「일평균」이면 가산 지표를 그 구간 일수로 나눈다.
+
+            달마다 일수가 다른 월 단위에서 특히 중요하다 — 2월(28일)과 1월(31일)을
+            누계로 맞대면 '2월이 10% 적다'가 날짜 수만으로 만들어진다."""
+            if agg is None:
+                return np.nan
+            v = agg.get(met, np.nan)
+            if _avg and met in ADDV:
+                d = agg.get("_days") or 1
+                return (v / d) if d else np.nan
+            return v
         METS = ["캠페인수", "발송", "UV", "주문건수", "거래액", "CTR", "주문CR", "RPS", "객단가"]
 
         def _fmt(met, v):
@@ -4859,72 +5027,90 @@ def main():
         def _dlt_sig(met, a, b):
             """_dlt에 유의성 마크를 더한 버전 — 비율 지표(CTR·주문CR)의 ±가 통계적으로
             유의(✱, p<0.05)한 변화인지 우연 변동인지 구분해 준다. a·b는 _agg dict."""
-            s = _dlt(met, a[met], (b[met] if b else np.nan))
+            s = _dlt(met, _dv(a, met), _dv(b, met))
             if s == "–" or met not in RATE:
                 return s
             pv = _prop_z_p(met, a, b)
             return s + (" ✱" if (pd.notna(pv) and pv < 0.05) else "")
 
-        def _rng_short(ws):
-            """짧은 기간 라벨 — 컬럼 헤더용. 예: '26년 6/22~6/28'."""
-            ws = pd.Timestamp(ws); we_ = ws + pd.Timedelta(days=6)
-            return f"{ws.year % 100}년 {ws.month}/{ws.day}~{we_.month}/{we_.day}"
+        def _rng_short(ps):
+            """짧은 기간 라벨 — 컬럼 헤더용.
+            '26년 6/22~6/28'(주) · '26년 9/8'(일) · '26년 8월'(월)."""
+            if ps is None:
+                return "–"
+            ps = pd.Timestamp(ps)
+            if _unit == "일":
+                return f"{ps.year % 100}년 {ps.month}/{ps.day}"
+            if _unit == "월":
+                return f"{ps.year % 100}년 {ps.month}월"
+            pe_ = ps + pd.Timedelta(days=6)
+            return f"{ps.year % 100}년 {ps.month}/{ps.day}~{pe_.month}/{pe_.day}"
 
         def _md(s):
             """마크다운 안전 문자열 — '~'가 취소선으로 해석되지 않게 이스케이프."""
             return str(s).replace("~", "\\~")
 
-        # 기준주가 '부분 주'(아직 일요일까지 데이터가 안 참)면 동요일 누계 비교 — 화요일에
-        # 열면 기준주 2일치가 전주 7일치와 비교되어 전주비 △70%대의 가짜 급락이 뜨는 착시
-        # 방지. 비교 기간(전주·전월 동주·전년 동주)도 전부 기준주와 같은 요일까지만 잘라 집계.
-        # 부분 주 = 달력상 진행 중 주(_is_live_week) 또는 데이터상 가장 최근 주인데 일요일까지
-        # 안 온 경우(_is_latest_partial). 후자를 안 보면 '지난 주지만 실적이 목요일까지만
-        # 업로드된' 최신 주가 완결로 처리돼 전주 전체와 비교되어 가짜 하락이 뜬다.
+        # 기준 기간이 '부분 기간'(아직 끝까지 데이터가 안 참)이면 **같은 지점까지 잘라**
+        # 비교한다 — 화요일에 열면 기준주 2일치가 전주 7일치와 맞붙어 전주비 △70%대의
+        # 가짜 급락이 뜨는 착시 방지. 비교 3종도 전부 같은 경과분까지만 집계한다.
+        # 부분 = 달력상 진행 중(_is_live) 또는 데이터상 가장 최근 기간인데 끝까지 안 온 경우
+        # (_is_latest_partial). 후자를 안 보면 '지난 주지만 실적이 목요일까지만 업로드된'
+        # 최신 주가 완결로 처리돼 전주 전체와 비교되어 가짜 하락이 뜬다.
         _today_k = today_kst()
-        _is_live_week = ref_ws.date() <= _today_k <= ref_we.date()
+        _plen_ref = _plen(ref_ps, _unit)
+        _is_live = ref_ps.date() <= _today_k <= ref_pe.date()
         _latest_data = g0["dt"].max()
-        _is_latest_week = bool(ref_ws <= _latest_data <= ref_we)
-        _is_latest_partial = _is_latest_week and (_latest_data.normalize() < ref_we.normalize())
-        _partial = _is_live_week or _is_latest_partial
-        _elapsed = 6
+        _is_latest = bool(ref_ps <= _latest_data <= ref_pe)
+        _is_latest_partial = _is_latest and (_latest_data.normalize() < ref_pe.normalize())
+        _partial = _is_live or _is_latest_partial
+        _elapsed = _plen_ref - 1
         if _partial:
-            _ref_rows = _slice(ref_ws, ref_we)
+            _ref_rows = _slice(ref_ps, ref_pe)
             if len(_ref_rows):
-                _elapsed = min(int((_ref_rows["dt"].max().normalize() - ref_ws).days), 6)
-            elif _is_live_week:
-                _elapsed = min((pd.Timestamp(_today_k) - ref_ws).days, 6)
+                _elapsed = min(int((_ref_rows["dt"].max().normalize() - ref_ps).days),
+                               _plen_ref - 1)
+            elif _is_live:
+                _elapsed = min((pd.Timestamp(_today_k) - ref_ps).days, _plen_ref - 1)
             _elapsed = max(_elapsed, 0)
 
-        def _aggw(ws):
-            """주 시작 ws부터 기준주와 같은 경과 요일까지 집계 (완결 주면 월~일 전체)."""
-            return _agg(_slice(pd.Timestamp(ws), pd.Timestamp(ws) + pd.Timedelta(days=_elapsed)))
+        def _aggp(ps):
+            """기간 시작 ps부터 기준 기간과 같은 경과분까지 집계 (완결이면 기간 전체).
 
-        cur_w = _aggw(ref_ws)
-        prev_ws = ref_ws - pd.Timedelta(days=7)
-        prev_w = _aggw(prev_ws)
-        # 전월 동주 — 기준주 '한가운데(목요일)'의 한 달 전 날짜가 속한 주(월~일).
-        # 시작일(월요일) 앵커를 쓰면 한 달 전 날짜가 그 주의 꼬리(토·일)에 걸릴 때 한 주
-        # 이른 주가 선택된다 (예: 기준주 7/6~7/12 → 6/6(토) → 6/1~6/7, 35일 전).
-        # 목요일 앵커는 '4주 전'·'월내 같은 주차 순번' 두 관례와 일치 (→ 6/8~6/14).
-        # ISO 주차가 목요일로 주의 소속을 정하는 것과 같은 원리.
-        pm_ws = pd.Timestamp(((ref_ws + pd.Timedelta(days=3)) - pd.DateOffset(months=1))
-                             .to_period("W").start_time)
-        pm_w = _aggw(pm_ws)
-        try:                                             # 전년 동주 — ISO 주차 번호 기준
-            _iy, _iw, _ = ref_ws.isocalendar()
-            yo_ws = pd.Timestamp(datetime.date.fromisocalendar(_iy - 1, _iw, 1))
-            yoy_w = _aggw(yo_ws)
-            yo_lab = _wklab(yo_ws)
-        except ValueError:                               # 53주차 등 전년에 없는 주
-            yo_ws, yoy_w, yo_lab = None, None, "–"
-        if _elapsed < 6:
-            _dowk = ["월", "화", "수", "목", "금", "토", "일"][_elapsed]
-            _why = "진행 중이라" if _is_live_week else "실적이 아직 다 안 들어와서"
-            st.info(f"⏳ 기준주가 {_why} **월~{_dowk} 동요일 누계**로 비교해요 — "
-                    "전주·전월 동주·전년 동주도 같은 요일까지만 집계해 부분 주 착시를 없앴어요. "
-                    "주가 끝나고 데이터가 다 차면 자동으로 월~일 전체 비교로 돌아가요.")
+            달마다 일수가 달라 비교 기간이 더 짧으면 그 기간 끝까지만 본다 — 3월 31일
+            기준으로 2월을 볼 때 3월 1일까지 넘어가지 않게."""
+            if ps is None:
+                return None
+            ps = pd.Timestamp(ps)
+            e = min(_elapsed, _plen(ps, _unit) - 1)
+            d = _slice(ps, ps + pd.Timedelta(days=e))
+            if not len(d):
+                return None                # 발송이 아예 없던 기간은 0이 아니라 결측이다
+            return _agg(d, days=e + 1)
 
-        # ── KPI 카드 (전주비·전년비) — △ 표기 방향이 st.metric 화살표와 어긋나서 커스텀 카드 사용 ──
+        # 직전 기간 이름 — 「…비」 칼럼·차트 제목이 전부 이걸 쓴다. 주 고정으로 '전주'를
+        # 박아 두면 일·월 단위에서 화면이 거짓말을 한다.
+        _PVN = _CMPSPEC[0][1]
+        cur_w = _aggp(ref_ps)
+        prev_ws, pm_ws, yo_ws = _cmp_starts(ref_ps, _unit)
+        prev_w, pm_w, yoy_w = _aggp(prev_ws), _aggp(pm_ws), _aggp(yo_ws)
+        yo_lab = _plab(yo_ws, _unit) if yo_ws is not None else "–"
+        # 비교 3종을 한 자리에 묶는다 — 카드·표·AI 문구가 같은 목록을 본다.
+        # (증감 칼럼 이름, 실적 칼럼 이름, 기간 시작, 집계)
+        _CMPS = [(_CMPSPEC[0][0], _CMPSPEC[0][1], prev_ws, prev_w),
+                 (_CMPSPEC[1][0], _CMPSPEC[1][1], pm_ws, pm_w),
+                 (_CMPSPEC[2][0], _CMPSPEC[2][1], yo_ws, yoy_w)]
+        _CMPS_ON = [c for c in _CMPS if c[0] in _cmp_on]
+        if _elapsed < _plen_ref - 1:
+            _why = "진행 중이라" if _is_live else "실적이 아직 다 안 들어와서"
+            _upto = (f"월~{_DOW_KO[_elapsed]} 동요일 누계" if _unit == "주"
+                     else f"1일~{_elapsed + 1}일 누계")
+            st.info(f"⏳ 기준 {_UNAME}가 {_why} **{_upto}**로 비교해요 — "
+                    + " · ".join(c[1] for c in _CMPS)
+                    + "도 같은 지점까지만 집계해 부분 기간 착시를 없앴어요. "
+                      "데이터가 다 차면 자동으로 기간 전체 비교로 돌아가요.")
+
+        # ── KPI 카드 — △ 표기 방향이 st.metric 화살표와 어긋나서 커스텀 카드 사용.
+        # 어떤 비교를 띄울지는 위 필터 바의 「비교」가 정한다.
         def _delta_line(d, label):
             if d == "–":
                 return (f'<div style="font-size:12px;color:#94a3b8;margin-top:3px">'
@@ -4935,48 +5121,44 @@ def main():
                     f'{d} {label} 대비</div>')
         k = st.columns(6)
         for col, met in zip(k, ["발송", "UV", "CTR", "주문CR", "거래액", "RPS"]):
-            _d = _dlt_sig(met, cur_w, prev_w)
-            _y = _dlt_sig(met, cur_w, yoy_w)
+            _pills = "".join(_delta_line(_dlt_sig(met, cur_w, _ag), _nm)
+                             for _dc, _nm, _bs, _ag in _CMPS_ON)
             col.markdown(
                 f'<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;'
                 f'padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
                 f'<div style="font-size:12px;color:#64748b">{met}</div>'
                 f'<div style="font-size:20px;color:#1e293b;font-weight:600;'
-                f'font-feature-settings:\'tnum\' 1">{_fmt(met, cur_w[met])}</div>'
-                f'{_delta_line(_d, "전주")}{_delta_line(_y, "전년")}</div>',
+                f'font-feature-settings:\'tnum\' 1">{_fmt(met, _dv(cur_w, met))}</div>'
+                f'{_pills}</div>',
                 unsafe_allow_html=True)
 
-        # ── 주요 지표 현황 표 (전주·전월 동주·전년 동주 — 컬럼에 기간 일자 표기) ──
+        # ── 주요 지표 현황 표 (비교 열은 단위에 따라 달라진다 — 컬럼에 기간 일자 표기) ──
         st.markdown("##### 📋 주요 지표 현황")
-        col_prev = f"전주 ({_rng_short(prev_ws)})"
-        col_cur = f"기준주 ({_rng_short(ref_ws)})"
-        col_pm = f"전월 동주 ({_rng_short(pm_ws)})"
-        col_yoy = f"전년 동주 ({_rng_short(yo_ws)})" if yo_ws is not None else "전년 동주 (–)"
+        col_cur = f"기준 {_UNAME} ({_rng_short(ref_ps)})"
+        # (증감 칼럼, 실적 칼럼, 집계) — 아래 표·펼치기가 전부 이 목록 하나를 본다
+        _CMPCOL = [(_dc, f"{_nm} ({_rng_short(_bs)})", _ag)
+                   for _dc, _nm, _bs, _ag in _CMPS_ON]
         rows = []
         for met in METS:
-            yv = yoy_w[met] if yoy_w else np.nan
-            rows.append({"지표": met,
-                         col_prev: _fmt(met, prev_w[met]), col_cur: _fmt(met, cur_w[met]),
-                         "전주비": _dlt_sig(met, cur_w, prev_w),
-                         col_pm: _fmt(met, pm_w[met]),
-                         "전월비": _dlt_sig(met, cur_w, pm_w),
-                         col_yoy: _fmt(met, yv), "전년비": _dlt_sig(met, cur_w, yoy_w)})
+            _r = {"지표": met, col_cur: _fmt(met, _dv(cur_w, met))}
+            for _dc, _vc, _ag in _CMPCOL:
+                _r[_vc] = _fmt(met, _dv(_ag, met))
+                _r[_dc] = _dlt_sig(met, cur_w, _ag)
+            rows.append(_r)
 
         # ── 앱푸시(PUSH 채널 × App 디바이스) — 사이트 데이터가 있을 때만 같은 표에 붙인다.
-        # 발송 실적과 분모가 달라 합계로 못 섞으니 '주 일평균'으로 나란히 놓는다.
-        # 부분 주면 위 지표와 같은 동요일 누계 창(_elapsed)을 그대로 쓴다.
+        # 발송 실적과 분모가 달라 합계로 못 섞으니 '그 기간의 일평균'으로 나란히 놓는다.
+        # 부분 기간이면 위 지표와 같은 경과 창(_elapsed)을 그대로 쓴다.
         _wr_site = finalize_site(st.session_state.get("site_store_df"))
         _wk_site_rows = 0
         if len(_wr_site):
-            def _wk_sm(ws):
-                if ws is None:
+            def _wk_sm(ps):
+                if ps is None:
                     return {"uv": np.nan, "amt": np.nan, "days": 0}
-                _w = pd.Timestamp(ws)
-                return site_mean(_wr_site, "PUSH", "App", _w,
-                                 _w + pd.Timedelta(days=_elapsed))
+                _w = pd.Timestamp(ps)
+                _e = min(_elapsed, _plen(_w, _unit) - 1)
+                return site_mean(_wr_site, "PUSH", "App", _w, _w + pd.Timedelta(days=_e))
 
-            _wk_c, _wk_p = _wk_sm(ref_ws), _wk_sm(prev_ws)
-            _wk_m, _wk_y = _wk_sm(pm_ws), _wk_sm(yo_ws)
             # 거래액은 위 '거래액' 행이 이미 담당한다 — 분모가 다른 값을 나란히 두면
             # 어느 쪽을 봐야 할지 헷갈린다. 여기선 회원UV만.
             for _mk in ("uv",):
@@ -4987,13 +5169,13 @@ def main():
                 def _wfmt(v):
                     return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
 
-                rows.append({"지표": _nm,
-                             col_prev: _wfmt(_wk_p[_mk]), col_cur: _wfmt(_wk_c[_mk]),
-                             "전주비": _dlt(_nm, _wk_c[_mk], _wk_p[_mk]),
-                             col_pm: _wfmt(_wk_m[_mk]),
-                             "전월비": _dlt(_nm, _wk_c[_mk], _wk_m[_mk]),
-                             col_yoy: _wfmt(_wk_y[_mk]),
-                             "전년비": _dlt(_nm, _wk_c[_mk], _wk_y[_mk])})
+                _wk_c = _wk_sm(ref_ps)
+                _r = {"지표": _nm, col_cur: _wfmt(_wk_c[_mk])}
+                for _dc, _nm2, _bs, _ag in _CMPS_ON:
+                    _wk_b = _wk_sm(_bs)
+                    _r[f"{_nm2} ({_rng_short(_bs)})"] = _wfmt(_wk_b[_mk])
+                    _r[_dc] = _dlt(_nm, _wk_c[_mk], _wk_b[_mk])
+                rows.append(_r)
                 _wk_site_rows += 1
         wr_tbl = pd.DataFrame(rows)
 
@@ -5005,12 +5187,13 @@ def main():
                 return "color:#dc2626;font-weight:600"
             return ""
 
-        # **기본은 기준주 + 비교 3열만.** 실적 열까지 일곱 칸을 늘어놓으면 가로로 넓어져
+        # **기본은 기준 기간 + 비교 열만.** 실적 열까지 일곱 칸을 늘어놓으면 가로로 넓어져
         # 정작 봐야 할 증감이 눈에 안 들어온다. 비교 열 **머리를 누르면** 그 비교의 실적
         # 열이 왼쪽에 펼쳐진다(다시 누르면 접힌다). 선택은 **칼럼 이름**으로 오므로 열이
         # 늘었다 줄었다 해도 어긋나지 않는다.
-        _CMP = [("전주비", col_prev), ("전월비", col_pm), ("전년비", col_yoy)]
-        _WRK = "wr_sum_cols"
+        _CMP = [(_dc, _vc) for _dc, _vc, _ag in _CMPCOL]
+        _DCOLS = [_dc for _dc, _vc in _CMP]
+        _WRK = f"wr_sum_cols_{_unit}"
 
         def _open_cmps(ev_or_state):
             """펼쳐 둘 비교 열 이름들. 칼럼 선택이라 이름이 그대로 온다."""
@@ -5038,29 +5221,184 @@ def main():
                 _show.append(_vc)
             _show.append(_dc)
         _view = wr_tbl[[c for c in _show if c in wr_tbl.columns]]
-        _ev = table(_view.style.map(_clr, subset=["전주비", "전월비", "전년비"]),
+        _ev = table(_view.style.map(_clr, subset=_DCOLS),
                      hide_index=True, width="stretch", height=38 + 35 * len(_view),
                      key=_WRK, on_select="rerun", selection_mode="single-column",
                      column_config={"지표": st.column_config.Column(width="medium")},
                      dl_name="주요 지표 현황",
-                     dl_data=wr_tbl.style.map(_clr, subset=["전주비", "전월비", "전년비"]))
-        st.caption("**전주비·전월비·전년비 열 머리를 누르면** 그 비교의 실적 열이 옆에 "
+                     dl_data=wr_tbl.style.map(_clr, subset=_DCOLS))
+        st.caption("**" + "·".join(_DCOLS) + " 열 머리를 누르면** 그 비교의 실적 열이 옆에 "
                    "펼쳐져요. 다시 누르면 접혀요. 엑셀로 받으면 접힌 열까지 다 들어가요.")
-        st.caption(f"기준주 {_md(_wklab(ref_ws))} · 전년 동주 {_md(yo_lab)} — "
-                   "해당 기간에 데이터가 없으면 '–'로 표시돼요. "
-                   "전월비는 전월 동주(기준주 목요일의 한 달 전이 속한 주)와 비교해요 — "
-                   "보통 4주 전이지만 달에 따라 5주 전이 되기도 해요. "
-                   "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
-                   "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
+        _cap = [f"기준 {_UNAME} {_md(_plab(ref_ps, _unit))}",
+                f"전년 {_md(yo_lab)}"]
+        if _unit == "주":
+            _cap.append("전월비는 전월 동주(기준주 목요일의 한 달 전이 속한 주)와 비교해요. "
+                        "보통 4주 전이지만 달에 따라 5주 전이 되기도 해요")
+        st.caption(" · ".join(_cap) + " — 해당 기간에 데이터가 없으면 '–'로 표시돼요. "
+                   + ("값은 그 기간의 **일평균**이에요. " if _avg
+                      else "값은 그 기간의 **합산**이에요. ")
+                   + "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
+                     "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
         if _wk_site_rows:
             st.markdown('<div class="appendix"><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 '
-                        '실적과 분모가 달라요 — 주 합계가 아니라 <b>그 주의 일평균</b>(천명)이에요. '
-                        '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
-                        '잡은 값이고요. 앱푸시 거래액은 「12. 회원UV·거래액」에서 보면 돼요 '
-                        '(채널 PUSH · 디바이스 App).</div>',
+                        '실적과 분모가 달라요 — 기간 합계가 아니라 <b>그 기간의 일평균</b>'
+                        '(천명)이에요. <b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 '
+                        '들어온 유입만 잡은 값이고요. 앱푸시 거래액은 「12. 회원UV·거래액」에서 '
+                        '보면 돼요 (채널 PUSH · 디바이스 App).</div>',
                         unsafe_allow_html=True)
 
-        # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 주차별로 저장 백엔드에 영속 ──
+
+        # ══ 📈 주요 지표 추이 ═════════════════════════════════════════════════
+        # 위 카드·표는 한 기간의 '사진'이라 이번이 낮은 건지 원래 그런 건지를 못 본다.
+        # 그래서 표 바로 뒤에 둔다. 예전엔 페이지 맨 아래에 막대·선 한 장으로 13주 고정
+        # 이었고, 지표를 갈아 끼우며 봐야 해서 지표 사이의 이야기가 안 이어졌다.
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 📈 주요 지표 추이")
+
+        # 추이에 올릴 기간 — 기준 기간까지의 **완결 기간**만. 진행 중이거나 실적이 덜 찬
+        # 기준 기간은 뺀다: 마지막 점만 부분 데이터라 꼬리가 인위적으로 급락하는 착시가
+        # 생긴다(카드·표는 경과 창으로 공정 비교하지만 추이는 기간 전체 창이라 안 맞는다).
+        _ps_upto = [pd.Timestamp(p) for p in sorted(g0["_ps"].unique())
+                    if pd.Timestamp(p) <= ref_ps]
+        _drop_ref = (_partial and len(_ps_upto) >= 2 and _ps_upto[-1] == ref_ps)
+        if _drop_ref:
+            _ps_upto = _ps_upto[:-1]
+        if _twin == "13":
+            _tps = _ps_upto[-13:]
+        elif _twin == "year":
+            _tps = [p for p in _ps_upto if p.year == ref_ps.year] or _ps_upto[-13:]
+        else:
+            _tps = list(_ps_upto)
+        _tlab = [_plab(p, _unit) for p in _tps]
+
+        # 기간별 합계를 **groupby 한 번**으로 만든다. 기간마다 _slice를 부르면 프레임
+        # 전체에 마스크를 씌우는 일이 기간 수만큼 반복된다 — '전체' 구간을 일 단위로 보면
+        # 그것만 1,400회다. `_ps`가 곧 기간 키라 결과는 기간 전체 슬라이스와 같다.
+        _gsum = g0.groupby("_ps").agg(_n=("send", "size"), send=("send", "sum"),
+                                      uv=("uv", "sum"), oc=("oc", "sum"),
+                                      amt=("amt", "sum"))
+
+        def _aggfull(ps):
+            """그 기간 전체의 집계 — 데이터가 아예 없으면 None(0이 아니라 결측)."""
+            if ps is None:
+                return None
+            ps = pd.Timestamp(ps)
+            if ps not in _gsum.index:
+                return None
+            r = _gsum.loc[ps]
+            s, u, o, a = float(r["send"]), float(r["uv"]), float(r["oc"]), float(r["amt"])
+            return {"캠페인수": float(r["_n"]), "발송": s, "UV": u, "주문건수": o, "거래액": a,
+                    "CTR": (u / s if s else np.nan), "주문CR": (o / u if u else np.nan),
+                    "RPS": (a / s if s else np.nan), "객단가": (a / o if o else np.nan),
+                    "_days": _plen(ps, _unit)}
+
+        _tagg = {p: _aggfull(p) for p in _tps}
+        _typ = {p: _aggfull(_yoy_ps(p, _unit)) for p in _tps}
+        _has_py = any(v is not None for v in _typ.values())
+
+        _TDEF = ["발송", "CTR", "거래액"]
+        guard_multi("wr_trend_mets", METS)
+        _tmets = st.multiselect("추이에 올릴 지표", METS, default=_TDEF,
+                                key="wr_trend_mets",
+                                help="고른 지표마다 차트 한 장이에요. 아래 표는 전 지표를 다 담아요.")
+        _tmets = _tmets or _TDEF
+
+        if len(_tps) < 2:
+            st.info("추이를 그리려면 완결된 기간이 2개 이상 필요해요. 실적을 더 쌓거나 "
+                    "위에서 기간 단위를 바꿔 보세요.")
+        else:
+            # 점이 적을 땐 눈금을 다 세우고, 많아지면 솎는다 — 안 솎으면 축이 새까매진다
+            _dtick = max(1, len(_tlab) // 12)
+            for _i0 in range(0, len(_tmets), 3):
+                for _tc, _met in zip(st.columns(3), _tmets[_i0:_i0 + 3]):
+                    _cy = [_dv(_tagg[p], _met) for p in _tps]
+                    _py = [_dv(_typ[p], _met) for p in _tps]
+                    _hv = ("%{y:.2%}<extra></extra>" if _met in RATE
+                           else ("%{y:,.0f}원<extra></extra>"
+                                 if _met in ("거래액", "RPS", "객단가")
+                                 else "%{y:,.0f}<extra></extra>"))
+                    _fg = go.Figure()
+                    if _has_py:
+                        # 전년은 **얇은 점선**이고 색은 회색이다 — 올해가 파랑으로 앞에
+                        # 서야 최신 흐름이 눌리지 않는다. 빠진 기간은 이으면 없는 데이터를
+                        # 지어내는 셈이라 connectgaps=False로 끊는다.
+                        _fg.add_trace(go.Scatter(
+                            x=_tlab, y=_py, name="전년", mode="lines", connectgaps=False,
+                            line=dict(color=PALETTE["slate"], width=1.4, dash="dot"),
+                            hovertemplate=_hv))
+                    _fg.add_trace(go.Scatter(
+                        x=_tlab, y=_cy, name="올해", mode="lines+markers", connectgaps=False,
+                        line=dict(color=PALETTE["blue"], width=2.2), marker=dict(size=5),
+                        hovertemplate=_hv))
+                    _lay = base_layout(270, title=_met, hover="x")
+                    _lay["showlegend"] = bool(_has_py)
+                    _lay["legend"] = legend_h()
+                    _lay["xaxis"]["tickmode"] = "linear"
+                    _lay["xaxis"]["dtick"] = _dtick
+                    _lay["xaxis"]["tickangle"] = -30
+                    if _met in RATE:
+                        _lay["yaxis"]["tickformat"] = ".2%"
+                    _fg.update_layout(**_lay)
+                    _tc.plotly_chart(_fg, width="stretch")
+
+        # 표는 **왼쪽에 실적 · 오른쪽에 전년비**로 모은다 — 증감만 가로로 훑어야
+        # '어느 기간부터 꺾였나'가 보인다. 기간을 잘라 보여 주지 않는 건 위 「추이 구간」이
+        # 이미 고르게 해서다.
+        _tt = {}
+        for _met in METS:
+            _row = {}
+            for _p, _lb in zip(_tps, _tlab):
+                _row[("실적", _lb)] = _fmt(_met, _dv(_tagg[_p], _met))
+            if _has_py:
+                for _p, _lb in zip(_tps, _tlab):
+                    _row[("전년비", _lb)] = _dlt(_met, _dv(_tagg[_p], _met),
+                                                _dv(_typ[_p], _met))
+            _tt[_met] = _row
+        _tdf = pd.DataFrame(_tt).T
+        if len(_tdf.columns):
+            _tdf.columns = pd.MultiIndex.from_tuples(list(_tdf.columns))
+            _tdf.index.name = "지표"
+            _dsub = [c for c in _tdf.columns if c[0] == "전년비"]
+            _tsty = _tdf.style
+            if _dsub:
+                _tsty = _tsty.map(_clr, subset=pd.IndexSlice[:, _dsub])
+            table(_tsty, width="stretch", height=38 + 35 * len(_tdf),
+                  dl_name="주요 지표 추이")
+        _tnote = [f"{len(_tps)}개 {_UNAME}"]
+        if _drop_ref:
+            _tnote.append("진행 중이거나 실적이 덜 찬 기준 기간은 뺐어요")
+        if not _has_py:
+            _tnote.append("전년 데이터가 없어 비교선과 전년비는 빠졌어요")
+        _tnote.append("값은 그 기간의 " + ("**일평균**" if _avg else "**합산**") + "이에요")
+        st.caption(" · ".join(_tnote) + ".")
+
+        with st.expander("📊 두 지표를 막대·선으로 겹쳐 보기"):
+            # 스케일이 다른 두 지표(발송량 ↔ CTR)를 같은 시점끼리 맞대는 자리다.
+            # 이중축 대신 X축을 공유하는 상·하 패널이라 스케일이 안 섞인다.
+            WRT_BAR = {"발송량": "발송", "거래액": "거래액", "캠페인수": "캠페인수", "유입UV": "UV"}
+            WRT_LINE = {"CTR": ("CTR", "%"), "주문CR": ("주문CR", "%"), "RPS": ("RPS", "")}
+            _sc1, _sc2 = st.columns(2)
+            _bl = _sc1.selectbox("막대 지표 (위)", list(WRT_BAR), index=1, key="wr_t_bar")
+            _ll = _sc2.selectbox("선 지표 (아래)", list(WRT_LINE), index=1, key="wr_t_line")
+            _lc, _ls = WRT_LINE[_ll]
+            if len(_tps) < 2:
+                st.caption("완결된 기간이 2개 이상이어야 그려요.")
+            else:
+                _sp = pd.DataFrame({
+                    "_x": _tlab,
+                    "_b": [_dv(_tagg[p], WRT_BAR[_bl]) for p in _tps],
+                    "_l": [_dv(_tagg[p], _lc) for p in _tps],
+                })
+                st.plotly_chart(
+                    stacked_panels(_sp["_x"], _sp["_b"], _bl,
+                                   _sp["_l"] * (100 if _ls == "%" else 1), _ll,
+                                   PALETTE["slate"], PALETTE["purple"], h=430,
+                                   line_suffix=_ls,
+                                   title=f"{_bl}(위) · {_ll}(아래) — 기준 {_UNAME}까지 "
+                                         f"{len(_tps)}개 기간"),
+                    width="stretch")
+
+        # ── 보고란 (weekly_report.py 동일 구성 · 접이식) — 기간별로 저장 백엔드에 영속 ──
         # 구글시트(설정 시) 또는 로컬 CSV에 {key:text}를 저장 → 세션이 끊겨도 유지된다.
         def _notes_save(d):
             try:
@@ -5089,25 +5427,25 @@ def main():
             """기준주 실적으로 보고 문구 자동 생성 — weekly_report 템플릿 형식."""
             lines = []
             for met in ["발송", "거래액", "CTR", "주문CR", "RPS", "캠페인수"]:
-                yv = yoy_w[met] if yoy_w else np.nan
-                lines.append(f"- {met} — {_fmt(met, cur_w[met])}, "
-                             f"전주비 {_dlt(met, cur_w[met], prev_w[met])}, "
-                             f"전년비 {_dlt(met, cur_w[met], yv)}")
+                lines.append(f"- {met} — {_fmt(met, _dv(cur_w, met))}, "
+                             + ", ".join(f"{_dc} {_dlt(met, _dv(cur_w, met), _dv(_ag, met))}"
+                                         for _dc, _nm, _bs, _ag in _CMPS_ON))
 
             # 앱푸시 수신동의 데이터가 세션에 적재되어 있는 경우 요약 한 줄 추가
             _push_df = st.session_state.get("push_consent_df")
             if _push_df is not None and not _push_df.empty:
                 
-                c_sum = get_push_stats(_push_df, ref_ws, ref_we, "Total")
+                c_sum = get_push_stats(_push_df, ref_ps, ref_pe, "Total")
                 if c_sum:
                     c_con = c_sum["last_consent"]
                     c_add = c_sum["tot_added"]
                     c_rem = c_sum["tot_removed"]
                     
-                    p_sum = get_push_stats(_push_df, prev_ws, ref_we - pd.Timedelta(days=7), "Total")
+                    p_sum = get_push_stats(_push_df, prev_ws, _pend(prev_ws, _unit), "Total")
                     p_con = p_sum["last_consent"] if p_sum else None
                     
-                    y_sum = get_push_stats(_push_df, yo_ws, yo_ws + pd.Timedelta(days=6), "Total") if yo_ws is not None else None
+                    y_sum = (get_push_stats(_push_df, yo_ws, _pend(yo_ws, _unit), "Total")
+                             if yo_ws is not None else None)
                     y_con = y_sum["last_consent"] if y_sum else None
                     
                     def _d_pct(cur, prev):
@@ -5120,7 +5458,7 @@ def main():
                     y_diff = _d_pct(c_con, y_con)
                     
                     lines.append(f"- 앱푸시 수신동의 — {c_con:,.0f}명 (신규: +{c_add:,.0f}명, 이탈: △{c_rem:,.0f}명), "
-                                 f"전주비 {p_diff}, 전년비 {y_diff}")
+                                 f"{_PVN} 대비 {p_diff}, 전년 대비 {y_diff}")
             return "\n".join(lines)
 
         def _note_render(text):
@@ -5318,9 +5656,11 @@ def main():
             with col:                     # 컨테이너 진입은 fragment 밖에서 (외부 컨테이너 제약)
                 _note_block_body(nkey, title, regen, ai_fn)
 
-        _wkkey = ref_ws.strftime("%Y%m%d")
+        # 저장 키는 **기준 기간의 첫날**이다. 단위를 바꿔도 같은 주의 첫날은 같은 키라
+        # 주 단위로 써 둔 글이 사라지지 않는다.
+        _wkkey = ref_ps.strftime("%Y%m%d")
         # '금주 집행'은 기준 주차 선택과 무관하게 항상 '오늘' 기준 이번 주를 가리키므로
-        # 저장 키도 ref_ws가 아니라 실제 이번 주 월요일로 고정한다(기준 주차를 바꿔도 안 사라짐).
+        # 저장 키도 ref_ps가 아니라 실제 이번 주 월요일로 고정한다(기준 기간을 바꿔도 안 사라짐).
         _this_wkkey = _this_week_range()[0].strftime("%Y%m%d")
         with st.expander("📝 보고란 — 전주 주요 지표 현황 · 금주 집행 내용 요약", expanded=True):
             nb1, nb2 = st.columns(2)
@@ -5338,34 +5678,41 @@ def main():
                 with st.expander(f"🗂 {_md(ref_sel)} 당시의 '금주 집행 내용 요약' 보기"):
                     st.markdown(_note_render(_past_exec), unsafe_allow_html=True)
 
-        # ── 월 누계(MTD) — 기준주 마감일 기준 ──
-        # 마감일은 기준주 일요일이 아니라 **KPI 카드와 같은 동요일 누계**(_elapsed)다.
-        # 완결 주면 ref_ws+6 == ref_we라 기존 동작과 같지만, 부분 주에선 아직 오지 않은
-        # 일요일을 마감으로 쓰게 돼 월말 월요일(8/31 등)에 '당월'이 다음 달로 한 주 일찍
-        # 넘어간다 — 9/1~9/6 창에는 실적도 사이트 데이터도 없어 표 전체가 '–'로 비었다.
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📆 월 누계(MTD) — 전월·전년 같은 기간 대비")
-        ref_end = (ref_ws + pd.Timedelta(days=_elapsed)).date()
+        # ── 월 누계(MTD) — 기준 기간 마감일 기준 ──
+        # 마감일은 기준 기간의 마지막 날이 아니라 **KPI 카드와 같은 경과 누계**(_elapsed)다.
+        # 완결이면 둘이 같지만, 부분 기간에선 아직 오지 않은 날을 마감으로 쓰게 돼 월말
+        # 월요일(8/31 등)에 '당월'이 다음 달로 한 주 일찍 넘어간다 — 9/1~9/6 창에는 실적도
+        # 사이트 데이터도 없어 표 전체가 '–'로 비었다.
+        ref_end = (ref_ps + pd.Timedelta(days=_elapsed)).date()
         m_first = ref_end.replace(day=1)
 
         def _mtd_range(y, m, day):
             last = calendar.monthrange(y, m)[1]
             return datetime.date(y, m, 1), datetime.date(y, m, min(day, last))
-        cur_mtd = _agg(_slice(m_first, ref_end))
+        cur_mtd = _agg(_slice(m_first, ref_end), days=ref_end.day)
         pm_y, pm_m = (ref_end.year, ref_end.month - 1) if ref_end.month > 1 else (ref_end.year - 1, 12)
         pm0, pm1 = _mtd_range(pm_y, pm_m, ref_end.day)
-        prev_mtd = _agg(_slice(pm0, pm1))
+        prev_mtd = _agg(_slice(pm0, pm1), days=pm1.day)
         py0, py1 = _mtd_range(ref_end.year - 1, ref_end.month, ref_end.day)
-        yoy_mtd = _agg(_slice(py0, py1))
+        yoy_mtd = _agg(_slice(py0, py1), days=py1.day)
+        # 월 단위에선 위 「주요 지표 현황」이 이미 같은 비교(당월 ↔ 전월·전년 동월)라
+        # 같은 표를 두 번 보여 주게 된다 — 그래서 일·주에서만 그린다.
+        _show_mtd = _unit != "월"
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        if not _show_mtd:
+            st.caption("월 단위에선 위 「주요 지표 현황」이 곧 월 누계 비교라 따로 두지 않았어요.")
+        else:
+            st.markdown("##### 📆 월 누계(MTD) — 전월·전년 같은 기간 대비")
         _cur_lab = f"당월 MTD ({m_first.month}/1~{ref_end.month}/{ref_end.day})"
         _pm_lab = f"전월 MTD ({pm0.month}/1~{pm1.month}/{pm1.day})"
         _py_lab = f"전년 MTD ({py0.year}년 {py0.month}월)"
         rows = []
         for met in METS:
             rows.append({"지표": met,
-                         _pm_lab: _fmt(met, prev_mtd[met]), _cur_lab: _fmt(met, cur_mtd[met]),
+                         _pm_lab: _fmt(met, _dv(prev_mtd, met)),
+                         _cur_lab: _fmt(met, _dv(cur_mtd, met)),
                          "전월비": _dlt_sig(met, cur_mtd, prev_mtd),
-                         _py_lab: _fmt(met, yoy_mtd[met]),
+                         _py_lab: _fmt(met, _dv(yoy_mtd, met)),
                          "전년비": _dlt_sig(met, cur_mtd, yoy_mtd)})
         # ── 사이트 지표(앱 디바이스 · PUSH 채널) — 있을 때만 같은 표에 붙인다 ──
         # 발송 실적과 분모가 달라 합계로 못 섞는다. '월 평균(일평균)'으로 나란히 놓는다.
@@ -5395,38 +5742,40 @@ def main():
                                  "전년비": _dlt(_nm, _c[_mk], _y[_mk])})
                     _site_rows += 1
 
-        table(pd.DataFrame(rows).style.map(_clr, subset=["전월비", "전년비"]),
-                     hide_index=True, width="stretch", height=38 + 35 * len(rows),
-                     column_config={"지표": st.column_config.Column(width="medium")},
-                     dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
-        _mtd_endlab = ("기준주 일요일" if _elapsed >= 6 else
-                       f"기준주 {['월','화','수','목','금','토','일'][_elapsed]}요일(실적이 있는 마지막 날)")
-        st.markdown(f'<div class="appendix">MTD는 <b>{_mtd_endlab}까지의 월 누계</b>예요. '
-                    '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
-                    '월초 주차일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
-                    + ('<br><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 실적과 분모가 '
-                       '달라요 — 월 누계가 아니라 <b>그 기간의 일평균</b>(천명)이에요. '
-                       '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
-                       '잡은 값이고요. 거래액과 채널·디바이스별 추이는 '
-                       '「12. 회원UV·거래액」에서 보면 돼요.'
-                       if _site_rows else '') + '</div>',
-                    unsafe_allow_html=True)
-        if not _site_rows:
-            st.caption("회원UV·거래액 리포트를 올리면 앱푸시(PUSH 채널 × App 디바이스) "
-                       "회원UV의 월 평균도 이 표에 같이 나와요.")
+        if _show_mtd:
+            table(pd.DataFrame(rows).style.map(_clr, subset=["전월비", "전년비"]),
+                  hide_index=True, width="stretch", height=38 + 35 * len(rows),
+                  column_config={"지표": st.column_config.Column(width="medium")},
+                  dl_name="월 누계(MTD) — 전월·전년 같은 기간 대비")
+            _mtd_endlab = (f"{ref_end.month}/{ref_end.day}(기준 기간의 마지막 실적일)"
+                           if _elapsed < _plen_ref - 1
+                           else f"{ref_end.month}/{ref_end.day}")
+            st.markdown(f'<div class="appendix">MTD는 <b>{_mtd_endlab}까지의 월 누계</b>예요. '
+                        '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
+                        '월초일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
+                        + ('<br><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 실적과 분모가 '
+                           '달라요 — 월 누계가 아니라 <b>그 기간의 일평균</b>(천명)이에요. '
+                           '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
+                           '잡은 값이고요. 거래액과 채널·디바이스별 추이는 '
+                           '「12. 회원UV·거래액」에서 보면 돼요.'
+                           if _site_rows else '') + '</div>',
+                        unsafe_allow_html=True)
+            if not _site_rows:
+                st.caption("회원UV·거래액 리포트를 올리면 앱푸시(PUSH 채널 × App 디바이스) "
+                           "회원UV의 월 평균도 이 표에 같이 나와요.")
 
-        # ── 📱 앱푸시 수신동의 주간 요약 (주간보고용 연동) ──
+        # ── 📱 앱푸시 수신동의 — 기준 기간 요약 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📱 앱푸시 수신동의 주간 요약")
+        st.markdown(f"##### 📱 앱푸시 수신동의 — 기준 {_UNAME} 요약")
 
         _push_df = st.session_state.get("push_consent_df")
         if _push_df is None or _push_df.empty:
-            st.info("사이드바에서 **앱푸시 동의 현황 xlsx**를 올려 주세요. 여기서도 기준 주차의 동의 "
-                    "추이와 전주 대비 증감을 볼 수 있어요.")
+            st.info("사이드바에서 **앱푸시 동의 현황 xlsx**를 올려 주세요. 여기서도 기준 기간의 "
+                    "동의 추이와 직전 기간 대비 증감을 볼 수 있어요.")
         else:
-            # 기준주 및 전주의 날짜 필터 정의
-            _cur_ws, _cur_we = pd.Timestamp(ref_ws), pd.Timestamp(ref_we)
-            _prev_ws, _prev_we = _cur_ws - pd.Timedelta(days=7), _cur_we - pd.Timedelta(days=7)
+            # 기준 기간 및 직전 기간의 날짜 필터 정의
+            _cur_ws, _cur_we = pd.Timestamp(ref_ps), pd.Timestamp(ref_pe)
+            _prev_ws, _prev_we = pd.Timestamp(prev_ws), _pend(prev_ws, _unit)
 
             push_summary = []
             for g in ["Total", "기존", "신규"]:
@@ -5469,10 +5818,10 @@ def main():
                     col_added = f"주간 신규추가 ({_cur_range})"
                     col_removed = f"주간 기존이탈 ({_cur_range})"
                     col_diff = f"주간 순증감 ({_cur_range})"
-                    col_con_diff = "동의수 증감(전주비)"
-                    col_add_pct = "신규추가 전주비"
-                    col_rem_pct = "기존이탈 전주비"
-                    col_dif_diff = "순증감 전주비"
+                    col_con_diff = f"동의수 증감({_PVN}비)"
+                    col_add_pct = f"신규추가 {_PVN}비"
+                    col_rem_pct = f"기존이탈 {_PVN}비"
+                    col_dif_diff = f"순증감 {_PVN}비"
 
                     push_summary.append({
                         "구분": g,
@@ -5492,11 +5841,12 @@ def main():
                     push_sum_df.style.map(_clr, subset=[col_con_diff, col_add_pct, col_rem_pct, col_dif_diff]),
                     hide_index=True, width="stretch"
                 )
-                st.caption(f"기준주 ({_md(_rng_short(_cur_ws))}) vs 전주 ({_md(_rng_short(_prev_ws))}) 앱푸시 수신동의 지표 비교 데이터예요. "
-                           f"마이너스 수치는 **△** 로 표기되며 붉은색으로 강조돼요.\n\n"
-                           "**기말 동의수**는 그 주 마지막 날 기준 누적 동의자 수(스냅샷)이고, "
-                           "**신규추가·기존이탈·순증감**은 그 주 전체를 더한 값(합계)이에요 — "
-                           "주말/평일로 나뉜 게 아니라 '시점값 하나 + 합계값 셋'이에요.")
+                st.caption(f"기준 {_UNAME} ({_md(_rng_short(_cur_ws))}) vs {_PVN} "
+                           f"({_md(_rng_short(_prev_ws))}) 앱푸시 수신동의 비교예요. "
+                           "마이너스 수치는 **△** 로 표기되며 붉은색으로 강조돼요.\n\n"
+                           "**기말 동의수**는 그 기간 마지막 날 기준 누적 동의자 수(스냅샷)이고, "
+                           "**신규추가·기존이탈·순증감**은 그 기간 전체를 더한 값(합계)이에요 — "
+                           "'시점값 하나 + 합계값 셋'이에요.")
             else:
                 st.info("이 기간엔 앱푸시 동의 데이터가 없어요.")
 
@@ -5510,9 +5860,11 @@ def main():
                 return "–"
             return f"△{won(abs(v))}" if v < 0 else f"+{won(v)}"
 
-        # ① 거래액 전주 대비 — 카테고리 기여 분해 (워터폴)
+        # ① 거래액 직전 기간 대비 — 카테고리 기여 분해 (워터폴)
         with tabW:
-            st.markdown("##### 거래액 전주 대비 — 어느 카테고리가 끌어올리고/깎아먹었나")
+            st.markdown(f"##### 거래액 {_PVN} 대비 — 어느 카테고리가 끌어올리고/깎아먹었나")
+            st.caption("여기 숫자는 **금액 분해**라 위의 「값 기준」과 무관하게 늘 합산이에요. "
+                       "일평균으로 나누면 '얼마를 끌어올렸나'가 안 읽혀요.")
             def _catfill(d):
                 """cat 결측/공백을 '(미분류)'로 채운 사본 — groupby('cat')는 NaN 행을 드롭하고
                 아래 union/성분합은 공백 카테고리를 제외하는데, 총합(prev_tot·s1t·ΔCTR)은 전체
@@ -5527,17 +5879,20 @@ def main():
                     dd["cat"] = np.where(_blank, "(미분류)", _c.astype(str))
                 return dd
             # 기준주가 부분 주면 KPI 카드와 같은 '동요일 누계'(_elapsed)로 잘라서 비교한다.
-            # 전체 주(월~일)로 비교하면 기준주 2일치가 전주 7일치와 맞붙어 분해 차트만
+            # 기간 전체로 비교하면 기준 기간 2일치가 직전 7일치와 맞붙어 분해 차트만
             # △70%대 가짜 급락을 그려 바로 위 KPI 카드(동요일 누계)와 모순됐다.
-            # 완결 주(_elapsed=6)면 ref_ws+6 == ref_we 라 기존 동작과 완전히 같다.
-            _dec_end = ref_ws + pd.Timedelta(days=_elapsed)
-            cwd = _catfill(_slice(ref_ws, _dec_end))
-            pwd = _catfill(_slice(ref_ws - pd.Timedelta(days=7), _dec_end - pd.Timedelta(days=7)))
-            if _elapsed < 6:
-                st.caption(f"⏳ 기준주가 부분 주라 **월~{['월','화','수','목','금','토','일'][_elapsed]} "
-                           "동요일 누계**로 전주와 비교해요 (위 KPI 카드와 같은 기준).")
+            # 완결 기간이면 경과분이 곧 기간 전체라 기존 동작과 완전히 같다.
+            _dec_end = ref_ps + pd.Timedelta(days=_elapsed)
+            _pv_e = min(_elapsed, _plen(prev_ws, _unit) - 1)
+            cwd = _catfill(_slice(ref_ps, _dec_end))
+            pwd = _catfill(_slice(prev_ws, pd.Timestamp(prev_ws) + pd.Timedelta(days=_pv_e)))
+            if _elapsed < _plen_ref - 1:
+                _upto2 = (f"월~{_DOW_KO[_elapsed]} 동요일 누계" if _unit == "주"
+                          else f"1일~{_elapsed + 1}일 누계")
+                st.caption(f"⏳ 기준 {_UNAME}가 부분 기간이라 **{_upto2}**로 {_PVN}과 비교해요 "
+                           "(위 KPI 카드와 같은 기준).")
             if "cat" not in cwd.columns or len(pwd) == 0:
-                st.info("전주 데이터가 없어 분해할 수 없어요.")
+                st.info(f"{_PVN} 데이터가 없어 분해할 수 없어요.")
             else:
                 cur_g = cwd.groupby("cat").agg(
                     send=("send", "sum"),
@@ -5561,7 +5916,7 @@ def main():
                 # 카테고리별 증감이 전부 0이면 워터폴은 건너뛰고 안내만 (LMDI·믹스는 계속).
                 # dif가 비면 아래 워터폴/표는 자연히 빈 값이 되지만, 안내로 오해를 막는다.
                 if dif.empty:
-                    st.info("전주 대비 카테고리별 거래액 증감이 없어요 (동일하거나 데이터 없음).")
+                    st.info(f"{_PVN} 대비 카테고리별 거래액 증감이 없어요 (동일하거나 데이터 없음).")
                 # 기여 큰 8개만 개별 표시, 나머지는 '기타'로 합산
                 if len(dif) > 8:
                     top8 = dif.reindex(dif.abs().sort_values(ascending=False).head(8).index)
@@ -5623,31 +5978,33 @@ def main():
                     send_diff_str = f"△{abs(send_diff):,.0f}" if send_diff < 0 else f"+{send_diff:,.0f}"
                     wrows.append({
                         "카테고리": str(c),
-                        "전주 거래액": won(p_amt),
-                        "기준주 거래액": won(c_amt),
+                        f"{_PVN} 거래액": won(p_amt),
+                        "기준 거래액": won(c_amt),
                         "거래액 증감": _damt(v),
-                        "거래액 전주비": _dlt("거래액", c_amt, p_amt if p_amt > 0 else np.nan),
-                        "전주 발송": f"{p_send:,.0f}",
-                        "기준주 발송": f"{c_send:,.0f}",
+                        f"거래액 {_PVN}비": _dlt("거래액", c_amt, p_amt if p_amt > 0 else np.nan),
+                        f"{_PVN} 발송": f"{p_send:,.0f}",
+                        "기준 발송": f"{c_send:,.0f}",
                         "발송 증감": send_diff_str,
-                        "발송 전주비": _dlt("발송", c_send, p_send if p_send > 0 else np.nan),
-                        "전주 CTR": f"{p_ctr:.2%}",
-                        "기준주 CTR": f"{c_ctr:.2%}",
-                        "전주 UV": f"{p_uv:,.0f}",
-                        "기준주 UV": f"{c_uv:,.0f}",
-                        "전주 CR": f"{p_cr:.2%}",
-                        "기준주 CR": f"{c_cr:.2%}",
-                        "전주 RPS": f"{p_rps:,.0f}원",
-                        "기준주 RPS": f"{c_rps:,.0f}원",
+                        f"발송 {_PVN}비": _dlt("발송", c_send, p_send if p_send > 0 else np.nan),
+                        f"{_PVN} CTR": f"{p_ctr:.2%}",
+                        "기준 CTR": f"{c_ctr:.2%}",
+                        f"{_PVN} UV": f"{p_uv:,.0f}",
+                        "기준 UV": f"{c_uv:,.0f}",
+                        f"{_PVN} CR": f"{p_cr:.2%}",
+                        "기준 CR": f"{c_cr:.2%}",
+                        f"{_PVN} RPS": f"{p_rps:,.0f}원",
+                        "기준 RPS": f"{c_rps:,.0f}원",
                     })
                 if wrows:
-                    table(pd.DataFrame(wrows).style.map(_clr, subset=["거래액 증감", "거래액 전주비", "발송 증감", "발송 전주비"]),
+                    table(pd.DataFrame(wrows).style.map(
+                              _clr, subset=["거래액 증감", f"거래액 {_PVN}비",
+                                            "발송 증감", f"발송 {_PVN}비"]),
                                  hide_index=True, width="stretch", height=min(38 + 35 * len(wrows), 640))
-                st.markdown('<div class="appendix">카테고리별로 전주 대비 거래액을 얼마나 끌어올리고 깎아먹었는지예요. '
+                st.markdown(f'<div class="appendix">카테고리별로 {_PVN} 대비 거래액을 얼마나 끌어올리고 깎아먹었는지예요. '
                             '녹색은 상승, 적색(△)은 감소 기여예요. 기여가 큰 8개만 보여주고 나머지는 기타로 합쳤어요.</div>', unsafe_allow_html=True)
 
                 # ── 지표 체인 분해(LMDI) — '어느 카테고리'가 아니라 '어느 지표'가 만들었나 ──
-                st.markdown("##### 거래액 전주 대비 — 어느 지표(발송·CTR·CR·객단가)가 만들었나")
+                st.markdown(f"##### 거래액 {_PVN} 대비 — 어느 지표(발송·CTR·CR·객단가)가 만들었나")
 
                 def _chain(d):
                     s, u, o, a = (float(d["send"].sum()), float(d["uv"].sum()),
@@ -5664,7 +6021,7 @@ def main():
                     contrib = {k: _L * _math.log(f1[k] / f0[k])
                                for k in ("발송량", "CTR", "주문CR", "객단가")}
                     wf = go.Figure(go.Waterfall(
-                        x=["전주 거래액"] + list(contrib.keys()) + ["기준주 거래액"],
+                        x=[f"{_PVN} 거래액"] + list(contrib.keys()) + ["기준 거래액"],
                         measure=["absolute"] + ["relative"] * 4 + ["total"],
                         y=[v0] + [contrib[k] for k in contrib] + [0],
                         text=[won(v0)] + [_damt(contrib[k]) for k in contrib] + [won(v1)],
@@ -5674,7 +6031,8 @@ def main():
                         decreasing=dict(marker=dict(color=PALETTE["red"])),
                         totals=dict(marker=dict(color=PALETTE["slate"])),
                     ))
-                    wf.update_layout(**base_layout(h=380, title="지표 체인 기여 분해 (LMDI) — 전주 → 기준주"))
+                    wf.update_layout(**base_layout(
+                        h=380, title=f"지표 체인 기여 분해 (LMDI) — {_PVN} → 기준 {_UNAME}"))
                     st.plotly_chart(wf, width="stretch")
                     _tot_d = v1 - v0
                     _big = max(contrib, key=lambda k: abs(contrib[k]))
@@ -5685,7 +6043,8 @@ def main():
                                 f'({_damt(contrib[_big])}, 총 증감 대비 크기 {_shr:.0f}%)예요.</div>',
                                 unsafe_allow_html=True)
                 else:
-                    st.caption("지표 체인 분해는 전주·기준주 모두 발송·UV·주문·거래액이 0보다 커야 계산돼요.")
+                    st.caption(f"지표 체인 분해는 {_PVN}·기준 {_UNAME} 모두 발송·UV·주문·거래액이 "
+                               "0보다 커야 계산돼요.")
 
                 # ── 가중 CTR 증감의 믹스 분해 — 진짜 효율 악화 vs 저효율 카테고리 비중 증가 ──
                 _cats_mx = [c for c in cur_g.index.union(prv_g.index)
@@ -5704,7 +6063,7 @@ def main():
 
                     def _pp(v):
                         return f"△{abs(v)*100:.2f}%p" if v < 0 else f"+{v*100:.2f}%p"
-                    st.markdown(f'<div class="appendix"><b>가중 CTR 전주 대비 {_pp(_dctr)}</b> = '
+                    st.markdown(f'<div class="appendix"><b>가중 CTR {_PVN} 대비 {_pp(_dctr)}</b> = '
                                 f'실질 효율 {_pp(_real)} + 카테고리 믹스 {_pp(_mix)} '
                                 '(두 성분의 합은 총 증감과 일치). 믹스 성분이 크면 CTR 변화가 '
                                 '문구·타깃 효율 문제가 아니라 카테고리 발송 비중 변화 때문이에요. '
@@ -5736,12 +6095,12 @@ def main():
                 st.caption("wc = 카테고리 c의 발송 비중(발송c ÷ 전체 발송), ctrc = 카테고리 c의 CTR. "
                            "0=전주·1=기준주. 두 성분의 합은 전체 가중 CTR 증감과 일치해요.")
 
-        # ② 금주 하이라이트 · 로우라이트
+        # ② 기준 기간 하이라이트 · 로우라이트
         with tabH:
-            st.markdown("##### 금주 주요 성과 지표 (Top 10 / Bottom 10)")
+            st.markdown(f"##### 기준 {_UNAME} 주요 성과 지표 (Top 10 / Bottom 10)")
             hlab = st.radio("기준 지표", ["CTR", "주문CR", "거래액", "RPS"], horizontal=True, key="wr_hl_met")
             hcol = {"CTR": "infl_cr", "주문CR": "ord_cr", "거래액": "amt", "RPS": "rps"}[hlab]
-            hw = _slice(ref_ws, ref_we)
+            hw = _slice(ref_ps, ref_pe)
             if "uv" in hw.columns:
                 hw = hw[hw["uv"].fillna(0) >= 100]        # UV 적으면 전환율이 튀어서 제외
             if len(hw) < 3:
@@ -5864,61 +6223,16 @@ def main():
                         '줄여 주지만, 월초(경과 일수가 적을 때)일수록 오차가 커요.</div>',
                         unsafe_allow_html=True)
 
-        # ── 최근 13주 추이 (발송량·CTR·주문CR·거래액) ──
+        # ── 카테고리별 기준 기간 실적 (직전 기간 대비) — 행 클릭 시 하단에 메시지 상세 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📈 최근 13주 추이")
-        # 기준주가 부분 주면 추이에서 제외 — 마지막 점만 부분 데이터라 꼬리가 인위적으로
-        # 급락하는 착시 방지 (KPI/표는 동요일 누계로 공정 비교하지만 추이는 풀주 창이라 불일치)
-        _wk_upto = [w for w in sorted(g0["주"].unique()) if pd.Timestamp(w) <= ref_ws]
-        # 2주 이상 있을 때만 부분 기준주를 제외 (1주뿐이면 빈 추이가 되므로 부분이라도 표시)
-        _drop_ref = (_partial and len(_wk_upto) >= 2 and pd.Timestamp(_wk_upto[-1]) == ref_ws)
-        if _drop_ref:
-            _wk_upto = _wk_upto[:-1]
-        wk13 = _wk_upto[-13:]
-        trows = []
-        for w in wk13:
-            a = _agg(_slice(pd.Timestamp(w), pd.Timestamp(w) + pd.Timedelta(days=6)))
-            a["주"] = pd.Timestamp(w)
-            trows.append(a)
-        tdf = pd.DataFrame(trows)
-        if _drop_ref:
-            st.caption("진행 중이거나 실적이 덜 찬 기준주는 추이에서 뺐어요. 완결된 주만 보여줘요.")
-        if len(tdf) < 2:
-            st.info("추이를 그리려면 완결된 주가 2주 이상 필요해요. 실적을 더 쌓아 주세요.")
-            st.stop()
-        # 라벨은 '6. 효율·피로도'의 같은 막대/선 지표 셀렉트(WKM)와 맞춘다.
-        # 값은 _agg()가 돌려주는 tdf 컬럼명. 새 항목은 뒤에 붙여 기본값(index=1, 거래액) 유지.
-        WRT_BAR = {"발송량": "발송", "거래액": "거래액", "캠페인수": "캠페인수", "유입UV": "UV"}
-        WRT_LINE = {"CTR": ("CTR", "%"), "주문CR": ("주문CR", "%"), "RPS": ("RPS", "")}
-        tsel1, tsel2 = st.columns(2)
-        _bl = tsel1.selectbox("막대 지표 (위)", list(WRT_BAR), index=1, key="wr_t_bar")
-        _ll = tsel2.selectbox("선 지표 (아래)", list(WRT_LINE), index=1, key="wr_t_line")
-        _lc, _ls = WRT_LINE[_ll]
-        fig = stacked_panels(tdf["주"], tdf[WRT_BAR[_bl]], _bl,
-                             tdf[_lc] * (100 if _ls == "%" else 1), _ll,
-                             PALETTE["slate"], PALETTE["purple"], h=430, line_suffix=_ls,
-                             title=f"주차별 {_bl}(위) · {_ll}(아래) — 기준주까지 13주")
-        st.plotly_chart(fig, width="stretch")
-        # 13주 표 — 발송량·유입UV·CTR·주문CR·거래액 한눈에 (기준주는 ★ 표시)
-        # 유입UV는 발송량과 CTR 사이에 둔다(CTR = UV ÷ 발송이라 퍼널 순서대로 읽힘).
-        tv = pd.DataFrame({
-            "주차": tdf["주"].map(lambda w: ("★ " if pd.Timestamp(w) == ref_ws else "") + _wklab(w)),
-            "캠페인수": tdf["캠페인수"].map(lambda v: f"{v:,.0f}"),
-            "발송량": tdf["발송"].map(lambda v: f"{v:,.0f}"),
-            "유입UV": tdf["UV"].map(lambda v: "–" if pd.isna(v) else f"{v:,.0f}"),
-            "CTR": tdf["CTR"].map(lambda v: "–" if pd.isna(v) else f"{v*100:.2f}%"),
-            "주문CR": tdf["주문CR"].map(lambda v: "–" if pd.isna(v) else f"{v*100:.2f}%"),
-            "RPS": tdf["RPS"].map(won),
-            "거래액": tdf["거래액"].map(won),
-        }).iloc[::-1]                                     # 최신 주가 위로
-        table(tv, hide_index=True, width="stretch", height=min(38 + 35 * len(tv), 500))
-
-        # ── 카테고리별 기준주 실적 (전주 대비) — 행 클릭 시 하단에 메시지 상세 ──
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🗂 카테고리별 기준주 실적 — 전주 대비")
-        st.caption("행을 클릭하면 그 카테고리의 기준주 메시지별 효율이 아래에 떠요.")
-        cw = _slice(ref_ws, ref_we)
-        pw = _slice(ref_ws - pd.Timedelta(days=7), ref_we - pd.Timedelta(days=7))
+        _catnm = f"카테고리별 기준 {_UNAME} 실적 — {_PVN} 대비"
+        st.markdown(f"##### 🗂 {_catnm}")
+        st.caption(f"행을 클릭하면 그 카테고리의 기준 {_UNAME} 메시지별 효율이 아래에 떠요. "
+                   + ("값은 그 기간의 일평균이에요." if _avg else "값은 그 기간의 합산이에요."))
+        _cdays = _elapsed + 1
+        _pv_e2 = min(_elapsed, _plen(prev_ws, _unit) - 1)
+        cw = _slice(ref_ps, ref_ps + pd.Timedelta(days=_elapsed))
+        pw = _slice(prev_ws, pd.Timestamp(prev_ws) + pd.Timedelta(days=_pv_e2))
         if "cat" in cw.columns and len(cw):
             def _bycat(d):
                 return d.groupby("cat").agg(캠페인수=("cat", "size"), 발송=("send", "sum"),
@@ -5936,22 +6250,23 @@ def main():
                 cr_c = (o_c / u_c) if u_c else np.nan
                 cat_names.append(str(cname))
                 crows.append({"카테고리": cname,
-                              "캠페인수": f"{ca.loc[cname, '캠페인수']:,.0f}",
-                              "발송량": f"{s_c:,.0f}",
-                              "발송 전주비": _dlt("발송", s_c, s_p),
+                              "캠페인수": f"{_dvn('캠페인수', ca.loc[cname, '캠페인수'], _cdays):,.0f}",
+                              "발송량": f"{_dvn('발송', s_c, _cdays):,.0f}",
+                              f"발송 {_PVN}비": _dlt("발송", s_c, s_p),
                               "CTR": (f"{ctr_c*100:.2f}%" if pd.notna(ctr_c) else "–"),
                               "주문CR": (f"{cr_c*100:.2f}%" if pd.notna(cr_c) else "–"),
-                              "거래액": won(amt_c),
-                              "거래액 전주비": _dlt("거래액", amt_c, amt_p)})
+                              "거래액": won(_dvn("거래액", amt_c, _cdays)),
+                              f"거래액 {_PVN}비": _dlt("거래액", amt_c, amt_p)})
             if crows:
-                _cstyled = pd.DataFrame(crows).style.map(_clr, subset=["발송 전주비", "거래액 전주비"])
+                _cstyled = pd.DataFrame(crows).style.map(
+                    _clr, subset=[f"발송 {_PVN}비", f"거래액 {_PVN}비"])
                 try:
                     _evc = table(_cstyled, hide_index=True, width="stretch", height=330,
                                         key="wr_cat_tbl", on_select="rerun",
-                                        selection_mode="single-row", dl_name="카테고리별 기준주 실적 — 전주 대비")
+                                        selection_mode="single-row", dl_name=_catnm)
                 except TypeError:
                     _evc = None
-                    table(_cstyled, hide_index=True, width="stretch", height=330, dl_name="카테고리별 기준주 실적 — 전주 대비")
+                    table(_cstyled, hide_index=True, width="stretch", height=330, dl_name=_catnm)
                 # 클릭한 행 → 카테고리 선택값에 반영 (수동 선택도 유지)
                 _cpick = None
                 try:
@@ -5971,7 +6286,7 @@ def main():
                 if sel_cat_wr:
                     sub_wr = cw[cw["cat"].astype(str) == sel_cat_wr]
                     st.markdown(f"##### 📋 '{sel_cat_wr}' — 기준주 메시지별 효율 상세")
-                    st.caption(f"{_md(_wklab(ref_ws))} 발송 {len(sub_wr)}건 — 주문CR 높은 순. "
+                    st.caption(f"{_md(_plab(ref_ps, _unit))} 발송 {len(sub_wr)}건 — 주문CR 높은 순. "
                                "표의 행을 클릭하면 문구 원문도 볼 수 있어요.")
                     render_messages(sub_wr, "ord_cr", f"wrcat_{sel_cat_wr}")
         else:
@@ -5982,13 +6297,12 @@ def main():
         st.markdown("##### 🤖 AI 주간보고 코멘트")
 
         def _wr_ai_lines():
-            lines = [f"[기준주] {_wklab(ref_ws)}"]
+            lines = [f"[기준 {_UNAME}] {_plab(ref_ps, _unit)}"
+                     + (" · 값은 일평균" if _avg else " · 값은 합산")]
             for met in METS:
-                yv = yoy_w[met] if yoy_w else np.nan
-                lines.append(f"- {met}: {_fmt(met, cur_w[met])} "
-                             f"(전주비 {_dlt(met, cur_w[met], prev_w[met])}, "
-                             f"전월비(전월 동주) {_dlt(met, cur_w[met], pm_w[met])}, "
-                             f"전년비 {_dlt(met, cur_w[met], yv)})")
+                _cmpx = ", ".join(f"{_dc}({_nm}) {_dlt(met, _dv(cur_w, met), _dv(_ag, met))}"
+                                  for _dc, _nm, _bs, _ag in _CMPS)
+                lines.append(f"- {met}: {_fmt(met, _dv(cur_w, met))} ({_cmpx})")
             lines.append(f"[MTD] 당월 거래액 {_fmt('거래액', cur_mtd['거래액'])} "
                          f"(전월비 {_dlt('거래액', cur_mtd['거래액'], prev_mtd['거래액'])}, "
                          f"전년비 {_dlt('거래액', cur_mtd['거래액'], yoy_mtd['거래액'])})")
