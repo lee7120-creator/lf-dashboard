@@ -4809,6 +4809,15 @@ def main():
             return (f"{iy}년 {iw}주차 ({ps.strftime('%m/%d')}~"
                     f"{(ps + pd.Timedelta(days=6)).strftime('%m/%d')})")
 
+        def _pyear(ps, u):
+            """라벨에 찍히는 연도. 주는 **ISO 기준연도**다.
+
+            달력 연도로 거르면 연초·연말 주가 라벨과 어긋난다 — 2026년 1주차의 월요일은
+            2025-12-29라서, 「올해 전체」로 2026을 봐도 1주차가 조용히 빠진다. 증상은
+            '추이가 2주차부터 시작하네'뿐이라 눈으로는 안 잡힌다."""
+            ps = pd.Timestamp(ps)
+            return int(ps.isocalendar()[0]) if u == "주" else int(ps.year)
+
         def _wklab(ws):
             """주 라벨 — 주로만 쌓이는 원천(앱푸시 수신동의)이 그대로 쓴다."""
             return _plab(ws, "주")
@@ -4916,11 +4925,18 @@ def main():
         with _bar:
             _b5, _b6 = st.columns([1.6, 2.4])
         with _b5:
-            _TWIN = {"최근 13기간": "13", "올해 전체": "year", "전체": "all"}
+            # 「최근 N」은 단위마다 다르다 — 13으로 고정하면 일 단위가 13일뿐이라 추세가
+            # 안 보인다. 라벨에도 실제 개수를 적어 둔다(숫자는 라벨에서 도로 파싱하지
+            # 않고 `_TWN`에서만 읽는다).
+            _TWN = {"일": 30, "주": 13, "월": 13}[_unit]
+            _TWSUF = {"일": "일", "주": "주", "월": "개월"}[_unit]
+            _TWREC = f"최근 {_TWN}{_TWSUF}"
+            _TWIN = {_TWREC: "recent", "올해 전체": "year", "전체": "all"}
+            guard_select(f"wr_twin_{_unit}", list(_TWIN))
             _twlab = st.segmented_control(
-                "추이 구간", list(_TWIN), default="최근 13기간", key=f"wr_twin_{_unit}",
+                "추이 구간", list(_TWIN), default=_TWREC, key=f"wr_twin_{_unit}",
                 help="아래 「주요 지표 추이」의 차트·표가 볼 구간이에요.")
-            _twin = _TWIN.get(_twlab or "최근 13기간", "13")
+            _twin = _TWIN.get(_twlab or _TWREC, "recent")
         with _b6:
             _cmp_sel = st.pills("비교", [c[0] for c in _CMPSPEC], selection_mode="multi",
                                 default=[c[0] for c in _CMPSPEC], key=f"wr_cmp_{_unit}",
@@ -5263,10 +5279,11 @@ def main():
         _drop_ref = (_partial and len(_ps_upto) >= 2 and _ps_upto[-1] == ref_ps)
         if _drop_ref:
             _ps_upto = _ps_upto[:-1]
-        if _twin == "13":
-            _tps = _ps_upto[-13:]
+        if _twin == "recent":
+            _tps = _ps_upto[-_TWN:]
         elif _twin == "year":
-            _tps = [p for p in _ps_upto if p.year == ref_ps.year] or _ps_upto[-13:]
+            _ry = _pyear(ref_ps, _unit)
+            _tps = [p for p in _ps_upto if _pyear(p, _unit) == _ry] or _ps_upto[-_TWN:]
         else:
             _tps = list(_ps_upto)
         _tlab = [_plab(p, _unit) for p in _tps]
@@ -5427,7 +5444,7 @@ def main():
                 st.session_state.wr_notes = {}
 
         def _auto_kpi_note():
-            """기준주 실적으로 보고 문구 자동 생성 — weekly_report 템플릿 형식."""
+            """기준 기간 실적으로 보고 문구 자동 생성 — weekly_report 템플릿 형식."""
             lines = []
             for met in ["발송", "거래액", "CTR", "주문CR", "RPS", "캠페인수"]:
                 lines.append(f"- {met} — {_fmt(met, _dv(cur_w, met))}, "
@@ -5633,7 +5650,7 @@ def main():
             bi += 1
             if regen is not None:
                 if bcols[bi].button("자동 생성", key=f"btn_r_{nkey}", width="stretch",
-                                    help="기준주 실적으로 지표 문구를 채워요. 기존 내용은 지워져요."):
+                                    help="기준 기간 실적으로 지표 문구를 채워요. 기존 내용은 지워져요."):
                     # callable을 받아 클릭 시에만 평가 — 값으로 받으면 매 rerun마다
                     # 자동 생성 로직(기획 lookup 전수 순회 등)이 실행된다
                     store[nkey] = regen() if callable(regen) else regen
@@ -5659,9 +5676,11 @@ def main():
             with col:                     # 컨테이너 진입은 fragment 밖에서 (외부 컨테이너 제약)
                 _note_block_body(nkey, title, regen, ai_fn)
 
-        # 저장 키는 **기준 기간의 첫날**이다. 단위를 바꿔도 같은 주의 첫날은 같은 키라
-        # 주 단위로 써 둔 글이 사라지지 않는다.
-        _wkkey = ref_ps.strftime("%Y%m%d")
+        # 보고란은 **늘 주 단위로** 저장한다 — 기준 기간이 속한 주의 월요일이 키다.
+        # 기준 기간의 첫날을 그대로 키로 쓰면 단위마다 칸이 갈린다: 주로 써 둔 글이
+        # 일·월로 바꾸는 순간 화면에서 사라지고(파일엔 남는다) 왜 없어졌는지가 안
+        # 드러난다. 주간보고 문서의 한 칸이라 주에 붙여 두는 게 맞다.
+        _wkkey = _pstart(ref_ps, "주").strftime("%Y%m%d")
         # '금주 집행'은 기준 주차 선택과 무관하게 항상 '오늘' 기준 이번 주를 가리키므로
         # 저장 키도 ref_ps가 아니라 실제 이번 주 월요일로 고정한다(기준 기간을 바꿔도 안 사라짐).
         _this_wkkey = _this_week_range()[0].strftime("%Y%m%d")
@@ -5671,8 +5690,10 @@ def main():
                         regen=_auto_kpi_note, ai_fn=_ai_kpi_note)
             _note_block(nb2, f"exec_{_this_wkkey}", "금주 집행 내용 요약",
                         regen=_auto_exec_note, ai_fn=_ai_exec_note)
-            st.caption("내용은 주차별로 저장돼요. 기준 주차를 바꾸면 그 주차 보고란이 열려요. '금주 집행 내용 "
-                       "요약'만은 항상 **오늘 기준 이번 주** 기획 시트를 읽어요. 아직 실적이 없는 발송 예정 "
+            st.caption(f"보고란은 **주 단위로** 저장돼요. 지금 열려 있는 건 "
+                       f"**{_md(_wklab(_pstart(ref_ps, '주')))}** 칸이에요. 기간 단위를 일·월로 "
+                       "바꿔도 그 날짜가 속한 주의 칸을 그대로 보여 줘요. '금주 집행 내용 요약'만은 "
+                       "항상 **오늘 기준 이번 주** 기획 시트를 읽어요. 아직 실적이 없는 발송 예정 "
                        "주니까요.")
             # 지난 주차의 '금주 집행' 노트도 열람 가능하게 — 주가 넘어가면 키가 바뀌어
             # 저장소에는 남는데 UI에서 영영 접근 불가하던 문제 방지 (기준 주차 선택과 연동)
