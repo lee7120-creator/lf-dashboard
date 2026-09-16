@@ -392,6 +392,82 @@ def t_trend_metric_picker_is_chips_not_a_tag_box():
         f"기본으로 켜 둘 지표가 달라요 — {list(c.value)}"
 
 
+def _trend_traces(at, name="올해"):
+    """추이 차트의 트레이스 — AppTest는 plotly에 `.value`를 안 주므로 figure JSON을 읽는다."""
+    import json
+    out = []
+    for e in at.get("plotly_chart"):
+        f = json.loads(e.proto.spec)
+        ttl = (f.get("layout", {}).get("title") or {}).get("text", "")
+        for tr in f.get("data", []):
+            if tr.get("name") == name:
+                out.append((ttl, tr))
+    return out
+
+
+@case
+def t_chart_tooltip_carries_the_deltas():
+    """점에 커서를 대면 값만이 아니라 **증감까지** 뜬다.
+
+    값만 뜨면 '그래서 얼마나 늘었나'를 눈으로 재거나 아래 표로 내려가야 한다.
+    이름은 단위를 따라간다 — 일 단위에서 「전주 대비」가 뜨면 화면이 거짓말이다."""
+    for unit, pvn in (("일별", "전일"), ("주별", "전주"), ("월별", "전월")):
+        at = _open(unit)
+        trs = _trend_traces(at)
+        assert trs, f"{unit}: 올해 트레이스를 못 찾았어요"
+        for ttl, tr in trs:
+            ht = tr.get("hovertemplate") or ""
+            assert f"{pvn} 대비" in ht, f"{unit}/{ttl}: 툴팁에 '{pvn} 대비'가 없어요 — {ht}"
+            assert "전년 대비" in ht, f"{unit}/{ttl}: 툴팁에 전년 대비가 없어요 — {ht}"
+            cd = tr.get("customdata")
+            assert cd and len(cd) == len(tr.get("y") or []), \
+                f"{unit}/{ttl}: customdata가 점 수와 안 맞아요"
+
+
+@case
+def t_tooltip_delta_unit_follows_the_metric():
+    """비율 지표는 %p, 나머지는 % — 툴팁도 표와 같은 단위여야 한다."""
+    at = _open("주별", wr_trend_pills=["CTR", "거래액"])
+    seen = {}
+    for ttl, tr in _trend_traces(at):
+        vals = [d[0] for d in (tr.get("customdata") or []) if d and d[0] != "–"]
+        if vals:
+            seen[ttl] = vals
+    assert "CTR" in seen and "거래액" in seen, f"두 차트를 못 찾았어요 — {list(seen)}"
+    assert all(v.endswith("%p") for v in seen["CTR"]), f"CTR이 %p가 아니에요 — {seen['CTR'][:3]}"
+    assert not any(v.endswith("%p") for v in seen["거래액"]), \
+        f"거래액이 %p로 찍혔어요 — {seen['거래액'][:3]}"
+
+
+@case
+def t_tooltip_delta_compares_the_real_previous_period():
+    """'전일 대비'는 **달력상 직전 기간**과 맞댄 값이어야 한다.
+
+    선 위의 앞 점으로 재면, 발송이 없어 점이 안 생긴 날이 끼었을 때 「전일 대비」라고
+    써 놓고 실은 며칠 전과 비교하게 된다. 그런 날을 일부러 지워 두고 확인한다."""
+    d = STORE.copy()
+    dt = pd.to_datetime(d["date"], format="%Y%m%d")
+    gap = dt.max() - pd.Timedelta(days=3)          # 하루를 통째로 비운다
+    d = d[dt != gap]
+    at = _open("일별", camp=d)
+    lab_gone = f"{gap.year}년 {gap.month}/{gap.day}"
+    trs = _trend_traces(at)
+    assert trs, "올해 트레이스를 못 찾았어요"
+    ttl, tr = trs[0]
+    xs = list(tr.get("x") or [])
+    assert not any(str(x).startswith(lab_gone) for x in xs), \
+        f"픽스처가 빈 날을 못 만들어 규칙을 반증하지 못해요 — {lab_gone}"
+    nxt = [i for i, x in enumerate(xs)
+           if str(x).startswith(f"{(gap + pd.Timedelta(days=1)).month}/"
+                                f"{(gap + pd.Timedelta(days=1)).day}")
+           or str(x).startswith(f"{gap.year}년 {(gap + pd.Timedelta(days=1)).month}/"
+                                f"{(gap + pd.Timedelta(days=1)).day}")]
+    assert nxt, f"빈 날 다음 점을 못 찾았어요 — {xs[-6:]}"
+    got = (tr.get("customdata") or [])[nxt[0]][0]
+    assert got == "–", \
+        f"빈 날 다음 점의 '전일 대비'가 '{got}'예요 — 직전 날이 없으니 '–'여야 해요"
+
+
 @case
 def t_trend_values_match_a_direct_sum():
     """추이 표의 값도 그 기간을 직접 센 합과 같아야 한다.

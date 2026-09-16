@@ -865,6 +865,17 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   색을 포기하면 없앨 수 있지만 △ 빨강/+ 초록은 이 표를 읽는 방식이라 남긴다 — 대신
   **기본값을 「최근 N」으로 두어** 흔한 경로는 1.2초에 머물게 한다. 「전체」는 사용자가
   직접 고르는 무거운 화면이다.
+- **차트 툴팁에 증감을 같이 띄운다.** 값만 뜨면 '그래서 얼마나 늘었나'를 눈으로 재거나
+  아래 표로 내려가야 한다. 올해 트레이스에 `customdata`로 **직전 기간 대비 · 전년 대비**를
+  실어 `hovertemplate`에서 읽는다. 이름은 `_PVN`을 따라가고(일=전일/주=전주/월=전월),
+  단위는 `_dlt`가 알아서 맞춘다(비율 %p · 나머지 %).
+  **'직전 대비'는 선 위의 앞 점이 아니라 «달력상 직전 기간»(`_prev_ps`)과 맞댄다** —
+  발송이 없던 날은 애초에 점이 안 생기므로, 앞 점으로 재면 「전일 대비」라고 써 놓고
+  실은 사흘 전과 비교하게 된다. 직전 기간이 없으면 '–'다
+  (`t_chart_tooltip_carries_the_deltas`·`t_tooltip_delta_unit_follows_the_metric`·
+  `t_tooltip_delta_compares_the_real_previous_period`).
+  **AppTest는 plotly 요소에 `.value`를 안 준다** — `el.proto.spec`이 figure JSON 통째라
+  거기서 트레이스·`hovertemplate`·`customdata`를 읽는다.
 - **추이 집계는 `groupby("_ps")` 한 번**이다. 기간마다 `_slice`를 부르면 프레임 전체에
   마스크를 씌우는 일이 기간 수만큼 반복된다 — 「전체」 구간을 일 단위로 보면 그것만
   1,400회다. `_ps`가 곧 기간 키라 결과는 기간 전체 슬라이스와 같다.

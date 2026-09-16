@@ -5312,6 +5312,10 @@ def main():
         _tagg = {p: _aggfull(p) for p in _tps}
         _typ = {p: _aggfull(_yoy_ps(p, _unit)) for p in _tps}
         _has_py = any(v is not None for v in _typ.values())
+        # 툴팁의 '직전 대비'는 **달력상 직전 기간**과 맞댄다 — 선 위의 앞 점이 아니다.
+        # 발송이 없던 날은 애초에 점이 안 생기므로, 앞 점으로 재면 「전일 대비」라고
+        # 써 놓고 실은 사흘 전과 비교하게 된다.
+        _tpv = {p: _aggfull(_prev_ps(p, _unit)) for p in _tps}
 
         # 칩으로 켜고 끈다 — 위 「비교」와 같은 모양이다. 태그를 넣고 빼는 multiselect는
         # **고른 것만** 보여서 뭘 더 켤 수 있는지가 안 보인다. 칩은 전 목록이 늘 떠 있고
@@ -5333,10 +5337,21 @@ def main():
                 for _tc, _met in zip(st.columns(3), _tmets[_i0:_i0 + 3]):
                     _cy = [_dv(_tagg[p], _met) for p in _tps]
                     _py = [_dv(_typ[p], _met) for p in _tps]
-                    _hv = ("%{y:.2%}<extra></extra>" if _met in RATE
-                           else ("%{y:,.0f}원<extra></extra>"
-                                 if _met in ("거래액", "RPS", "객단가")
-                                 else "%{y:,.0f}<extra></extra>"))
+                    _hv0 = ("%{y:.2%}" if _met in RATE
+                            else ("%{y:,.0f}원"
+                                  if _met in ("거래액", "RPS", "객단가")
+                                  else "%{y:,.0f}"))
+                    _hv = _hv0 + "<extra></extra>"
+                    # 점에 커서를 대면 값만 뜨고 '그래서 얼마나 늘었나'는 눈으로 재야
+                    # 했다. 직전 기간 대비와 전년비를 같이 띄운다 — 표를 안 내려가도
+                    # 읽히게. 비율 지표는 `_dlt`가 %p로 내므로 단위도 알아서 맞는다.
+                    _dpp = [_dlt(_met, _dv(_tagg[p], _met), _dv(_tpv[p], _met))
+                            for p in _tps]
+                    _dyy = [_dlt(_met, _c, _p) for _c, _p in zip(_cy, _py)]
+                    _cd = [list(_x) for _x in zip(_dpp, _dyy)]
+                    _hvc = (_hv0 + f" · {_PVN} 대비 %{{customdata[0]}}"
+                            + (" · 전년 대비 %{customdata[1]}" if _has_py else "")
+                            + "<extra></extra>")
                     _fg = go.Figure()
                     if _has_py:
                         # 전년은 **얇은 점선**이고 색은 회색이다 — 올해가 파랑으로 앞에
@@ -5349,7 +5364,7 @@ def main():
                     _fg.add_trace(go.Scatter(
                         x=_tlab, y=_cy, name="올해", mode="lines+markers", connectgaps=False,
                         line=dict(color=PALETTE["blue"], width=2.2), marker=dict(size=5),
-                        hovertemplate=_hv))
+                        customdata=_cd, hovertemplate=_hvc))
                     _lay = base_layout(270, title=_met, hover="x")
                     _lay["showlegend"] = bool(_has_py)
                     _lay["legend"] = legend_h()
