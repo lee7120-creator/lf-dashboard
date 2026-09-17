@@ -111,6 +111,24 @@ def _elapsed_days(unit):
     return int((last.normalize() - ps).days) + 1
 
 
+def _push_fixture():
+    """앱푸시 수신동의 원천 — 「앱푸시 수신동의 요약」 블록을 띄우는 최소 프레임.
+
+    이 블록은 `push_consent_df`가 있어야만 렌더된다. 없으면 칼럼 이름 규칙을 깨도
+    표 자체가 안 떠서 검사가 조용히 통과한다."""
+    d = pd.to_datetime(STORE["date"], format="%Y%m%d")
+    days = pd.date_range(d.min(), d.max(), freq="D")
+    rows = []
+    for i, g in enumerate(("Total", "기존", "신규")):
+        for j, dt in enumerate(days):
+            rows.append({"date": dt, "group": g,
+                         "consent": 100000 + i * 1000 + j * 7,
+                         "added": 300 + i * 10 + (j % 5),
+                         "removed": 120 + i * 5 + (j % 3),
+                         "diff": 180 + i * 5, "is_outlier": False})
+    return pd.DataFrame(rows)
+
+
 CASES = []
 
 
@@ -585,6 +603,45 @@ def t_site_metric_is_not_divided_again_by_the_value_mode():
     # 가산 지표는 반대로 줄어야 한다 (픽스처가 규칙을 반증하는지 확인)
     assert _num(a.loc["발송", ca]) > _num(b.loc["발송", cb]), \
         "발송이 안 줄었어요 — 일평균 모드가 안 걸린 픽스처예요"
+
+
+@case
+def t_prose_reads_right_in_every_unit():
+    """단위를 바꿔도 화면 글이 말이 돼야 한다.
+
+    기간 단위가 일·주·월로 갈리면서 조사와 세는 말이 어긋났다 —
+    「기준 **월가** 부분 기간이라」·「**7개 월**」. 산출식 캡션엔 단위와 무관하게
+    「기준주·전주」가 박혀 있어 월로 봐도 주라고 말했다. 전부 화면은 멀쩡히 뜨고
+    글만 틀리는 자리라 눈으로만 잡힌다."""
+    import re
+    for unit, uname, peradj in (("일별", "일자", "일간"), ("주별", "주차", "주간"),
+                                ("월별", "월", "월간")):
+        at = _open(unit, push_consent_df=_push_fixture())
+        txt = " ".join(re.sub(r"\s+", " ", str(e.value))
+                       for e in list(at.caption) + list(at.info) + list(at.markdown))
+        tex = " ".join(str(e.value) for e in at.latex)
+        cols = " ".join(str(c) for d in at.dataframe
+                        for c in getattr(d.value, "columns", []))
+        # ① 조사 — 받침 있는 단위에 '가'가 붙으면 안 된다
+        assert f"기준 {uname}가 " not in txt or uname[-1] in "자차", \
+            f"{unit}: '기준 {uname}가'로 찍혔어요 (받침이 있으면 '이')"
+        if uname == "월":
+            assert "기준 월이 " in txt, f"{unit}: '기준 월이'가 안 보여요"
+            assert "기준 월가" not in txt, f"{unit}: '기준 월가'가 남았어요"
+        # ② 세는 말 — '7개 월'이 아니라 '7개월'
+        assert not re.search(r"\d+개 월\b", txt), f"{unit}: '개 월'로 띄어 썼어요"
+        # ③ 산출식은 캡션도 수식도 단위를 따라가야 한다
+        assert "기준주·전주 거래액" not in txt, f"{unit}: LMDI 캡션에 '기준주·전주'가 남았어요"
+        assert "0=전주·1=기준주" not in txt, f"{unit}: 믹스 캡션에 '전주·기준주'가 남았어요"
+        assert r"\text{기준주}" not in tex, f"{unit}: 수식 첨자에 '기준주'가 남았어요"
+        assert r"\text{전주}" not in tex or unit == "주별", \
+            f"{unit}: 수식 첨자에 '전주'가 남았어요"
+        # ④ 단위를 형용사로 쓰는 칼럼 — '주간 신규추가'가 일·월에서도 '주간'이었다
+        assert "신규추가" in cols, f"{unit}: 앱푸시 수신동의 표가 안 떴어요 (픽스처 문제)"
+        assert f"{peradj} 신규추가" in cols, \
+            f"{unit}: 칼럼이 '{peradj} 신규추가'가 아니에요 — {cols[:200]}"
+        # ⑤ 믹스 분해 주석의 '이번 주'도 단위를 따라간다
+        assert "이번 주 새로 시작" not in txt, f"{unit}: 믹스 주석에 '이번 주'가 남았어요"
 
 
 @case

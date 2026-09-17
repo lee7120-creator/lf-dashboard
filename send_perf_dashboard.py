@@ -2445,6 +2445,24 @@ def hour_of_day(v):
     return None if n is None else n // 100
 
 
+_JOSA_TAIL = {**{d: t for d, t in zip("0123456789", [1, 1, 0, 1, 0, 0, 1, 1, 1, 0])},
+              **{c: 1 for c in "LMNR"}, **{c.lower(): 1 for c in "LMNR"}}
+
+
+def josa(word, pair="은는"):
+    """받침 유무로 조사를 고른다 — '기준 월가'·'시그니처이 가장' 같은 문장을 막는다.
+
+    기간 단위가 일·주·월로 갈리면서 「기준 {단위}가」가 월에서 '월가'가 됐다.
+    주간보고 앱의 같은 헬퍼와 구현을 맞춰 둔다."""
+    w = str(word).strip()
+    if not w:
+        return pair[1]
+    ch = w[-1]
+    if "가" <= ch <= "힣":
+        return pair[0] if (ord(ch) - 0xAC00) % 28 else pair[1]
+    return pair[0] if _JOSA_TAIL.get(ch) else pair[1]
+
+
 def fmt_hhmm(h):
     """발송 시간대 → '12시' / '08시' / '10시 50분'. 못 읽는 값은 '–'."""
     n = norm_hhmm(h)
@@ -4892,6 +4910,9 @@ def main():
                 help="고른 단위를 이 화면 전체가 따라가요. 비교 기준도 같이 바뀌어요.")
         _unit = _UNITS.get(_ulab or "주별", "주")
         _UNAME = {"일": "일자", "주": "주차", "월": "월"}[_unit]
+        # 「주간 신규추가」처럼 단위를 형용사로 쓰는 자리 — 일·월에서도 '주간'이라고
+        # 말하던 걸 막는다. 조사는 josa()가, 세는 말은 _TWSUF가 맡는다.
+        _PERADJ = {"일": "일간", "주": "주간", "월": "월간"}[_unit]
         _CMPSPEC = {
             "일": [("전일비", "전일"), ("전주비", "전주 같은 요일"), ("전년비", "전년 같은 날")],
             "주": [("전주비", "전주"), ("전월비", "전월 동주"), ("전년비", "전년 동주")],
@@ -5135,7 +5156,7 @@ def main():
             _why = "진행 중이라" if _is_live else "실적이 아직 다 안 들어와서"
             _upto = (f"월~{_DOW_KO[_elapsed]} 동요일 누계" if _unit == "주"
                      else f"1일~{_elapsed + 1}일 누계")
-            st.info(f"⏳ 기준 {_UNAME}가 {_why} **{_upto}**로 비교해요 — "
+            st.info(f"⏳ 기준 {_UNAME}{josa(_UNAME, '이가')} {_why} **{_upto}**로 비교해요 — "
                     + " · ".join(c[1] for c in _CMPS)
                     + "도 같은 지점까지만 집계해 부분 기간 착시를 없앴어요. "
                       "데이터가 다 차면 자동으로 기간 전체 비교로 돌아가요.")
@@ -5474,10 +5495,10 @@ def main():
             table(_tsty, width="stretch", height=38 + 35 * len(_tdf),
                   dl_name="주요 지표 추이")
         _ahead = len(_tps) - len(_ttp)
-        _tnote = [f"{len(_ttp)}개 {_UNAME}"]
+        _tnote = [f"{len(_ttp)}{_TWSUF}"]
         if _ahead:
-            _tnote.append(f"차트는 전년 선을 그 해 끝까지 그려요(아직 안 온 {_ahead}개 "
-                          f"{_UNAME}는 실적이 없어 표에선 빼요)")
+            _tnote.append(f"차트는 전년 선을 그 해 끝까지 그려요(아직 안 온 "
+                          f"{_ahead}{_TWSUF}{josa(_TWSUF, '은는')} 실적이 없어 표에선 빼요)")
         if _drop_ref:
             _tnote.append("진행 중이거나 실적이 덜 찬 기준 기간은 뺐어요")
         if not _has_py:
@@ -5932,9 +5953,9 @@ def main():
                     _cur_range = _rng_short(_cur_ws)
                     _prev_range = _rng_short(_prev_ws)
                     col_consent = f"기말 동의수 ({_cur_range})"
-                    col_added = f"주간 신규추가 ({_cur_range})"
-                    col_removed = f"주간 기존이탈 ({_cur_range})"
-                    col_diff = f"주간 순증감 ({_cur_range})"
+                    col_added = f"{_PERADJ} 신규추가 ({_cur_range})"
+                    col_removed = f"{_PERADJ} 기존이탈 ({_cur_range})"
+                    col_diff = f"{_PERADJ} 순증감 ({_cur_range})"
                     col_con_diff = f"동의수 증감({_PVN}비)"
                     col_add_pct = f"신규추가 {_PVN}비"
                     col_rem_pct = f"기존이탈 {_PVN}비"
@@ -6006,7 +6027,8 @@ def main():
             if _elapsed < _plen_ref - 1:
                 _upto2 = (f"월~{_DOW_KO[_elapsed]} 동요일 누계" if _unit == "주"
                           else f"1일~{_elapsed + 1}일 누계")
-                st.caption(f"⏳ 기준 {_UNAME}가 부분 기간이라 **{_upto2}**로 {_PVN}과 비교해요 "
+                st.caption(f"⏳ 기준 {_UNAME}{josa(_UNAME, '이가')} 부분 기간이라 "
+                           f"**{_upto2}**로 {_PVN}과 비교해요 "
                            "(위 KPI 카드와 같은 기준).")
             if "cat" not in cwd.columns or len(pwd) == 0:
                 st.info(f"{_PVN} 데이터가 없어 분해할 수 없어요.")
@@ -6184,16 +6206,16 @@ def main():
                                 f'실질 효율 {_pp(_real)} + 카테고리 믹스 {_pp(_mix)} '
                                 '(두 성분의 합은 총 증감과 일치). 믹스 성분이 크면 CTR 변화가 '
                                 '문구·타깃 효율 문제가 아니라 카테고리 발송 비중 변화 때문이에요. '
-                                '단, 이번 주 새로 시작하거나 중단한 카테고리의 효과는 실질 효율 '
-                                '쪽에 섞일 수 있어요.</div>',
+                                f'단, 기준 {_UNAME}에 새로 시작하거나 중단한 카테고리의 '
+                                '효과는 실질 효율 쪽에 섞일 수 있어요.</div>',
                                 unsafe_allow_html=True)
 
             # ── 산출식 (접이식) — 위 3개 분해 차트가 어떻게 계산되는지 ──
             with st.expander("📐 산출식 보기 — 증감 분해가 어떻게 계산되나"):
                 st.markdown("**① 카테고리 기여 분해** (막대차트)")
                 st.markdown("각 카테고리의 거래액 증감을 그대로 더한 값 — 합은 전체 거래액 증감과 일치.")
-                st.latex(r"\Delta \text{거래액} = \sum_{c}\left(\text{거래액}_{c,\text{기준주}} "
-                         r"- \text{거래액}_{c,\text{전주}}\right)")
+                st.latex(r"\Delta \text{거래액} = \sum_{c}\left(\text{거래액}_{c,\text{기준 "
+                         + _UNAME + r"}} - \text{거래액}_{c,\text{" + _PVN + r"}}\right)")
                 st.markdown("---")
                 st.markdown("**② 지표 체인 분해 (LMDI)** — 워터폴")
                 st.markdown("거래액을 4개 지표의 곱으로 보고, 각 지표가 증감에 얼마나 기여했는지 분해해요. "
@@ -6201,7 +6223,8 @@ def main():
                 st.latex(r"\text{거래액} = \text{발송량}\times \text{CTR}\times \text{주문CR}\times \text{객단가}")
                 st.latex(r"\text{기여}_{k} = L(V_1,V_0)\cdot \ln\!\frac{f_{k,1}}{f_{k,0}}"
                          r"\qquad L(a,b)=\frac{a-b}{\ln a-\ln b}")
-                st.caption("V₁·V₀ = 기준주·전주 거래액, fₖ = 각 지표값, L = 로그평균. "
+                st.caption(f"V₁·V₀ = 기준 {_UNAME}·{_PVN} 거래액, fₖ = 각 지표값, "
+                           "L = 로그평균. "
                            "Σ 기여ₖ = V₁ − V₀ (오차 없이 정확 분해).")
                 st.markdown("---")
                 st.markdown("**③ 가중 CTR 믹스 분해** — 실질 효율 vs 카테고리 비중 변화")
@@ -6210,7 +6233,8 @@ def main():
                 st.latex(r"\Delta \text{CTR} = \underbrace{\sum_{c} w_{c,0}\,(\text{ctr}_{c,1}-\text{ctr}_{c,0})}_{\text{실질 효율}}"
                          r" + \underbrace{\sum_{c} (w_{c,1}-w_{c,0})\,\text{ctr}_{c,1}}_{\text{카테고리 믹스}}")
                 st.caption("wc = 카테고리 c의 발송 비중(발송c ÷ 전체 발송), ctrc = 카테고리 c의 CTR. "
-                           "0=전주·1=기준주. 두 성분의 합은 전체 가중 CTR 증감과 일치해요.")
+                           f"0={_PVN}·1=기준 {_UNAME}. 두 성분의 합은 전체 가중 CTR 증감과 "
+                           "일치해요.")
 
         # ② 기준 기간 하이라이트 · 로우라이트
         with tabH:
@@ -6234,12 +6258,12 @@ def main():
                     st.markdown(f"**🏆 하이라이트 — {hlab} 상위 10**")
                     table(hw.sort_values(hcol, ascending=False).head(10)[_hc]
                                  .rename(columns=_hrn).style.format(_hft),
-                                 hide_index=True, width="stretch", dl_name="금주 주요 성과 지표 Top 10 / Bottom")
+                                 hide_index=True, width="stretch", dl_name=f"하이라이트 {hlab} 상위 10")
                 with hc2:
                     st.markdown(f"**🧊 로우라이트 — {hlab} 하위 10**")
                     table(hw.sort_values(hcol).head(10)[_hc]
                                  .rename(columns=_hrn).style.format(_hft),
-                                 hide_index=True, width="stretch", dl_name="금주 주요 성과 지표 Top 10 / Bottom")
+                                 hide_index=True, width="stretch", dl_name=f"로우라이트 {hlab} 하위 10")
                 st.caption("UV 100 미만은 전환율이 크게 흔들려서 뺐어요. 잘된 소구는 다음 기획에 다시 쓰고, "
                            "아쉬운 건 발송 조건을 점검해 보세요.")
 
