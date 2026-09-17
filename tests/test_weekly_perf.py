@@ -37,9 +37,11 @@ PAGE = "0. 주간보고"
 STORE = synth_store(weeks=70)
 
 
-def _open(unit=None, camp=None, **ss):
+def _open(unit=None, camp=None, site=None, **ss):
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
     at.session_state["camp_store"] = STORE if camp is None else camp
+    if site is not None:
+        at.session_state["site_store_df"] = site
     at.run()
     assert not at.exception, at.exception[0].value
     at.sidebar.radio[0].set_value(PAGE)
@@ -515,6 +517,74 @@ def t_recent_window_is_not_stretched_for_the_prior_year():
             break
     else:
         raise AssertionError("올해 트레이스를 못 찾았어요")
+
+
+SITE_MET = "앱푸시 회원UV(일평균·천명)"
+
+
+@case
+def t_site_metric_joins_the_trend_when_the_source_is_there():
+    """앱푸시 회원UV도 추이에 올린다 — 칩·차트·표 셋 다.
+
+    사이트 원천이라 캠페인 집계(`_gsum`)에 없다. 값은 이미 그 기간의 일평균이라
+    「값 기준」이 또 나누면 안 되고, 천명 단위라 소수 한 자리로 찍어야 위 표들과
+    같은 서식이 된다."""
+    from test_site_metrics import _site_store
+    at = _open("주별", site=_site_store(days=500))
+    chips = [b for b in at.get("button_group")
+             if str(getattr(b, "label", "")) == "추이에 올릴 지표"]
+    assert chips, "칩을 못 찾았어요"
+    assert SITE_MET in list(chips[0].options), \
+        f"선택지에 없어요 — {list(chips[0].options)}"
+    assert SITE_MET in list(chips[0].value), \
+        f"기본으로 안 켜져 있어요 — {list(chips[0].value)}"
+    # 차트 한 장이 실제로 그려지고 값이 있어야 한다
+    hit = [(t, tr) for t, tr in _trend_traces(at) if t == SITE_MET]
+    assert hit, f"차트를 못 찾았어요 — {[t for t, _ in _trend_traces(at)]}"
+    tr = hit[0][1]
+    assert any(v is not None for v in tr["y"]), "차트에 값이 하나도 없어요"
+    assert "%{y:,.1f}" in (tr.get("hovertemplate") or ""), \
+        f"천명이라 소수 한 자리여야 해요 — {tr.get('hovertemplate')}"
+    # 표에도 한 줄
+    t = _trend(at)
+    assert SITE_MET in list(t.index), f"표에 없어요 — {list(t.index)}"
+    # **실적 칸만** 본다 — 한 줄 전체를 보면 전년비('+3.7%')에 소수점이 있어서
+    # 서식을 정수로 깨도 통과한다(실제로 그렇게 심어 보고 확인했다).
+    _vals = [str(t.loc[SITE_MET, c]) for c in t.columns
+             if c[0] == "실적" and str(t.loc[SITE_MET, c]) != "–"]
+    assert _vals, "실적 칸이 전부 비었어요"
+    assert all("." in v for v in _vals), \
+        f"천명이라 소수 한 자리여야 해요 — {_vals[:3]}"
+
+
+@case
+def t_site_metric_is_absent_without_the_source():
+    """사이트 데이터를 안 올렸으면 선택지에 안 띄운다.
+
+    눌러도 아무 선이 안 생기는 선택지는 '왜 안 그려지지'만 남긴다."""
+    at = _open("주별")
+    chips = [b for b in at.get("button_group")
+             if str(getattr(b, "label", "")) == "추이에 올릴 지표"][0]
+    assert SITE_MET not in list(chips.options), \
+        f"원천이 없는데 선택지에 있어요 — {list(chips.options)}"
+    assert SITE_MET not in list(_trend(at).index), "원천이 없는데 표에 줄이 있어요"
+
+
+@case
+def t_site_metric_is_not_divided_again_by_the_value_mode():
+    """「일평균」으로 바꿔도 앱푸시 회원UV는 그대로다 — 이미 일평균이라서."""
+    from test_site_metrics import _site_store
+    site = _site_store(days=500)
+    a = _trend(_open("주별", site=site))
+    b = _trend(_open("주별", site=site, wr_valmode="일평균"))
+    ca = [c for c in a.columns if c[0] == "실적"][-1]
+    cb = [c for c in b.columns if c[0] == "실적"][-1]
+    assert ca == cb, f"비교할 기간이 달라요 — {ca} vs {cb}"
+    assert a.loc[SITE_MET, ca] == b.loc[SITE_MET, cb], \
+        f"값 기준이 사이트 지표까지 나눴어요 — {a.loc[SITE_MET, ca]} → {b.loc[SITE_MET, cb]}"
+    # 가산 지표는 반대로 줄어야 한다 (픽스처가 규칙을 반증하는지 확인)
+    assert _num(a.loc["발송", ca]) > _num(b.loc["발송", cb]), \
+        "발송이 안 줄었어요 — 일평균 모드가 안 걸린 픽스처예요"
 
 
 @case

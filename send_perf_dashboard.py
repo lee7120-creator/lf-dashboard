@@ -5345,12 +5345,54 @@ def main():
         # 써 놓고 실은 사흘 전과 비교하게 된다.
         _tpv = {p: _aggfull(_prev_ps(p, _unit)) for p in _tps}
 
+        # 앱푸시 회원UV는 **사이트 원천**이라 캠페인 groupby(`_gsum`)에 없다. 기간 키로
+        # 한 번에 묶어 둔다 — 기간마다 `site_mean`을 부르면 프레임을 그 수만큼 다시 판다.
+        # 값은 이미 그 기간의 일평균이라 「값 기준」이 또 나누지 않게 `ADDV`에 안 넣는다.
+        _SITEM = f"앱푸시 {SITE_LABEL['uv']}(일평균·{SITE_UNIT['uv']})"
+        _smean = None
+        if len(_wr_site) and _wr_site["uv"].notna().any():
+            _sp = site_pick(_wr_site, "PUSH", "App")
+            if len(_sp):
+                if _unit == "일":
+                    _sk = _sp["dt"].dt.normalize()
+                elif _unit == "주":
+                    _sk = _sp["dt"].dt.to_period("W").dt.start_time
+                else:
+                    _sk = _sp["dt"].dt.to_period("M").dt.start_time
+                _smean = _sp.groupby(_sk)["uv"].mean()
+        _METS_T = METS + ([_SITEM] if _smean is not None else [])
+
+        def _tv(p, met):
+            """추이 한 칸의 값 — 사이트 지표만 원천이 다르다."""
+            if met == _SITEM:
+                if _smean is None or p is None or pd.Timestamp(p) > _cut:
+                    return np.nan
+                return float(_smean.get(pd.Timestamp(p), np.nan))
+            return _dv(_tagg.get(p) if p in _tagg else _aggfull(p), met)
+
+        def _tvy(p, met):
+            """그 칸의 전년 값."""
+            if met == _SITEM:
+                _y = _yoy_ps(p, _unit)
+                if _smean is None or _y is None:
+                    return np.nan
+                return float(_smean.get(pd.Timestamp(_y), np.nan))
+            return _dv(_typ.get(p) if p in _typ else _aggfull(_yoy_ps(p, _unit)), met)
+
+        def _tfmt(met, v):
+            """사이트 지표는 천명이라 소수 한 자리 — 위 표들과 같은 서식."""
+            if met == _SITEM:
+                return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
+            return _fmt(met, v)
+
         # 칩으로 켜고 끈다 — 위 「비교」와 같은 모양이다. 태그를 넣고 빼는 multiselect는
         # **고른 것만** 보여서 뭘 더 켤 수 있는지가 안 보인다. 칩은 전 목록이 늘 떠 있고
         # 안 고른 건 회색으로 남는다.
         _TDEF = ["발송", "UV", "주문건수", "거래액", "CTR", "주문CR"]
-        guard_multi("wr_trend_pills", METS)
-        _tmets = st.pills("추이에 올릴 지표", METS, selection_mode="multi", default=_TDEF,
+        if _smean is not None:
+            _TDEF = _TDEF + [_SITEM]
+        guard_multi("wr_trend_pills", _METS_T)
+        _tmets = st.pills("추이에 올릴 지표", _METS_T, selection_mode="multi", default=_TDEF,
                           key="wr_trend_pills",
                           help="고른 지표마다 차트 한 장이에요. 아래 표는 전 지표를 다 담아요.")
         _tmets = list(_tmets or _TDEF)
@@ -5363,17 +5405,19 @@ def main():
             _dtick = max(1, len(_tlab) // 12)
             for _i0 in range(0, len(_tmets), 3):
                 for _tc, _met in zip(st.columns(3), _tmets[_i0:_i0 + 3]):
-                    _cy = [_dv(_tagg[p], _met) for p in _tps]
-                    _py = [_dv(_typ[p], _met) for p in _tps]
+                    _cy = [_tv(p, _met) for p in _tps]
+                    _py = [_tvy(p, _met) for p in _tps]
                     _hv0 = ("%{y:.2%}" if _met in RATE
                             else ("%{y:,.0f}원"
                                   if _met in ("거래액", "RPS", "객단가")
-                                  else "%{y:,.0f}"))
+                                  else ("%{y:,.1f}" if _met == _SITEM else "%{y:,.0f}")))
                     _hv = _hv0 + "<extra></extra>"
                     # 점에 커서를 대면 값만 뜨고 '그래서 얼마나 늘었나'는 눈으로 재야
                     # 했다. 직전 기간 대비와 전년비를 같이 띄운다 — 표를 안 내려가도
                     # 읽히게. 비율 지표는 `_dlt`가 %p로 내므로 단위도 알아서 맞는다.
-                    _dpp = [_dlt(_met, _dv(_tagg[p], _met), _dv(_tpv[p], _met))
+                    _dpp = [_dlt(_met, _tv(p, _met),
+                                 (_tv(_prev_ps(p, _unit), _met) if _met == _SITEM
+                                  else _dv(_tpv[p], _met)))
                             for p in _tps]
                     _dyy = [_dlt(_met, _c, _p) for _c, _p in zip(_cy, _py)]
                     _cd = [list(_x) for _x in zip(_dpp, _dyy)]
@@ -5411,14 +5455,13 @@ def main():
         # 실적·전년비가 둘 다 '–'라, 넣으면 빈 칼럼만 늘어 표가 넓어진다.
         _ttp = [(p, lb) for p, lb in zip(_tps, _tlab) if _tagg[p] is not None]
         _tt = {}
-        for _met in METS:
+        for _met in _METS_T:
             _row = {}
             for _p, _lb in _ttp:
-                _row[("실적", _lb)] = _fmt(_met, _dv(_tagg[_p], _met))
+                _row[("실적", _lb)] = _tfmt(_met, _tv(_p, _met))
             if _has_py:
                 for _p, _lb in _ttp:
-                    _row[("전년비", _lb)] = _dlt(_met, _dv(_tagg[_p], _met),
-                                                _dv(_typ[_p], _met))
+                    _row[("전년비", _lb)] = _dlt(_met, _tv(_p, _met), _tvy(_p, _met))
             _tt[_met] = _row
         _tdf = pd.DataFrame(_tt).T
         if len(_tdf.columns):
