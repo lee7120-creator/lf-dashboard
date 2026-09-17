@@ -37,9 +37,11 @@ PAGE = "0. 주간보고"
 STORE = synth_store(weeks=70)
 
 
-def _open(unit=None, camp=None, **ss):
+def _open(unit=None, camp=None, site=None, **ss):
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
     at.session_state["camp_store"] = STORE if camp is None else camp
+    if site is not None:
+        at.session_state["site_store_df"] = site
     at.run()
     assert not at.exception, at.exception[0].value
     at.sidebar.radio[0].set_value(PAGE)
@@ -390,6 +392,199 @@ def t_trend_metric_picker_is_chips_not_a_tag_box():
                                "CTR", "주문CR", "RPS", "객단가"], list(c.options)
     assert set(c.value) == {"발송", "UV", "주문건수", "거래액", "CTR", "주문CR"}, \
         f"기본으로 켜 둘 지표가 달라요 — {list(c.value)}"
+
+
+def _fig_traces(at, idx=0):
+    """추이 차트 한 장의 트레이스 목록 (figure JSON에서 읽는다)."""
+    import json
+    return json.loads(at.get("plotly_chart")[idx].proto.spec).get("data", [])
+
+
+def _trend_traces(at, name="올해"):
+    """추이 차트의 트레이스 — AppTest는 plotly에 `.value`를 안 주므로 figure JSON을 읽는다."""
+    import json
+    out = []
+    for e in at.get("plotly_chart"):
+        f = json.loads(e.proto.spec)
+        ttl = (f.get("layout", {}).get("title") or {}).get("text", "")
+        for tr in f.get("data", []):
+            if tr.get("name") == name:
+                out.append((ttl, tr))
+    return out
+
+
+@case
+def t_chart_tooltip_carries_the_deltas():
+    """점에 커서를 대면 값만이 아니라 **증감까지** 뜬다.
+
+    값만 뜨면 '그래서 얼마나 늘었나'를 눈으로 재거나 아래 표로 내려가야 한다.
+    이름은 단위를 따라간다 — 일 단위에서 「전주 대비」가 뜨면 화면이 거짓말이다."""
+    for unit, pvn in (("일별", "전일"), ("주별", "전주"), ("월별", "전월")):
+        at = _open(unit)
+        trs = _trend_traces(at)
+        assert trs, f"{unit}: 올해 트레이스를 못 찾았어요"
+        for ttl, tr in trs:
+            ht = tr.get("hovertemplate") or ""
+            assert f"{pvn} 대비" in ht, f"{unit}/{ttl}: 툴팁에 '{pvn} 대비'가 없어요 — {ht}"
+            assert "전년 대비" in ht, f"{unit}/{ttl}: 툴팁에 전년 대비가 없어요 — {ht}"
+            cd = tr.get("customdata")
+            assert cd and len(cd) == len(tr.get("y") or []), \
+                f"{unit}/{ttl}: customdata가 점 수와 안 맞아요"
+
+
+@case
+def t_tooltip_delta_unit_follows_the_metric():
+    """비율 지표는 %p, 나머지는 % — 툴팁도 표와 같은 단위여야 한다."""
+    at = _open("주별", wr_trend_pills=["CTR", "거래액"])
+    seen = {}
+    for ttl, tr in _trend_traces(at):
+        vals = [d[0] for d in (tr.get("customdata") or []) if d and d[0] != "–"]
+        if vals:
+            seen[ttl] = vals
+    assert "CTR" in seen and "거래액" in seen, f"두 차트를 못 찾았어요 — {list(seen)}"
+    assert all(v.endswith("%p") for v in seen["CTR"]), f"CTR이 %p가 아니에요 — {seen['CTR'][:3]}"
+    assert not any(v.endswith("%p") for v in seen["거래액"]), \
+        f"거래액이 %p로 찍혔어요 — {seen['거래액'][:3]}"
+
+
+@case
+def t_tooltip_delta_compares_the_real_previous_period():
+    """'전일 대비'는 **달력상 직전 기간**과 맞댄 값이어야 한다.
+
+    선 위의 앞 점으로 재면, 발송이 없어 점이 안 생긴 날이 끼었을 때 「전일 대비」라고
+    써 놓고 실은 며칠 전과 비교하게 된다. 그런 날을 일부러 지워 두고 확인한다."""
+    d = STORE.copy()
+    dt = pd.to_datetime(d["date"], format="%Y%m%d")
+    gap = dt.max() - pd.Timedelta(days=3)          # 하루를 통째로 비운다
+    d = d[dt != gap]
+    at = _open("일별", camp=d)
+    lab_gone = f"{gap.year}년 {gap.month}/{gap.day}"
+    trs = _trend_traces(at)
+    assert trs, "올해 트레이스를 못 찾았어요"
+    ttl, tr = trs[0]
+    xs = list(tr.get("x") or [])
+    assert not any(str(x).startswith(lab_gone) for x in xs), \
+        f"픽스처가 빈 날을 못 만들어 규칙을 반증하지 못해요 — {lab_gone}"
+    nxt = [i for i, x in enumerate(xs)
+           if str(x).startswith(f"{(gap + pd.Timedelta(days=1)).month}/"
+                                f"{(gap + pd.Timedelta(days=1)).day}")
+           or str(x).startswith(f"{gap.year}년 {(gap + pd.Timedelta(days=1)).month}/"
+                                f"{(gap + pd.Timedelta(days=1)).day}")]
+    assert nxt, f"빈 날 다음 점을 못 찾았어요 — {xs[-6:]}"
+    got = (tr.get("customdata") or [])[nxt[0]][0]
+    assert got == "–", \
+        f"빈 날 다음 점의 '전일 대비'가 '{got}'예요 — 직전 날이 없으니 '–'여야 해요"
+
+
+@case
+def t_prior_year_line_runs_to_the_end_of_the_year():
+    """「올해 전체」에선 **전년 선을 그 해 끝까지** 그린다.
+
+    올해가 아직 안 온 칸도 전년 값이 있으면 x자리를 세운다 — '남은 기간에 전년은
+    어땠나'(계절성)를 보려고 여는 화면이라서다. 데이터에 있는 기간만 모으면 전년 선이
+    올해와 같은 지점에서 잘려 그 뒤를 못 본다.
+
+    표는 **올해 실적이 있는 기간만** 담는다. 뒷칸은 실적·전년비가 둘 다 '–'라 넣으면
+    빈 칼럼만 늘어난다."""
+    at = _open("주별", **{"wr_twin_주": "올해 전체"})
+    trs = {n: t for n, t in
+           ((tr.get("name"), tr) for tr in _fig_traces(at))}
+    assert "올해" in trs and "전년" in trs, sorted(trs)
+    cy, py = trs["올해"], trs["전년"]
+    xs = list(cy["x"])
+    _last_cur = max(i for i, v in enumerate(cy["y"]) if v is not None)
+    _last_py = max(i for i, v in enumerate(py["y"]) if v is not None)
+    assert _last_py > _last_cur, (
+        f"전년 선이 올해와 같은 지점에서 끊겼어요 — 올해 {xs[_last_cur]} · "
+        f"전년 {xs[_last_py]} (픽스처가 전년 뒷기간을 안 품었을 수도 있어요)")
+    assert len(xs) > _last_cur + 1, "올해 뒤로 x자리가 안 생겼어요"
+    # 표는 올해 실적이 있는 기간까지만
+    tb = {c[1] for c in _trend(at).columns}
+    assert xs[_last_cur] in tb, f"표에 마지막 실적 기간이 없어요 — {sorted(tb)[-2:]}"
+    assert xs[_last_py] not in tb, \
+        f"실적이 없는 기간이 표에 들어왔어요 — {xs[_last_py]} ('–'만 늘어선 칼럼)"
+
+
+@case
+def t_recent_window_is_not_stretched_for_the_prior_year():
+    """「최근 N」은 사용자가 일부러 좁힌 창이라 전년 때문에 늘리지 않는다."""
+    at = _open("주별")
+    for tr in _fig_traces(at):
+        if tr.get("name") == "올해":
+            assert len(tr["x"]) == 13, f"최근 13주가 {len(tr['x'])}칸으로 늘었어요"
+            assert all(v is not None for v in tr["y"]), \
+                "최근 창에 올해 값이 빈 칸이 생겼어요"
+            break
+    else:
+        raise AssertionError("올해 트레이스를 못 찾았어요")
+
+
+SITE_MET = "앱푸시 회원UV(일평균·천명)"
+
+
+@case
+def t_site_metric_joins_the_trend_when_the_source_is_there():
+    """앱푸시 회원UV도 추이에 올린다 — 칩·차트·표 셋 다.
+
+    사이트 원천이라 캠페인 집계(`_gsum`)에 없다. 값은 이미 그 기간의 일평균이라
+    「값 기준」이 또 나누면 안 되고, 천명 단위라 소수 한 자리로 찍어야 위 표들과
+    같은 서식이 된다."""
+    from test_site_metrics import _site_store
+    at = _open("주별", site=_site_store(days=500))
+    chips = [b for b in at.get("button_group")
+             if str(getattr(b, "label", "")) == "추이에 올릴 지표"]
+    assert chips, "칩을 못 찾았어요"
+    assert SITE_MET in list(chips[0].options), \
+        f"선택지에 없어요 — {list(chips[0].options)}"
+    assert SITE_MET in list(chips[0].value), \
+        f"기본으로 안 켜져 있어요 — {list(chips[0].value)}"
+    # 차트 한 장이 실제로 그려지고 값이 있어야 한다
+    hit = [(t, tr) for t, tr in _trend_traces(at) if t == SITE_MET]
+    assert hit, f"차트를 못 찾았어요 — {[t for t, _ in _trend_traces(at)]}"
+    tr = hit[0][1]
+    assert any(v is not None for v in tr["y"]), "차트에 값이 하나도 없어요"
+    assert "%{y:,.1f}" in (tr.get("hovertemplate") or ""), \
+        f"천명이라 소수 한 자리여야 해요 — {tr.get('hovertemplate')}"
+    # 표에도 한 줄
+    t = _trend(at)
+    assert SITE_MET in list(t.index), f"표에 없어요 — {list(t.index)}"
+    # **실적 칸만** 본다 — 한 줄 전체를 보면 전년비('+3.7%')에 소수점이 있어서
+    # 서식을 정수로 깨도 통과한다(실제로 그렇게 심어 보고 확인했다).
+    _vals = [str(t.loc[SITE_MET, c]) for c in t.columns
+             if c[0] == "실적" and str(t.loc[SITE_MET, c]) != "–"]
+    assert _vals, "실적 칸이 전부 비었어요"
+    assert all("." in v for v in _vals), \
+        f"천명이라 소수 한 자리여야 해요 — {_vals[:3]}"
+
+
+@case
+def t_site_metric_is_absent_without_the_source():
+    """사이트 데이터를 안 올렸으면 선택지에 안 띄운다.
+
+    눌러도 아무 선이 안 생기는 선택지는 '왜 안 그려지지'만 남긴다."""
+    at = _open("주별")
+    chips = [b for b in at.get("button_group")
+             if str(getattr(b, "label", "")) == "추이에 올릴 지표"][0]
+    assert SITE_MET not in list(chips.options), \
+        f"원천이 없는데 선택지에 있어요 — {list(chips.options)}"
+    assert SITE_MET not in list(_trend(at).index), "원천이 없는데 표에 줄이 있어요"
+
+
+@case
+def t_site_metric_is_not_divided_again_by_the_value_mode():
+    """「일평균」으로 바꿔도 앱푸시 회원UV는 그대로다 — 이미 일평균이라서."""
+    from test_site_metrics import _site_store
+    site = _site_store(days=500)
+    a = _trend(_open("주별", site=site))
+    b = _trend(_open("주별", site=site, wr_valmode="일평균"))
+    ca = [c for c in a.columns if c[0] == "실적"][-1]
+    cb = [c for c in b.columns if c[0] == "실적"][-1]
+    assert ca == cb, f"비교할 기간이 달라요 — {ca} vs {cb}"
+    assert a.loc[SITE_MET, ca] == b.loc[SITE_MET, cb], \
+        f"값 기준이 사이트 지표까지 나눴어요 — {a.loc[SITE_MET, ca]} → {b.loc[SITE_MET, cb]}"
+    # 가산 지표는 반대로 줄어야 한다 (픽스처가 규칙을 반증하는지 확인)
+    assert _num(a.loc["발송", ca]) > _num(b.loc["발송", cb]), \
+        "발송이 안 줄었어요 — 일평균 모드가 안 걸린 픽스처예요"
 
 
 @case

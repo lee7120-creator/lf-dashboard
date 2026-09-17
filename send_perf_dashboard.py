@@ -4848,6 +4848,21 @@ def main():
             except ValueError:
                 return ps - pd.Timedelta(days=364)
 
+        def _year_grid(y, u):
+            """그 해의 **전 기간** 시작일 — 라벨에 찍히는 연도(주는 ISO) 기준.
+
+            추이에서 전년 선을 그 해 끝까지 그리려면 올해가 아직 안 온 칸에도 x자리가
+            있어야 한다. 데이터에 있는 기간만 모으면 그 자리가 아예 안 생긴다."""
+            if u == "월":
+                return [pd.Timestamp(y, m, 1) for m in range(1, 13)]
+            if u == "일":
+                return list(pd.date_range(f"{y}-01-01", f"{y}-12-31", freq="D"))
+            out, d = [], pd.Timestamp(datetime.date.fromisocalendar(y, 1, 1))
+            while int(d.isocalendar()[0]) == y:
+                out.append(d)
+                d += pd.Timedelta(days=7)
+            return out
+
         def _cmp_starts(ps, u):
             """비교 3종의 시작일 — 순서는 _CMPSPEC과 같다."""
             ps = pd.Timestamp(ps)
@@ -5279,14 +5294,9 @@ def main():
         _drop_ref = (_partial and len(_ps_upto) >= 2 and _ps_upto[-1] == ref_ps)
         if _drop_ref:
             _ps_upto = _ps_upto[:-1]
-        if _twin == "recent":
-            _tps = _ps_upto[-_TWN:]
-        elif _twin == "year":
-            _ry = _pyear(ref_ps, _unit)
-            _tps = [p for p in _ps_upto if _pyear(p, _unit) == _ry] or _ps_upto[-_TWN:]
-        else:
-            _tps = list(_ps_upto)
-        _tlab = [_plab(p, _unit) for p in _tps]
+        # 마지막 완결 기간 — 이보다 뒤 칸은 올해 값이 없다(전년 선만 그린다)
+        _cut = _ps_upto[-1] if _ps_upto else ref_ps
+        _have = set(_ps_upto)
 
         # 기간별 합계를 **groupby 한 번**으로 만든다. 기간마다 _slice를 부르면 프레임
         # 전체에 마스크를 씌우는 일이 기간 수만큼 반복된다 — '전체' 구간을 일 단위로 보면
@@ -5309,16 +5319,80 @@ def main():
                     "RPS": (a / s if s else np.nan), "객단가": (a / o if o else np.nan),
                     "_days": _plen(ps, _unit)}
 
-        _tagg = {p: _aggfull(p) for p in _tps}
+        # 추이에 세울 기간. **전년 선은 그 해 전체를 그린다** — 올해가 아직 안 온 칸도
+        # 전년 값이 있으면 x자리를 세운다. '남은 기간에 전년은 어땠나'(계절성)를 보려고
+        # 여는 화면이라서다. 두 해 모두 값이 없는 칸은 뺀다 — 그 자리는 아무 선도 없어
+        # 데이터가 빠진 것처럼 보인다. 「최근 N」은 사용자가 일부러 좁힌 창이라 안 늘린다.
+        def _ylast(p):
+            return _aggfull(_yoy_ps(p, _unit)) is not None
+
+        if _twin == "recent":
+            _tps = _ps_upto[-_TWN:]
+        elif _twin == "year":
+            _ry = _pyear(ref_ps, _unit)
+            _tps = [p for p in _year_grid(_ry, _unit) if p in _have or _ylast(p)]
+            _tps = _tps or _ps_upto[-_TWN:]
+        else:
+            _tps = list(_ps_upto) + [p for p in _year_grid(_pyear(ref_ps, _unit), _unit)
+                                     if p > _cut and _ylast(p)]
+        _tlab = [_plab(p, _unit) for p in _tps]
+
+        _tagg = {p: (_aggfull(p) if p in _have else None) for p in _tps}
         _typ = {p: _aggfull(_yoy_ps(p, _unit)) for p in _tps}
         _has_py = any(v is not None for v in _typ.values())
+        # 툴팁의 '직전 대비'는 **달력상 직전 기간**과 맞댄다 — 선 위의 앞 점이 아니다.
+        # 발송이 없던 날은 애초에 점이 안 생기므로, 앞 점으로 재면 「전일 대비」라고
+        # 써 놓고 실은 사흘 전과 비교하게 된다.
+        _tpv = {p: _aggfull(_prev_ps(p, _unit)) for p in _tps}
+
+        # 앱푸시 회원UV는 **사이트 원천**이라 캠페인 groupby(`_gsum`)에 없다. 기간 키로
+        # 한 번에 묶어 둔다 — 기간마다 `site_mean`을 부르면 프레임을 그 수만큼 다시 판다.
+        # 값은 이미 그 기간의 일평균이라 「값 기준」이 또 나누지 않게 `ADDV`에 안 넣는다.
+        _SITEM = f"앱푸시 {SITE_LABEL['uv']}(일평균·{SITE_UNIT['uv']})"
+        _smean = None
+        if len(_wr_site) and _wr_site["uv"].notna().any():
+            _sp = site_pick(_wr_site, "PUSH", "App")
+            if len(_sp):
+                if _unit == "일":
+                    _sk = _sp["dt"].dt.normalize()
+                elif _unit == "주":
+                    _sk = _sp["dt"].dt.to_period("W").dt.start_time
+                else:
+                    _sk = _sp["dt"].dt.to_period("M").dt.start_time
+                _smean = _sp.groupby(_sk)["uv"].mean()
+        _METS_T = METS + ([_SITEM] if _smean is not None else [])
+
+        def _tv(p, met):
+            """추이 한 칸의 값 — 사이트 지표만 원천이 다르다."""
+            if met == _SITEM:
+                if _smean is None or p is None or pd.Timestamp(p) > _cut:
+                    return np.nan
+                return float(_smean.get(pd.Timestamp(p), np.nan))
+            return _dv(_tagg.get(p) if p in _tagg else _aggfull(p), met)
+
+        def _tvy(p, met):
+            """그 칸의 전년 값."""
+            if met == _SITEM:
+                _y = _yoy_ps(p, _unit)
+                if _smean is None or _y is None:
+                    return np.nan
+                return float(_smean.get(pd.Timestamp(_y), np.nan))
+            return _dv(_typ.get(p) if p in _typ else _aggfull(_yoy_ps(p, _unit)), met)
+
+        def _tfmt(met, v):
+            """사이트 지표는 천명이라 소수 한 자리 — 위 표들과 같은 서식."""
+            if met == _SITEM:
+                return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
+            return _fmt(met, v)
 
         # 칩으로 켜고 끈다 — 위 「비교」와 같은 모양이다. 태그를 넣고 빼는 multiselect는
         # **고른 것만** 보여서 뭘 더 켤 수 있는지가 안 보인다. 칩은 전 목록이 늘 떠 있고
         # 안 고른 건 회색으로 남는다.
         _TDEF = ["발송", "UV", "주문건수", "거래액", "CTR", "주문CR"]
-        guard_multi("wr_trend_pills", METS)
-        _tmets = st.pills("추이에 올릴 지표", METS, selection_mode="multi", default=_TDEF,
+        if _smean is not None:
+            _TDEF = _TDEF + [_SITEM]
+        guard_multi("wr_trend_pills", _METS_T)
+        _tmets = st.pills("추이에 올릴 지표", _METS_T, selection_mode="multi", default=_TDEF,
                           key="wr_trend_pills",
                           help="고른 지표마다 차트 한 장이에요. 아래 표는 전 지표를 다 담아요.")
         _tmets = list(_tmets or _TDEF)
@@ -5331,12 +5405,25 @@ def main():
             _dtick = max(1, len(_tlab) // 12)
             for _i0 in range(0, len(_tmets), 3):
                 for _tc, _met in zip(st.columns(3), _tmets[_i0:_i0 + 3]):
-                    _cy = [_dv(_tagg[p], _met) for p in _tps]
-                    _py = [_dv(_typ[p], _met) for p in _tps]
-                    _hv = ("%{y:.2%}<extra></extra>" if _met in RATE
-                           else ("%{y:,.0f}원<extra></extra>"
-                                 if _met in ("거래액", "RPS", "객단가")
-                                 else "%{y:,.0f}<extra></extra>"))
+                    _cy = [_tv(p, _met) for p in _tps]
+                    _py = [_tvy(p, _met) for p in _tps]
+                    _hv0 = ("%{y:.2%}" if _met in RATE
+                            else ("%{y:,.0f}원"
+                                  if _met in ("거래액", "RPS", "객단가")
+                                  else ("%{y:,.1f}" if _met == _SITEM else "%{y:,.0f}")))
+                    _hv = _hv0 + "<extra></extra>"
+                    # 점에 커서를 대면 값만 뜨고 '그래서 얼마나 늘었나'는 눈으로 재야
+                    # 했다. 직전 기간 대비와 전년비를 같이 띄운다 — 표를 안 내려가도
+                    # 읽히게. 비율 지표는 `_dlt`가 %p로 내므로 단위도 알아서 맞는다.
+                    _dpp = [_dlt(_met, _tv(p, _met),
+                                 (_tv(_prev_ps(p, _unit), _met) if _met == _SITEM
+                                  else _dv(_tpv[p], _met)))
+                            for p in _tps]
+                    _dyy = [_dlt(_met, _c, _p) for _c, _p in zip(_cy, _py)]
+                    _cd = [list(_x) for _x in zip(_dpp, _dyy)]
+                    _hvc = (_hv0 + f" · {_PVN} 대비 %{{customdata[0]}}"
+                            + (" · 전년 대비 %{customdata[1]}" if _has_py else "")
+                            + "<extra></extra>")
                     _fg = go.Figure()
                     if _has_py:
                         # 전년은 **얇은 점선**이고 색은 회색이다 — 올해가 파랑으로 앞에
@@ -5349,7 +5436,7 @@ def main():
                     _fg.add_trace(go.Scatter(
                         x=_tlab, y=_cy, name="올해", mode="lines+markers", connectgaps=False,
                         line=dict(color=PALETTE["blue"], width=2.2), marker=dict(size=5),
-                        hovertemplate=_hv))
+                        customdata=_cd, hovertemplate=_hvc))
                     _lay = base_layout(270, title=_met, hover="x")
                     _lay["showlegend"] = bool(_has_py)
                     _lay["legend"] = legend_h()
@@ -5364,15 +5451,17 @@ def main():
         # 표는 **왼쪽에 실적 · 오른쪽에 전년비**로 모은다 — 증감만 가로로 훑어야
         # '어느 기간부터 꺾였나'가 보인다. 기간을 잘라 보여 주지 않는 건 위 「추이 구간」이
         # 이미 고르게 해서다.
+        # 표는 **올해 실적이 있는 기간만** 담는다. 차트가 전년을 위해 세운 뒷칸은
+        # 실적·전년비가 둘 다 '–'라, 넣으면 빈 칼럼만 늘어 표가 넓어진다.
+        _ttp = [(p, lb) for p, lb in zip(_tps, _tlab) if _tagg[p] is not None]
         _tt = {}
-        for _met in METS:
+        for _met in _METS_T:
             _row = {}
-            for _p, _lb in zip(_tps, _tlab):
-                _row[("실적", _lb)] = _fmt(_met, _dv(_tagg[_p], _met))
+            for _p, _lb in _ttp:
+                _row[("실적", _lb)] = _tfmt(_met, _tv(_p, _met))
             if _has_py:
-                for _p, _lb in zip(_tps, _tlab):
-                    _row[("전년비", _lb)] = _dlt(_met, _dv(_tagg[_p], _met),
-                                                _dv(_typ[_p], _met))
+                for _p, _lb in _ttp:
+                    _row[("전년비", _lb)] = _dlt(_met, _tv(_p, _met), _tvy(_p, _met))
             _tt[_met] = _row
         _tdf = pd.DataFrame(_tt).T
         if len(_tdf.columns):
@@ -5384,7 +5473,11 @@ def main():
                 _tsty = _tsty.map(_clr, subset=pd.IndexSlice[:, _dsub])
             table(_tsty, width="stretch", height=38 + 35 * len(_tdf),
                   dl_name="주요 지표 추이")
-        _tnote = [f"{len(_tps)}개 {_UNAME}"]
+        _ahead = len(_tps) - len(_ttp)
+        _tnote = [f"{len(_ttp)}개 {_UNAME}"]
+        if _ahead:
+            _tnote.append(f"차트는 전년 선을 그 해 끝까지 그려요(아직 안 온 {_ahead}개 "
+                          f"{_UNAME}는 실적이 없어 표에선 빼요)")
         if _drop_ref:
             _tnote.append("진행 중이거나 실적이 덜 찬 기준 기간은 뺐어요")
         if not _has_py:
