@@ -2387,6 +2387,12 @@ _STYPE_SUB_RE = re.compile(r"^(우수발송|컨틴전시|컨틴)\s*([A-Za-z0-9]+
 # 됐다. 운영 자체가 다르므로 전후를 섞어 비교하면 대조군이 오염된다.
 POLICY_CHANGE_DATE = "20260801"
 
+# 증감 색 — `+`는 초록, `△`(=마이너스, 회사 보고 양식)는 빨강. 표·KPI 카드·차트 툴팁이
+# **같은 값**을 봐야 화면마다 색이 갈리지 않는다. `DELTA_FG`는 색을 안 입히는 자리
+# (`–`)용 기본 글자색인데, `base_layout`의 hoverlabel 글자색과 같아야 툴팁에서
+# 안 칠한 것처럼 보인다.
+DELTA_UP, DELTA_DN, DELTA_FG = "#16a34a", "#dc2626", "#1e293b"
+
 
 def norm_prio(v):
     """우선순위 원값 → 정수. 0순위는 1순위에 합친다.
@@ -2588,7 +2594,7 @@ def growth_pace_note(s_cur, s_prev=None):
     pace = ytd / span
 
     def _c(v, txt):
-        return f'<span style="color:{"#dc2626" if v < 0 else "#16a34a"};font-weight:700">{txt}</span>'
+        return f'<span style="color:{DELTA_DN if v < 0 else DELTA_UP};font-weight:700">{txt}</span>'
     bits = [f"연초 대비 {_c(ytd, f'{ytd:+,.0f}명')} · 일평균 {_c(pace, f'{pace:+,.1f}명/일')}"]
 
     # 전년 동기(같은 연중 위치)까지의 속도와 비교
@@ -5055,6 +5061,19 @@ def main():
             d = (cur / prev - 1) * 100
             return f"△{abs(d):.1f}%" if d < 0 else f"+{d:.1f}%"
 
+        def _dlt_css(s):
+            """증감 문자열 → 표와 같은 색 CSS. 툴팁 `<span style>`에 그대로 넣는다.
+
+            plotly 호버는 태그를 tspan으로 바꾸면서 `style` 속성을 그대로 입힌다
+            (`span:""`가 기본 스타일이라 색만 준다). 값은 점마다 다르니 색도 점마다
+            `customdata`로 실어 보낸다 — 템플릿 문자열 하나로는 못 가른다.
+            `–`는 안 칠한 것처럼 보이게 hoverlabel 글자색을 그대로 준다."""
+            if s.startswith("+"):
+                return f"color:{DELTA_UP};font-weight:600"
+            if s.startswith("△") or s.startswith("-"):
+                return f"color:{DELTA_DN};font-weight:600"
+            return f"color:{DELTA_FG}"
+
         def _prop_z_p(met, a, b):
             """CTR/주문CR 증감의 두 비율 z검정 p값 — a·b는 _agg 결과 dict."""
             if b is None:
@@ -5171,7 +5190,7 @@ def main():
                         f'{label} 데이터 없음</div>')
             _neg = d.startswith("△") or d.startswith("-")
             return (f'<div style="font-size:12px;font-weight:600;margin-top:3px;'
-                    f'color:{"#dc2626" if _neg else "#16a34a"}">'
+                    f'color:{DELTA_DN if _neg else DELTA_UP}">'
                     f'{d} {label} 대비</div>')
         k = st.columns(6)
         for col, met in zip(k, ["발송", "UV", "CTR", "주문CR", "거래액", "RPS"]):
@@ -5236,9 +5255,9 @@ def main():
         def _clr(v):
             s = str(v)
             if s.startswith("+"):
-                return "color:#16a34a;font-weight:600"
+                return f"color:{DELTA_UP};font-weight:600"
             if s.startswith("△") or s.startswith("-"):    # △ = 마이너스 (회사 보고 양식)
-                return "color:#dc2626;font-weight:600"
+                return f"color:{DELTA_DN};font-weight:600"
             return ""
 
         # **기본은 기준 기간 + 비교 열만.** 실적 열까지 일곱 칸을 늘어놓으면 가로로 넓어져
@@ -5443,9 +5462,16 @@ def main():
                                   else _dv(_tpv[p], _met)))
                             for p in _tps]
                     _dyy = [_dlt(_met, _c, _p) for _c, _p in zip(_cy, _py)]
-                    _cd = [list(_x) for _x in zip(_dpp, _dyy)]
-                    _hvc = (_hv0 + f" · {_PVN} 대비 %{{customdata[0]}}"
-                            + (" · 전년 대비 %{customdata[1]}" if _has_py else "")
+                    # 색은 점마다 다르니 값과 **같이** 싣는다(0·1=값, 2·3=CSS).
+                    # 표·KPI 카드와 같은 규칙이라 화면 어디서나 △는 빨강, +는 초록이다.
+                    _cd = [[_a, _b, _dlt_css(_a), _dlt_css(_b)]
+                           for _a, _b in zip(_dpp, _dyy)]
+                    _hvc = (_hv0
+                            + f" · {_PVN} 대비 "
+                            + '<span style="%{customdata[2]}">%{customdata[0]}</span>'
+                            + (" · 전년 대비 "
+                               '<span style="%{customdata[3]}">%{customdata[1]}</span>'
+                               if _has_py else "")
                             + "<extra></extra>")
                     _fg = go.Figure()
                     if _has_py:
@@ -10914,8 +10940,8 @@ def main():
                 h=320, title="영업 세일즈 푸시를 100으로 뒀을 때 컨틴 (100 위면 컨틴이 나음)"))
             st.plotly_chart(_kt_bar, width="stretch")
             table(pd.DataFrame(_kt_rows).style.map(
-                lambda v: ("color:#dc2626;font-weight:600" if str(v).startswith("△")
-                           else "color:#16a34a;font-weight:600" if str(v).startswith("+")
+                lambda v: (f"color:{DELTA_DN};font-weight:600" if str(v).startswith("△")
+                           else f"color:{DELTA_UP};font-weight:600" if str(v).startswith("+")
                            else ""), subset=["차이"]),
                 hide_index=True, width="stretch", dl_name="컨틴 vs 영업 세일즈 푸시")
             _kt_min = min(_kt_ga["건수"], _kt_gb["건수"])

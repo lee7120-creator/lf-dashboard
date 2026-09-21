@@ -901,6 +901,16 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   실은 사흘 전과 비교하게 된다. 직전 기간이 없으면 '–'다
   (`t_chart_tooltip_carries_the_deltas`·`t_tooltip_delta_unit_follows_the_metric`·
   `t_tooltip_delta_compares_the_real_previous_period`).
+  **증감에는 표·KPI 카드와 같은 색을 입힌다**(△ 빨강 · + 초록). 값만 검게 뜨면 같은
+  숫자를 표에선 색으로, 차트에선 부호로 읽게 된다. plotly 호버는 태그를 tspan으로 바꾸며
+  `style` 속성을 **그대로** 입히므로(`span`의 기본 스타일이 빈 문자열이다) `<span style>`
+  이면 된다. 다만 **색은 점마다 다르니 값과 같이 `customdata`로 싣는다** — 템플릿 문자열
+  하나로는 못 가른다(0·1=값, 2·3=CSS). 값 칸을 건드리면 단위·직전기간 검사가 같이
+  깨지니 **CSS만 뒤에 붙일 것**. `–`는 `DELTA_FG`(hoverlabel 글자색)를 줘서 안 칠한
+  것처럼 보이게 한다 (`t_tooltip_deltas_are_coloured_like_the_tables`).
+  색 값은 **`DELTA_UP`·`DELTA_DN`·`DELTA_FG` 한곳**에서 나온다 — 표 Styler·KPI 카드·
+  컨틴 비교표가 같은 상수를 본다. 예전엔 `#16a34a`·`#dc2626`을 자리마다 박아 둬서
+  한 군데만 고치면 화면끼리 색이 갈릴 수 있었다.
   **AppTest는 plotly 요소에 `.value`를 안 준다** — `el.proto.spec`이 figure JSON 통째라
   거기서 트레이스·`hovertemplate`·`customdata`를 읽는다.
 - **추이 집계는 `groupby("_ps")` 한 번**이다. 기간마다 `_slice`를 부르면 프레임 전체에
