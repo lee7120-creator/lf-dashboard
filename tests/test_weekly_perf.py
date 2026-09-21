@@ -26,11 +26,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from streamlit.testing.v1 import AppTest        # noqa: E402
 
-from smoke_pages import synth_store             # noqa: E402
+from smoke_pages import group_of, synth_store   # noqa: E402
 
 APP = str(ROOT / "send_perf_dashboard.py")
 TIMEOUT = 400
-PAGE = "0. 주간보고"
+PAGE = group_of("주간보고")
 
 # 전년 비교가 살아 있으려면 1년을 넘겨야 한다. 70주면 최근 넉 달만 전년 짝이 있어서
 # '전년이 있는 기간'과 '없는 기간'이 한 픽스처에 같이 들어온다.

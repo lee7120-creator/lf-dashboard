@@ -216,7 +216,7 @@ def t_exec_note_reads_four_tuple_lookup():
     ValueError로 죽었다. 세션에 lookup이 있어야만 밟는 경로라 스모크로는 안 잡힌다."""
     from streamlit.testing.v1 import AppTest
     sys.path.insert(0, str(ROOT / "tests"))
-    from smoke_pages import synth_store
+    from smoke_pages import group_of, synth_store
 
     t = S.today_kst()
     mon = t - datetime.timedelta(days=t.weekday())
@@ -233,7 +233,7 @@ def t_exec_note_reads_four_tuple_lookup():
     at.session_state["plan_lookup_gs"] = lookup
     at.run()
     assert not at.exception, at.exception[0].value
-    at.sidebar.radio[0].set_value("0. 주간보고")
+    at.sidebar.radio[0].set_value(group_of("주간보고"))
     at.run()
     assert not at.exception, at.exception[0].value
 

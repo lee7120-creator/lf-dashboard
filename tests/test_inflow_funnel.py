@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from streamlit.testing.v1 import AppTest        # noqa: E402
 
 import send_perf_dashboard as S                 # noqa: E402
-from smoke_pages import synth_store             # noqa: E402
+from smoke_pages import group_of, synth_store   # noqa: E402
 from test_send_volume_band import synth_mtd     # noqa: E402
 
 APP = str(ROOT / "send_perf_dashboard.py")
@@ -37,7 +37,7 @@ def _open_tab(camp=None, mtd=None):
         at.session_state["mtd_store_df"] = mtd
     at.run()
     assert not at.exception, at.exception[0].value
-    at.sidebar.radio[0].set_value("6. 효율·피로도")
+    at.sidebar.radio[0].set_value(group_of(TAB))
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
     assert subs, "하위탭 라디오를 찾지 못했어요"
@@ -78,7 +78,7 @@ def t_tab_exists_in_group():
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
     at.session_state["camp_store"] = synth_store(weeks=10)
     at.run()
-    at.sidebar.radio[0].set_value("6. 효율·피로도")
+    at.sidebar.radio[0].set_value(group_of(TAB))
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
     assert subs and TAB in subs[0].options, "탭이 하위탭 목록에 없어요"
@@ -244,7 +244,7 @@ def t_new_metrics_selectable_in_mtd_tabs():
         at.session_state["camp_store"] = synth_store(weeks=10)
         at.session_state["mtd_store_df"] = synth_mtd(days=200)
         at.run()
-        at.sidebar.radio[0].set_value("6. 효율·피로도")
+        at.sidebar.radio[0].set_value(group_of(TAB))
         at.run()
         subs = [r for r in at.radio if r.label != "페이지"][0]
         subs.set_value(tab)
@@ -360,7 +360,7 @@ def t_unique_inflow_is_offered_in_the_fatigue_chart():
     at.session_state["camp_store"] = synth_store(weeks=10)
     at.session_state["mtd_store_df"] = synth_mtd(days=200)
     at.run()
-    at.sidebar.radio[0].set_value("6. 효율·피로도"); at.run()
+    at.sidebar.radio[0].set_value(group_of(TAB)); at.run()
     [r for r in at.radio if r.label != "페이지"][0].set_value("피로도 시계열"); at.run()
     assert not at.exception, at.exception[0].value
     bar = [s for s in at.selectbox if s.label == "기준 지표(좌·막대)"]

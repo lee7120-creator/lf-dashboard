@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from streamlit.testing.v1 import AppTest        # noqa: E402
 
 import send_perf_dashboard as S                 # noqa: E402
-from smoke_pages import synth_store             # noqa: E402
+from smoke_pages import group_of, synth_store   # noqa: E402
 
 APP = str(ROOT / "send_perf_dashboard.py")
 TIMEOUT = 300
@@ -72,7 +72,7 @@ def _open_named(tab, camp=None, mtd=None, push=None):
         at.session_state["push_consent_df"] = push
     at.run()
     assert not at.exception, at.exception[0].value
-    at.sidebar.radio[0].set_value("6. 효율·피로도")
+    at.sidebar.radio[0].set_value(group_of(tab))
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
     assert subs and tab in subs[0].options, f"{tab} 탭이 없어요 — {subs[0].options if subs else None}"
@@ -91,7 +91,7 @@ def _open_tab(camp=None, mtd=None, push=None):
         at.session_state["push_consent_df"] = push
     at.run()
     assert not at.exception, at.exception[0].value
-    at.sidebar.radio[0].set_value("6. 효율·피로도")
+    at.sidebar.radio[0].set_value(group_of(TAB))
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
     assert subs, "하위탭 라디오를 찾지 못했어요"
@@ -123,7 +123,7 @@ def t_tab_exists_in_group():
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
     at.session_state["camp_store"] = synth_store(weeks=10)
     at.run()
-    at.sidebar.radio[0].set_value("6. 효율·피로도")
+    at.sidebar.radio[0].set_value(group_of(TAB))
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
     assert subs and TAB in subs[0].options, "탭이 하위탭 목록에 없어요"
