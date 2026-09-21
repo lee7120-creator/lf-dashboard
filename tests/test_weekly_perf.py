@@ -346,18 +346,29 @@ def t_partial_period_clamps_every_comparison():
     """부분 기간이면 비교 기간도 **같은 경과분까지만** 집계해야 한다.
 
     안 자르면 2일치가 7일치와 맞붙어 △70%대 가짜 급락이 뜬다. 화면에 찍힌 전주 값을
-    픽스처에서 직접 센 값과 대조한다."""
-    at = _open("주별")
+    픽스처에서 직접 센 값과 대조한다.
+
+    **픽스처를 수요일에서 끊는다.** 기본 `STORE`는 '오늘'까지라, 일요일에 돌리면 기준주가
+    통째로 차서 부분 기간 경로를 아예 안 밟는다 — 검사가 규칙이 아니라 **달력을 재게**
+    된다(실제로 일요일→월요일로 넘어가는 자정에 이 검사만 빨개졌다). 요일과 무관하게
+    같은 경로를 타도록 마지막 수요일까지만 남긴다."""
+    d = STORE.copy()
+    d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d")
+    _last = d["dt"].max()
+    _cut = _last - pd.Timedelta(days=(int(_last.weekday()) - 2) % 7)   # 마지막 수요일
+    d = d[d["dt"] <= _cut].copy()
+    camp = d.drop(columns=["dt"])
+
+    at = _open("주별", camp=camp)
     t = _kpi(at)
-    # 기준주는 오늘이 속한 주 = 진행 중 → 부분 기간
+    # 기준주는 수요일에서 끊겨 있으니 늘 진행 중 → 부분 기간
     cur_col = [str(c) for c in t.columns if str(c).startswith("기준 주차")][0]
     assert any("동요일 누계" in x for x in _texts(at)), "부분 기간 안내가 없어요"
 
-    d = STORE.copy()
-    d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d")
     last = d["dt"].max()
     ws = last - pd.Timedelta(days=int(last.weekday()))
     elapsed = int((last.normalize() - ws).days)
+    assert elapsed == 2, f"수요일에서 끊었는데 경과가 {elapsed}일이에요"
     prev = ws - pd.Timedelta(days=7)
     want = float(d[(d["dt"] >= prev)
                    & (d["dt"] <= prev + pd.Timedelta(days=elapsed))]["send"].sum())
@@ -365,7 +376,7 @@ def t_partial_period_clamps_every_comparison():
                    & (d["dt"] <= prev + pd.Timedelta(days=6))]["send"].sum())
     assert want < full, "픽스처가 부분 주를 못 만들어 규칙을 반증하지 못해요"
     # 전주 실적 열은 접혀 있으니 펼쳐서 읽는다
-    at2 = _open("주별", wr_sum_cols_주={"selection": {"columns": ["전주비"]}})
+    at2 = _open("주별", camp=camp, wr_sum_cols_주={"selection": {"columns": ["전주비"]}})
     t2 = _kpi(at2)
     pcol = [str(c) for c in t2.columns if str(c).startswith("전주 (")]
     assert pcol, [str(c) for c in t2.columns]

@@ -3726,9 +3726,33 @@ SEG_PAL = {s: ORGCAT_PAL[i % len(ORGCAT_PAL)] for i, s in enumerate(SEGMENTS)}
 DAY_RANGE_DEFAULT = 21
 FUNNEL_GRAN_LABEL = {"일": "일자별", "주": "주차별", "월": "월별"}
 FUNNEL_GRAN_ORDER = ["일", "주", "월"]
-# 번호는 재정렬될 수 있으니 **이름**으로 가리킨다. 예전엔 `page.startswith("09.")`로
-# 박아 뒀다가 페이지를 옮기면서 '마스터 없이도 열리는' 예외가 조용히 끊겼다.
+# 페이지 이름은 **여기 한곳**에서만 적는다. 번호는 `PAGE_ORDER`로 목록을 만들 때만
+# 붙이고, 분기는 번호를 뗀 이름으로 가린다.
+#
+# 예전엔 목록과 분기가 번호까지 박은 문자열을 **따로** 들고 있어서, 페이지를 옮길 때마다
+# 두 곳을 같이 고쳐야 했다. 한쪽을 빠뜨리면 그 페이지는 **예외 없이 빈 화면**이 된다 —
+# `page.startswith("09.")` 예외가 실제로 그렇게 끊겼고, 증상이 안 드러난다.
+# 이제 목록과 분기가 같은 상수를 보므로 번호를 바꿔도 어긋날 수가 없다
+# (`smoke_weekly_report.py`가 페이지마다 본문 `##` 제목이 나오는지 본다).
+PAGE_SUMMARY = "주간보고 요약"
+PAGE_FUNNEL = "첫구매 퍼널별 상세 실적"
+PAGE_ORGCAT_CH = "조직·카테고리·채널별 첫구매 상세"
+PAGE_CHANNEL = "채널별 실적"
+PAGE_PUSH = "앱푸시 동의 현황"
+PAGE_SEGMENT = "첫구매 고객 세그먼트 성과"
 PAGE_ORGCAT = "조직·카테고리별 실적"
+PAGE_DOWNLOAD = "통합 데이터·다운로드"
+
+# 화면에 거는 순서. 「월별 추이」·「주차별 추이」는 「02」가 기간 단위를 갖게 되면서
+# 같은 걸 두 벌 보여 주게 돼 접었고, 받아 가는 화면인 「통합 데이터」는 맨 뒤다.
+PAGE_ORDER = [PAGE_SUMMARY, PAGE_FUNNEL, PAGE_ORGCAT_CH, PAGE_CHANNEL,
+              PAGE_PUSH, PAGE_SEGMENT, PAGE_ORGCAT, PAGE_DOWNLOAD]
+PAGES = [f"{i:02d}. {nm}" for i, nm in enumerate(PAGE_ORDER, 1)]
+
+
+def page_name(label):
+    """화면이 고른 페이지 라벨에서 **번호를 뗀 이름**. 분기는 전부 이걸로 가린다."""
+    return label.split(". ", 1)[-1] if label else ""
 
 
 def gran_options(df, metrics):
@@ -5362,7 +5386,7 @@ def _render_funnel_app(df, gran, cy, py, clabel, base_tag, prv_close,
 # 한 화면에서 볼 수 있게 됐다. 「조직·카테고리별 실적」은 채널을 안 가르고(전 채널) 조직을
 # 깊이 파고드는 화면이고, 여기는 **조직 × 채널 교차**가 주인공이라 화면을 따로 둔다 —
 # 한 화면에 다 넣으면 축이 셋(조직·카테고리·채널)이라 표가 안 읽힌다.
-PAGE_ORGCAT_CH = "조직·카테고리·채널별 첫구매 상세"
+# 페이지 이름 상수(`PAGE_ORGCAT_CH`)는 파일 위쪽 `PAGE_ORDER` 옆에 모아 뒀다.
 
 
 def _occ_table(views, path, kids, lv_lbl, met, cy, py, clabel, chs):
@@ -6031,14 +6055,7 @@ def main():
                  "MICRO 대시보드의 조직×카테고리(구분06×구분07) export, "
                  "브랜드·상품 결제 원장을 자동으로 인식해요.")
         st.markdown("---")
-        # 「월별 추이」·「주차별 추이」는 접었다 — 「02」가 기간 단위(일/주/월)를 갖게
-        # 되면서 같은 걸 두 벌 보여 주게 됐다. 두 페이지의 액션·이슈 메모는 키를 그대로
-        # 둔 채 「02」 하단으로 옮겨서, 써 둔 글이 사라지지 않는다.
-        # 「통합 데이터·다운로드」는 보는 화면이 아니라 받아 가는 화면이라 맨 뒤로.
-        PAGES = ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적",
-                 "03. " + PAGE_ORGCAT_CH, "04. 채널별 실적",
-                 "05. 앱푸시 동의 현황", "06. 첫구매 고객 세그먼트 성과",
-                 "07. " + PAGE_ORGCAT, "08. 통합 데이터·다운로드"]
+        # 목록·순서·이름은 전부 모듈 위쪽 `PAGE_ORDER` 한곳에서 나온다.
         page = st.radio("페이지", PAGES, key="wr_page")
 
     stored = load_store()
@@ -6137,10 +6154,10 @@ def main():
         # 조직·카테고리는 **자체 기간 선택**을 쓰니 그것만 올린 상태에서도 보여 준다.
         # 번호가 아니라 **이름**으로 가른다 — 예전엔 `page.startswith("09.")`였는데
         # 페이지를 재정렬하면서 조용히 안 열리게 됐다(증상이 '빈 화면'이라 안 드러난다).
-        if PAGE_ORGCAT_CH in page and not odf.empty:
+        if page_name(page) == PAGE_ORGCAT_CH and not odf.empty:
             render_orgcat_channel_page(odf)
             st.stop()
-        if PAGE_ORGCAT in page and (not odf.empty or not ddf.empty):
+        if page_name(page) == PAGE_ORGCAT and (not odf.empty or not ddf.empty):
             render_orgcat_page(odf, ddf)
             st.stop()
         _o8 = ", ".join(x for x in (f"조직×카테고리 {len(odf):,}행" if not odf.empty else "",
@@ -6286,8 +6303,11 @@ def main():
     texts = st.session_state.wr_texts
     print_button()
 
-    # ════════════ 01. 주간보고 요약 ════════════
-    if page == "01. 주간보고 요약":
+    # 번호는 화면에만 붙는다 — 분기는 이름으로 가린다(`PAGE_ORDER` 옆 주석 참고).
+    _pg = page_name(page)
+
+    # ════════════ 주간보고 요약 ════════════
+    if _pg == PAGE_SUMMARY:
         st.markdown(f"## 첫구매 주간보고 — {ref_year}년 {ref_month}월")
         wy, wlabel = week_ref(df, ref_year, ref_week)
         if wlabel:
@@ -6399,29 +6419,30 @@ def main():
                     st.plotly_chart(yoy_chart(df, "주", _met, chart_years, h=280),
                                     width="stretch")
 
-    # ════════════ 02. 첫구매 퍼널별 상세 실적 ════════════
-    elif page == "02. 첫구매 퍼널별 상세 실적":
+    # ════════════ 첫구매 퍼널별 상세 실적 ════════════
+    elif _pg == PAGE_FUNNEL:
         _fwy, _fwlabel = week_ref(df, ref_year, ref_week)
         render_funnel_page(df, odf, ref_year, ref_month, _fwy, _fwlabel)
 
-    # ════════════ 04. 채널별 실적 ════════════
-    elif PAGE_ORGCAT_CH in page:
+    # ════════════ 조직·카테고리·채널별 첫구매 상세 ════════════
+    elif _pg == PAGE_ORGCAT_CH:
         render_orgcat_channel_page(odf)
 
-    elif page == "04. 채널별 실적":
+    # ════════════ 채널별 실적 ════════════
+    elif _pg == PAGE_CHANNEL:
         _cwy, _cwlabel = week_ref(df, ref_year, ref_week)
         render_channel_page(df, ref_year, ref_month, _cwy, _cwlabel, ch_sel)
 
-    # ════════════ 05. 앱푸시 동의 현황 ════════════
-    elif page == "05. 앱푸시 동의 현황":
+    # ════════════ 앱푸시 동의 현황 ════════════
+    elif _pg == PAGE_PUSH:
         render_push_page(df, ref_year, chart_years)
 
-    # ════════════ 06. 첫구매 고객 세그먼트 성과 ════════════
+    # ════════════ 첫구매 고객 세그먼트 성과 ════════════
     # 예전엔 주·월 표 두 개가 박혀 있고 세그먼트를 하나씩 갈아 끼워야 했다 — 일 단위는
     # 아예 못 봤고, 세그먼트 사이의 이야기가 안 이어졌다. 「채널별 실적」과 **같은 함수**를
     # 쓴다(`render_axis_page`) — 축만 채널→세그먼트로 바뀐다. 복사해 두면 한쪽만 고쳐져
     # 조용히 갈린다.
-    elif page == "06. 첫구매 고객 세그먼트 성과":
+    elif _pg == PAGE_SEGMENT:
         _swy, _swlabel = week_ref(df, ref_year, ref_week)
         _segs = [x for x in SEGMENTS if (df["segment"] == x).any()]
         if not _segs:
@@ -6451,12 +6472,12 @@ def main():
 * **DAU (Daily Active Users)**: 하루 동안 서비스에 한 번 이상 방문해서 활동한 사용자 수예요.
 """)
 
-    # ════════════ 07. 조직·카테고리별 실적 ════════════
-    elif PAGE_ORGCAT in page:
+    # ════════════ 조직·카테고리별 실적 ════════════
+    elif _pg == PAGE_ORGCAT:
         render_orgcat_page(odf, ddf)
 
-    # ════════════ 08. 통합 데이터·다운로드 ════════════
-    elif page == "08. 통합 데이터·다운로드":
+    # ════════════ 통합 데이터·다운로드 ════════════
+    elif _pg == PAGE_DOWNLOAD:
         st.markdown("## 통합 데이터 · 다운로드")
         # 원천이 셋으로 늘었다(마스터 · 조직×카테고리 · 결제 원장). 예전엔 마스터만
         # 보여 줘서 '원장을 올렸는데 어디 갔지'를 여기서 확인할 수가 없었다.

@@ -229,17 +229,29 @@ def t_pages_are_not_referenced_by_number():
     실제로 `page.startswith("09.")`로 박아 둔 '마스터 없이도 조직·카테고리는 열린다'
     예외가, 페이지를 재정렬하자 안 열리게 됐다. 증상이 그냥 **빈 화면**이라 안 드러난다.
     이름(`PAGE_ORGCAT` 같은 상수)으로 가리키면 번호가 바뀌어도 산다.
+
+    변수 이름을 `page`로 박아 두면 같은 실수가 다른 이름으로 돌아온다 — 실제로
+    발송성과의 그룹 안내가 `_grp.startswith("6.")`로 남아 있었다(재정렬하면 「전사 MTD를
+    올리면 볼 수 있어요」가 조용히 안 뜬다). 받는 쪽을 안 가리고 **번호로 시작하는
+    리터럴**을 다 본다. 한 자리 번호도 마찬가지다.
     """
     bad = []
     for name in APPS:
         for node in ast.walk(_tree(name)):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in ("startswith", "endswith")
-                    and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "page"):
+                    and node.func.attr in ("startswith", "endswith")):
+                tgt = ast.unparse(node.func.value)
                 for a in node.args:
-                    if isinstance(a, ast.Constant) and re.match(r"^\d{2}\.", str(a.value)):
-                        bad.append(f"{name}:{node.lineno} — page.{node.func.attr}({a.value!r})")
+                    for c in (a.elts if isinstance(a, ast.Tuple) else [a]):
+                        if isinstance(c, ast.Constant) and re.match(r"^\d+\.", str(c.value)):
+                            bad.append(f"{name}:{node.lineno} — "
+                                       f"{tgt}.{node.func.attr}({c.value!r})")
+            # 번호까지 박은 라벨과의 동등 비교도 같은 자리다 — 주간보고 분기가 그랬다.
+            if isinstance(node, ast.Compare):
+                for c in node.comparators:
+                    if (isinstance(c, ast.Constant) and isinstance(c.value, str)
+                            and re.match(r"^\d+\.\s", c.value)):
+                        bad.append(f"{name}:{node.lineno} — {ast.unparse(node)[:60]}")
     assert not bad, ("페이지를 번호로 가리키고 있어요. 이름 상수를 쓰세요:\n  "
                      + "\n  ".join(bad))
 
@@ -250,9 +262,24 @@ def _page_map(name):
     주간보고는 `PAGES` 리스트(하위탭 없음), 발송성과는 그룹 dict(키=페이지, 값=하위탭)다.
     어느 쪽이든 **번호로 시작하는 문자열**이라 모양으로 찾는다 — 변수명을 박으면 이름을
     바꿀 때 검사가 조용히 빈 표를 보고 통과한다.
+
+    주간보고는 번호를 목록에서 붙이는 형태(`PAGE_ORDER` → `f"{i:02d}. {이름}"`)라
+    리터럴이 없다. **이름 상수를 풀어** 같은 규칙으로 번호를 매겨 본다 — 앱이 번호 꼴을
+    바꾸면 여기서 어긋나 검사가 시끄럽게 실패한다(조용히 통과하는 것보다 낫다).
     """
+    tree = _tree(name)
+    consts = {n.targets[0].id: n.value.value
+              for n in tree.body
+              if isinstance(n, ast.Assign) and len(n.targets) == 1
+              and isinstance(n.targets[0], ast.Name)
+              and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str)}
     pages = {}
-    for node in ast.walk(_tree(name)):
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.List) and len(node.elts) >= 3
+                and all(isinstance(e, ast.Name) and e.id in consts for e in node.elts)):
+            for i, e in enumerate(node.elts, 1):
+                pages.setdefault(f"{i:02d}. {consts[e.id]}", set())
+            continue
         if isinstance(node, ast.Dict):
             got = {k.value: {c.value for c in v.elts
                              if isinstance(c, ast.Constant) and isinstance(c.value, str)}
@@ -405,6 +432,54 @@ def t_caches_are_bounded():
                     bad.append(f"{name}:{node.lineno} — {node.name}()")
     assert not bad, ("한도 없는 `@st.cache_data`가 있어요. 키가 늘수록 결과가 그대로 "
                      "쌓여 OOM으로 앱이 죽어요:\n  " + "\n  ".join(bad))
+
+
+@case
+def t_ui_prose_is_haeyoche():
+    """화면에 뜨는 글은 **해요체**다 — 합쇼체가 섞이면 여러 사람이 이어붙인 인상을 준다.
+
+    두 대시보드 모두 해요체로 통일돼 있는데, 문구를 고치다 보면 한두 줄이 합쇼체로
+    남는다. 「…하나로 못박습니다」·「…정상입니다 — 」가 실제로 그렇게 남아 있었다.
+    화면은 멀쩡히 떠서 눈으로만 잡히는 자리라 검사로 못 박는다.
+
+    **AI 프롬프트는 안 본다** — `system`/`user` 문자열은 출력 서식을 지시하는 내용이라
+    말투를 바꾸면 생성 결과가 깨진다. 그 문자열은 `st.*`를 안 거치니 자연히 빠진다.
+
+    **위젯의 `help=`·라벨도 화면에 뜨는 글이다.** 본문만 보면 거기 남은 합쇼체를 놓친다 —
+    실제로 「…운영 차이를 보게 됩니다」·「…급락처럼 보입니다」 둘이 `help=`에 있었다.
+    """
+    show = {"caption", "info", "markdown", "warning", "success", "error", "write",
+            "subheader", "header", "title", "metric", "toast"}
+    widget = {"selectbox", "multiselect", "radio", "checkbox", "slider", "text_input",
+              "number_input", "button", "download_button", "toggle", "pills",
+              "segmented_control", "select_slider", "date_input", "text_area",
+              "expander", "file_uploader", "form_submit_button", "color_picker"}
+    # 종결 어미로 쓰인 것만 — 문장 끝(끝·문장부호·태그·줄표) 앞에 있을 때다.
+    hap = re.compile(r"(합니다|습니다|입니다|됩니다|드립니다|바랍니다|하십시오|십시오)"
+                     r"\s*(?:[.!?]|<|—|$)")
+    bad = []
+    for name in APPS:
+        for node in ast.walk(_tree(name)):
+            if not isinstance(node, ast.Call):
+                continue
+            attr = getattr(node.func, "attr", None) or ""
+            if attr in show:
+                args = list(node.args)
+            elif attr in widget:
+                args = list(node.args[:1])          # 첫 인자가 라벨이다
+            else:
+                continue
+            args += [k.value for k in node.keywords
+                     if k.arg in ("help", "label", "body", "placeholder")]
+            for arg in args:
+                for sub in ast.walk(arg):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        m = hap.search(sub.value)
+                        if m:
+                            bad.append(f"{name}:{sub.lineno} — [{attr} · {m.group(1)}] "
+                                       f"{sub.value.strip()[:70]}")
+    assert not bad, ("화면 문구에 합쇼체가 섞였어요. 해요체로 맞춰 주세요:\n  "
+                     + "\n  ".join(bad))
 
 
 def main():

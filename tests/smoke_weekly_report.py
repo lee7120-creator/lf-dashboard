@@ -111,6 +111,14 @@ def run_pages(store, tag):
                 a.run()
                 if a.exception:
                     raise RuntimeError(a.exception[0].value)
+                # 분기를 하나라도 놓치면 «예외 없이 빈 화면»이 된다. 페이지를 재정렬할
+                # 때 실제로 겪은 모양이고, 예외가 안 나니 여기까지는 그냥 통과한다.
+                # 이 앱은 페이지마다 자기 `##` 제목을 내므로, 본문에 그게 하나도 없으면
+                # 본문이 안 그려진 것이다(사이드바에도 `##`이 있어 `a.main`으로 봐야 한다).
+                if not [e for e in a.main.markdown
+                        if str(e.value).lstrip().startswith("##")]:
+                    raise RuntimeError("본문이 비었어요 — 페이지 분기가 안 걸린 것 같아요 "
+                                       "(`##` 제목이 하나도 없어요)")
                 print(f"  OK   [{tag}] {p}")
             except Exception as e:                       # noqa: BLE001
                 print(f"  FAIL [{tag}] {p}: {str(e)[:200]}")
