@@ -3953,7 +3953,9 @@ def main():
                         label_visibility="collapsed")
     else:
         page = _subs[0]
-    if _grp.startswith("6.") and mtd_data is None:
+    # 번호가 아니라 **이름**으로 가른다 — 재정렬하면 이 안내가 조용히 안 뜬다
+    # (주간보고에서 페이지 분기가 같은 모양으로 끊긴 적이 있다).
+    if "효율·피로도" in _grp and mtd_data is None:
         st.sidebar.info("피로도 하위탭(시계열·퍼널·빈도·요일)은 전사 MTD 파일을 올리면 볼 수 있어요.")
     _model_keys = list(AI_MODELS.keys())
     _default_model = "Gemini 2.5 Flash (균형)"
@@ -4398,7 +4400,7 @@ def main():
         _opt = ["2026-08 정책 변경 이후", "전체 기간"]
         _sel = st.radio("비교 범위", _opt, horizontal=True, key=key,
                         help="정책 변경 전(구좌 10개·남은발송 20%)과 후는 운영이 달라요. "
-                             "섞어서 비교하면 문구 효과가 아니라 운영 차이를 보게 됩니다.")
+                             "섞어서 비교하면 문구 효과가 아니라 운영 차이를 보게 돼요.")
         return _sel == _opt[0]
 
     def _eff_frame(after_policy=False):
@@ -8375,7 +8377,7 @@ def main():
                     + ("…" if len(_partial) > 3 else ""),
                     value=True, key="p_fat_dropparts",
                     help="‘(기간 합계)’ 지표는 구간이 짧으면 그만큼 낮게 나와요. "
-                         "끝 달이 며칠치뿐이면 급락처럼 보입니다. "
+                         "끝 달이 며칠치뿐이면 급락처럼 보여요. "
                          "일수가 8할도 안 차는 구간만 잡아요.")
                 if _drop:
                     agg = agg[~agg["_part"]].reset_index(drop=True)
@@ -10391,7 +10393,7 @@ def main():
             '앱 설치와 마케팅 동의를 한 화면에서 동시에 요구하면 전환이 떨어지고, 이미 끝낸 '
             '설치·동의를 다시 요청하면 고객이 자기 상태를 헷갈리거나 설정 화면에서 '
             '<b>철회</b>해 버려요. 그래서 두 축으로 4개 상태를 나누고 각 상태에 요청할 행동을 '
-            '하나로 못박습니다.</div>', unsafe_allow_html=True)
+            '하나로 못박았어요.</div>', unsafe_allow_html=True)
 
         _PSX = [                                       # (번호, 상태, 요청 행동, 색, 실행 3, 대표 KPI)
             ("①", "앱 미설치 · 마케팅 미동의", "설치 후 동의", "#B03030",
@@ -10744,7 +10746,7 @@ def main():
             st.markdown(_eff_bias_note(
                 "잔여모수는 <b>모수가 남았을 때만</b> 붙이기 때문에, 추가군에는 타겟이 좁았던 "
                 "기획전이 몰릴 수 있어요. 또 타겟 밖 고객이 섞이므로 CTR이 내려가는 게 "
-                "정상입니다 — 총 유입·거래액이 그만큼 늘었는지를 같이 보세요."),
+                "정상이에요. 총 유입·거래액이 그만큼 늘었는지를 같이 보세요."),
                 unsafe_allow_html=True)
         glossary()
 
