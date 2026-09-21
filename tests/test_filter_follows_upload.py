@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from streamlit.testing.v1 import AppTest        # noqa: E402
 
-from smoke_pages import synth_store             # noqa: E402
+from smoke_pages import group_of, synth_store   # noqa: E402
 
 APP = str(ROOT / "send_perf_dashboard.py")
 TIMEOUT = 300
@@ -35,8 +35,8 @@ def _sv(at, key, default=None):
 
 
 def _goto_yoy(at):
-    """5. 맥락·타이밍 › 전년 동요일 비교 페이지로 이동."""
-    at.sidebar.radio[0].set_value("5. 맥락·타이밍")
+    """「전년 동요일 비교」 화면으로 이동 — 그룹은 이름으로 찾는다."""
+    at.sidebar.radio[0].set_value(group_of("전년 동요일 비교"))
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
     if subs:

@@ -23,11 +23,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 from streamlit.testing.v1 import AppTest        # noqa: E402
 
 import send_perf_dashboard as S                 # noqa: E402
-from smoke_pages import synth_store             # noqa: E402
+from smoke_pages import group_of, synth_store   # noqa: E402
 
 APP = str(ROOT / "send_perf_dashboard.py")
 TIMEOUT = 300
-PAGE = "12. 회원UV·거래액"
+PAGE = group_of("회원UV·거래액")
 
 
 def synth_site_xlsx(kind="uv", days=120, seed=2):
@@ -193,7 +193,7 @@ def t_backup_zip_contains_site():
     import io as _io
     import zipfile
     site = _site_store(days=40)
-    at = _open("9. 데이터·다운로드", site=site)
+    at = _open(group_of("데이터·다운로드"), site=site)
     btn = [b for b in at.button if "백업 파일 만들기" in b.label]
     assert btn, f"백업 버튼이 없어요 — {[b.label for b in at.button]}"
     btn[0].click()
@@ -215,7 +215,7 @@ def t_backup_zip_contains_site():
 @case
 def t_backup_ui_mentions_site():
     """안내 문구에도 사이트가 있어야 한다 — 빠진 줄 알고 따로 챙기게 된다."""
-    at = _open("9. 데이터·다운로드", site=_site_store(days=20))
+    at = _open(group_of("데이터·다운로드"), site=_site_store(days=20))
     txt = " ".join(_texts(at))
     assert "사이트" in txt and "백업" in txt, f"사이트 언급이 없어요 — {txt[:300]}"
     labels = [b.label for b in at.button] + [d.label for d in at.download_button]
@@ -331,7 +331,7 @@ def t_weekly_mtd_rows_appear_with_data():
     앱과 PUSH를 따로 보면 '앱으로 들어온 광고 유입'·'PC로 받은 푸시'까지 섞인다 —
     보려는 건 두 축의 교집합(PUSH 채널 × App 디바이스)이다.
     """
-    at = _open("0. 주간보고", site=_site_store(days=200))
+    at = _open(group_of("주간보고"), site=_site_store(days=200))
     tbls = [t for t in at.dataframe if "지표" in list(getattr(t.value, "columns", []))]
     assert tbls, "MTD 표를 찾지 못했어요"
     names = set()
@@ -348,7 +348,7 @@ def t_weekly_mtd_rows_appear_with_data():
 @case
 def t_weekly_kpi_table_has_apppush_rows():
     """주간 비교 표(주요 지표 현황)에도 앱푸시 행이 붙어야 한다."""
-    at = _open("0. 주간보고", site=_site_store(days=400))
+    at = _open(group_of("주간보고"), site=_site_store(days=400))
     hit = None
     for t in at.dataframe:
         cols = [str(c) for c in getattr(t.value, "columns", [])]
@@ -370,7 +370,7 @@ def t_weekly_kpi_table_has_apppush_rows():
 @case
 def t_weekly_kpi_rows_vanish_without_data():
     """사이트 데이터가 없으면 주간 비교 표에서도 그 행만 빠진다."""
-    at = _open("0. 주간보고")
+    at = _open(group_of("주간보고"))
     names = set()
     for t in at.dataframe:
         if "지표" in [str(c) for c in getattr(t.value, "columns", [])]:
@@ -382,7 +382,7 @@ def t_weekly_kpi_rows_vanish_without_data():
 @case
 def t_weekly_mtd_rows_vanish_without_data():
     """사이트 데이터가 없으면 그 행만 통째로 빠져야 한다 (빈 행 금지)."""
-    at = _open("0. 주간보고")
+    at = _open(group_of("주간보고"))
     names = set()
     for t in at.dataframe:
         if "지표" in list(getattr(t.value, "columns", [])):
@@ -396,7 +396,7 @@ def t_weekly_mtd_rows_vanish_without_data():
 def t_weekly_mtd_value_is_daily_mean():
     """MTD 칸 값은 그 구간의 일평균이어야 한다 (누계가 아니라)."""
     site = _site_store(days=200)
-    at = _open("0. 주간보고", site=site)
+    at = _open(group_of("주간보고"), site=site)
     tbls = [t for t in at.dataframe if "지표" in list(getattr(t.value, "columns", []))]
     row, curcol = None, None
     for t in tbls:
@@ -441,7 +441,7 @@ def t_mtd_window_clamps_to_partial_week():
     _END = "2025-03-31"
     camp = _shift_to(synth_store(weeks=12), "date", _END)
     site = _shift_to(_site_store(days=200), "date", _END)
-    at = _open("0. 주간보고", site=site, camp=camp)
+    at = _open(group_of("주간보고"), site=site, camp=camp)
     cols = []
     for t in at.dataframe:
         cols += [str(c) for c in getattr(t.value, "columns", [])

@@ -196,12 +196,12 @@ def t_leaderboard_formats_in_the_browser_not_in_python():
     화면 서식은 column_config(브라우저가 그린다)로, 엑셀만 Styler로 내보낸다."""
     sys.path.insert(0, str(ROOT / "tests"))
     from streamlit.testing.v1 import AppTest
-    from smoke_pages import synth_store
+    from smoke_pages import group_of, synth_store
 
     at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=600)
     at.session_state["camp_store"] = synth_store(weeks=8, per_day=2)
     at.run()
-    at.sidebar.radio[0].set_value("3. 캠페인 리더보드").run()
+    at.sidebar.radio[0].set_value(group_of("캠페인 리더보드")).run()
     assert not at.exception, at.exception[0].value
 
     dfs = [e for e in at._tree if type(e).__name__ == "Dataframe"]

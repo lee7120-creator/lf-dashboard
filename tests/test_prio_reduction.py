@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from streamlit.testing.v1 import AppTest        # noqa: E402
 
 import send_perf_dashboard as S                 # noqa: E402
-from smoke_pages import synth_store             # noqa: E402
+from smoke_pages import group_of, synth_store   # noqa: E402
 
 APP = str(ROOT / "send_perf_dashboard.py")
 TIMEOUT = 300
@@ -69,7 +69,7 @@ def _open_tab(store, tab=TAB):
     at.session_state["camp_store"] = store
     at.run()
     assert not at.exception, at.exception[0].value
-    at.sidebar.radio[0].set_value("11. 개선 효과 검증")
+    at.sidebar.radio[0].set_value(group_of(tab))
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
     assert subs and tab in subs[0].options, f"{tab} 탭이 없어요 — {subs[0].options if subs else None}"

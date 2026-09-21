@@ -48,6 +48,28 @@ def synth_store(weeks=18, per_day=2, seed=1):
     return pd.DataFrame(rows)
 
 
+def _has_body(a):
+    """본문이 실제로 그려졌는지 — 분기를 놓치면 «예외 없이 빈 화면»이 된다.
+
+    이 앱은 화면마다 `st.title()`을 하나씩 단다. 예외만 보면 하위탭 이름을 바꾸거나
+    메뉴를 재정렬하다 분기 조건과 어긋났을 때 그대로 통과한다(주간보고에서 실제로
+    그랬다). 앱 배너(`### 📨 …`)는 모든 페이지에 뜨므로 제목으로 봐야 한다."""
+    return bool(list(a.title))
+
+
+def group_of(tab):
+    """하위탭이 속한 사이드바 그룹 이름 — 메뉴를 재정렬해도 검사가 안 깨진다.
+
+    예전엔 검사마다 `"6. 효율·피로도"`처럼 **번호까지 박은 그룹 이름**을 들고 있어서,
+    메뉴를 손볼 때마다 검사 여남은 곳을 같이 고쳐야 했다. 앱이 내거는 목록
+    (`CAMPAIGN_GROUPS`)에서 찾으면 그럴 일이 없다."""
+    import send_perf_dashboard as S               # 앱 최상단이 무거워 여기서 부른다
+    for grp, subs in S.CAMPAIGN_GROUPS.items():
+        if tab in subs:
+            return grp
+    raise AssertionError(f"'{tab}' 하위탭이 메뉴에 없어요 — {list(S.CAMPAIGN_GROUPS)}")
+
+
 def _fresh(store):
     at = AppTest.from_file(str(APP), default_timeout=TIMEOUT)
     at.session_state["camp_store"] = store
@@ -87,6 +109,8 @@ def main():
             a.run()
             if a.exception:
                 raise RuntimeError(a.exception[0].value)
+            if not _has_body(a):
+                raise RuntimeError("본문이 비었어요 — 페이지 분기가 안 걸린 것 같아요")
             print(f"  OK   {p}")
             done += 1
         except Exception as e:                       # noqa: BLE001 — 어떤 예외든 실패로 기록
@@ -112,6 +136,8 @@ def main():
                 b.run()
                 if b.exception:
                     raise RuntimeError(b.exception[0].value)
+                if not _has_body(b):
+                    raise RuntimeError("본문이 비었어요 — 하위탭 분기가 안 걸린 것 같아요")
                 print(f"  OK   {label}")
                 done += 1
             except Exception as e:                   # noqa: BLE001
