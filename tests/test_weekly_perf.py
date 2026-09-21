@@ -506,6 +506,49 @@ def t_tooltip_delta_compares_the_real_previous_period():
 
 
 @case
+def t_tooltip_deltas_are_coloured_like_the_tables():
+    """툴팁 증감도 표·KPI 카드와 **같은 색**이어야 한다 — △ 빨강 · + 초록.
+
+    값만 검게 뜨면 같은 숫자를 표에선 색으로, 차트에선 부호로 읽게 된다.
+    plotly 호버는 태그를 tspan으로 바꾸며 `style`을 그대로 입히므로 `<span style>`이면
+    된다. 색은 **점마다 다르니 customdata로 같이 싣는다** — 템플릿 문자열 하나로는
+    못 가른다. 값 칸(0·1)은 그대로 두고 CSS만 2·3에 붙였다.
+    `–`는 hoverlabel 글자색(`DELTA_FG`)을 줘서 안 칠한 것처럼 보이게 한다."""
+    import send_perf_dashboard as S
+    at = _open("주별", wr_trend_pills=["거래액", "CTR"])
+    trs = _trend_traces(at)
+    assert trs, "올해 트레이스를 못 찾았어요"
+    seen = set()
+    for ttl, tr in trs:
+        ht = tr.get("hovertemplate") or ""
+        for i in (0, 1):
+            tag = '<span style="%%{customdata[%d]}">%%{customdata[%d]}</span>' % (i + 2, i)
+            assert tag in ht, f"{ttl}: 증감에 색이 안 붙었어요 — {ht}"
+        for cd in tr.get("customdata") or []:
+            assert len(cd) == 4, f"{ttl}: customdata가 값 2 + 색 2가 아니에요 — {cd}"
+            for val, css in ((cd[0], cd[2]), (cd[1], cd[3])):
+                want = (S.DELTA_UP if str(val).startswith("+")
+                        else S.DELTA_DN if str(val).startswith("△")
+                        else S.DELTA_FG)
+                assert str(css).startswith(f"color:{want}"), \
+                    f"{ttl}: '{val}'에 «{css}»가 붙었어요 (기대 {want})"
+                seen.add(want)
+    assert {S.DELTA_UP, S.DELTA_DN} <= seen, \
+        f"오름·내림이 둘 다 안 나와 색 규칙을 반증하지 못해요 — {seen}"
+
+    # '–'(직전 기간이 없는 점)는 안 칠한 것처럼 보여야 한다 — 하루를 비워 만든다.
+    d = STORE.copy()
+    dt = pd.to_datetime(d["date"], format="%Y%m%d")
+    d = d[dt != dt.max() - pd.Timedelta(days=3)]
+    at2 = _open("일별", camp=d, wr_trend_pills=["거래액"])
+    dash = [(cd[0], cd[2]) for _t, tr in _trend_traces(at2)
+            for cd in (tr.get("customdata") or []) if cd[0] == "–"]
+    assert dash, "픽스처가 '–'를 못 만들어 중립 색 규칙을 반증하지 못해요"
+    for val, css in dash:
+        assert css == f"color:{S.DELTA_FG}", f"'–'에 «{css}»가 붙었어요"
+
+
+@case
 def t_prior_year_line_runs_to_the_end_of_the_year():
     """「올해 전체」에선 **전년 선을 그 해 끝까지** 그린다.
 
