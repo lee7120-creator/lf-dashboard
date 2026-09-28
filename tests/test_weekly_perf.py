@@ -399,26 +399,30 @@ def t_decomposition_comparison_basis_is_selectable():
 
 
 @case
-def t_decomposition_basis_does_not_leak_into_the_cards_above():
-    """**분해 탭의 선택이 위 화면으로 새면 안 된다.**
+def t_decomposition_basis_does_not_leak_below_the_tab():
+    """**분해 탭의 선택이 탭 «아래» 화면으로 새면 안 된다.**
 
-    `_PVN`·`prev_ws`는 `main()` 지역변수라 위 KPI 카드·「주요 지표 현황」·추이 툴팁이
-    같이 본다. 탭 안에서 그 이름에 재대입하면 **위 화면까지 따라 바뀌는데 값은 멀쩡히
-    찍혀** 눈으로는 안 잡힌다 — 전역 헬퍼 섀도잉과 정확히 같은 자리다."""
+    `_PVN`·`prev_ws`는 `main()` 지역변수다. 탭 안에서 그 이름에 재대입하면 뒤이어
+    그려지는 「카테고리별 기준 기간 실적」이 조용히 따라 바뀐다 — 값은 멀쩡히 찍히고
+    제목만 다른 기준을 말하게 된다. 전역 헬퍼 섀도잉과 정확히 같은 자리다.
+
+    **위 KPI 카드를 보면 안 된다.** 그건 탭보다 «먼저» 그려져서 재대입해도 안 바뀐다 —
+    실제로 처음엔 거기를 봤고, 버그를 심었는데 검사가 그대로 통과했다. 봐야 하는 건
+    탭 «뒤»에 그려지는 블록이다."""
+    want, other = "전월", "전년 동월"
     base = _open("월별")
-    kpi = _kpi(base)
-    assert kpi is not None, "「주요 지표 현황」 표를 못 찾았어요"
-    want = [str(c) for c in kpi.columns]
-    assert any("전월" in c for c in want), f"기대한 「전월…」 칼럼이 없어요 — {want}"
+    head = [t for t in _texts(base) if "카테고리별 기준" in t and "실적 —" in t]
+    assert head, "「카테고리별 기준 … 실적」 제목을 못 찾았어요"
+    assert f"— {want} 대비" in head[0], f"기대한 기준이 아니에요 — {head[0]}"
 
-    at = _open("월별", **{"wr_wf_cmp_월": "전년 동월"})
+    at = _open("월별", **{"wr_wf_cmp_월": other})
     assert not at.exception, at.exception[0].value
-    got = [str(c) for c in _kpi(at).columns]
-    assert got == want, f"탭 선택이 위 표로 샜어요 — {want} → {got}"
-    # 추이 툴팁의 '직전 대비' 이름도 그대로여야 한다
-    tip = [(tr.get("hovertemplate") or "") for _ttl, tr in _trend_traces(at)]
-    assert tip and all("전월 대비" in t for t in tip), \
-        f"추이 툴팁의 직전 기간 이름이 바뀌었어요 — {[t[:80] for t in tip[:2]]}"
+    got = [t for t in _texts(at) if "카테고리별 기준" in t and "실적 —" in t]
+    assert got and f"— {want} 대비" in got[0], \
+        f"탭 선택이 아래 블록으로 샜어요 — 「{got[0] if got else None}」"
+    cols = {str(c) for d in at.dataframe for c in getattr(d.value, "columns", [])}
+    assert f"거래액 {want}비" in cols, \
+        f"아래 표의 칼럼이 탭 선택을 따라갔어요 — {sorted(c for c in cols if '비' in c)}"
 
 
 @case
@@ -583,6 +587,19 @@ def _fig_traces(at, idx=0):
     """추이 차트 한 장의 트레이스 목록 (figure JSON에서 읽는다)."""
     import json
     return json.loads(at.get("plotly_chart")[idx].proto.spec).get("data", [])
+
+
+def _done_col(tbl):
+    """추이 표에서 «완결된» 마지막 실적 칸.
+
+    마지막 칸은 진행 중인 기간(월=MTD·주=WTD)일 수 있고, 그 칸은 경과 일수가
+    1일이면 **합산과 일평균이 같아진다**. 「값 기준」처럼 둘이 갈리는지 보는
+    검사가 마지막 칸을 그냥 집으면 규칙이 아니라 그 우연에 걸려 넘어진다
+    (실제로 `t_site_metric_is_not_divided_again_by_the_value_mode`가 그랬다)."""
+    done = [c for c in tbl.columns
+            if c[0] == "실적" and not re.search(r"\((MTD|WTD)\)$", str(c[1]))]
+    assert done, f"완결된 기간 칸이 없어요 — {[c[1] for c in tbl.columns][:6]}"
+    return done[-1]
 
 
 def _trend_traces(at, name="올해"):
@@ -805,8 +822,9 @@ def t_site_metric_is_not_divided_again_by_the_value_mode():
     site = _site_store(days=500)
     a = _trend(_open("주별", site=site))
     b = _trend(_open("주별", site=site, wr_valmode="일평균"))
-    ca = [c for c in a.columns if c[0] == "실적"][-1]
-    cb = [c for c in b.columns if c[0] == "실적"][-1]
+    # 마지막 칸은 진행 중인 주(WTD)라 경과 1일이면 합산=일평균이 된다 — 규칙이 아니라
+    # 그 우연에 걸려 넘어지지 않게 **완결된** 칸을 집는다.
+    ca, cb = _done_col(a), _done_col(b)
     assert ca == cb, f"비교할 기간이 달라요 — {ca} vs {cb}"
     assert a.loc[SITE_MET, ca] == b.loc[SITE_MET, cb], \
         f"값 기준이 사이트 지표까지 나눴어요 — {a.loc[SITE_MET, ca]} → {b.loc[SITE_MET, cb]}"
