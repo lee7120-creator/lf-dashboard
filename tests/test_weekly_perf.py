@@ -247,9 +247,14 @@ def t_trend_window_follows_the_control():
     """「추이 구간」이 차트·표가 보는 기간 수를 정한다.
 
     「최근 N」은 **단위마다 다르다** — 13으로 고정하면 일 단위가 13일뿐이라 추세가
-    안 보인다. 라벨에 적힌 개수와 실제로 그린 개수가 같아야 한다."""
-    for unit, u, want in (("일별", "일", 30), ("주별", "주", 13), ("월별", "월", 13)):
-        at = _open(unit)
+    안 보인다. 라벨에 적힌 개수와 실제로 그린 개수가 같아야 한다.
+
+    구간은 **세션값으로 몬다** — 기본 구간은 단위마다 달라서(월은 「올해 전체」)
+    그냥 열면 「최근 N」을 안 밟는 단위가 생긴다. 기본값 쪽은 아래
+    `t_trend_window_default_follows_the_unit`이 따로 본다."""
+    for unit, u, want, suf in (("일별", "일", 30, "일"), ("주별", "주", 13, "주"),
+                               ("월별", "월", 3, "개월")):
+        at = _open(unit, **{f"wr_twin_{u}": f"최근 {want}{suf}"})
         got = len({c[1] for c in _trend(at).columns})
         assert got == want, f"{unit}: 최근 구간이 {got}개예요 (기대 {want})"
         chips = [b for b in at.get("button_group")
@@ -263,6 +268,37 @@ def t_trend_window_follows_the_control():
     tyr = _trend(_open("주별", **{"wr_twin_주": "올해 전체"}))
     years = {lb.split("년")[0] for _b, lb in tyr.columns}
     assert len(years) == 1, f"'올해 전체'에 다른 해가 섞였어요 — {sorted(years)}"
+
+
+@case
+def t_trend_window_default_follows_the_unit():
+    """**기본 추이 구간도 단위를 따라간다 — 월은 「올해 전체」다.**
+
+    월 「최근 N」은 3개월이라 점이 셋뿐이고, 그걸 기본으로 두면 열자마자 추세가 안
+    보인다. 일·주는 「최근 N」(30일·13주)이 그대로 기본이다.
+
+    「추이 표는 폭이 곧 리런 비용이다」와 어긋나 보이지만, 그 규칙이 막는 건 일
+    단위 「전체」(490칸)다. 월 「올해 전체」는 많아야 12칸이라 같은 비용이 아니다.
+
+    **기본값은 세션을 심지 않고 그냥 연다** — `default=`가 세션값에 지는 자리라
+    심어 놓고 보면 위젯이 아니라 내가 심은 값을 읽게 된다."""
+    # 개수는 라벨에서 도로 파싱하지 않고 여기 적어 둔다(앱의 `_TWN`과 같은 규칙).
+    for unit, want, n in (("일별", "최근 30일", 30), ("주별", "최근 13주", 13),
+                          ("월별", "올해 전체", None)):
+        at = _open(unit)
+        chips = [b for b in at.get("button_group")
+                 if str(getattr(b, "label", "")) == "추이 구간"]
+        assert chips, f"{unit}: 「추이 구간」을 못 찾았어요"
+        assert str(chips[0].value) == want, \
+            f"{unit}: 기본 구간이 «{chips[0].value}»예요 (기대 «{want}»)"
+        # 라벨만 맞고 화면이 안 따라오면 의미가 없다 — 그린 기간도 같이 본다.
+        cols = {c[1] for c in _trend(at).columns}
+        if n is None:
+            years = {lb.split("년")[0] for lb in cols}
+            assert len(years) == 1, f"{unit}: 기본 구간에 다른 해가 섞였어요 — {sorted(years)}"
+            assert len(cols) > 3, f"{unit}: 기본이 여전히 「최근 3개월」이에요 — {len(cols)}칸"
+        else:
+            assert len(cols) == n, f"{unit}: 기본 구간이 {len(cols)}칸이에요 (기대 {n})"
 
 
 @case

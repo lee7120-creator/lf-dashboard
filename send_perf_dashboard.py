@@ -4997,15 +4997,22 @@ def main():
             # 「최근 N」은 단위마다 다르다 — 13으로 고정하면 일 단위가 13일뿐이라 추세가
             # 안 보인다. 라벨에도 실제 개수를 적어 둔다(숫자는 라벨에서 도로 파싱하지
             # 않고 `_TWN`에서만 읽는다).
-            _TWN = {"일": 30, "주": 13, "월": 13}[_unit]
+            _TWN = {"일": 30, "주": 13, "월": 3}[_unit]
             _TWSUF = {"일": "일", "주": "주", "월": "개월"}[_unit]
             _TWREC = f"최근 {_TWN}{_TWSUF}"
-            _TWIN = {_TWREC: "recent", "올해 전체": "year", "전체": "all"}
+            _TWYEAR = "올해 전체"
+            _TWIN = {_TWREC: "recent", _TWYEAR: "year", "전체": "all"}
+            # **기본 구간도 단위를 따라간다 — 월은 「올해 전체」다.** 월 「최근 3개월」은
+            # 점이 셋뿐이라 추세가 안 보인다. 아래 「추이 표는 폭이 곧 리런 비용이다」와
+            # 어긋나 보이지만 그 규칙이 막는 건 일 단위 「전체」(490칸)이고, 월 「올해
+            # 전체」는 많아야 12칸이라 같은 비용이 아니다. 라벨을 박지 말고 `_TWREC`·
+            # `_TWYEAR`를 쓸 것 — 「최근 N」을 손보면 박아 둔 라벨이 목록 밖이 된다.
+            _TWDEF = {"일": _TWREC, "주": _TWREC, "월": _TWYEAR}[_unit]
             guard_select(f"wr_twin_{_unit}", list(_TWIN))
             _twlab = st.segmented_control(
-                "추이 구간", list(_TWIN), default=_TWREC, key=f"wr_twin_{_unit}",
+                "추이 구간", list(_TWIN), default=_TWDEF, key=f"wr_twin_{_unit}",
                 help="아래 「주요 지표 추이」의 차트·표가 볼 구간이에요.")
-            _twin = _TWIN.get(_twlab or _TWREC, "recent")
+            _twin = _TWIN.get(_twlab or _TWDEF, _TWIN[_TWDEF])
         with _b6:
             _cmp_sel = st.pills("비교", [c[0] for c in _CMPSPEC], selection_mode="multi",
                                 default=[c[0] for c in _CMPSPEC], key=f"wr_cmp_{_unit}",
