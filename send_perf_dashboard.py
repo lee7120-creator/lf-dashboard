@@ -5360,14 +5360,25 @@ def main():
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📈 주요 지표 추이")
 
-        # 추이에 올릴 기간 — 기준 기간까지의 **완결 기간**만. 진행 중이거나 실적이 덜 찬
-        # 기준 기간은 뺀다: 마지막 점만 부분 데이터라 꼬리가 인위적으로 급락하는 착시가
-        # 생긴다(카드·표는 경과 창으로 공정 비교하지만 추이는 기간 전체 창이라 안 맞는다).
+        # 추이에 올릴 기간. **진행 중인 기준 기간도 세우되 «경과분까지»로 읽는다**
+        # (월이면 MTD·주면 WTD). 예전엔 통째로 뺐다 — 추이만 기간 전체 창(`_aggfull`)이라
+        # 28일치 9월을 30일치 8월 옆에 세우면 가짜 급락이 뜨기 때문이었다. 그런데 그러면
+        # '이번 달은 어떤가'를 이 화면에서 못 본다. 카드·표가 이미 쓰는 경과 창(`_aggp`)을
+        # 그 칸에만 적용하면 급락 없이 세울 수 있다 — **전년·직전 기간도 같은 창으로
+        # 자른다.** 한쪽만 자르면 급락이 전년비 칸으로 옮겨 갈 뿐이다.
+        #
+        # **일 단위는 그대로 뺀다.** 기간이 하루라 `_elapsed`가 0이고 `_aggp`가
+        # `_aggfull`과 같아져, 자를 게 없는 채로 몇 시간치를 전년 하루와 맞대게 된다.
         _ps_upto = [pd.Timestamp(p) for p in sorted(g0["_ps"].unique())
                     if pd.Timestamp(p) <= ref_ps]
-        _drop_ref = (_partial and len(_ps_upto) >= 2 and _ps_upto[-1] == ref_ps)
+        _keep_ref = _partial and _unit in ("주", "월") and _ps_upto and _ps_upto[-1] == ref_ps
+        _drop_ref = (_partial and not _keep_ref and len(_ps_upto) >= 2
+                     and _ps_upto[-1] == ref_ps)
         if _drop_ref:
             _ps_upto = _ps_upto[:-1]
+        # 경과분까지만 읽을 칸. None이면 모든 칸이 기간 전체다(예전 동작).
+        _mtd_ps = ref_ps if _keep_ref else None
+        _PARTSUF = {"주": "WTD", "월": "MTD"}
         # 마지막 완결 기간 — 이보다 뒤 칸은 올해 값이 없다(전년 선만 그린다)
         _cut = _ps_upto[-1] if _ps_upto else ref_ps
         _have = set(_ps_upto)
@@ -5409,24 +5420,41 @@ def main():
         else:
             _tps = list(_ps_upto) + [p for p in _year_grid(_pyear(ref_ps, _unit), _unit)
                                      if p > _cut and _ylast(p)]
-        _tlab = [_plab(p, _unit) for p in _tps]
+        # 진행 중인 칸은 라벨에도 밝힌다 — 차트 축과 표 머리가 같은 `_tlab`을 보므로
+        # 한 곳만 고치면 둘 다 따라온다. 캡션만으로는 어느 점이 경과분인지 안 보인다.
+        _tlab = [_plab(p, _unit) + (f" ({_PARTSUF[_unit]})" if p == _mtd_ps else "")
+                 for p in _tps]
 
-        _tagg = {p: (_aggfull(p) if p in _have else None) for p in _tps}
-        _typ = {p: _aggfull(_yoy_ps(p, _unit)) for p in _tps}
+        def _aggt(ps):
+            """추이 한 칸 — 완결 기간은 기간 전체, 진행 중인 기준 기간만 경과분까지.
+
+            `_aggp`는 `min(_elapsed, 그 기간 길이-1)`로 자르므로 비교 기간이 더 짧아도
+            (2월) 넘어가지 않는다. 반환 dict의 `_days`도 자른 창 기준이라 「값 기준」의
+            일평균이 저절로 맞는다."""
+            return _aggp(ps) if (_mtd_ps is not None and ps == _mtd_ps) else _aggfull(ps)
+
+        def _aggt_of(p, ps):
+            """칸 `p`의 짝(전년·직전)을 «p와 같은 창»으로 읽는다."""
+            return _aggp(ps) if (_mtd_ps is not None and p == _mtd_ps) else _aggfull(ps)
+
+        _tagg = {p: (_aggt(p) if p in _have else None) for p in _tps}
+        _typ = {p: _aggt_of(p, _yoy_ps(p, _unit)) for p in _tps}
         _has_py = any(v is not None for v in _typ.values())
         # 툴팁의 '직전 대비'는 **달력상 직전 기간**과 맞댄다 — 선 위의 앞 점이 아니다.
         # 발송이 없던 날은 애초에 점이 안 생기므로, 앞 점으로 재면 「전일 대비」라고
         # 써 놓고 실은 사흘 전과 비교하게 된다.
-        _tpv = {p: _aggfull(_prev_ps(p, _unit)) for p in _tps}
+        _tpv = {p: _aggt_of(p, _prev_ps(p, _unit)) for p in _tps}
 
         # 앱푸시 회원UV는 **사이트 원천**이라 캠페인 groupby(`_gsum`)에 없다. 기간 키로
         # 한 번에 묶어 둔다 — 기간마다 `site_mean`을 부르면 프레임을 그 수만큼 다시 판다.
         # 값은 이미 그 기간의 일평균이라 「값 기준」이 또 나누지 않게 `ADDV`에 안 넣는다.
         _SITEM = f"앱푸시 {SITE_LABEL['uv']}(일평균·{SITE_UNIT['uv']})"
         _smean = None
+        _sprows = None
         if len(_wr_site) and _wr_site["uv"].notna().any():
             _sp = site_pick(_wr_site, "PUSH", "App")
             if len(_sp):
+                _sprows = _sp
                 if _unit == "일":
                     _sk = _sp["dt"].dt.normalize()
                 elif _unit == "주":
@@ -5436,22 +5464,34 @@ def main():
                 _smean = _sp.groupby(_sk)["uv"].mean()
         _METS_T = METS + ([_SITEM] if _smean is not None else [])
 
+        def _smean_at(ps, clip=False):
+            """사이트 원천의 기간 일평균. clip이면 경과분까지만 평균 낸다.
+
+            값이 이미 일평균이라 합산 지표만큼 튀지는 않지만, 같은 화면에서 지표마다
+            창이 갈리면 마지막 점의 전년비가 지표별로 다른 뜻이 된다."""
+            if _smean is None or ps is None:
+                return np.nan
+            ps = pd.Timestamp(ps)
+            if not clip or _sprows is None:
+                return float(_smean.get(ps, np.nan))
+            e = min(_elapsed, _plen(ps, _unit) - 1)
+            _v = _sprows.loc[(_sprows["dt"] >= ps)
+                             & (_sprows["dt"] <= ps + pd.Timedelta(days=e)), "uv"]
+            return float(_v.mean()) if len(_v) else np.nan
+
         def _tv(p, met):
             """추이 한 칸의 값 — 사이트 지표만 원천이 다르다."""
             if met == _SITEM:
                 if _smean is None or p is None or pd.Timestamp(p) > _cut:
                     return np.nan
-                return float(_smean.get(pd.Timestamp(p), np.nan))
-            return _dv(_tagg.get(p) if p in _tagg else _aggfull(p), met)
+                return _smean_at(p, clip=(p == _mtd_ps))
+            return _dv(_tagg.get(p) if p in _tagg else _aggt(p), met)
 
         def _tvy(p, met):
             """그 칸의 전년 값."""
             if met == _SITEM:
-                _y = _yoy_ps(p, _unit)
-                if _smean is None or _y is None:
-                    return np.nan
-                return float(_smean.get(pd.Timestamp(_y), np.nan))
-            return _dv(_typ.get(p) if p in _typ else _aggfull(_yoy_ps(p, _unit)), met)
+                return _smean_at(_yoy_ps(p, _unit), clip=(p == _mtd_ps))
+            return _dv(_typ.get(p) if p in _typ else _aggt_of(p, _yoy_ps(p, _unit)), met)
 
         def _tfmt(met, v):
             """사이트 지표는 천명이라 소수 한 자리 — 위 표들과 같은 서식."""
@@ -5490,8 +5530,8 @@ def main():
                     # 했다. 직전 기간 대비와 전년비를 같이 띄운다 — 표를 안 내려가도
                     # 읽히게. 비율 지표는 `_dlt`가 %p로 내므로 단위도 알아서 맞는다.
                     _dpp = [_dlt(_met, _tv(p, _met),
-                                 (_tv(_prev_ps(p, _unit), _met) if _met == _SITEM
-                                  else _dv(_tpv[p], _met)))
+                                 (_smean_at(_prev_ps(p, _unit), clip=(p == _mtd_ps))
+                                  if _met == _SITEM else _dv(_tpv[p], _met)))
                             for p in _tps]
                     _dyy = [_dlt(_met, _c, _p) for _c, _p in zip(_cy, _py)]
                     # 색은 점마다 다르니 값과 **같이** 싣는다(0·1=값, 2·3=CSS).
@@ -5561,6 +5601,11 @@ def main():
                           f"{_ahead}{_TWSUF}{josa(_TWSUF, '은는')} 실적이 없어 표에선 빼요)")
         if _drop_ref:
             _tnote.append("진행 중이거나 실적이 덜 찬 기준 기간은 뺐어요")
+        if _mtd_ps is not None:
+            _tnote.append(
+                f"마지막 {_UNAME}{josa(_UNAME, '은는')} 진행 중이라 **{_elapsed + 1}일치 "
+                f"경과분({_PARTSUF[_unit]})**이에요. 전년·{_PVN}도 같은 일수로 잘라 "
+                f"맞댔어요")
         if not _has_py:
             _tnote.append("전년 데이터가 없어 비교선과 전년비는 빠졌어요")
         _tnote.append("값은 그 기간의 " + ("**일평균**" if _avg else "**합산**") + "이에요")
@@ -6060,7 +6105,31 @@ def main():
 
         # ① 거래액 직전 기간 대비 — 카테고리 기여 분해 (워터폴)
         with tabW:
-            st.markdown(f"##### 거래액 {_PVN} 대비 — 어느 카테고리가 끌어올리고/깎아먹었나")
+            # 비교 기준을 고른다 — 예전엔 «직전 기간» 하나에 박혀 있었다. 월 단위에서
+            # '전년 같은 달과 견주면 어느 카테고리가 빠졌나'를 여기서 못 봐 같은 질문을
+            # 다른 페이지에서 다시 찾아야 했다. 선택지도 이름도 위 「비교」와 **같은
+            # 목록(`_CMPSPEC`)**에서 나온다 — 여기 따로 적으면 단위를 바꿀 때 한쪽만 썩는다.
+            #
+            # **`_PVN`·`prev_ws`를 재대입하지 말 것.** 둘 다 `main()` 지역변수라 위 KPI
+            # 카드·추이 툴팁이 같이 본다 — 여기서 덮으면 그 화면들까지 따라 바뀐다.
+            # 그래서 이 탭 안에서만 쓰는 `_wfn`·`_wf_ps`로 받는다.
+            _WFOPT = {nm: ps for (_c, nm), ps in
+                      zip(_CMPSPEC, (prev_ws, pm_ws, yo_ws)) if ps is not None}
+            # 실적이 없는 기준은 안 올린다 — 눌러도 '데이터가 없어요'만 나오는 선택지는
+            # '왜 안 나오지'만 남긴다. 셋 다 비면 그대로 둬 블록이 이유를 말하게 한다.
+            _WFOK = {nm: ps for nm, ps in _WFOPT.items() if pd.Timestamp(ps) in _have}
+            _WFOPT = _WFOK or _WFOPT
+            _wfn = list(_WFOPT)[0]
+            if len(_WFOPT) > 1:
+                # 라벨이 단위마다 바뀌니 키를 단위로 가르고 `guard_select`를 앞에 둔다 —
+                # 세션에 남은 옛 라벨(「전주」)이 월 단위에선 목록 밖이다.
+                guard_select(f"wr_wf_cmp_{_unit}", list(_WFOPT))
+                _wfn = st.segmented_control(
+                    "비교 기준", list(_WFOPT), default=_wfn, key=f"wr_wf_cmp_{_unit}",
+                    help="아래 두 분해가 무엇과 맞댈지예요. 위 「비교」와 같은 목록이에요.") \
+                    or list(_WFOPT)[0]
+            _wf_ps = _WFOPT[_wfn]
+            st.markdown(f"##### 거래액 {_wfn} 대비 — 어느 카테고리가 끌어올리고/깎아먹었나")
             st.caption("여기 숫자는 **금액 분해**라 위의 「값 기준」과 무관하게 늘 합산이에요. "
                        "일평균으로 나누면 '얼마를 끌어올렸나'가 안 읽혀요.")
             def _catfill(d):
@@ -6081,17 +6150,17 @@ def main():
             # △70%대 가짜 급락을 그려 바로 위 KPI 카드(동요일 누계)와 모순됐다.
             # 완결 기간이면 경과분이 곧 기간 전체라 기존 동작과 완전히 같다.
             _dec_end = ref_ps + pd.Timedelta(days=_elapsed)
-            _pv_e = min(_elapsed, _plen(prev_ws, _unit) - 1)
+            _pv_e = min(_elapsed, _plen(_wf_ps, _unit) - 1)
             cwd = _catfill(_slice(ref_ps, _dec_end))
-            pwd = _catfill(_slice(prev_ws, pd.Timestamp(prev_ws) + pd.Timedelta(days=_pv_e)))
+            pwd = _catfill(_slice(_wf_ps, pd.Timestamp(_wf_ps) + pd.Timedelta(days=_pv_e)))
             if _elapsed < _plen_ref - 1:
                 _upto2 = (f"월~{_DOW_KO[_elapsed]} 동요일 누계" if _unit == "주"
                           else f"1일~{_elapsed + 1}일 누계")
                 st.caption(f"⏳ 기준 {_UNAME}{josa(_UNAME, '이가')} 부분 기간이라 "
-                           f"**{_upto2}**로 {_PVN}과 비교해요 "
+                           f"**{_upto2}**로 {_wfn}과 비교해요 "
                            "(위 KPI 카드와 같은 기준).")
             if "cat" not in cwd.columns or len(pwd) == 0:
-                st.info(f"{_PVN} 데이터가 없어 분해할 수 없어요.")
+                st.info(f"{_wfn} 데이터가 없어 분해할 수 없어요.")
             else:
                 cur_g = cwd.groupby("cat").agg(
                     send=("send", "sum"),
@@ -6115,7 +6184,7 @@ def main():
                 # 카테고리별 증감이 전부 0이면 워터폴은 건너뛰고 안내만 (LMDI·믹스는 계속).
                 # dif가 비면 아래 워터폴/표는 자연히 빈 값이 되지만, 안내로 오해를 막는다.
                 if dif.empty:
-                    st.info(f"{_PVN} 대비 카테고리별 거래액 증감이 없어요 (동일하거나 데이터 없음).")
+                    st.info(f"{_wfn} 대비 카테고리별 거래액 증감이 없어요 (동일하거나 데이터 없음).")
                 # 기여 큰 8개만 개별 표시, 나머지는 '기타'로 합산
                 if len(dif) > 8:
                     top8 = dif.reindex(dif.abs().sort_values(ascending=False).head(8).index)
@@ -6177,33 +6246,33 @@ def main():
                     send_diff_str = f"△{abs(send_diff):,.0f}" if send_diff < 0 else f"+{send_diff:,.0f}"
                     wrows.append({
                         "카테고리": str(c),
-                        f"{_PVN} 거래액": won(p_amt),
+                        f"{_wfn} 거래액": won(p_amt),
                         "기준 거래액": won(c_amt),
                         "거래액 증감": _damt(v),
-                        f"거래액 {_PVN}비": _dlt("거래액", c_amt, p_amt if p_amt > 0 else np.nan),
-                        f"{_PVN} 발송": f"{p_send:,.0f}",
+                        f"거래액 {_wfn}비": _dlt("거래액", c_amt, p_amt if p_amt > 0 else np.nan),
+                        f"{_wfn} 발송": f"{p_send:,.0f}",
                         "기준 발송": f"{c_send:,.0f}",
                         "발송 증감": send_diff_str,
-                        f"발송 {_PVN}비": _dlt("발송", c_send, p_send if p_send > 0 else np.nan),
-                        f"{_PVN} CTR": f"{p_ctr:.2%}",
+                        f"발송 {_wfn}비": _dlt("발송", c_send, p_send if p_send > 0 else np.nan),
+                        f"{_wfn} CTR": f"{p_ctr:.2%}",
                         "기준 CTR": f"{c_ctr:.2%}",
-                        f"{_PVN} UV": f"{p_uv:,.0f}",
+                        f"{_wfn} UV": f"{p_uv:,.0f}",
                         "기준 UV": f"{c_uv:,.0f}",
-                        f"{_PVN} CR": f"{p_cr:.2%}",
+                        f"{_wfn} CR": f"{p_cr:.2%}",
                         "기준 CR": f"{c_cr:.2%}",
-                        f"{_PVN} RPS": f"{p_rps:,.0f}원",
+                        f"{_wfn} RPS": f"{p_rps:,.0f}원",
                         "기준 RPS": f"{c_rps:,.0f}원",
                     })
                 if wrows:
                     table(pd.DataFrame(wrows).style.map(
-                              _clr, subset=["거래액 증감", f"거래액 {_PVN}비",
-                                            "발송 증감", f"발송 {_PVN}비"]),
+                              _clr, subset=["거래액 증감", f"거래액 {_wfn}비",
+                                            "발송 증감", f"발송 {_wfn}비"]),
                                  hide_index=True, width="stretch", height=min(38 + 35 * len(wrows), 640))
-                st.markdown(f'<div class="appendix">카테고리별로 {_PVN} 대비 거래액을 얼마나 끌어올리고 깎아먹었는지예요. '
+                st.markdown(f'<div class="appendix">카테고리별로 {_wfn} 대비 거래액을 얼마나 끌어올리고 깎아먹었는지예요. '
                             '녹색은 상승, 적색(△)은 감소 기여예요. 기여가 큰 8개만 보여주고 나머지는 기타로 합쳤어요.</div>', unsafe_allow_html=True)
 
                 # ── 지표 체인 분해(LMDI) — '어느 카테고리'가 아니라 '어느 지표'가 만들었나 ──
-                st.markdown(f"##### 거래액 {_PVN} 대비 — 어느 지표(발송·CTR·CR·객단가)가 만들었나")
+                st.markdown(f"##### 거래액 {_wfn} 대비 — 어느 지표(발송·CTR·CR·객단가)가 만들었나")
 
                 def _chain(d):
                     s, u, o, a = (float(d["send"].sum()), float(d["uv"].sum()),
@@ -6220,7 +6289,7 @@ def main():
                     contrib = {k: _L * _math.log(f1[k] / f0[k])
                                for k in ("발송량", "CTR", "주문CR", "객단가")}
                     wf = go.Figure(go.Waterfall(
-                        x=[f"{_PVN} 거래액"] + list(contrib.keys()) + ["기준 거래액"],
+                        x=[f"{_wfn} 거래액"] + list(contrib.keys()) + ["기준 거래액"],
                         measure=["absolute"] + ["relative"] * 4 + ["total"],
                         y=[v0] + [contrib[k] for k in contrib] + [0],
                         text=[won(v0)] + [_damt(contrib[k]) for k in contrib] + [won(v1)],
@@ -6231,7 +6300,7 @@ def main():
                         totals=dict(marker=dict(color=PALETTE["slate"])),
                     ))
                     wf.update_layout(**base_layout(
-                        h=380, title=f"지표 체인 기여 분해 (LMDI) — {_PVN} → 기준 {_UNAME}"))
+                        h=380, title=f"지표 체인 기여 분해 (LMDI) — {_wfn} → 기준 {_UNAME}"))
                     st.plotly_chart(wf, width="stretch")
                     _tot_d = v1 - v0
                     _big = max(contrib, key=lambda k: abs(contrib[k]))
@@ -6242,7 +6311,7 @@ def main():
                                 f'({_damt(contrib[_big])}, 총 증감 대비 크기 {_shr:.0f}%)예요.</div>',
                                 unsafe_allow_html=True)
                 else:
-                    st.caption(f"지표 체인 분해는 {_PVN}·기준 {_UNAME} 모두 발송·UV·주문·거래액이 "
+                    st.caption(f"지표 체인 분해는 {_wfn}·기준 {_UNAME} 모두 발송·UV·주문·거래액이 "
                                "0보다 커야 계산돼요.")
 
                 # ── 가중 CTR 증감의 믹스 분해 — 진짜 효율 악화 vs 저효율 카테고리 비중 증가 ──
@@ -6262,7 +6331,7 @@ def main():
 
                     def _pp(v):
                         return f"△{abs(v)*100:.2f}%p" if v < 0 else f"+{v*100:.2f}%p"
-                    st.markdown(f'<div class="appendix"><b>가중 CTR {_PVN} 대비 {_pp(_dctr)}</b> = '
+                    st.markdown(f'<div class="appendix"><b>가중 CTR {_wfn} 대비 {_pp(_dctr)}</b> = '
                                 f'실질 효율 {_pp(_real)} + 카테고리 믹스 {_pp(_mix)} '
                                 '(두 성분의 합은 총 증감과 일치). 믹스 성분이 크면 CTR 변화가 '
                                 '문구·타깃 효율 문제가 아니라 카테고리 발송 비중 변화 때문이에요. '
@@ -6275,7 +6344,7 @@ def main():
                 st.markdown("**① 카테고리 기여 분해** (막대차트)")
                 st.markdown("각 카테고리의 거래액 증감을 그대로 더한 값 — 합은 전체 거래액 증감과 일치.")
                 st.latex(r"\Delta \text{거래액} = \sum_{c}\left(\text{거래액}_{c,\text{기준 "
-                         + _UNAME + r"}} - \text{거래액}_{c,\text{" + _PVN + r"}}\right)")
+                         + _UNAME + r"}} - \text{거래액}_{c,\text{" + _wfn + r"}}\right)")
                 st.markdown("---")
                 st.markdown("**② 지표 체인 분해 (LMDI)** — 워터폴")
                 st.markdown("거래액을 4개 지표의 곱으로 보고, 각 지표가 증감에 얼마나 기여했는지 분해해요. "
@@ -6283,7 +6352,7 @@ def main():
                 st.latex(r"\text{거래액} = \text{발송량}\times \text{CTR}\times \text{주문CR}\times \text{객단가}")
                 st.latex(r"\text{기여}_{k} = L(V_1,V_0)\cdot \ln\!\frac{f_{k,1}}{f_{k,0}}"
                          r"\qquad L(a,b)=\frac{a-b}{\ln a-\ln b}")
-                st.caption(f"V₁·V₀ = 기준 {_UNAME}·{_PVN} 거래액, fₖ = 각 지표값, "
+                st.caption(f"V₁·V₀ = 기준 {_UNAME}·{_wfn} 거래액, fₖ = 각 지표값, "
                            "L = 로그평균. "
                            "Σ 기여ₖ = V₁ − V₀ (오차 없이 정확 분해).")
                 st.markdown("---")
@@ -6293,7 +6362,7 @@ def main():
                 st.latex(r"\Delta \text{CTR} = \underbrace{\sum_{c} w_{c,0}\,(\text{ctr}_{c,1}-\text{ctr}_{c,0})}_{\text{실질 효율}}"
                          r" + \underbrace{\sum_{c} (w_{c,1}-w_{c,0})\,\text{ctr}_{c,1}}_{\text{카테고리 믹스}}")
                 st.caption("wc = 카테고리 c의 발송 비중(발송c ÷ 전체 발송), ctrc = 카테고리 c의 CTR. "
-                           f"0={_PVN}·1=기준 {_UNAME}. 두 성분의 합은 전체 가중 CTR 증감과 "
+                           f"0={_wfn}·1=기준 {_UNAME}. 두 성분의 합은 전체 가중 CTR 증감과 "
                            "일치해요.")
 
         # ② 기준 기간 하이라이트 · 로우라이트
