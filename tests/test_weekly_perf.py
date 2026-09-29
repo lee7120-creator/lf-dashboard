@@ -302,6 +302,130 @@ def t_trend_window_default_follows_the_unit():
 
 
 @case
+def t_in_progress_period_joins_the_trend_as_mtd():
+    """**진행 중인 기준 기간도 추이에 세우되 «경과분까지»로 읽는다** (월=MTD·주=WTD).
+
+    예전엔 통째로 뺐다 — 추이만 기간 전체 창이라 28일치 9월을 30일치 8월 옆에 세우면
+    가짜 급락이 뜨기 때문이었다. 그래서 '이번 달은 어떤가'를 이 화면에서 못 봤다.
+
+    **핵심은 전년도 같은 일수로 자르는 것**이다. 한쪽만 자르면 급락이 전년비 칸으로
+    옮겨 갈 뿐이다. 픽스처가 그걸 반증하는지부터 확인한다 — 자른 값과 안 자른 값이
+    같으면 규칙을 깨도 안 잡힌다."""
+    for unit, u, suf in (("월별", "월", "MTD"), ("주별", "주", "WTD")):
+        at = _open(unit)
+        tbl = _trend(at)
+        labs = [c[1] for c in tbl.columns if c[0] == "실적"]
+        assert labs, f"{unit}: 추이 표가 비었어요"
+        assert labs[-1].endswith(f"({suf})"), \
+            f"{unit}: 마지막 칸이 «{labs[-1]}» — 진행 중인 기간이 없거나 표시가 빠졌어요"
+        assert not any(x.endswith(f"({suf})") for x in labs[:-1]), \
+            f"{unit}: 완결 기간에도 {suf}가 붙었어요 — {labs}"
+        # 경과분이라고 «화면이 말하는지»
+        assert any("경과분" in t and suf in t for t in _texts(at)), \
+            f"{unit}: 경과분 캡션이 없어요"
+
+    # 값 대조 — 월 단위로 직접 합과 맞댄다.
+    at = _open("월별")
+    tbl = _trend(at)
+    lab = [c[1] for c in tbl.columns if c[0] == "실적"][-1]
+    d = STORE.copy()
+    d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d")
+    last = d["dt"].max().normalize()
+    ms = last.replace(day=1)
+    el = (last - ms).days                                  # 경과일수 - 1
+
+    def _sum(a, b):
+        return float(d.loc[(d.dt >= a) & (d.dt <= b), "amt"].sum())
+
+    cur = _sum(ms, ms + pd.Timedelta(days=el))
+    pys = ms - pd.offsets.DateOffset(years=1)
+    py_clip = _sum(pys, pys + pd.Timedelta(days=el))
+    py_full = _sum(pys, pys + pd.offsets.MonthEnd(0))
+    # 픽스처가 규칙을 반증하나 — 자른 전년과 안 자른 전년이 달라야 한다
+    assert py_clip > 0 and abs(py_clip - py_full) / py_full > 0.01, \
+        f"픽스처가 약해요: 전년 경과분 {py_clip:,.0f} ≈ 전년 전체 {py_full:,.0f}"
+    want = (cur / py_clip - 1) * 100
+    nope = (cur / py_full - 1) * 100
+    got = str(tbl.loc["거래액", ("전년비", lab)])
+    num = float(re.sub(r"[^\d.]", "", got)) * (-1 if got.startswith("△") else 1)
+    assert abs(num - want) < 0.15, \
+        f"전년비 {got} — 경과분 기준 {want:+.1f}% 여야 해요 (안 자르면 {nope:+.1f}%)"
+
+
+@case
+def t_daily_unit_is_left_alone():
+    """**일 단위는 손대지 않는다.** 기간이 하루라 경과 창이 0이고 `_aggp`가
+    `_aggfull`과 같아져, 자를 게 없는 채로 몇 시간치를 전년 하루와 맞대게 된다.
+    MTD 표시도 붙으면 안 된다."""
+    at = _open("일별")
+    labs = [c[1] for c in _trend(at).columns if c[0] == "실적"]
+    assert labs and not any("MTD" in x or "WTD" in x for x in labs), \
+        f"일 단위에 경과분 표시가 붙었어요 — {labs[-3:]}"
+
+
+@case
+def t_decomposition_comparison_basis_is_selectable():
+    """**증감 기여 분해의 비교 기준을 고를 수 있다.** 예전엔 «직전 기간» 하나에
+    박혀 있어 '전년 같은 달과 견주면 어느 카테고리가 빠졌나'를 못 봤다.
+
+    선택지는 위 「비교」와 **같은 목록(`_CMPSPEC`)**에서 나와야 한다 — 여기 따로
+    적으면 단위를 바꿀 때 한쪽만 썩는다. 제목만 바뀌고 값이 안 따라오는 게 이
+    저장소의 전형적인 조용한 실패라 **값까지** 본다."""
+    for unit, u, want in (("월별", "월", ["전월", "전전월", "전년 동월"]),
+                          ("주별", "주", ["전주", "전월 동주", "전년 동주"])):
+        at = _open(unit)
+        chips = [b for b in at.get("button_group")
+                 if str(getattr(b, "label", "")) == "비교 기준"]
+        assert chips, f"{unit}: 「비교 기준」 위젯이 없어요"
+        opts = list(chips[0].options)
+        assert opts == want, f"{unit}: 선택지가 {opts} — _CMPSPEC과 갈렸어요"
+
+        seen = {}
+        for o in opts:
+            b = _open(unit, **{f"wr_wf_cmp_{u}": o})
+            assert not b.exception, b.exception[0].value
+            heads = [t for t in _texts(b) if "끌어올리고" in t]
+            assert heads and f"거래액 {o} 대비" in heads[0], \
+                f"{unit}/{o}: 제목이 기준을 안 따라가요 — {heads[:1]}"
+            col = f"{o} 거래액"
+            val = None
+            for d in b.dataframe:
+                if col in [str(c) for c in getattr(d.value, "columns", [])]:
+                    val = str(d.value[col].iloc[0]); break
+            assert val is not None, f"{unit}/{o}: 「{col}」 칼럼이 없어요"
+            seen[o] = val
+        assert len(set(seen.values())) > 1, \
+            f"{unit}: 기준을 바꿔도 값이 그대로예요 — {seen} (제목만 바뀐 것)"
+
+
+@case
+def t_decomposition_basis_does_not_leak_below_the_tab():
+    """**분해 탭의 선택이 탭 «아래» 화면으로 새면 안 된다.**
+
+    `_PVN`·`prev_ws`는 `main()` 지역변수다. 탭 안에서 그 이름에 재대입하면 뒤이어
+    그려지는 「카테고리별 기준 기간 실적」이 조용히 따라 바뀐다 — 값은 멀쩡히 찍히고
+    제목만 다른 기준을 말하게 된다. 전역 헬퍼 섀도잉과 정확히 같은 자리다.
+
+    **위 KPI 카드를 보면 안 된다.** 그건 탭보다 «먼저» 그려져서 재대입해도 안 바뀐다 —
+    실제로 처음엔 거기를 봤고, 버그를 심었는데 검사가 그대로 통과했다. 봐야 하는 건
+    탭 «뒤»에 그려지는 블록이다."""
+    want, other = "전월", "전년 동월"
+    base = _open("월별")
+    head = [t for t in _texts(base) if "카테고리별 기준" in t and "실적 —" in t]
+    assert head, "「카테고리별 기준 … 실적」 제목을 못 찾았어요"
+    assert f"— {want} 대비" in head[0], f"기대한 기준이 아니에요 — {head[0]}"
+
+    at = _open("월별", **{"wr_wf_cmp_월": other})
+    assert not at.exception, at.exception[0].value
+    got = [t for t in _texts(at) if "카테고리별 기준" in t and "실적 —" in t]
+    assert got and f"— {want} 대비" in got[0], \
+        f"탭 선택이 아래 블록으로 샜어요 — 「{got[0] if got else None}」"
+    cols = {str(c) for d in at.dataframe for c in getattr(d.value, "columns", [])}
+    assert f"거래액 {want}비" in cols, \
+        f"아래 표의 칼럼이 탭 선택을 따라갔어요 — {sorted(c for c in cols if '비' in c)}"
+
+
+@case
 def t_year_window_uses_the_iso_year_of_the_label():
     """「올해 전체」는 **라벨에 찍힌 연도**로 거른다 — 주는 ISO 기준연도다.
 
@@ -463,6 +587,19 @@ def _fig_traces(at, idx=0):
     """추이 차트 한 장의 트레이스 목록 (figure JSON에서 읽는다)."""
     import json
     return json.loads(at.get("plotly_chart")[idx].proto.spec).get("data", [])
+
+
+def _done_col(tbl):
+    """추이 표에서 «완결된» 마지막 실적 칸.
+
+    마지막 칸은 진행 중인 기간(월=MTD·주=WTD)일 수 있고, 그 칸은 경과 일수가
+    1일이면 **합산과 일평균이 같아진다**. 「값 기준」처럼 둘이 갈리는지 보는
+    검사가 마지막 칸을 그냥 집으면 규칙이 아니라 그 우연에 걸려 넘어진다
+    (실제로 `t_site_metric_is_not_divided_again_by_the_value_mode`가 그랬다)."""
+    done = [c for c in tbl.columns
+            if c[0] == "실적" and not re.search(r"\((MTD|WTD)\)$", str(c[1]))]
+    assert done, f"완결된 기간 칸이 없어요 — {[c[1] for c in tbl.columns][:6]}"
+    return done[-1]
 
 
 def _trend_traces(at, name="올해"):
@@ -685,8 +822,9 @@ def t_site_metric_is_not_divided_again_by_the_value_mode():
     site = _site_store(days=500)
     a = _trend(_open("주별", site=site))
     b = _trend(_open("주별", site=site, wr_valmode="일평균"))
-    ca = [c for c in a.columns if c[0] == "실적"][-1]
-    cb = [c for c in b.columns if c[0] == "실적"][-1]
+    # 마지막 칸은 진행 중인 주(WTD)라 경과 1일이면 합산=일평균이 된다 — 규칙이 아니라
+    # 그 우연에 걸려 넘어지지 않게 **완결된** 칸을 집는다.
+    ca, cb = _done_col(a), _done_col(b)
     assert ca == cb, f"비교할 기간이 달라요 — {ca} vs {cb}"
     assert a.loc[SITE_MET, ca] == b.loc[SITE_MET, cb], \
         f"값 기준이 사이트 지표까지 나눴어요 — {a.loc[SITE_MET, ca]} → {b.loc[SITE_MET, cb]}"
