@@ -6093,8 +6093,39 @@ def main():
             else:
                 st.info("이 기간엔 앱푸시 동의 데이터가 없어요.")
 
-        # ── 심화 분석 탭: 증감 기여 분해 · 하이라이트 · 월말 마감 예상 ──
+        # ── 심화 분석 — 비교 기준 하나를 이 아래가 다 본다 ──
+        # 예전엔 「직전 기간」에 박혀 있었다. 월 단위에서 '전년 같은 달과 견주면 어느
+        # 카테고리가 빠졌나'를 여기서 못 봐 같은 질문을 다른 페이지에서 다시 찾아야 했다.
+        #
+        # **위젯은 탭 «밖»에 둔다.** 탭 ① 안에 두면 탭 ②·③을 보는 동안엔 안 보이는데
+        # 그 아래 「카테고리별 실적」은 따라 바뀌어, 어디서 바뀐 건지 화면에서 되짚을
+        # 수가 없다. 실제로 탭 안에 두고 카테고리 블록만 안 따라가게 했다가
+        # 「비교 필터를 바꿔도 안 바뀐다」는 지적을 받았다.
+        #
+        # 선택지도 이름도 위 「비교」와 **같은 목록(`_CMPSPEC`)**에서 나온다 — 여기
+        # 따로 적으면 단위를 바꿀 때 한쪽만 썩는다.
+        #
+        # **`_PVN`·`prev_ws`를 재대입하지 말 것.** 둘 다 `main()` 지역변수고 **위**
+        # KPI 카드·「주요 지표 현황」·추이 툴팁이 같이 본다. 그쪽은 「비교」 칩으로
+        # 셋을 한꺼번에 보는 화면이라 여기 선택을 따라가면 안 된다.
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        _WFOPT = {nm: ps for (_c, nm), ps in
+                  zip(_CMPSPEC, (prev_ws, pm_ws, yo_ws)) if ps is not None}
+        # 실적이 없는 기준은 안 올린다 — 눌러도 '데이터가 없어요'만 나오는 선택지는
+        # '왜 안 나오지'만 남긴다. 셋 다 비면 그대로 둬 블록이 이유를 말하게 한다.
+        _WFOK = {nm: ps for nm, ps in _WFOPT.items() if pd.Timestamp(ps) in _have}
+        _WFOPT = _WFOK or _WFOPT
+        _wfn = list(_WFOPT)[0]
+        if len(_WFOPT) > 1:
+            # 라벨이 단위마다 바뀌니 키를 단위로 가르고 `guard_select`를 앞에 둔다 —
+            # 세션에 남은 옛 라벨(「전주」)이 월 단위에선 목록 밖이다.
+            guard_select(f"wr_wf_cmp_{_unit}", list(_WFOPT))
+            _wfn = st.segmented_control(
+                "비교 기준", list(_WFOPT), default=_wfn, key=f"wr_wf_cmp_{_unit}",
+                help="위 「비교」와 같은 목록이에요.") or list(_WFOPT)[0]
+        _wf_ps = _WFOPT[_wfn]
+        st.caption(f"아래 「증감 기여 분해」와 「카테고리별 실적」을 **{_wfn}**과 맞대요. "
+                   f"맨 위 카드·「주요 지표 현황」은 「비교」에서 고른 대로 그대로예요.")
         tabW, tabH, tabP = st.tabs(["📉 증감 기여 분해", "🏆 하이라이트·로우라이트", "🎯 월말 마감 예상"])
 
         def _damt(v):
@@ -6105,30 +6136,6 @@ def main():
 
         # ① 거래액 직전 기간 대비 — 카테고리 기여 분해 (워터폴)
         with tabW:
-            # 비교 기준을 고른다 — 예전엔 «직전 기간» 하나에 박혀 있었다. 월 단위에서
-            # '전년 같은 달과 견주면 어느 카테고리가 빠졌나'를 여기서 못 봐 같은 질문을
-            # 다른 페이지에서 다시 찾아야 했다. 선택지도 이름도 위 「비교」와 **같은
-            # 목록(`_CMPSPEC`)**에서 나온다 — 여기 따로 적으면 단위를 바꿀 때 한쪽만 썩는다.
-            #
-            # **`_PVN`·`prev_ws`를 재대입하지 말 것.** 둘 다 `main()` 지역변수라 위 KPI
-            # 카드·추이 툴팁이 같이 본다 — 여기서 덮으면 그 화면들까지 따라 바뀐다.
-            # 그래서 이 탭 안에서만 쓰는 `_wfn`·`_wf_ps`로 받는다.
-            _WFOPT = {nm: ps for (_c, nm), ps in
-                      zip(_CMPSPEC, (prev_ws, pm_ws, yo_ws)) if ps is not None}
-            # 실적이 없는 기준은 안 올린다 — 눌러도 '데이터가 없어요'만 나오는 선택지는
-            # '왜 안 나오지'만 남긴다. 셋 다 비면 그대로 둬 블록이 이유를 말하게 한다.
-            _WFOK = {nm: ps for nm, ps in _WFOPT.items() if pd.Timestamp(ps) in _have}
-            _WFOPT = _WFOK or _WFOPT
-            _wfn = list(_WFOPT)[0]
-            if len(_WFOPT) > 1:
-                # 라벨이 단위마다 바뀌니 키를 단위로 가르고 `guard_select`를 앞에 둔다 —
-                # 세션에 남은 옛 라벨(「전주」)이 월 단위에선 목록 밖이다.
-                guard_select(f"wr_wf_cmp_{_unit}", list(_WFOPT))
-                _wfn = st.segmented_control(
-                    "비교 기준", list(_WFOPT), default=_wfn, key=f"wr_wf_cmp_{_unit}",
-                    help="아래 두 분해가 무엇과 맞댈지예요. 위 「비교」와 같은 목록이에요.") \
-                    or list(_WFOPT)[0]
-            _wf_ps = _WFOPT[_wfn]
             st.markdown(f"##### 거래액 {_wfn} 대비 — 어느 카테고리가 끌어올리고/깎아먹었나")
             st.caption("여기 숫자는 **금액 분해**라 위의 「값 기준」과 무관하게 늘 합산이에요. "
                        "일평균으로 나누면 '얼마를 끌어올렸나'가 안 읽혀요.")
@@ -6493,16 +6500,18 @@ def main():
                         '줄여 주지만, 월초(경과 일수가 적을 때)일수록 오차가 커요.</div>',
                         unsafe_allow_html=True)
 
-        # ── 카테고리별 기준 기간 실적 (직전 기간 대비) — 행 클릭 시 하단에 메시지 상세 ──
+        # ── 카테고리별 기준 기간 실적 — 위 「비교 기준」을 따라간다 (행 클릭 시 하단에 메시지 상세) ──
+        # 바로 위 「증감 기여 분해」와 같은 질문('어느 카테고리가 빠졌나')이라
+        # 기준이 갈리면 한 화면이 두 기간을 말하게 된다. `_PVN`이 아니라 `_wfn`이다.
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        _catnm = f"카테고리별 기준 {_UNAME} 실적 — {_PVN} 대비"
+        _catnm = f"카테고리별 기준 {_UNAME} 실적 — {_wfn} 대비"
         st.markdown(f"##### 🗂 {_catnm}")
         st.caption(f"행을 클릭하면 그 카테고리의 기준 {_UNAME} 메시지별 효율이 아래에 떠요. "
                    + ("값은 그 기간의 일평균이에요." if _avg else "값은 그 기간의 합산이에요."))
         _cdays = _elapsed + 1
-        _pv_e2 = min(_elapsed, _plen(prev_ws, _unit) - 1)
+        _pv_e2 = min(_elapsed, _plen(_wf_ps, _unit) - 1)
         cw = _slice(ref_ps, ref_ps + pd.Timedelta(days=_elapsed))
-        pw = _slice(prev_ws, pd.Timestamp(prev_ws) + pd.Timedelta(days=_pv_e2))
+        pw = _slice(_wf_ps, pd.Timestamp(_wf_ps) + pd.Timedelta(days=_pv_e2))
         if "cat" in cw.columns and len(cw):
             def _bycat(d):
                 return d.groupby("cat").agg(캠페인수=("cat", "size"), 발송=("send", "sum"),
@@ -6522,14 +6531,14 @@ def main():
                 crows.append({"카테고리": cname,
                               "캠페인수": f"{_dvn('캠페인수', ca.loc[cname, '캠페인수'], _cdays):,.0f}",
                               "발송량": f"{_dvn('발송', s_c, _cdays):,.0f}",
-                              f"발송 {_PVN}비": _dlt("발송", s_c, s_p),
+                              f"발송 {_wfn}비": _dlt("발송", s_c, s_p),
                               "CTR": (f"{ctr_c*100:.2f}%" if pd.notna(ctr_c) else "–"),
                               "주문CR": (f"{cr_c*100:.2f}%" if pd.notna(cr_c) else "–"),
                               "거래액": won(_dvn("거래액", amt_c, _cdays)),
-                              f"거래액 {_PVN}비": _dlt("거래액", amt_c, amt_p)})
+                              f"거래액 {_wfn}비": _dlt("거래액", amt_c, amt_p)})
             if crows:
                 _cstyled = pd.DataFrame(crows).style.map(
-                    _clr, subset=[f"발송 {_PVN}비", f"거래액 {_PVN}비"])
+                    _clr, subset=[f"발송 {_wfn}비", f"거래액 {_wfn}비"])
                 try:
                     _evc = table(_cstyled, hide_index=True, width="stretch", height=330,
                                         key="wr_cat_tbl", on_select="rerun",

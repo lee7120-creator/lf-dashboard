@@ -311,8 +311,9 @@ def t_in_progress_period_joins_the_trend_as_mtd():
     **핵심은 전년도 같은 일수로 자르는 것**이다. 한쪽만 자르면 급락이 전년비 칸으로
     옮겨 갈 뿐이다. 픽스처가 그걸 반증하는지부터 확인한다 — 자른 값과 안 자른 값이
     같으면 규칙을 깨도 안 잡힌다."""
+    camp = _partial_store()          # 오늘이 월말이어도 부분 기간이게 잘라 둔다
     for unit, u, suf in (("월별", "월", "MTD"), ("주별", "주", "WTD")):
-        at = _open(unit)
+        at = _open(unit, camp=camp)
         tbl = _trend(at)
         labs = [c[1] for c in tbl.columns if c[0] == "실적"]
         assert labs, f"{unit}: 추이 표가 비었어요"
@@ -325,10 +326,10 @@ def t_in_progress_period_joins_the_trend_as_mtd():
             f"{unit}: 경과분 캡션이 없어요"
 
     # 값 대조 — 월 단위로 직접 합과 맞댄다.
-    at = _open("월별")
+    at = _open("월별", camp=camp)
     tbl = _trend(at)
     lab = [c[1] for c in tbl.columns if c[0] == "실적"][-1]
-    d = STORE.copy()
+    d = camp.copy()
     d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d")
     last = d["dt"].max().normalize()
     ms = last.replace(day=1)
@@ -399,30 +400,62 @@ def t_decomposition_comparison_basis_is_selectable():
 
 
 @case
-def t_decomposition_basis_does_not_leak_below_the_tab():
-    """**분해 탭의 선택이 탭 «아래» 화면으로 새면 안 된다.**
+def t_comparison_basis_drives_the_category_block_too():
+    """**「비교 기준」은 분해 탭과 「카테고리별 실적」을 «함께» 움직인다.**
 
-    `_PVN`·`prev_ws`는 `main()` 지역변수다. 탭 안에서 그 이름에 재대입하면 뒤이어
-    그려지는 「카테고리별 기준 기간 실적」이 조용히 따라 바뀐다 — 값은 멀쩡히 찍히고
-    제목만 다른 기준을 말하게 된다. 전역 헬퍼 섀도잉과 정확히 같은 자리다.
+    둘은 같은 질문('어느 카테고리가 빠졌나')이라 기준이 갈리면 한 화면이 두 기간을
+    말하게 된다. 처음엔 반대로 짰다 — 위젯을 탭 ① 안에 두고 아래 블록은 `_PVN`에
+    남겨, 「비교 기준을 전년 동월로 바꿔도 카테고리 표가 안 바뀐다」는 지적을 받았다.
+    그래서 위젯을 **탭 밖**으로 올렸다(탭 ②·③을 보는 동안 안 보이는 위젯이 아래를
+    바꾸면 어디서 바뀐 건지 되짚을 수가 없다).
 
-    **위 KPI 카드를 보면 안 된다.** 그건 탭보다 «먼저» 그려져서 재대입해도 안 바뀐다 —
-    실제로 처음엔 거기를 봤고, 버그를 심었는데 검사가 그대로 통과했다. 봐야 하는 건
-    탭 «뒤»에 그려지는 블록이다."""
-    want, other = "전월", "전년 동월"
-    base = _open("월별")
-    head = [t for t in _texts(base) if "카테고리별 기준" in t and "실적 —" in t]
-    assert head, "「카테고리별 기준 … 실적」 제목을 못 찾았어요"
-    assert f"— {want} 대비" in head[0], f"기대한 기준이 아니에요 — {head[0]}"
+    **제목만 보면 안 된다 — 값까지 본다.** 제목만 바뀌는 게 이 저장소의 전형적인
+    조용한 실패다."""
+    seen = {}
+    for nm in ("전월", "전년 동월"):
+        at = _open("월별", **{"wr_wf_cmp_월": nm})
+        assert not at.exception, at.exception[0].value
+        head = [t for t in _texts(at) if "카테고리별 기준" in t and "실적 —" in t]
+        assert head and f"— {nm} 대비" in head[0], \
+            f"{nm}: 카테고리 블록이 기준을 안 따라가요 — 「{head[0] if head else None}」"
+        col = f"거래액 {nm}비"
+        tbl = next((d.value for d in at.dataframe
+                    if col in [str(c) for c in getattr(d.value, "columns", [])]
+                    and f"발송 {nm}비" in [str(c) for c in getattr(d.value, "columns", [])]),
+                   None)
+        assert tbl is not None, f"{nm}: 「{col}」을 가진 카테고리 표가 없어요"
+        seen[nm] = str(tbl[col].iloc[0])
+    assert len(set(seen.values())) > 1, \
+        f"기준을 바꿔도 카테고리 값이 그대로예요 — {seen} (제목만 바뀐 것)"
 
-    at = _open("월별", **{"wr_wf_cmp_월": other})
+
+@case
+def t_comparison_basis_does_not_touch_the_cards_above():
+    """**그 선택이 «위» KPI 카드·「주요 지표 현황」까지 바꾸면 안 된다.**
+
+    위쪽은 「비교」 칩으로 전월비·전전월비·전년비 셋을 한꺼번에 보는 화면이라 기준
+    하나를 고르는 개념이 없다. `_PVN`·`prev_ws`를 재대입하면 거기까지 따라 바뀌는데
+    값은 멀쩡히 찍혀 눈으로는 안 잡힌다 — 전역 헬퍼 섀도잉과 같은 자리다.
+
+    **이 보호는 위젯 «위치»에 기대고 있다.** 위젯은 탭 밖으로 올라왔어도 여전히 위
+    카드(∼5200줄)보다 뒤(∼6100줄)라, 거기서 `_PVN`을 덮어 봐야 이미 그려진 카드는
+    안 바뀐다 — 그 자리에 버그를 심으면 **주입이 무효라 이 검사가 헛돈다**(실제로
+    두 번 그랬다). 유효한 주입은 **카드보다 앞에서** 기준을 갈아 끼우는 것이고
+    (`prev_ws, pm_ws, yo_ws = _cmp_starts(...)` 바로 뒤), 그게 이 검사가 진짜로
+    막는 시나리오다 — 나중에 이 선택 위젯을 상단 필터 바로 옮기고 `_PVN`에 물리는
+    경우. 그 주입은 툴팁 이름에서 잡힌다.
+
+    그래서 **툴팁까지 같이 본다** — 칼럼 이름만 보면 위젯을 위로 옮겼을 때 카드
+    칼럼은 「비교」 칩이 정하니 그대로일 수 있다."""
+    base = [str(c) for c in _kpi(_open("월별")).columns]
+    assert any("전월" in c for c in base), f"기대한 「전월…」 칼럼이 없어요 — {base}"
+    at = _open("월별", **{"wr_wf_cmp_월": "전년 동월"})
     assert not at.exception, at.exception[0].value
-    got = [t for t in _texts(at) if "카테고리별 기준" in t and "실적 —" in t]
-    assert got and f"— {want} 대비" in got[0], \
-        f"탭 선택이 아래 블록으로 샜어요 — 「{got[0] if got else None}」"
-    cols = {str(c) for d in at.dataframe for c in getattr(d.value, "columns", [])}
-    assert f"거래액 {want}비" in cols, \
-        f"아래 표의 칼럼이 탭 선택을 따라갔어요 — {sorted(c for c in cols if '비' in c)}"
+    got = [str(c) for c in _kpi(at).columns]
+    assert got == base, f"「비교 기준」이 위 표까지 바꿨어요 — {base} → {got}"
+    tip = [(tr.get("hovertemplate") or "") for _t, tr in _trend_traces(at)]
+    assert tip and all("전월 대비" in t for t in tip), \
+        f"추이 툴팁의 직전 기간 이름이 바뀌었어요 — {[t[:80] for t in tip[:2]]}"
 
 
 @case
@@ -587,6 +620,30 @@ def _fig_traces(at, idx=0):
     """추이 차트 한 장의 트레이스 목록 (figure JSON에서 읽는다)."""
     import json
     return json.loads(at.get("plotly_chart")[idx].proto.spec).get("data", [])
+
+
+def _partial_store(day=20):
+    """기준 기간이 **반드시 부분**이 되게 자른 픽스처.
+
+    `STORE`는 «오늘»까지 만들어지므로, 오늘이 월말이면 기준 월이 완결 기간이 되어
+    「부분 기간이라」 캡션·MTD 라벨·전년 자르기가 **달력 날짜에 따라** 있다 없다
+    한다. 실제로 2026-09-30에 CI가 그렇게 깨졌다 — 이틀 전엔 통과했다.
+    마지막 달을 `day`일까지만 남겨 언제 돌려도 부분 기간이게 만든다.
+
+    **주도 같이 부분이어야 한다.** 자른 날이 일요일이면 그 ISO 주는 완결이라
+    WTD가 안 붙는다 — 2026-09-20이 마침 일요일이라 여기서 한 번 더 걸렸다.
+    그래서 일요일이면 하루씩 당긴다. 두 조건 모두 아래에서 못 박는다."""
+    d = STORE.copy()
+    dt = pd.to_datetime(d["date"], format="%Y%m%d")
+    last = dt.max().normalize()
+    cut = min(last, last.replace(day=1) + pd.Timedelta(days=day - 1))
+    while cut.weekday() == 6:                      # 일요일 = ISO 주의 마지막 날
+        cut -= pd.Timedelta(days=1)
+    out = d[dt <= cut].reset_index(drop=True)
+    assert len(out) > 0, "픽스처를 너무 많이 잘랐어요"
+    assert cut.day < cut.days_in_month, f"{cut.date()}가 월말이라 달이 완결이에요"
+    assert cut.weekday() != 6, f"{cut.date()}가 일요일이라 주가 완결이에요"
+    return out
 
 
 def _done_col(tbl):
@@ -844,7 +901,9 @@ def t_prose_reads_right_in_every_unit():
     import re
     for unit, uname, peradj in (("일별", "일자", "일간"), ("주별", "주차", "주간"),
                                 ("월별", "월", "월간")):
-        at = _open(unit, push_consent_df=_push_fixture())
+        # 「기준 월이 부분 기간이라」 캡션은 부분 기간일 때만 뜬다 — 오늘이 월말이면
+        # 그 문장이 아예 안 그려져 조사 규칙을 깨도 안 잡힌다(2026-09-30 CI 실패).
+        at = _open(unit, camp=_partial_store(), push_consent_df=_push_fixture())
         txt = " ".join(re.sub(r"\s+", " ", str(e.value))
                        for e in list(at.caption) + list(at.info) + list(at.markdown))
         tex = " ".join(str(e.value) for e in at.latex)
