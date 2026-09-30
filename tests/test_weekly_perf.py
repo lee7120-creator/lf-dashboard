@@ -311,8 +311,9 @@ def t_in_progress_period_joins_the_trend_as_mtd():
     **핵심은 전년도 같은 일수로 자르는 것**이다. 한쪽만 자르면 급락이 전년비 칸으로
     옮겨 갈 뿐이다. 픽스처가 그걸 반증하는지부터 확인한다 — 자른 값과 안 자른 값이
     같으면 규칙을 깨도 안 잡힌다."""
+    camp = _partial_store()          # 오늘이 월말이어도 부분 기간이게 잘라 둔다
     for unit, u, suf in (("월별", "월", "MTD"), ("주별", "주", "WTD")):
-        at = _open(unit)
+        at = _open(unit, camp=camp)
         tbl = _trend(at)
         labs = [c[1] for c in tbl.columns if c[0] == "실적"]
         assert labs, f"{unit}: 추이 표가 비었어요"
@@ -325,10 +326,10 @@ def t_in_progress_period_joins_the_trend_as_mtd():
             f"{unit}: 경과분 캡션이 없어요"
 
     # 값 대조 — 월 단위로 직접 합과 맞댄다.
-    at = _open("월별")
+    at = _open("월별", camp=camp)
     tbl = _trend(at)
     lab = [c[1] for c in tbl.columns if c[0] == "실적"][-1]
-    d = STORE.copy()
+    d = camp.copy()
     d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d")
     last = d["dt"].max().normalize()
     ms = last.replace(day=1)
@@ -621,6 +622,30 @@ def _fig_traces(at, idx=0):
     return json.loads(at.get("plotly_chart")[idx].proto.spec).get("data", [])
 
 
+def _partial_store(day=20):
+    """기준 기간이 **반드시 부분**이 되게 자른 픽스처.
+
+    `STORE`는 «오늘»까지 만들어지므로, 오늘이 월말이면 기준 월이 완결 기간이 되어
+    「부분 기간이라」 캡션·MTD 라벨·전년 자르기가 **달력 날짜에 따라** 있다 없다
+    한다. 실제로 2026-09-30에 CI가 그렇게 깨졌다 — 이틀 전엔 통과했다.
+    마지막 달을 `day`일까지만 남겨 언제 돌려도 부분 기간이게 만든다.
+
+    **주도 같이 부분이어야 한다.** 자른 날이 일요일이면 그 ISO 주는 완결이라
+    WTD가 안 붙는다 — 2026-09-20이 마침 일요일이라 여기서 한 번 더 걸렸다.
+    그래서 일요일이면 하루씩 당긴다. 두 조건 모두 아래에서 못 박는다."""
+    d = STORE.copy()
+    dt = pd.to_datetime(d["date"], format="%Y%m%d")
+    last = dt.max().normalize()
+    cut = min(last, last.replace(day=1) + pd.Timedelta(days=day - 1))
+    while cut.weekday() == 6:                      # 일요일 = ISO 주의 마지막 날
+        cut -= pd.Timedelta(days=1)
+    out = d[dt <= cut].reset_index(drop=True)
+    assert len(out) > 0, "픽스처를 너무 많이 잘랐어요"
+    assert cut.day < cut.days_in_month, f"{cut.date()}가 월말이라 달이 완결이에요"
+    assert cut.weekday() != 6, f"{cut.date()}가 일요일이라 주가 완결이에요"
+    return out
+
+
 def _done_col(tbl):
     """추이 표에서 «완결된» 마지막 실적 칸.
 
@@ -876,7 +901,9 @@ def t_prose_reads_right_in_every_unit():
     import re
     for unit, uname, peradj in (("일별", "일자", "일간"), ("주별", "주차", "주간"),
                                 ("월별", "월", "월간")):
-        at = _open(unit, push_consent_df=_push_fixture())
+        # 「기준 월이 부분 기간이라」 캡션은 부분 기간일 때만 뜬다 — 오늘이 월말이면
+        # 그 문장이 아예 안 그려져 조사 규칙을 깨도 안 잡힌다(2026-09-30 CI 실패).
+        at = _open(unit, camp=_partial_store(), push_consent_df=_push_fixture())
         txt = " ".join(re.sub(r"\s+", " ", str(e.value))
                        for e in list(at.caption) + list(at.info) + list(at.markdown))
         tex = " ".join(str(e.value) for e in at.latex)
