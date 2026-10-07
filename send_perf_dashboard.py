@@ -39,11 +39,10 @@ def today_kst():
     from zoneinfo import ZoneInfo
     return datetime.datetime.now(ZoneInfo("Asia/Seoul")).date()
 
-try:
-    from streamlit_quill import st_quill
-    HAS_QUILL = True
-except Exception:
-    HAS_QUILL = False
+# 보고란 에디터 — 두 앱 공용(note_editor.py). 모듈을 못 불러와도 앱은 떠야 하므로
+# 평범한 텍스트 박스로 내려가는 폴백까지 그 안에 있다.
+from note_editor import note_editor, note_editor_reset
+from note_markdown import looks_like_html as note_is_html
 
 # ══════════════════════════════════════════════════════════════════════
 # 1. 순수 데이터 로직 (Streamlit 비의존)
@@ -5701,25 +5700,36 @@ def main():
             return "\n".join(lines)
 
         def _note_render(text):
-            """보고란 표시 — △는 빨강, +는 초록 (회사 양식). HTML 태그를 보존하면서 텍스트 노드만 색칠합니다."""
+            """보고란 표시 — △는 빨강, +는 초록 (회사 양식).
+
+            저장된 글은 두 꼴이 섞여 있다. 에디터를 마크다운(lexical)으로 바꾸기 전
+            Quill로 저장한 **HTML**과, 지금 쓰는 **마크다운**이다.
+
+            · HTML — 태그를 보존하면서 텍스트 노드만 색칠한다(예전 동작 그대로).
+              이미 저장된 글의 색·정렬이 손대지 않은 화면에서 그대로 보여야 한다.
+            · 마크다운 — 개행을 `<br>`로 바꾸면 안 된다. 불릿·표가 한 줄로 뭉개진다.
+              Streamlit은 `<div>` 안의 마크다운도 파싱하므로 감싸기만 하면 된다
+              (브라우저로 중첩 목록·굵게·표까지 떠 보고 확인했다).
+            """
             s = (text or "").strip() or "내용을 입력하세요."
-            parts = re.split(r'(<[^>]+>)', s)
+            is_html = note_is_html(s)
+            parts = re.split(r'(<[^>]+>)', s) if is_html else [s]
             for i in range(len(parts)):
                 if i % 2 == 0:
                     txt = parts[i]
                     txt = re.sub(
                         r"(△[\d.,]+%?p?)",
-                        r'<span style="color:#dc2626;font-weight:700">\1</span>',
+                        rf'<span style="color:{DELTA_DN};font-weight:700">\1</span>',
                         txt
                     )
                     txt = re.sub(
                         r"(\+[\d.,]+%?p?)",
-                        r'<span style="color:#16a34a;font-weight:700">\1</span>',
+                        rf'<span style="color:{DELTA_UP};font-weight:700">\1</span>',
                         txt
                     )
                     parts[i] = txt
             res = "".join(parts)
-            if "<p>" not in res and "<li>" not in res and "<br>" not in res:
+            if is_html and "<p>" not in res and "<li>" not in res and "<br>" not in res:
                 res = res.replace("\n", "<br>")
             return f'<div class="vg">{res}</div>'
 
@@ -5814,47 +5824,22 @@ def main():
         def _note_block_body(nkey, title, regen=None, ai_fn=None):
             """편집/자동 생성/AI 생성 버튼이 달린 보고란 본문 (weekly_report.report_text_block 계승).
 
-            fragment — 편집 토글·quill 입력 등 상호작용 시 전체 스크립트가 아니라 이 보고란만
+            fragment — 편집 토글·에디터 입력 등 상호작용 시 전체 스크립트가 아니라 이 보고란만
             다시 그린다. 저장/생성 버튼은 st.rerun()으로 전체 갱신(다른 표시 영역 반영)."""
             store = st.session_state.wr_notes
             ekey = f"_wr_note_edit_{nkey}"
+            _edkey = f"note_ed_{nkey}"
             st.markdown(f"**{title}**")
             if st.session_state.get(ekey, False):
                 val = store.get(nkey, "")
-                if val and not (val.startswith("<p>") or val.startswith("<ul>") or val.startswith("<li>") or "<div" in val):
-                    if val.strip().startswith("-"):
-                        # '-'로 시작하는 줄만 접두어를 떼고, 'ㄴ'(세부) 줄은 텍스트를
-                        # 그대로 보존한다 — 무조건 첫 글자를 자르면 계층 구조가 깨진다
-                        items = []
-                        for item in val.strip().split("\n"):
-                            t = item.strip()
-                            if not t:
-                                continue
-                            if t.startswith("-"):
-                                items.append(f"<li>{t[1:].strip()}</li>")
-                            else:
-                                items.append(f"<li>{t}</li>")
-                        val = f"<ul>{''.join(items)}</ul>"
-                    else:
-                        val = "".join(f"<p>{line}</p>" for line in val.split("\n"))
-                
-                if HAS_QUILL:
-                    toolbar = [
-                        [{"size": ["small", False, "large", "huge"]}],
-                        ["bold", "italic", "underline", "strike"],
-                        [{"color": []}, {"background": []}],
-                        [{"list": "ordered"}, {"list": "bullet"}],
-                        [{"align": []}], ["clean"],
-                    ]
-                    new = st_quill(value=val, html=True, toolbar=toolbar,
-                                   key=f"quill_{nkey}")
-                else:
-                    new = st.text_area("내용", val, key=f"ta_{nkey}",
-                                       height=200, label_visibility="collapsed")
-                
+                # 플레인 텍스트를 <ul><li>로 조립하던 자리였다. 에디터가 마크다운을
+                # 읽으므로 변환은 note_markdown 한 곳에서 끝난다.
+                new = note_editor(val, key=_edkey, min_height=260)
+
                 if st.button("저장", key=f"btn_s_{nkey}", type="primary", width="stretch"):
                     store[nkey] = new if new is not None else val
                     _notes_save(store)
+                    note_editor_reset(_edkey)
                     st.session_state[ekey] = False
                     st.rerun()
             else:
@@ -5864,6 +5849,8 @@ def main():
             bi = 0
             editing = st.session_state.get(ekey, False)
             if bcols[bi].button("보기" if editing else "편집", key=f"btn_e_{nkey}", width="stretch"):
+                if editing:
+                    note_editor_reset(_edkey)     # 「보기」로 닫으면 안 저장한 글은 버린다
                 st.session_state[ekey] = not editing
                 st.rerun()
             bi += 1
@@ -5874,6 +5861,7 @@ def main():
                     # 자동 생성 로직(기획 lookup 전수 순회 등)이 실행된다
                     store[nkey] = regen() if callable(regen) else regen
                     _notes_save(store)
+                    note_editor_reset(_edkey)
                     st.session_state[ekey] = False
                     st.rerun()
                 bi += 1
@@ -5887,6 +5875,7 @@ def main():
                     else:
                         store[nkey] = text
                         _notes_save(store)
+                        note_editor_reset(_edkey)
                         st.session_state[ekey] = False
                         st.rerun()
 

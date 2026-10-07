@@ -22,11 +22,9 @@ try:
 except Exception:                                         # noqa: BLE001
     xlsx_bytes = None
 
-try:
-    from streamlit_quill import st_quill
-    HAS_QUILL = True
-except Exception:
-    HAS_QUILL = False
+# 보고란 에디터 — 두 앱 공용(note_editor.py). 모듈을 못 불러와도 앱은 떠야 하므로
+# 평범한 텍스트 박스로 내려가는 폴백까지 그 안에 있다.
+from note_editor import note_editor, note_editor_reset
 
 # ══════════════════════════════════════════════════════
 # CONFIG
@@ -2102,33 +2100,17 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
     # 제목 + 액션 버튼 (제목 한 줄, 버튼은 그 아래 정상 너비 컬럼)
     st.markdown(f"**{title}**")
 
+    edkey = f"wr_note_ed_{key}"
     if st.session_state[ekey]:
-        if HAS_QUILL:
-            # Word 수준 리치 에디터 (글자 크기·색·굵게·기울임·밑줄·목록·정렬 등)
-            toolbar = [
-                [{"size": ["small", False, "large", "huge"]}],
-                ["bold", "italic", "underline", "strike"],
-                [{"color": []}, {"background": []}],
-                [{"list": "ordered"}, {"list": "bullet"}],
-                [{"align": []}], ["clean"],
-            ]
-            # value(초기값)는 최초 진입 또는 store[key]가 바뀐 경우에만 주입한다.
-            # 매 rerun마다 value를 다시 넣으면 타이핑 중 저장값으로 되돌아가
-            # '계속 리프레시'되는 버그가 발생한다. (st_quill은 입력마다 rerun 유발)
-            qkey = f"wr_quill_{key}"
-            skey = f"{qkey}__seed"
-            if st.session_state.get(skey) != store[key]:
-                st.session_state[skey] = store[key]
-                new = st_quill(value=store[key], html=True, toolbar=toolbar, key=qkey)
-            else:
-                new = st_quill(html=True, toolbar=toolbar, key=qkey)
-        else:
-            new = st.text_area("", store[key], key=f"wr_ta_{key}", height=180,
-                               label_visibility="collapsed")
+        # 값 주입·폴백·마크다운 변환은 note_editor가 맡는다(발송성과와 같은 모듈).
+        # 예전엔 여기에 quill 전용 __seed 우회가 있었다 — 리런마다 value를 넣으면
+        # 타이핑이 저장값으로 되돌아가는 버그를 막던 자리고, 지금은 모듈 안에 있다.
+        new = note_editor(store[key], key=edkey, min_height=220)
         if st.button("저장", key=f"wr_save_{key}", type="primary",
                      width="stretch"):
             store[key] = new if new is not None else store[key]
             all_d = load_insights(); all_d[key] = store[key]; save_insights(all_d)
+            note_editor_reset(edkey)
             st.session_state[ekey] = False; st.rerun()
     else:
         st.markdown(f"<div class='report-box'>{store[key] or '내용을 입력해 주세요.'}</div>",
@@ -2158,6 +2140,8 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
     edit_on = st.session_state[ekey]
     if bcols[bi].button("편집" if not edit_on else "보기",
                         key=f"wr_edit_{key}", width="stretch"):
+        if edit_on:
+            note_editor_reset(edkey)          # 「보기」로 닫으면 안 저장한 글은 버린다
         st.session_state[ekey] = not edit_on; st.rerun()
     bi += 1
     if regen is not None:
@@ -2165,6 +2149,7 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
                             help="기준 주차 실적으로 템플릿 문구를 채워요. 기존 내용은 지워져요."):
             store[key] = regen
             all_d = load_insights(); all_d[key] = regen; save_insights(all_d)
+            note_editor_reset(edkey)
             st.session_state[ekey] = False; st.rerun()
         bi += 1
     if ai_fn is not None:
@@ -2179,6 +2164,7 @@ def report_text_block(key, title, default="", regen=None, ai_fn=None):
             else:
                 store[key] = text
                 all_d = load_insights(); all_d[key] = text; save_insights(all_d)
+                note_editor_reset(edkey)
                 st.session_state[ekey] = False; st.rerun()
     return store[key]
 

@@ -4,7 +4,7 @@ openpyxl
 plotly>=6
 scipy
 numpy
-streamlit-quill
+streamlit-lexical-extended>=0.3.12
 google-genai
 gspread>=6.0.0
 google-auth
