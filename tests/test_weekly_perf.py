@@ -37,11 +37,13 @@ PAGE = group_of("주간보고")
 STORE = synth_store(weeks=70)
 
 
-def _open(unit=None, camp=None, site=None, **ss):
+def _open(unit=None, camp=None, site=None, mtd=None, **ss):
     at = AppTest.from_file(APP, default_timeout=TIMEOUT)
     at.session_state["camp_store"] = STORE if camp is None else camp
     if site is not None:
         at.session_state["site_store_df"] = site
+    if mtd is not None:
+        at.session_state["mtd_store_df"] = mtd
     at.run()
     assert not at.exception, at.exception[0].value
     at.sidebar.radio[0].set_value(PAGE)
@@ -1008,6 +1010,144 @@ def t_decomposition_names_the_right_previous_period():
         body = " ".join(_texts(_open(unit)))
         assert f"거래액 {pvn} 대비" in body, f"{unit}: '거래액 {pvn} 대비'가 없어요"
         assert f"거래액 {nope} 대비" not in body, f"{unit}: '거래액 {nope} 대비'가 남았어요"
+
+
+# ══════════════════════════════════════════════════════════════════
+# 유니크 유입 — 전사 MTD 파일에서 오는 줄
+#
+# 캠페인 실적에 없는 지표라 원천이 다르다. 하루치가 «그날 들어온 사람 수»라
+# 기간 합계로 더하면 여러 날 온 사람을 겹쳐 센다 — 그래서 **그 기간의 일평균**이고
+# 「값 기준」(누계/일평균)도 안 따른다. 사이트 회원UV와 같은 규칙이다.
+# ══════════════════════════════════════════════════════════════════
+UNIQ_MET = "유니크 유입(일평균)"
+UNIQ_V = 12_345.0
+
+
+def _mtd_flat(days=620, value=UNIQ_V):
+    """일자별 전사 MTD — 유니크유입만 **매일 같은 값**으로 심는다.
+
+    일평균이면 어느 창으로 읽어도 그대로 `value`지만, 합계면 기간 일수만큼
+    커진다(주 단위면 7배). 그래서 '합이 아니라 평균'이라는 규칙을 값 하나로
+    반증할 수 있다 — 날짜 산수를 안 거치고도 틀리면 바로 드러난다.
+    """
+    from test_send_volume_band import synth_mtd
+    m = synth_mtd(days=days)
+    m["uniqueInflow"] = float(value)
+    return m
+
+
+@case
+def t_unique_inflow_joins_the_status_table_and_the_trend():
+    """MTD 파일을 올리면 「주요 지표 현황」과 추이에 같이 올라온다."""
+    at = _open("주별", mtd=_mtd_flat())
+    k = _kpi(at)
+    assert UNIQ_MET in list(k["지표"]), f"현황 표에 없어요 — {list(k['지표'])}"
+
+    chips = [b for b in at.get("button_group")
+             if str(getattr(b, "label", "")) == "추이에 올릴 지표"]
+    assert chips, "칩을 못 찾았어요"
+    assert UNIQ_MET in list(chips[0].options), \
+        f"선택지에 없어요 — {list(chips[0].options)}"
+    assert UNIQ_MET in list(chips[0].value), \
+        f"기본으로 안 켜져 있어요 — {list(chips[0].value)}"
+
+    hit = [(t, tr) for t, tr in _trend_traces(at) if t == UNIQ_MET]
+    assert hit, f"차트를 못 찾았어요 — {[t for t, _ in _trend_traces(at)]}"
+    assert any(v is not None for v in hit[0][1]["y"]), "차트에 값이 하나도 없어요"
+    assert UNIQ_MET in list(_trend(at).index), f"추이 표에 없어요 — {list(_trend(at).index)}"
+
+
+@case
+def t_unique_inflow_is_absent_without_the_mtd_source():
+    """MTD 파일을 안 올렸으면 줄도 선택지도 안 만든다.
+
+    눌러도 아무 선이 안 생기는 선택지는 '왜 안 그려지지'만 남긴다."""
+    at = _open("주별")
+    assert UNIQ_MET not in list(_kpi(at)["지표"]), "원천이 없는데 현황 표에 줄이 있어요"
+    chips = [b for b in at.get("button_group")
+             if str(getattr(b, "label", "")) == "추이에 올릴 지표"][0]
+    assert UNIQ_MET not in list(chips.options), \
+        f"원천이 없는데 선택지에 있어요 — {list(chips.options)}"
+    assert UNIQ_MET not in list(_trend(at).index), "원천이 없는데 추이 표에 줄이 있어요"
+
+
+@case
+def t_unique_inflow_is_a_daily_mean_not_a_sum():
+    """합이 아니라 **그 기간의 일평균**이다.
+
+    픽스처가 매일 같은 값이라 일평균이면 그대로, 합계면 그 기간 일수만큼 커진다.
+    주 단위에서 합으로 읽으면 7배가 되므로 규칙을 깨면 값이 바로 갈린다."""
+    at = _open("주별", mtd=_mtd_flat())
+    t = _trend(at)
+    vals = [_num(t.loc[UNIQ_MET, c]) for c in t.columns
+            if c[0] == "실적" and str(t.loc[UNIQ_MET, c]) != "–"]
+    assert vals, "실적 칸이 전부 비었어요"
+    for v in vals:
+        assert abs(v - UNIQ_V) < 1.0, \
+            (f"일평균이 아니에요 — {v:,.0f} (기대 {UNIQ_V:,.0f}). "
+             f"합계로 읽으면 기간 일수만큼 커져요")
+    # 현황 표도 같은 값이어야 한다 — 두 블록이 다른 창을 말하면 안 된다
+    k = _kpi(at)
+    _cur = [c for c in k.columns if str(c).startswith("기준 ")][0]
+    _kv = _num(k.loc[k["지표"] == UNIQ_MET, _cur].iloc[0])
+    assert abs(_kv - UNIQ_V) < 1.0, f"현황 표가 달라요 — {_kv:,.0f}"
+
+
+@case
+def t_unique_inflow_is_not_divided_again_by_the_value_mode():
+    """「일평균」으로 바꿔도 유니크 유입은 그대로다 — 이미 일평균이라서."""
+    mtd = _mtd_flat()
+    a = _trend(_open("주별", mtd=mtd))
+    b = _trend(_open("주별", mtd=mtd, wr_valmode="일평균"))
+    ca, cb = _done_col(a), _done_col(b)
+    assert ca == cb, f"비교할 기간이 달라요 — {ca} vs {cb}"
+    assert a.loc[UNIQ_MET, ca] == b.loc[UNIQ_MET, cb], \
+        f"값 기준이 유니크 유입까지 나눴어요 — {a.loc[UNIQ_MET, ca]} → {b.loc[UNIQ_MET, cb]}"
+    # 가산 지표는 반대로 줄어야 한다 (픽스처가 규칙을 반증하는지 확인)
+    assert _num(a.loc["발송", ca]) > _num(b.loc["발송", cb]), \
+        "발송이 안 줄었어요 — 일평균 모드가 안 걸린 픽스처예요"
+
+
+@case
+def t_unique_inflow_reads_only_the_elapsed_days():
+    """부분 기간에선 «경과분까지»만 평균 낸다.
+
+    전사 MTD 파일은 캠페인 실적보다 **며칠 더 길게** 들어올 수 있다(원천이 다르니
+    적재 시점도 다르다). 창을 안 자르면 아직 실적이 없는 날까지 섞여, 같은 화면의
+    다른 지표와 **다른 창**을 말하게 된다 — 마지막 점의 전년비가 지표마다 다른
+    뜻이 되는 자리다.
+
+    **평평한 픽스처로는 이 규칙을 반증할 수 없다** — 매일 값이 같으면 잘라도
+    안 잘라도 평균이 같다(실제로 그 주입이 안 잡혔다). 그래서 캠페인 실적을
+    수요일에서 끊고, 그 **뒤쪽 날들에만** 큰 값을 심는다.
+    """
+    from test_send_volume_band import synth_mtd
+    LOW, HIGH = 1_000.0, 90_000.0
+
+    d = STORE.copy()
+    dt = pd.to_datetime(d["date"], format="%Y%m%d")
+    end = dt.max().normalize()
+    while end.weekday() != 2:                      # 수요일 — 주 한가운데라 반드시 부분 주
+        end -= pd.Timedelta(days=1)
+    camp = d[dt <= end].reset_index(drop=True)
+    assert len(camp), "픽스처를 너무 많이 잘랐어요"
+
+    m = synth_mtd(days=700)
+    mdt = pd.to_datetime(m["date"])
+    m["uniqueInflow"] = [HIGH if x > end else LOW for x in mdt]
+    # 픽스처가 규칙을 반증하는지 먼저 확인 — 기준 주 안에 '실적 없는 날'이 있어야
+    # 자르고 안 자르고가 갈린다
+    _wk_end = end + pd.Timedelta(days=6 - end.weekday())
+    assert ((mdt > end) & (mdt <= _wk_end)).any(), \
+        "기준 주에 캠페인 실적보다 뒤인 MTD 날이 없어요 — 이 픽스처론 규칙을 못 깨요"
+
+    at = _open("주별", camp=camp, mtd=m)
+    k = _kpi(at)
+    cur = [c for c in k.columns if str(c).startswith("기준 ")][0]
+    v = _num(k.loc[k["지표"] == UNIQ_MET, cur].iloc[0])
+    assert abs(v - LOW) < 1.0, \
+        (f"경과분 밖의 날까지 섞었어요 — {v:,.0f} (기대 {LOW:,.0f}). "
+         "기준 기간이 부분 기간이면 캠페인 실적이 있는 날까지만 평균 내야 해요")
 
 
 def main():
