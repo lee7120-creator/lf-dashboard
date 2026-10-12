@@ -526,6 +526,56 @@ def t_report_capture_survives_a_double_patch():
         "차트·표를 하나도 못 모았어요 — 가로채기가 끊겼어요"
 
 
+@case
+def t_report_capture_recovers_from_a_poisoned_wrapper():
+    """«이전 프로세스가 남긴» 오염된 래퍼 위에 또 감싸지 않는다.
+
+    Streamlit Cloud는 배포할 때 프로세스를 재시작하지 않고 스크립트만 갈아 끼우기도
+    한다. 그러면 `st.plotly_chart`에 **옛 버전의 래퍼**가 그대로 앉아 있는데, 그
+    래퍼엔 `_lf_orig`가 없어 되감을 수가 없다. 모르고 그 위에 또 감싸면 호출이 옛
+    체인으로 들어가 `RecursionError`로 앱이 통째로 내려간다 — 운영에서 두 번째로
+    난 사고가 정확히 이 모양이었다(프레임 이름은 옛 `_cap_plotly`인데 소스 줄은
+    새 코드라 둘이 어긋나 있었다).
+
+    그래서 원본은 `st`가 아니라 **`st._main`(DeltaGenerator)** 에서 가져온다.
+    거긴 모듈 속성을 무엇으로 덮어써도 영향을 안 받는다.
+    """
+    sys.path.insert(0, str(ROOT / "tests"))
+    import streamlit as _st
+    from streamlit.testing.v1 import AppTest
+    from smoke_pages import synth_store
+
+    _save = _st.plotly_chart
+
+    def _legacy(*a, **k):                      # 옛 래퍼 흉내 — 자기를 부른다
+        return _st._orig_plotly_chart(*a, **k)
+
+    _st._orig_plotly_chart = _legacy           # 옛 코드가 원본인 줄 알고 담아 둔 자리
+    _st.plotly_chart = _legacy
+    try:
+        at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=600)
+        at.session_state["camp_store"] = synth_store(weeks=6, per_day=2)
+        at.run()
+        assert not at.exception, at.exception[0].value
+
+        base = _st.plotly_chart
+        hops = 0
+        while getattr(base, "_lf_orig", None) is not None and hops < 40:
+            base, hops = base._lf_orig, hops + 1
+        assert base is not _legacy, \
+            "옛 래퍼를 원본으로 집었어요 — 차트를 그리면 무한 재귀예요"
+        want = _st._main.plotly_chart
+        assert getattr(base, "__func__", base) is getattr(want, "__func__", want), \
+            f"원본이 DeltaGenerator의 것이 아니에요 — {base}"
+        assert not hasattr(_st, "_orig_plotly_chart"), \
+            "옛 체인(st._orig_plotly_chart)을 안 끊었어요"
+        assert at.session_state.get("_page_report"), "가로채기가 끊겼어요"
+    finally:
+        _st.plotly_chart = _save
+        if hasattr(_st, "_orig_plotly_chart"):
+            del _st._orig_plotly_chart
+
+
 def main():
     fails = []
     for fn in CASES:
