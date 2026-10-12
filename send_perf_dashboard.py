@@ -2684,35 +2684,42 @@ def main():
     from scipy import stats
 
     # ── 페이지 리포트 캡처: st.plotly_chart / st.dataframe 호출을 가로채 기록 ──
-    if not hasattr(st, "_orig_plotly_chart"):
-        st._orig_plotly_chart = st.plotly_chart
-    if not hasattr(st, "_orig_dataframe"):
-        st._orig_dataframe = st.dataframe
+    # **래퍼를 또 감싸면 안 된다.** `st`는 프로세스 공유(멀티유저)라, 예전처럼
+    # `hasattr` 가드로 원본을 `st._orig_plotly_chart`에 담아 두면 동시 접속한 두
+    # 세션이 가드를 **같이** 통과한다 — 뒤 세션이 앞 세션의 래퍼를 '원본'으로 집어
+    # 가고, 그 뒤로 래퍼가 자기를 호출해 `RecursionError`로 **앱 전체가 내려간다**.
+    # 운영에서 실제로 났고, 증상은 페이지 안 빨간 트레이스백이 아니라 앱이 죽는
+    # 화면이라 리런하면 살아나 원인이 안 드러난다.
+    #
+    # 그래서 ①원본을 **클로저에 담고**(호출 시점에 `st`에서 찾지 않는다) ②래퍼에
+    # 원본을 매달아 두어 몇 겹이 쌓여도 되감아 꺼낸다. 두 세션이 같은 순간에
+    # 지나가도 둘 다 진짜 원본을 감싸게 된다 (`t_report_capture_survives_a_double_patch`).
+    def _unwrap(fn):
+        """우리 래퍼면 원본을 꺼낸다 — 감싼 걸 또 감싸는 걸 막는다."""
+        seen = 0
+        while hasattr(fn, "_lf_orig") and seen < 20:
+            fn, seen = fn._lf_orig, seen + 1
+        return fn
+
+    def _mk_cap(kind, argkey, orig):
+        def _cap(*a, **k):
+            try:
+                x = a[0] if a else k.get(argkey)
+                if x is not None:
+                    st.session_state.setdefault("_page_report", []).append((kind, x))
+            except Exception:                             # noqa: BLE001
+                pass
+            return orig(*a, **k)
+        _cap._lf_orig = orig
+        return _cap
+
     # 캡처 버퍼는 session_state에 — st 모듈 속성은 프로세스(멀티유저) 공유라 클로저
     # 리스트에 쌓으면 동시 접속한 다른 사용자의 차트/표가 내 리포트에 섞인다.
     # session_state 프록시는 '호출 시점' 세션 컨텍스트를 따라가므로 항상 자기 세션에 쌓인다.
     st.session_state["_page_report"] = []
     _REPORT = st.session_state["_page_report"]
-
-    def _cap_plotly(*a, **k):
-        try:
-            f = a[0] if a else k.get("figure_or_data")
-            if f is not None:
-                st.session_state.setdefault("_page_report", []).append(("fig", f))
-        except Exception:
-            pass
-        return st._orig_plotly_chart(*a, **k)
-
-    def _cap_df(*a, **k):
-        try:
-            d = a[0] if a else k.get("data")
-            if d is not None:
-                st.session_state.setdefault("_page_report", []).append(("table", d))
-        except Exception:
-            pass
-        return st._orig_dataframe(*a, **k)
-    st.plotly_chart = _cap_plotly
-    st.dataframe = _cap_df
+    st.plotly_chart = _mk_cap("fig", "figure_or_data", _unwrap(st.plotly_chart))
+    st.dataframe = _mk_cap("table", "data", _unwrap(st.dataframe))
 
     st.set_page_config(page_title="LF몰 발송성과 대시보드", layout="wide",
                        initial_sidebar_state="expanded")
