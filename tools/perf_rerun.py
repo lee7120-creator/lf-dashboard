@@ -86,12 +86,29 @@ class SendPerf:
     name = "발송성과"
     app = str(ROOT / "send_perf_dashboard.py")
 
-    def __init__(self, rows):
+    def __init__(self, rows, full=True):
         from smoke_pages import synth_store
         self.store = synth_store(weeks=70, per_day=rows, seed=7)
+        # **실적만 넣고 재면 운영을 안 재는 것이다.** 전사 MTD·사이트·앱푸시 저장소가
+        # 있어야 열리는 블록이 꽤 되고(「1. 주간보고」의 MTD 표·사이트 지표 줄·유니크
+        # 유입, 「6」의 최적 구간·유입 퍼널 전부), 그게 없으면 그 비용이 통째로 측정
+        # 밖으로 빠진다. 운영에선 늘 있는 데이터라 기본으로 같이 넣는다.
+        self.extra = {}
+        if full:
+            try:
+                from test_send_volume_band import synth_mtd, synth_push
+                from test_site_metrics import _site_store
+                _mtd = synth_mtd(days=700)
+                self.extra["mtd_store_df"] = _mtd
+                self.extra["push_consent_df"] = synth_push(_mtd)
+                self.extra["site_store_df"] = _site_store(days=700)
+            except Exception as e:                        # noqa: BLE001
+                print(f"  (부가 저장소 픽스처를 못 만들었어요: {e})")
 
     def describe(self):
-        return f"캠페인 {len(self.store):,}건"
+        _x = " · ".join(f"{k.replace('_store_df', '').replace('_df', '')} {len(v):,}행"
+                        for k, v in self.extra.items())
+        return f"캠페인 {len(self.store):,}건" + (f" · {_x}" if _x else " (실적만)")
 
     def setup(self):
         return None                      # cwd를 안 옮겨도 된다
@@ -99,6 +116,8 @@ class SendPerf:
     def fresh(self):
         at = AppTest.from_file(self.app, default_timeout=TIMEOUT)
         at.session_state["camp_store"] = self.store
+        for k, v in self.extra.items():
+            at.session_state[k] = v
         at.run()
         return at
 
@@ -119,9 +138,9 @@ class Weekly:
     def setup(self):
         self._tmp = tempfile.mkdtemp(prefix="perf_wr_")
         shutil.copy(self.app, os.path.join(self._tmp, "weekly_report.py"))
-        te = ROOT / "table_export.py"
-        if te.exists():
-            shutil.copy(te, os.path.join(self._tmp, "table_export.py"))
+        for _m in ("table_export.py", "chart_layout.py"):
+            if (ROOT / _m).exists():
+                shutil.copy(ROOT / _m, os.path.join(self._tmp, _m))
         self.store.to_csv(os.path.join(self._tmp, "wr_data_store.csv"),
                           index=False, encoding="utf-8-sig")
         self.app = os.path.join(self._tmp, "weekly_report.py")
@@ -168,9 +187,12 @@ def main():
     ap.add_argument("--page", help="이 페이지만 잰다 (생략하면 전부)")
     ap.add_argument("--profile", type=int, metavar="N",
                     help="측정과 함께 상위 N개 함수를 뜬다 (--page와 같이 쓰는 게 좋다)")
+    ap.add_argument("--camp-only", action="store_true",
+                    help="실적만 넣고 잰다 (전사 MTD·사이트·앱푸시 저장소를 빼고)")
     a = ap.parse_args()
 
-    adapter = APPS[a.app](a.rows)
+    _kw = {} if a.app != "send" else {"full": not a.camp_only}
+    adapter = APPS[a.app](a.rows, **_kw)
     adapter.setup()
     print(f"{adapter.name} — {adapter.describe()}\n")
 

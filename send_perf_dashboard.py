@@ -20,6 +20,7 @@ import pandas as pd
 # (`@st.cache_resource`)를 모듈 최상단에서 걸기 위해서다 — 스크립트 본문은 리런마다
 # 통째로 다시 실행되므로, 사전 CSV 같은 건 캐시에 얹지 않으면 매번 다시 읽는다.
 import streamlit as st
+import plotly.graph_objects as go
 
 # table_export는 같은 폴더의 모듈이다. 테스트 하네스가 앱만 임시 폴더로 복사해 돌리는
 # 경우가 있어 경로를 직접 얹는다 (없으면 엑셀 버튼만 빠지고 앱은 정상 동작).
@@ -31,6 +32,11 @@ try:
     from table_export import xlsx_bytes
 except Exception:                                         # noqa: BLE001
     xlsx_bytes = None
+
+# 차트 레이아웃 적용 — 두 앱 공용(chart_layout.py). `fig.update_layout(**lay)`는
+# 플로틀리가 속성을 하나씩 재귀 병합하며 매번 검증을 다시 돌려 한 장에 12.3ms다.
+# 이쪽은 3.1ms다 — 근거와 실측은 그 모듈의 독스트링에 있다.
+from chart_layout import set_layout
 
 
 def today_kst():
@@ -1156,19 +1162,57 @@ def save_site_store(df):
     return out
 
 
+# 한 칸 메모 둘 — **프레임 객체를 들고 `is`로 비교한다.** `id()`만 키로 쓰면 옛 프레임이
+# 해제된 자리에 새 프레임이 앉을 때 옛 결과를 그대로 준다(마스터 `pick`과 같은 규칙).
+_SITE_FIN = {"src": None, "out": None}
+_SITE_IDX = {"src": None, "by": None}
+
+
+def site_frame(df):
+    """`finalize_site`를 «프레임당 한 번»만 돌린다. **반환값은 읽기 전용으로 쓸 것.**
+
+    저장소 프레임은 리런 사이에 안 바뀌는데(세션에 들고 있다) 화면마다 다시 정규화하면
+    2만 행 문자열 변환을 리런마다 되풀이한다. 세션 프레임은 객체가 그대로라 메모가
+    리런을 넘어 산다.
+    """
+    if _SITE_FIN["src"] is df and _SITE_FIN["out"] is not None:
+        return _SITE_FIN["out"]
+    out = finalize_site(df)
+    _SITE_FIN["src"], _SITE_FIN["out"] = df, out
+    return out
+
+
+def site_index(df):
+    """채널×디바이스 조합별 프레임을 «프레임당 한 번» 만든다 → {(ch, dev): [dt, uv, amt]}.
+
+    `site_pick`은 한 화면에서 열 번 넘게 불린다 — 채널 패널 차트(채널 수 × 비교 연도)와
+    디바이스 비중(디바이스 3종 × 올해·전년)이 각각 자기 조합을 집는다. 호출마다
+    `finalize_site`로 2만 행을 다시 정규화하면 그 비용이 그대로 곱해진다. 실측(합성
+    22,400행)으로 「9. 사이트·앱 지표」 리런의 0.34초가 여기였다.
+    """
+    if _SITE_IDX["src"] is df and _SITE_IDX["by"] is not None:
+        return _SITE_IDX["by"]
+    d = site_frame(df)
+    by = {}
+    if len(d):
+        d = d.copy()                      # site_frame 반환값은 읽기 전용이다
+        d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d", errors="coerce")
+        d = d.dropna(subset=["dt"]).sort_values("dt")
+        for c in ("uv", "amt"):
+            d[c] = pd.to_numeric(d[c], errors="coerce") / SITE_DIV
+        for _k, _g in d.groupby(["ch", "dev"], sort=False):
+            by[tuple(_k)] = _g[["dt", "uv", "amt"]].reset_index(drop=True)
+    _SITE_IDX["src"], _SITE_IDX["by"] = df, by
+    return by
+
+
 def site_pick(df, ch="Total", dev="Total"):
-    """채널×디바이스 한 조합만 뽑아 날짜 인덱스 프레임으로. 값은 표시 단위(÷1000)로 환산."""
-    d = finalize_site(df)
-    if not len(d):
-        return pd.DataFrame(columns=["dt", "uv", "amt"])
-    d = d[(d["ch"] == ch) & (d["dev"] == dev)].copy()
-    if not len(d):
-        return pd.DataFrame(columns=["dt", "uv", "amt"])
-    d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d", errors="coerce")
-    d = d.dropna(subset=["dt"]).sort_values("dt")
-    for c in ("uv", "amt"):
-        d[c] = pd.to_numeric(d[c], errors="coerce") / SITE_DIV
-    return d[["dt", "uv", "amt"]].reset_index(drop=True)
+    """채널×디바이스 한 조합만 뽑아 날짜 인덱스 프레임으로. 값은 표시 단위(÷1000)로 환산.
+
+    **반환값은 읽기 전용으로 쓸 것** — 인덱스가 들고 있는 그 객체다.
+    """
+    d = site_index(df).get((ch, dev))
+    return pd.DataFrame(columns=["dt", "uv", "amt"]) if d is None else d
 
 
 def site_mean(df, ch, dev, d0, d1):
@@ -2679,8 +2723,12 @@ def growth_pace_note(s_cur, s_prev=None):
     return " · ".join(bits)
 
 
+    fig.layout = go.Layout(**_lay_merge(
+        {k: v for k, v in cur.items() if k != "template"}, lay))
+    return fig
+
+
 def main():
-    import plotly.graph_objects as go
     from scipy import stats
 
     # ── 페이지 리포트 캡처: st.plotly_chart / st.dataframe 호출을 가로채 기록 ──
@@ -2914,7 +2962,7 @@ def main():
         lay.pop("xaxis", None); lay.pop("yaxis", None)
         lay["showlegend"] = True
         lay["hovermode"] = "x unified"
-        fig.update_layout(**lay)
+        set_layout(fig, lay)
         fig.update_xaxes(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
                          tickfont=dict(color="#64748b", size=11),
                          showspikes=True, spikemode="across", spikethickness=1,
@@ -2949,7 +2997,7 @@ def main():
                              title=dict(text=line_name, font=dict(color=line_color, size=11)),
                              tickfont=dict(color=line_color, size=11),
                              zeroline=True, zerolinecolor="#e2e8f0")
-        fig.update_layout(**lay)
+        set_layout(fig, lay)
         return fig
 
     def sig_label(p):
@@ -4229,7 +4277,7 @@ def main():
                 st.success("앱푸시 데이터를 영구히 지웠어요. 새로고침해 주세요.")
 
             st.markdown("---")
-            _s_df = finalize_site(st.session_state.get("site_store_df"))
+            _s_df = site_frame(st.session_state.get("site_store_df"))
             st.caption(f"사이트 회원UV·거래액 {len(_s_df):,}행 "
                        f"({0 if not len(_s_df) else _s_df['date'].nunique():,}일치)")
             if len(_s_df):
@@ -4599,7 +4647,7 @@ def main():
             # 날짜축을 명시한다 — 점이 적으면 plotly가 시각(밀리초)까지 쪼개 눈금을 만든다
             _l2["xaxis"] = {**_l2["xaxis"], "type": "date", "tickformat": "%m/%d",
                             "dtick": 7 * 86400000}
-            _f2.update_layout(**_l2)
+            set_layout(_f2, _l2)
             st.plotly_chart(_f2, width="stretch")
         if _drop:
             st.caption(f"양쪽 군이 {min_n}건 미만인 주 {_drop}개는 뺐어요 — 1~2건짜리 주는 "
@@ -5267,8 +5315,8 @@ def main():
         # ══ 일별 원천 두 벌 — 캠페인 집계에 없는 지표 ═══════════════════════
         # 「주요 지표 현황」과 아래 「주요 지표 추이」가 **같은 것**을 본다.
         #
-        #   · 앱푸시 회원UV — 사이트 전체 리포트(PUSH 채널 × App 디바이스)
-        #   · 유니크 유입   — 전사 MTD 발송상세 파일
+        #   · 푸시 회원UV(문자포함) — 사이트 전체 리포트(PUSH 채널 × App 디바이스)
+        #   · 앱푸시 회원UV        — 전사 MTD 발송상세 파일(유니크유입)
         #
         # 둘 다 **그날 들어온 «사람 수»**라 기간 합계로 더하면 여러 날 온 사람을 겹쳐
         # 센다. 그래서 합이 아니라 **그 기간의 일평균**이고, 「값 기준」(누계/일평균)도
@@ -5276,7 +5324,7 @@ def main():
         #
         # **한 구현으로 묶어 둔다.** 따로 두면 경과분 자르기 같은 규칙이 한쪽만 바뀌어
         # 같은 화면의 두 줄이 서로 다른 창을 말하게 된다.
-        _wr_site = finalize_site(st.session_state.get("site_store_df"))
+        _wr_site = site_frame(st.session_state.get("site_store_df"))
 
         def _perkey(s_dt):
             """일자 시리즈 → 기간 시작일 키. 기간 단위를 따라간다."""
@@ -5309,7 +5357,9 @@ def main():
 
             return by, _at
 
-        _SITEM = f"앱푸시 {SITE_LABEL['uv']}(일평균·{SITE_UNIT['uv']})"
+        # 사이트 리포트의 PUSH 채널은 **문자(SMS) 유입까지** 담는다 — 앱푸시만 잡은
+        # 값이 아니라서 이름에 그걸 밝힌다. 앱푸시만 보는 줄은 아래 전사 MTD 쪽이다.
+        _SITEM = f"푸시 {SITE_LABEL['uv']}(문자포함, 일평균·{SITE_UNIT['uv']})"
         _sprows = None
         if len(_wr_site) and _wr_site["uv"].notna().any():
             _sp = site_pick(_wr_site, "PUSH", "App")
@@ -5317,11 +5367,11 @@ def main():
                 _sprows = _sp
         _smean, _smean_at = _daily_src(_sprows, "uv")
 
-        # 유니크 유입 — 전사 MTD 파일에만 있다. 캠페인 실적엔 '유입UV'(발송 1건당)가
+        # 앱푸시 회원UV — 전사 MTD 파일의 유니크유입이다. 캠페인 실적엔 '유입UV'(발송 1건당)가
         # 있지만 분모가 달라 같은 지표가 아니다. 파일이 없거나 그 칸이 비어 있으면
         # 아래에서 줄도 선택지도 안 만든다 — 눌러도 아무 선이 안 생기는 선택지는
         # '왜 안 그려지지'만 남긴다.
-        _UNIQM = "유니크 유입(일평균)"
+        _UNIQM = "앱푸시 회원UV(일평균)"
         _uqrows = None
         if mtd_work is not None and len(mtd_work) and "uniqueInflow" in mtd_work:
             _uq0 = pd.DataFrame({
@@ -5346,7 +5396,7 @@ def main():
                 _r[_dc] = _dlt_sig(met, cur_w, _ag)
             rows.append(_r)
 
-        # ── 유니크 유입 — 전사 MTD 파일이 있을 때만 붙인다.
+        # ── 앱푸시 회원UV(전사 MTD의 유니크유입) — 파일이 있을 때만 붙인다.
         # 「그 기간의 일평균」이다. 하루치가 '그날 들어온 사람 수'라 합계로 더하면
         # 여러 날 온 사람을 겹쳐 세게 된다 — 「값 기준」을 안 따르는 것도 같은 이유다.
         # 부분 기간이면 위 지표와 같은 경과 창(_elapsed)을 쓴다.
@@ -5377,7 +5427,7 @@ def main():
             for _mk in ("uv",):
                 if not _wr_site[_mk].notna().any():
                     continue
-                _nm = f"앱푸시 {SITE_LABEL[_mk]}(일평균·{SITE_UNIT[_mk]})"
+                _nm = f"푸시 {SITE_LABEL[_mk]}(문자포함, 일평균·{SITE_UNIT[_mk]})"
 
                 def _wfmt(v):
                     return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
@@ -5453,19 +5503,20 @@ def main():
                    + "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
                      "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
         if _wk_uq_rows:
-            st.markdown('<div class="appendix"><b>유니크 유입은 전사 MTD 파일</b>에서 온 값이라 '
-                        '위 발송 실적과 원천이 달라요. 하루치가 <b>그날 들어온 사람 수</b>라 '
-                        '기간 합계로 더하면 여러 날 온 사람을 겹쳐 세게 돼요 — 그래서 '
-                        '<b>그 기간의 일평균</b>으로 놓았고, 위 「값 기준」(누계/일평균)도 '
+            st.markdown('<div class="appendix"><b>앱푸시 회원UV는 전사 MTD 파일</b>의 '
+                        '유니크유입이라 위 발송 실적과 원천이 달라요. 하루치가 <b>그날 들어온 '
+                        '사람 수</b>라 기간 합계로 더하면 여러 날 온 사람을 겹쳐 세게 돼요 — '
+                        '그래서 <b>그 기간의 일평균</b>으로 놓았고, 위 「값 기준」(누계/일평균)도 '
                         '따르지 않아요. 캠페인 실적의 <b>UV</b>는 발송 1건당 유입이라 분모가 '
                         f'다른 값이에요. 단계별로 끊어 보려면 「{menu_ref("유입 퍼널")}」에서 '
                         '보면 돼요.</div>', unsafe_allow_html=True)
         if _wk_site_rows:
-            st.markdown('<div class="appendix"><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 '
+            st.markdown('<div class="appendix"><b>푸시 회원UV는 사이트 전체 지표</b>라 위 발송 '
                         '실적과 분모가 달라요 — 기간 합계가 아니라 <b>그 기간의 일평균</b>'
-                        '(천명)이에요. <b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 '
-                        f'들어온 유입만 잡은 값이고요. 앱푸시 거래액은 「{menu_ref("회원UV·거래액")}」에서 '
-                        '보면 돼요 (채널 PUSH · 디바이스 App).</div>',
+                        '(천명)이에요. <b>PUSH 채널 × App 디바이스</b>로 잡은 값이라 '
+                        '<b>문자(SMS)를 보고 앱으로 들어온 유입까지</b> 들어가요. 앱푸시만 보려면 '
+                        '위 <b>앱푸시 회원UV</b> 줄(전사 MTD)을 보면 되고, 거래액은 '
+                        f'「{menu_ref("회원UV·거래액")}」에서 보면 돼요 (채널 PUSH · 디바이스 App).</div>',
                         unsafe_allow_html=True)
 
 
@@ -5592,7 +5643,7 @@ def main():
         def _tfmt(met, v):
             """사이트 회원UV만 천명이라 소수 한 자리 — 위 표들과 같은 서식.
 
-            유니크 유입은 사람 수라 `_fmt`의 정수 서식을 그대로 쓴다."""
+            앱푸시 회원UV는 사람 수라 `_fmt`의 정수 서식을 그대로 쓴다."""
             if met == _SITEM:
                 return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
             return _fmt(met, v)
@@ -5666,7 +5717,7 @@ def main():
                     _lay["xaxis"]["tickangle"] = -30
                     if _met in RATE:
                         _lay["yaxis"]["tickformat"] = ".2%"
-                    _fg.update_layout(**_lay)
+                    set_layout(_fg, _lay)
                     _tc.plotly_chart(_fg, width="stretch")
 
         # 표는 **왼쪽에 실적 · 오른쪽에 전년비**로 모은다 — 증감만 가로로 훑어야
@@ -6086,10 +6137,10 @@ def main():
             st.markdown(f'<div class="appendix">MTD는 <b>{_mtd_endlab}까지의 월 누계</b>예요. '
                         '전월·전년은 같은 일수(1일~같은 날짜)로 맞춰 비교해요. '
                         '월초일수록 누계 일수가 짧아 값이 작게 보이는 게 정상이에요.'
-                        + ('<br><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 실적과 분모가 '
+                        + ('<br><b>푸시 회원UV는 사이트 전체 지표</b>라 위 발송 실적과 분모가 '
                            '달라요 — 월 누계가 아니라 <b>그 기간의 일평균</b>(천명)이에요. '
-                           '<b>PUSH 채널 × App 디바이스</b>, 즉 앱푸시를 눌러 앱으로 들어온 유입만 '
-                           '잡은 값이고요. 거래액과 채널·디바이스별 추이는 '
+                           '<b>PUSH 채널 × App 디바이스</b>로 잡은 값이라 <b>문자(SMS)를 보고 앱으로 '
+                           '들어온 유입까지</b> 들어가요. 거래액과 채널·디바이스별 추이는 '
                            f'「{menu_ref("회원UV·거래액")}」에서 보면 돼요.'
                            if _site_rows else '') + '</div>',
                         unsafe_allow_html=True)
@@ -6301,7 +6352,7 @@ def main():
                     marker_color=colors,
                     hovertemplate="%{x}<br>증감액: %{text}<extra></extra>"
                 ))
-                figw.update_layout(**base_layout(
+                set_layout(figw, base_layout(
                     h=410, title=f"거래액 {won(prev_tot)} → {won(cur_tot)} "
                                  f"({_dlt('거래액', cur_tot, prev_tot)})"
                 ))
@@ -6396,7 +6447,7 @@ def main():
                         decreasing=dict(marker=dict(color=PALETTE["red"])),
                         totals=dict(marker=dict(color=PALETTE["slate"])),
                     ))
-                    wf.update_layout(**base_layout(
+                    set_layout(wf, base_layout(
                         h=380, title=f"지표 체인 기여 분해 (LMDI) — {_wfn} → 기준 {_UNAME}"))
                     st.plotly_chart(wf, width="stretch")
                     _tot_d = v1 - v0
@@ -6733,7 +6784,7 @@ def main():
             x=delta_disp, y=adf["속성"], orientation="h",
             marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in adf["차이"]],
             text=[f"{v:+.2f}{'%p' if is_pct else ''}" for v in delta_disp], textposition="outside"))
-        fig.update_layout(**base_layout(h=360, title=f"{mlabel} — 속성 보유 시 평균 차이 (보유 − 미보유)"))
+        set_layout(fig, base_layout(h=360, title=f"{mlabel} — 속성 보유 시 평균 차이 (보유 − 미보유)"))
         fig.update_yaxes(autorange="reversed")        # 아래 순효과 차트와 같은 방향(큰 값이 위)
         st.plotly_chart(fig, width="stretch")
 
@@ -6776,7 +6827,7 @@ def main():
                 x=ev, y=eff["속성"], orientation="h",
                 marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in eff["순효과"]],
                 text=[f"{v:+.3f}{'%p' if is_pct else ''}" for v in ev], textposition="outside"))
-            figr.update_layout(**base_layout(h=380, title=f"{mlabel} — 속성 순효과 (교란 통제)"))
+            set_layout(figr, base_layout(h=380, title=f"{mlabel} — 속성 순효과 (교란 통제)"))
             figr.update_yaxes(autorange="reversed")
             st.plotly_chart(figr, width="stretch")
             er = eff.copy()
@@ -6843,7 +6894,7 @@ def main():
                 hovertemplate="%{y}<br>평균 " + mlabel + ": %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
             lay = base_layout(h=440, title=f"속성 {ksize}개 조합별 평균 {mlabel} (상위 12 · 전체평균 점선)")
             lay["xaxis"]["range"] = bar_xrange(yv, 1.18)
-            figc.update_layout(**lay)
+            set_layout(figc, lay)
             figc.update_yaxes(autorange="reversed")
             bm = base_mean * (100 if is_pct else 1)
             figc.add_vline(x=bm, line_dash="dot", line_color="#94a3b8",
@@ -6918,7 +6969,7 @@ def main():
                                                 color="#94a3b8", thickness=1.2, width=4),
                                    text=[f"{v:.2f}<br>(n={int(n)})" for v, n in zip(yvv, g["count"])],
                                    textposition="outside"))
-            fig.update_layout(**base_layout(h=300, ysuffix=("%" if is_pct else ""),
+            set_layout(fig, base_layout(h=300, ysuffix=("%" if is_pct else ""),
                                             title=f"{label} 길이 구간별 평균 {mlabel}"))
             container.plotly_chart(fig, width="stretch")
 
@@ -7120,7 +7171,7 @@ def main():
                 customdata=n_arr,
                 hovertemplate="%{y} × %{x}<br>" + mlabel + ": %{z:.2f}"
                               + ("%" if is_pct else "") + " · n=%{customdata:.0f}<extra></extra>"))
-            fig.update_layout(**base_layout(h=420, title=title))
+            set_layout(fig, base_layout(h=420, title=title))
             st.plotly_chart(fig, width="stretch")
             st.caption(f"빈 셀은 캠페인 {min_cell_n}건 미만이라 가린 구간이에요 (우연값 강조 방지) · "
                        "hover에 표본수(n)가 함께 떠요.")
@@ -7171,7 +7222,7 @@ def main():
                 customdata=nmat.values,
                 hovertemplate="%{y} · %{x}<br>" + mlabel + ": %{z:.2f}"
                               + ("%" if is_pct else "") + " · n=%{customdata}<extra></extra>"))
-            fig.update_layout(**base_layout(h=max(320, 60 + 34 * len(cmat)),
+            set_layout(fig, base_layout(h=max(320, 60 + 34 * len(cmat)),
                                             title=f"카테고리 × 문구속성 — 평균 {mlabel}"))
             st.plotly_chart(fig, width="stretch")
             st.caption("빈 셀은 캠페인이 3건이 안 되는 조합이에요. 마우스를 올리면 표본수(n)가 보여요.")
@@ -7236,7 +7287,7 @@ def main():
             fig = go.Figure(go.Bar(x=xlab, y=y,
                                    marker_color=METRIC_OPTS[mlabel][2],
                                    text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
-            fig.update_layout(**base_layout(h=320, ysuffix=("%" if is_pct else ""), title=title))
+            set_layout(fig, base_layout(h=320, ysuffix=("%" if is_pct else ""), title=title))
             st.plotly_chart(fig, width="stretch")
 
         cc = st.columns(2)
@@ -7253,7 +7304,7 @@ def main():
             y = g.values * (100 if is_pct else 1)
             fig = go.Figure(go.Bar(x=[str(i) for i in g.index], y=y, marker_color=PALETTE["amber"],
                                    text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
-            fig.update_layout(**base_layout(h=320, ysuffix=("%" if is_pct else ""),
+            set_layout(fig, base_layout(h=320, ysuffix=("%" if is_pct else ""),
                                             title=f"발송 규모 5분위(Q1 소량→Q5 대량)별 평균 {mlabel}"))
             st.plotly_chart(fig, width="stretch")
             st.markdown('<div class="appendix">대량 발송 구간(Q5)에서 효율이 떨어지면 더 보내는 게 오히려 '
@@ -7290,7 +7341,7 @@ def main():
                     textposition="outside"))
                 lay = base_layout(h=380, title=f"효율 상위 발송 슬롯 — 평균 {mlabel}")
                 lay["xaxis"]["range"] = bar_xrange(yv, 1.2)
-                figs.update_layout(**lay)
+                set_layout(figs, lay)
                 figs.update_yaxes(autorange="reversed")
                 st.plotly_chart(figs, width="stretch")
                 disp = slot.copy()
@@ -7607,7 +7658,7 @@ def main():
             _lay["xaxis"]["type"] = "category"
             _lay["xaxis"]["categoryorder"] = "array"
             _lay["xaxis"]["categoryarray"] = _xl
-            figh.update_layout(**_lay)
+            set_layout(figh, _lay)
 
             # 시간대 라인 옆에 '그 날 통째로' 얼마였는지 막대로 — 시간대 분포와 일자 총량을
             # 한 화면에서 같이 봐야 "특정 시간이 좋았나 / 그날 자체가 좋았나"가 갈린다.
@@ -7627,7 +7678,7 @@ def main():
             _lay2 = base_layout(h=420, ysuffix=("%" if _yunit == "%" else ""),
                                 title=f"일자 합산 {_ymet}")
             _lay2["yaxis"]["range"] = bar_xrange([v for v in _tv if np.isfinite(v)], 1.25)
-            figt2.update_layout(**_lay2)
+            set_layout(figt2, _lay2)
             _rc.plotly_chart(figt2, width="stretch")
 
             _basis_txt = ("비율은 <b>합산 기준</b>(ΣUV÷Σ발송)이에요. 발송 전체의 실제 효율이죠."
@@ -7715,7 +7766,7 @@ def main():
                 _lay2["barmode"] = "group"
                 _lay2["showlegend"] = True
                 _lay2["legend"] = legend_h()
-                figt.update_layout(**_lay2)
+                set_layout(figt, _lay2)
                 st.plotly_chart(figt, width="stretch")
                 st.markdown('<div class="appendix">그날 안 쓴 소구는 막대가 없어요. 건수가 적은 소구는 '
                             '우연히 높/낮게 나올 수 있으니 아래 표의 건수를 함께 보세요.</div>',
@@ -7958,7 +8009,7 @@ def main():
             layf2 = base_layout(h=340, title="단계별 전환 — 막대 길이 = 직전 단계 대비 전환율(%)")
             layf2["xaxis"]["range"] = [0, 130]
             layf2["xaxis"]["ticksuffix"] = "%"
-            figf.update_layout(**layf2)
+            set_layout(figf, layf2)
             figf.update_yaxes(autorange="reversed")
             st.plotly_chart(figf, width="stretch")
             # 단계별 전환율 표
@@ -8081,7 +8132,7 @@ def main():
             y = bp[mcol] * (100 if is_pct else 1)
             fig = go.Figure(go.Bar(x=bp["_key"].astype(str), y=y, marker_color=mclr,
                                    text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
-            fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
+            set_layout(fig, base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"BPU별 (가중) {mlabel}"))
             st.plotly_chart(fig, width="stretch")
             table(eff_table(bp.sort_values("발송", ascending=False), "BPU"),
@@ -8104,7 +8155,7 @@ def main():
             y = pr_chart[mcol] * (100 if is_pct else 1)
             fig = go.Figure(go.Bar(x=xlab, y=y, marker_color=mclr,
                                    text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
-            fig.update_layout(**base_layout(h=340, ysuffix=("%" if is_pct else ""),
+            set_layout(fig, base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"우선순위별 (가중) {mlabel}"))
             st.plotly_chart(fig, width="stretch")
             if n_excluded:
@@ -8143,7 +8194,7 @@ def main():
                                        hovertemplate="%{y} · %{x}<br>" + mlabel + ": %{z:.2f}"
                                                      + ("%" if is_pct else "")
                                                      + " · n=%{customdata:.0f}<extra></extra>"))
-            fig.update_layout(**base_layout(h=420, title=f"BPU × 우선순위 평균 {mlabel}"))
+            set_layout(fig, base_layout(h=420, title=f"BPU × 우선순위 평균 {mlabel}"))
             st.plotly_chart(fig, width="stretch")
         st.markdown('<div class="appendix">빈 셀은 캠페인 3건 미만(우연값 방지). hover에 표본수(n)가 함께 떠요.</div>',
                     unsafe_allow_html=True)
@@ -8202,7 +8253,7 @@ def main():
                 hovertemplate="%{y}<br>평균: %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
             lay = base_layout(h=h, title=title)
             lay["xaxis"]["range"] = bar_xrange(yv, 1.18)
-            fig.update_layout(**lay)
+            set_layout(fig, lay)
             fig.update_yaxes(autorange="reversed")
             return fig
 
@@ -8238,7 +8289,7 @@ def main():
                     hovertemplate="%{y}<br>전체평균 대비: %{x:+.2f}<br>캠페인수: %{customdata}<extra></extra>"))
                 layd = base_layout(h=max(420, 40 + 24 * len(_dv)),
                                    title=f"전체평균 대비 차이 ±상하위 — {mlabel} (회색=유의하지 않음)")
-                figd.update_layout(**layd)
+                set_layout(figd, layd)
                 figd.update_yaxes(autorange="reversed")
                 st.plotly_chart(figd, width="stretch")
             sel_kw = st.selectbox("조회 대상 키워드 선택 (실제 발송 메시지 드릴다운)", list(kdf["단어"]), key="p10_kw")
@@ -8316,7 +8367,7 @@ def main():
                           title=f"속성별 주차 추이 — 평균 {mlabel}", hover="x")
         lay["showlegend"] = True
         lay["legend"] = legend_h()
-        fig.update_layout(**lay)
+        set_layout(fig, lay)
         st.plotly_chart(fig, width="stretch")
 
         # 마모 진단: 각 속성의 주차 추세 회귀(기울기) + 사용 빈도 추이
@@ -8403,7 +8454,7 @@ def main():
         layf = base_layout(h=320, title="속성별 주차 사용 빈도(캠페인 수)", hover="x")
         layf["showlegend"] = True
         layf["legend"] = legend_h()
-        figf.update_layout(**layf)
+        set_layout(figf, layf)
         st.plotly_chart(figf, width="stretch")
         st.markdown('<div class="appendix">상관계수(r)가 유의한 음수(-)면 같은 소구를 반복해서 성과가 닳고 있다는 신호예요. 효율 감소가 이어지면 그 소구를 한동안 쉬게 하고 다른 오퍼로 바꿔 보세요. 카테고리 구성이나 시즌 영향이 섞일 수 있으니 보조 지표로만 참고하세요.</div>', unsafe_allow_html=True)
 
@@ -8880,7 +8931,7 @@ def main():
                 x=[_t_cst / _fdays, _t_uvq / _fdays, _t_pcs / _fdays],
                 textinfo="value+percent previous",
                 marker=dict(color=[PALETTE["slate"], PALETTE["blue"], PALETTE["purple"]])))
-            _fig.update_layout(**base_layout(h=320, title="하루 평균 퍼널 (선택 기간 합계 기준 비율)"))
+            set_layout(_fig, base_layout(h=320, title="하루 평균 퍼널 (선택 기간 합계 기준 비율)"))
             st.plotly_chart(_fig, width="stretch")
             st.markdown('<div class="appendix">막대 옆 %는 <b>바로 앞 단계 대비</b> 남은 비율이에요. '
                         '전사 MTD 기준이라 CRM 발송만 보는 다른 페이지와 값이 달라요. '
@@ -8930,7 +8981,7 @@ def main():
             _flay = base_layout(h=340, ysuffix="%", title=f"{_fn_gran} 단계별 전환율", hover="x")
             _flay["showlegend"] = True
             _flay["legend"] = legend_h()
-            _figt.update_layout(**_flay)
+            set_layout(_figt, _flay)
             st.plotly_chart(_figt, width="stretch")
             st.markdown('<div class="appendix">세 선이 같이 내려가면 발송량·피로도 쪽을, '
                         '<b>유입→구매만</b> 내려가면 랜딩·오퍼 쪽을 먼저 보세요. '
@@ -9056,7 +9107,7 @@ def main():
                 y = b[mc] * (100 if mc in MTD_PCT else 1)
                 fig = go.Figure(go.Bar(x=b["bucket"].astype(str), y=y, marker_color=MCLR[mc],
                                        text=[bar_label(v, mc, mc in MTD_PCT) for v in y], textposition="outside"))
-                fig.update_layout(**base_layout(h=340, ysuffix=("%" if mc in MTD_PCT else ""),
+                set_layout(fig, base_layout(h=340, ysuffix=("%" if mc in MTD_PCT else ""),
                                                 title=f"인당 발송 구간별 평균 {lab} (표본 30일+)"))
                 st.plotly_chart(fig, width="stretch")
 
@@ -9072,7 +9123,7 @@ def main():
                 fig = go.Figure(go.Bar(x=labels, y=diff,
                                        marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in diff],
                                        text=[f"{v:+.2f}" for v in diff], textposition="outside"))
-                fig.update_layout(**base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
+                set_layout(fig, base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
                 st.plotly_chart(fig, width="stretch")
                 st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 더 보낼수록 반응과 '
                             '효율이 오히려 줄어드는 구간이에요.</div>', unsafe_allow_html=True)
@@ -9275,7 +9326,7 @@ def main():
                         text=[bar_label(v, _ob_col, _ob_pct) for v in _ob_y], textposition="outside",
                         customdata=_ob_g["send"],
                         hovertemplate="%{x}<br>" + _ob_lab + ": %{y:,.2f}<br>발송 %{customdata:,}건<extra></extra>"))
-                    fig.update_layout(**base_layout(h=380, ysuffix=("%" if _ob_pct else ""),
+                    set_layout(fig, base_layout(h=380, ysuffix=("%" if _ob_pct else ""),
                                                     title=f"발송유형별 {_ob_lab}"))
                     st.plotly_chart(fig, width="stretch")
                     _ob_show = _ob_g[["_styp", "cnt", "send", "rps", "infl_cr", "ord_cr", "aov", "amt"]].copy()
@@ -9318,7 +9369,7 @@ def main():
             y = dm[mc] * (100 if mc in MTD_PCT else 1)
             fig = go.Figure(go.Bar(x=dm["요일"], y=y, marker_color=MCLR[mc],
                                    text=[bar_label(v, mc, mc in MTD_PCT) for v in y], textposition="outside"))
-            fig.update_layout(**base_layout(h=320, ysuffix=("%" if mc in MTD_PCT else ""),
+            set_layout(fig, base_layout(h=320, ysuffix=("%" if mc in MTD_PCT else ""),
                                             title=f"요일별 평균 {lab}"))
             st.plotly_chart(fig, width="stretch")
             dc = pd.DataFrame(mtd_data["dow_comp"])
@@ -9381,7 +9432,7 @@ def main():
             lay = base_layout(h=420, title="캠페인 전환 사분면 (점 크기=발송량)")
             lay["showlegend"] = True
             lay["xaxis"]["ticksuffix"] = "%"; lay["yaxis"]["ticksuffix"] = "%"
-            fig.update_layout(**lay)
+            set_layout(fig, lay)
             st.plotly_chart(fig, width="stretch")
             qsum = d["사분면"].value_counts().reset_index()
             qsum.columns = ["사분면", "캠페인수"]
@@ -9424,7 +9475,7 @@ def main():
             fig.add_hline(y=mav, line_dash="dash", line_color="#cbd5e1")
             lay = base_layout(h=420, title="주문CR(많이) × AOV(비싸게) — 점 크기=거래액")
             lay["xaxis"]["ticksuffix"] = "%"
-            fig.update_layout(**lay)
+            set_layout(fig, lay)
             st.plotly_chart(fig, width="stretch")
             gs = gg.sort_values("거래액", ascending=False).copy()
             gs["전략"] = [("박리다매(전환↑·객단↓)" if cr >= mcr and av < mav else
@@ -9642,7 +9693,7 @@ def main():
             fig.add_vline(x=overall, line_dash="dash", line_color=PALETTE["red"])
             lay = base_layout(h=max(280, 40 + 28 * len(g)), title=f"{title} — 평균 {mlabel} (빨간선=전체평균)")
             lay["xaxis"]["range"] = bar_xrange(yv, 1.22)
-            fig.update_layout(**lay); fig.update_yaxes(autorange="reversed")
+            set_layout(fig, lay); fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, width="stretch")
             gs = g.copy()
             gs["지표"] = gs["지표"].map(lambda v: f"{v*100:.2f}%" if is_pct else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}"))
@@ -9896,7 +9947,7 @@ def main():
                 clip = (a["기여율"].clip(upper=2.0) * 100)
                 fig = go.Figure(go.Histogram(x=clip, nbinsx=30, marker_color=PALETTE["blue"]))
                 lay = base_layout(h=300, title="기여율 분포 (200% 초과는 200%로 표시)")
-                fig.update_layout(**lay)
+                set_layout(fig, lay)
                 fig.update_xaxes(ticksuffix="%")
                 st.plotly_chart(fig, width="stretch")
                 show = a.sort_values("기여율", ascending=False)
@@ -9951,7 +10002,7 @@ def main():
                          hide_index=True, width="stretch", dl_name="발송한 기획전 vs 발송 안 한 기획전 — 매출 비")
             fig = go.Figure(go.Bar(x=["발송함", "발송안함"], y=[sset.mean(), uset.mean()],
                                    marker_color=[PALETTE["green"], PALETTE["slate"]]))
-            fig.update_layout(**base_layout(h=320, title=f"발송 유무별 평균 {base_lbl}"))
+            set_layout(fig, base_layout(h=320, title=f"발송 유무별 평균 {base_lbl}"))
             st.plotly_chart(fig, width="stretch")
             p = welch(sset.dropna().values, uset.dropna().values)
             st.caption(f"평균 차이 통계 유의성: {sig_label(p)} · 발송 {len(sset):,}건 vs 미발송 {len(uset):,}건")
@@ -9981,7 +10032,7 @@ def main():
                 lay = base_layout(h=420, title=f"월별 {base_lbl} 합계 추이 (발송/미발송 기획전)", hover="x")
                 lay["showlegend"] = True
                 lay["legend"] = legend_h()
-                fig.update_layout(**lay)
+                set_layout(fig, lay)
                 st.plotly_chart(fig, width="stretch")
                 cnt = P2.groupby(["월", "발송"]).size().reset_index(name="기획전수")
                 figc = go.Figure()
@@ -9993,7 +10044,7 @@ def main():
                 layc = base_layout(h=300, title="월별 기획전 수 (발송/미발송)", hover="x")
                 layc["showlegend"] = True
                 layc["legend"] = legend_h()
-                figc.update_layout(**layc)
+                set_layout(figc, layc)
                 st.plotly_chart(figc, width="stretch")
                 st.caption("기획전 시작월 기준으로 묶었어요. 발송을 본격적으로 돌린 시점 전후로 녹색 선이 어떻게 움직였는지 보세요.")
 
@@ -10066,7 +10117,7 @@ def main():
                 hovertemplate="%{x|%m/%d} 주<br>매칭률 %{y:.0f}% · 캠페인 %{customdata}건<extra></extra>"))
             laym = base_layout(h=260, title="주차별 문구 매칭률(%) — 80% 미만 주는 빨강")
             laym["yaxis"]["range"] = [0, 108]
-            figm.update_layout(**laym)
+            set_layout(figm, laym)
             st.plotly_chart(figm, width="stretch")
             _low = wk_m[wk_m["매칭률"] < 0.8]
             if len(_low):
@@ -10286,7 +10337,7 @@ def main():
         lay_consent["showlegend"] = True
         lay_consent["yaxis"]["gridcolor"] = "#f1f5f9"
         lay_consent["yaxis"]["title"] = "수신동의 수"
-        fig_consent.update_layout(**lay_consent)
+        set_layout(fig_consent, lay_consent)
         st.plotly_chart(fig_consent, width="stretch")
 
         # ── 차트 1-b: 연중 추이 (전년 비교) + 증감 속도 코멘트 ──
@@ -10328,7 +10379,7 @@ def main():
             _lay_yoy["xaxis"]["tickformat"] = "%m월"
             _lay_yoy["xaxis"]["dtick"] = "M1"
             _lay_yoy["yaxis"]["title"] = "수신동의 수"
-            fig_yoy.update_layout(**_lay_yoy)
+            set_layout(fig_yoy, _lay_yoy)
             st.plotly_chart(fig_yoy, width="stretch")
 
         # 증감 속도 코멘트 — 세 그룹 모두 (기존은 빠지는데 신규가 메우는지 한눈에)
@@ -10371,7 +10422,7 @@ def main():
         lay_addrem["yaxis"]["zeroline"] = True
         lay_addrem["yaxis"]["zerolinecolor"] = "#cbd5e1"
         lay_addrem["yaxis"]["title"] = "명"
-        fig_addrem.update_layout(**lay_addrem)
+        set_layout(fig_addrem, lay_addrem)
         st.plotly_chart(fig_addrem, width="stretch")
 
         # ── 차트 3: 주간 순증감 바차트 ──
@@ -10411,7 +10462,7 @@ def main():
             lay_wk["xaxis"]["type"] = "date"  # 명시적으로 날짜 축 설정
             lay_wk["xaxis"]["tickformat"] = "%Y-%m"  # 연도-월 형태로 눈금 깔끔하게 포맷
             lay_wk["xaxis"]["dtick"] = "M3"  # 3개월 간격으로 격자선 및 눈금 표시
-            fig_wk.update_layout(**lay_wk)
+            set_layout(fig_wk, lay_wk)
             st.plotly_chart(fig_wk, width="stretch")
 
         # ── 차트 4: 기존 vs 신규 동의수 비교 (스택 영역) ──
@@ -10444,7 +10495,7 @@ def main():
             lay_stack["showlegend"] = True
             lay_stack["yaxis"]["gridcolor"] = "#f1f5f9"
             lay_stack["yaxis"]["title"] = "수신동의 수"
-            fig_stack.update_layout(**lay_stack)
+            set_layout(fig_stack, lay_stack)
             st.plotly_chart(fig_stack, width="stretch")
 
         # ── 크로스 분석: 발송 강도(MTD) ↔ 수신동의 증감 ──
@@ -10526,7 +10577,7 @@ def main():
                         lay_sc["yaxis"]["gridcolor"] = "#f1f5f9"
                         lay_sc["yaxis"]["zeroline"] = True
                         lay_sc["yaxis"]["zerolinecolor"] = "#cbd5e1"
-                        fig_sc.update_layout(**lay_sc)
+                        set_layout(fig_sc, lay_sc)
                         st.plotly_chart(fig_sc, width="stretch")
 
                         if r <= -0.3:
@@ -10907,7 +10958,7 @@ def main():
                     customdata=np.stack([_sdf["변경 건수"], _sdf["그대로 건수"]], axis=-1),
                     hovertemplate="%{x}<br>CTR 차이 %{y:+.2f}%p<br>"
                                   "변경 %{customdata[0]}건 · 그대로 %{customdata[1]}건<extra></extra>"))
-                _fg.update_layout(**base_layout(h=300, title="발송유형별 CTR 차이 (변경 − 그대로)"))
+                set_layout(_fg, base_layout(h=300, title="발송유형별 CTR 차이 (변경 − 그대로)"))
                 st.plotly_chart(_fg, width="stretch")
                 table(_sdf.style.format({
                     "변경 CTR": "{:.2f}%", "그대로 CTR": "{:.2f}%", "CTR 차이(%p)": "{:+.2f}",
@@ -11136,7 +11187,7 @@ def main():
                 text=[f"{v:,.0f}" if pd.notna(v) else "–" for v in _kt_idx],
                 textposition="outside"))
             _kt_bar.add_hline(y=100, line_dash="dot", line_color="#94a3b8")
-            _kt_bar.update_layout(**base_layout(
+            set_layout(_kt_bar, base_layout(
                 h=320, title="영업 세일즈 푸시를 100으로 뒀을 때 컨틴 (100 위면 컨틴이 나음)"))
             st.plotly_chart(_kt_bar, width="stretch")
             table(pd.DataFrame(_kt_rows).style.map(
@@ -11211,7 +11262,7 @@ def main():
                     customdata=np.stack([_tdf["건수"], _tdf["CTR"]], axis=-1),
                     hovertemplate="%{x}<br>" + _lift_lab + " %{y:,.2f}<br>"
                                   "%{customdata[0]}건 · CTR %{customdata[1]:.2f}%<extra></extra>"))
-                _ft.update_layout(**base_layout(
+                set_layout(_ft, base_layout(
                     h=320, title=(f"소구 속성별 {_mlab}" if _is_total
                                   else f"소구 속성별 {_mlab} 리프트 (기준 {_mtxt(_bm)})")))
                 st.plotly_chart(_ft, width="stretch")
@@ -11275,7 +11326,7 @@ def main():
                 customdata=np.stack([_mg["남은발송"], _mg["전체"]], axis=-1),
                 hovertemplate="%{x|%Y-%m}<br>남은발송 %{y:.1f}%<br>"
                               "%{customdata[0]}건 / %{customdata[1]}건<extra></extra>"))
-            _fm.update_layout(**base_layout(h=280, title="월별 남은발송 비중 (%)", hover="x"))
+            set_layout(_fm, base_layout(h=280, title="월별 남은발송 비중 (%)", hover="x"))
             st.plotly_chart(_fm, width="stretch")
             if len(_mpart):
                 st.caption("발송이 몇 건뿐인 달 "
@@ -11477,7 +11528,7 @@ def main():
         _pf_lay["showlegend"] = True
         _pf_lay["legend"] = legend_h()
         _pf_lay["barmode"] = "group"
-        fig.update_layout(**_pf_lay)
+        set_layout(fig, _pf_lay)
         st.plotly_chart(fig, width="stretch")
 
         _pf_show = _pf_t.copy()
@@ -11564,7 +11615,7 @@ def main():
         st.title("🌐 회원UV · 거래액")
         st.caption(f"전사 사이트 지표예요. 회원UV는 **{SITE_UNIT['uv']}**, "
                    f"거래액은 **{SITE_UNIT['amt']}** 단위예요.")
-        _sv_all = finalize_site(st.session_state.get("site_store_df"))
+        _sv_all = site_frame(st.session_state.get("site_store_df"))
         if not len(_sv_all):
             st.info("회원UV·거래액 리포트를 왼쪽 📂 파일 올리기에 올려 주세요. "
                     "두 파일(회원UV·거래액)을 같이 올리면 한 화면에서 같이 봐요.")
@@ -11588,11 +11639,15 @@ def main():
             _sv_mcol = _SV_MET[_sv_mlab]
             _sv_other = "amt" if _sv_mcol == "uv" else "uv"
         with _sv_c[2]:
-            _sv_chs = [c for c in SITE_CHANNELS if c in set(_sv_all["ch"])]
+            # set()을 컴프리헨션 «안»에 두면 후보마다 2만 행을 다시 훑는다
+            # (실측 0.16초/리런). 한 번만 만든다.
+            _sv_chset = set(_sv_all["ch"])
+            _sv_chs = [c for c in SITE_CHANNELS if c in _sv_chset]
             guard_select("sv_ch", _sv_chs)
             _sv_ch = st.selectbox("채널", _sv_chs, key="sv_ch")
         with _sv_c[3]:
-            _sv_devs = [c for c in SITE_DEVICES if c in set(_sv_all["dev"])]
+            _sv_dvset = set(_sv_all["dev"])
+            _sv_devs = [c for c in SITE_DEVICES if c in _sv_dvset]
             guard_select("sv_dev", _sv_devs)
             _sv_dev = st.selectbox("디바이스", _sv_devs, key="sv_dev")
         with _sv_c[4]:
@@ -11722,7 +11777,7 @@ def main():
         else:
             fig = go.Figure(go.Bar(x=_sv_show["dt"], y=_sv_show[_sv_mcol],
                                    marker_color=PALETTE["blue"]))
-            fig.update_layout(**base_layout(h=380,
+            set_layout(fig, base_layout(h=380,
                                             title=f"{_sv_ch} · {_sv_dev} — {_sv_mlab}"))
         fig.update_xaxes(**_sv_ax)
         st.plotly_chart(fig, width="stretch")
@@ -11793,7 +11848,7 @@ def main():
             _lay.pop("xaxis", None); _lay.pop("yaxis", None)
             _lay["showlegend"] = True
             _lay["legend"] = legend_h()
-            _sv_fig.update_layout(**_lay)
+            set_layout(_sv_fig, _lay)
             _sv_fig.update_xaxes(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
                                  tickfont=dict(color="#64748b", size=9), **_sv_ax)
             _sv_fig.update_yaxes(gridcolor="#f1f5f9", linecolor="#e2e8f0",
@@ -11848,7 +11903,7 @@ def main():
                     hovertemplate="%{label}<br>%{value:,.1f}<br>%{percent}<extra></extra>"))
                 _pl = base_layout(h=330, title=f"{_plab} ({_prng})")
                 _pl.pop("xaxis", None); _pl.pop("yaxis", None)
-                _fig.update_layout(**_pl)
+                set_layout(_fig, _pl)
                 _col.plotly_chart(_fig, width="stretch")
             if len(_sv_pies) > 1:
                 _tn, _ta = sum(_sv_now.values()), sum(_sv_ago.values())

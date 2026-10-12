@@ -576,6 +576,176 @@ def t_report_capture_recovers_from_a_poisoned_wrapper():
             del _st._orig_plotly_chart
 
 
+# ──────────────────────────────────────────────────────────────────────
+# 차트 레이아웃 — `update_layout`은 리런마다 재귀 병합을 다시 돈다
+# ──────────────────────────────────────────────────────────────────────
+# `fig.update_layout(**lay)`는 플로틀리가 기존 레이아웃에 속성을 하나씩 얹으면서 매직
+# 밑줄 경로를 다시 파싱하고 검증한다 — 한 장에 12.3ms다. `set_layout`은 레이아웃을
+# 통째로 갈아 끼워 3.1ms에 끝낸다(4배). 실측으로 「1. 주간보고」 리런 1.15초 중
+# 0.29초 · 「9. 사이트·앱 지표」 0.73초 중 0.21초가 여기였다.
+#
+# 빠른 길의 전제는 **기본 템플릿을 새 레이아웃에 안 싣는 것**이다(그걸 같이 넘기면
+# 12ms가 그대로 돌아온다). 안 실어도 직렬화할 때 기본값이 다시 붙어서 결과 JSON이
+# 같지만, **앱이 템플릿을 직접 고르면 그 순간 깨진다** — 아래 둘이 같이 못 박는다.
+
+
+def _fig_json(fig):
+    import json
+    return json.loads(fig.to_json())
+
+
+@case
+def t_set_layout_matches_update_layout():
+    """`set_layout`과 `update_layout`의 결과 figure가 한 글자도 다르지 않아야 한다."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    import weekly_report as W
+
+    x, y = list(range(12)), [i * 1.5 for i in range(12)]
+
+    def plain():
+        f = go.Figure()
+        f.add_trace(go.Scatter(x=x, y=y, name="올해"))
+        return f
+
+    def sub():
+        # 패널 제목은 layout.annotations 로 들어간다 — 갈아 끼울 때 잃기 쉬운 자리다
+        f = make_subplots(rows=2, cols=2, subplot_titles=["가", "나", "다", "라"],
+                          shared_xaxes=True, vertical_spacing=0.14)
+        for r in (1, 2):
+            for c in (1, 2):
+                f.add_trace(go.Bar(x=x, y=y), row=r, col=c)
+        return f
+
+    def _slay():
+        l = W.base_layout(430, title="제목")
+        l.pop("xaxis", None)
+        l.pop("yaxis", None)
+        l["showlegend"] = True
+        return l
+
+    cases = [("단일", plain, lambda: W.base_layout(320, ysuffix="%", title="제목")),
+             ("서브플롯", sub, _slay)]
+    for nm, mk, mklay in cases:
+        a, b = mk(), mk()
+        a.update_layout(**mklay())
+        W.set_layout(b, mklay())
+        ja, jb = _fig_json(a), _fig_json(b)
+        assert ja["layout"] == jb["layout"], f"{nm}: layout이 달라요"
+        assert ja["data"] == jb["data"], f"{nm}: data가 달라요"
+
+    # 여러 번 겹쳐 입히는 길 (base → 추가 조정) 도 같아야 한다
+    a, b = plain(), plain()
+    a.update_layout(**W.base_layout(320, title="제목"))
+    a.update_layout(yaxis2=dict(overlaying="y", side="right"))
+    a.update_layout(legend=dict(x=0.5))
+    W.set_layout(b, W.base_layout(320, title="제목"))
+    W.set_layout(b, dict(yaxis2=dict(overlaying="y", side="right")))
+    W.set_layout(b, dict(legend=dict(x=0.5)))
+    assert _fig_json(a)["layout"] == _fig_json(b)["layout"], "겹쳐 입히면 달라져요"
+
+    # 레이아웃을 입힌 뒤 축을 손봐도(`update_xaxes`) 같아야 한다 — stacked_panels 모양
+    a, b = sub(), sub()
+    a.update_layout(**_slay())
+    a.update_xaxes(linecolor="#e2e8f0", tickfont=dict(size=9))
+    W.set_layout(b, _slay())
+    b.update_xaxes(linecolor="#e2e8f0", tickfont=dict(size=9))
+    assert _fig_json(a)["layout"] == _fig_json(b)["layout"], "축을 손보면 달라져요"
+
+    # 패널 제목이 살아 있어야 한다 (안 살면 위 대조가 둘 다 비어서 통과할 수 있다)
+    assert len(_fig_json(b)["layout"].get("annotations", [])) == 4, \
+        "패널 제목(annotations)이 사라졌어요"
+
+
+@case
+def t_set_layout_takes_the_fast_path():
+    """빠른 길을 타는지 — 느린 길로 되돌리면 잡힌다.
+
+    위 대조 검사만 두면 `set_layout`의 본문을 `fig.update_layout(**lay)` 한 줄로
+    바꿔도 **값이 같으니 통과한다**. 느려진 건 값으로 안 보여서, 셋을 같이 본다.
+
+    ③이 핵심이다 — `go.Figure()`가 꽂아 둔 기본 템플릿을 새 레이아웃에 같이 넘기면
+    그 큰 dict를 다시 검증하느라 12ms가 그대로 돌아오는데, **결과 JSON은 똑같아서**
+    대조로는 영영 안 잡힌다. 실제로 그렇게 짜 보고서야 드러났다.
+    """
+    import time
+    import plotly.graph_objects as go
+    import chart_layout as C
+    import weekly_report as W
+
+    def mk():
+        f = go.Figure()
+        f.add_trace(go.Scatter(x=list(range(30)), y=list(range(30))))
+        return f
+
+    # ① 병합 API를 안 불렀는지
+    ul = []
+    _oul = go.Figure.update_layout
+    go.Figure.update_layout = lambda self, *a, **k: (ul.append(1), _oul(self, *a, **k))[1]
+    # ③ go.Layout 에 넘기는 dict에 템플릿이 없는지 — lay_merge 결과가 곧 그 dict다
+    merged = []
+    _omg = C.lay_merge
+
+    def _mg(a, b):
+        out = _omg(a, b)
+        merged.append(out)
+        return out
+
+    C.lay_merge = _mg
+    try:
+        C.set_layout(mk(), W.base_layout(320, title="제목"))
+    finally:
+        go.Figure.update_layout = _oul
+        C.lay_merge = _omg
+
+    assert not ul, "set_layout이 update_layout을 불렀어요 (느린 길)"
+    assert merged, "lay_merge를 안 거쳤어요 — 검사가 헛돌고 있어요"
+    assert "template" not in merged[-1], \
+        "기본 템플릿을 go.Layout에 넘겼어요 — 그러면 12ms가 그대로 돌아와요"
+
+    # ② 실제로 더 빠른지. 실측은 12.3ms 대 3.1ms(4배)라 2배 여유를 두고 본다.
+    def _best(fn, n=12):
+        fn()
+        return min((lambda: (lambda t0: (fn(), time.perf_counter() - t0)[1])(
+            time.perf_counter()))() for _ in range(n))
+
+    slow = _best(lambda: mk().update_layout(**W.base_layout(320, title="제목")))
+    fast = _best(lambda: C.set_layout(mk(), W.base_layout(320, title="제목")))
+    assert fast * 2 < slow, (f"빠르지 않아요 — set_layout {fast * 1000:.1f}ms vs "
+                             f"update_layout {slow * 1000:.1f}ms (2배는 돼야 해요)")
+
+
+@case
+def t_charts_do_not_call_update_layout_directly():
+    """두 앱에 `update_layout`이 남아 있으면 안 된다 — 느린 길이 다시 스며든다.
+
+    그리고 **템플릿을 직접 고르지 않는 것**이 `set_layout`의 전제다. 누가
+    `template=`을 쓰기 시작하면 `set_layout`이 그걸 버려서 화면이 조용히 달라진다.
+    """
+    # **줄 문자열이 아니라 호출을 본다.** 줄로 보면 임포트 위의 설명 주석
+    # (`fig.update_layout(**lay)`는 느리다…)에 걸려 오탐이 나고, 그걸 피하려고 예외를
+    # 두면 그 예외가 진짜 호출을 통과시키는 구멍이 된다.
+    def _calls(tree, attr):
+        return [n.lineno for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == attr]
+
+    def _kwargs(tree, name):
+        return [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call)
+                for k in n.keywords if k.arg == name]
+
+    for name in APPS:
+        tree = _tree(name)
+        bad = _calls(tree, "update_layout")
+        assert not bad, f"{name}: update_layout 직접 호출이 남았어요 — 줄 {bad}"
+        tpl = _kwargs(tree, "template")
+        assert not tpl, f"{name}: 플로틀리 템플릿을 직접 골랐어요 — 줄 {tpl}"
+    # 공용 모듈엔 폴백 하나만 (`_props`가 없어지는 미래 판 대비)
+    _cl = ast.parse((ROOT / "chart_layout.py").read_text(encoding="utf-8"))
+    _n = _calls(_cl, "update_layout")
+    assert len(_n) == 1, f"chart_layout.py의 update_layout이 {len(_n)}곳이에요 — 폴백 하나여야 해요"
+
+
 def main():
     fails = []
     for fn in CASES:

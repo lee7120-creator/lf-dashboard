@@ -194,6 +194,10 @@ def _open(store=None, orgcat=None, unit=None):
     _te = ROOT / "table_export.py"
     if _te.exists():
         shutil.copy(_te, os.path.join(tmp, "table_export.py"))
+    # 차트 레이아웃 공용 모듈 — 안 옮기면 임포트가 깨져 «모든» 차트가 사라진다
+    _cl = ROOT / "chart_layout.py"
+    if _cl.exists():
+        shutil.copy(_cl, os.path.join(tmp, "chart_layout.py"))
     (synth_store() if store is None else store).to_csv(
         os.path.join(tmp, W.DATA_STORE), index=False, encoding="utf-8-sig")
     oc = synth_orgcat() if orgcat is None else orgcat
@@ -2054,6 +2058,10 @@ def _open_page(page, store=None, orgcat=None):
     _te = ROOT / "table_export.py"
     if _te.exists():
         shutil.copy(_te, os.path.join(tmp, "table_export.py"))
+    # 차트 레이아웃 공용 모듈 — 안 옮기면 임포트가 깨져 «모든» 차트가 사라진다
+    _cl = ROOT / "chart_layout.py"
+    if _cl.exists():
+        shutil.copy(_cl, os.path.join(tmp, "chart_layout.py"))
     (synth_store() if store is None else store).to_csv(
         os.path.join(tmp, W.DATA_STORE), index=False, encoding="utf-8-sig")
     oc = synth_orgcat() if orgcat is None else orgcat

@@ -108,6 +108,143 @@ def case(fn):
     return fn
 
 
+# ──────────────────────────────────────────────────────────────────────
+# site_pick — 인덱스가 예전 풀스캔과 한 건이라도 달라지면 화면 숫자가 통째로 틀어진다
+# ──────────────────────────────────────────────────────────────────────
+# `site_pick`은 한 화면에서 열 번 넘게 불린다(채널 패널 차트 = 채널 수 × 비교 연도,
+# 디바이스 비중 = 디바이스 3종 × 올해·전년). 예전엔 호출마다 `finalize_site`로 2만 행을
+# 다시 정규화했고 그게 「9. 사이트·앱 지표」 리런 0.96초 중 0.34초였다. 지금은
+# `site_index`가 `{(채널, 디바이스): 프레임}`을 한 번 만들고 조회만 한다.
+#
+# **합성 그리드는 너무 순해서 규칙을 깨도 값이 안 변한다** — 중복 키도, 못 읽는 날짜도,
+# 기본 목록 밖 채널도 없다. 아래 픽스처가 그 넷을 일부러 심는다.
+
+
+def _adversarial_site():
+    """저장소에서 실제로 나오는 험한 모양들 — 구글시트 라운드트립까지 흉내 낸다."""
+    rows = [
+        # 전값이 문자열로 돌아온 판 (구글시트 라운드트립)
+        {"date": "20260901", "ch": "Total", "dev": "Total", "uv": "251900", "amt": "980000"},
+        {"date": "20260902", "ch": "Total", "dev": "Total", "uv": "248100", "amt": "960000"},
+        # 같은 키가 두 번 — 저장소가 지우기 전 프레임이 화면에 올 수 있다
+        {"date": "20260903", "ch": "Total", "dev": "Total", "uv": 100, "amt": 1},
+        {"date": "20260903", "ch": "Total", "dev": "Total", "uv": 999, "amt": 2},
+        # 날짜가 8자리가 아닌 줄 — 버려야 한다
+        {"date": "2026-09-04", "ch": "Total", "dev": "Total", "uv": 1, "amt": 1},
+        {"date": "nan", "ch": "Total", "dev": "Total", "uv": 2, "amt": 2},
+        # 끝에 .0 이 붙어 온 날짜 — 되살려야 한다
+        {"date": "20260905.0", "ch": "Total", "dev": "Total", "uv": 240000, "amt": 900000},
+        # 한쪽 지표만 있는 줄
+        {"date": "20260906", "ch": "PUSH", "dev": "App", "uv": 3300, "amt": np.nan},
+        {"date": "20260907", "ch": "PUSH", "dev": "App", "uv": np.nan, "amt": 7700},
+        # 공백이 붙은 채널·디바이스
+        {"date": "20260908", "ch": " PUSH ", "dev": " App ", "uv": 3100, "amt": 7100},
+        # 기본 목록 밖 조합 — 조회하면 빈 프레임이어야 한다
+        {"date": "20260909", "ch": "없는채널", "dev": "Total", "uv": 5, "amt": 5},
+        # 날짜 순서가 뒤섞인 입력 — 인덱스가 정렬해야 한다
+        {"date": "20260810", "ch": "Total", "dev": "Total", "uv": 230000, "amt": 870000},
+    ]
+    return pd.DataFrame(rows)
+
+
+def _scan_pick(df, ch, dev):
+    """최적화 «전» 구현 — 이게 기준이다."""
+    d = S.finalize_site(df)
+    if not len(d):
+        return pd.DataFrame(columns=["dt", "uv", "amt"])
+    d = d[(d["ch"] == ch) & (d["dev"] == dev)].copy()
+    if not len(d):
+        return pd.DataFrame(columns=["dt", "uv", "amt"])
+    d["dt"] = pd.to_datetime(d["date"], format="%Y%m%d", errors="coerce")
+    d = d.dropna(subset=["dt"]).sort_values("dt")
+    for c in ("uv", "amt"):
+        d[c] = pd.to_numeric(d[c], errors="coerce") / S.SITE_DIV
+    return d[["dt", "uv", "amt"]].reset_index(drop=True)
+
+
+@case
+def t_site_pick_matches_the_scan():
+    """인덱스 조회가 예전 풀스캔과 전수 일치해야 한다."""
+    combos = [("Total", "Total"), ("PUSH", "App"), ("없는채널", "Total"),
+              ("PUSH", "PC Web"), ("Total", "App")]
+    for df in (_adversarial_site(), _site_store(days=40)):
+        for ch, dev in combos:
+            a, b = _scan_pick(df, ch, dev), S.site_pick(df, ch, dev)
+            assert list(a.columns) == list(b.columns), (ch, dev, list(b.columns))
+            assert len(a) == len(b), f"{ch}·{dev}: 행 수가 달라요 {len(a)} vs {len(b)}"
+            if len(a):
+                pd.testing.assert_frame_equal(a, b, check_dtype=False,
+                                              obj=f"{ch}·{dev}")
+    # 픽스처가 규칙을 반증할 수 있는지 — 험한 줄이 실제로 걸러졌나
+    t = S.site_pick(_adversarial_site(), "Total", "Total")
+    assert len(t) == 6, f"험한 줄이 안 걸러졌어요 — {len(t)}행"
+    assert t["dt"].is_monotonic_increasing, "정렬이 안 됐어요"
+    # 중복 칸은 «지우지 않는다» — 저장소가 `KEY_COLS`로 지우는 일이고, 화면에 그대로
+    # 오면 둘 다 보여야 한다. 지우도록 바꾸면 소비처(일평균)의 분모가 조용히 달라진다.
+    _dup = t[t["dt"] == pd.Timestamp("2026-09-03")]["uv"].tolist()
+    assert _dup == [100 / S.SITE_DIV, 999 / S.SITE_DIV], f"중복 칸이 달라졌어요 — {_dup}"
+    # 날짜 뒤 '.0'을 되살렸나 (안 되살리면 5행이 된다)
+    assert (t["dt"] == pd.Timestamp("2026-09-05")).any(), "'.0'이 붙은 날짜를 버렸어요"
+
+
+@case
+def t_site_pick_follows_a_new_frame():
+    """프레임이 바뀌면 인덱스도 다시 만들어야 한다 — 메모가 옛 값을 주면 안 된다.
+
+    업로드로 저장소가 갱신되면 세션에 **새 객체**가 앉는다. 메모가 그걸 못 알아보면
+    화면이 옛 데이터를 계속 보여 주는데, 증상은 '올렸는데 안 바뀌네'로만 보인다.
+    """
+    one = _adversarial_site()
+    assert len(S.site_pick(one, "Total", "Total")) == 6
+    two = one[one["date"] != "20260901"].reset_index(drop=True)
+    got = S.site_pick(two, "Total", "Total")
+    assert len(got) == 5, f"새 프레임인데 옛 인덱스를 줬어요 — {len(got)}행"
+    # 행 수가 같은 갱신도 따라와야 한다 — **직전 프레임과 길이가 같아야** 이 규칙을
+    # 반증한다. 길이가 다른 프레임(`two`)을 거친 뒤에 재면 길이로 판단하는 구현도
+    # 어차피 다시 만들어서 통과한다(실제로 그 주입이 안 잡혔다). 그래서 길이가 같은
+    # 프레임으로 메모를 다시 채운 뒤에 본다.
+    assert len(S.site_pick(one, "Total", "Total")) == 6          # 메모를 len(one)로 되돌린다
+    three = one.copy()
+    three.loc[three["date"] == "20260901", "uv"] = 111000
+    assert len(three) == len(one), "픽스처가 규칙을 반증할 수 없어요 — 길이가 같아야 해요"
+    assert float(S.site_pick(three, "Total", "Total")["uv"].iloc[1]) == 111000 / S.SITE_DIV, \
+        "행 수가 같은 갱신을 못 따라갔어요 (메모가 길이·id로 판단하고 있어요)"
+
+    # `id()`로 키를 잡는 구현은 **여기서 안 잡힌다** — 세 프레임이 다 살아 있으니 주소가
+    # 겹치지 않는다. 겹치려면 옛 프레임이 해제된 자리에 새 프레임이 앉아야 하는데 그건
+    # 불러낼 수 있는 조건이 아니다(실제로 그 주입이 안 잡혔다). 그래서 «프레임 객체를
+    # 들고 is로 비교한다»는 규칙 자체를 소스로 못 박는다.
+    import ast
+    tree = ast.parse((ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8"))
+    for nm in ("site_index", "site_frame"):
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == nm), None)
+        assert fn is not None, f"{nm}을 못 찾았어요 — 검사가 헛돌고 있어요"
+        body = ast.dump(fn)
+        assert "'id'" not in body, \
+            f"{nm}의 메모가 id()를 쓰고 있어요 — 해제된 자리에 새 프레임이 앉으면 옛 값을 줘요"
+        assert any(isinstance(n, ast.Compare) and any(isinstance(o, ast.Is) for o in n.ops)
+                   for n in ast.walk(fn)), f"{nm}이 프레임을 `is`로 비교하지 않아요"
+
+
+@case
+def t_site_frame_is_memoised_across_reruns():
+    """읽기 전용 자리는 `site_frame`을 거쳐 **같은 객체**를 받아야 한다.
+
+    `finalize_site`를 직접 부르면 리런마다 새 프레임이 나와 `site_index` 메모까지 같이
+    깨진다 — 그게 리런당 0.11초였다.
+    """
+    df = _adversarial_site()
+    a, b = S.site_frame(df), S.site_frame(df)
+    assert a is b, "같은 프레임인데 두 번 정규화했어요"
+    assert S.site_frame(df.copy()) is not a, "다른 프레임에 옛 결과를 줬어요"
+    # 화면 코드가 실제로 그 길을 쓰는지 — 직접 호출로 되돌리면 잡힌다
+    src = (ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8")
+    bad = [i + 1 for i, l in enumerate(src.split("\n"))
+           if 'finalize_site(st.session_state' in l]
+    assert not bad, f"화면이 finalize_site를 직접 불러요 (site_frame을 쓰세요) — 줄 {bad}"
+
+
 @case
 def t_kind_detection():
     """정수만 있으면 회원UV, 소수가 섞이면 거래액. 파일명이 말해 주면 그게 우선."""
@@ -337,7 +474,7 @@ def t_weekly_mtd_rows_appear_with_data():
     names = set()
     for t in tbls:
         names |= set(t.value["지표"].astype(str))
-    assert "앱푸시 회원UV(일평균·천명)" in names, f"MTD에 앱푸시 행이 없어요 — {sorted(names)}"
+    assert "푸시 회원UV(문자포함, 일평균·천명)" in names, f"MTD에 푸시 행이 없어요 — {sorted(names)}"
     # 거래액은 위 '거래액' 행이 이미 담당한다 (주간 비교 표와 같은 이유)
     assert not [n for n in names if n.startswith("앱푸시 거래액")], \
         f"MTD에 앱푸시 거래액이 남았어요 — {sorted(names)}"
@@ -359,7 +496,7 @@ def t_weekly_kpi_table_has_apppush_rows():
             break
     assert hit is not None, "주요 지표 현황 표를 못 찾았어요"
     names = set(hit["지표"].astype(str))
-    assert "앱푸시 회원UV(일평균·천명)" in names, f"앱푸시 회원UV 행이 없어요 — {sorted(names)}"
+    assert "푸시 회원UV(문자포함, 일평균·천명)" in names, f"푸시 회원UV 행이 없어요 — {sorted(names)}"
     # 거래액은 위 '거래액' 행이 이미 담당한다 — 분모가 다른 값을 겹쳐 두지 않는다
     assert not [n for n in names if n.startswith("앱푸시 거래액")], \
         f"주간 표에 앱푸시 거래액이 남았어요 — {sorted(names)}"
