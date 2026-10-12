@@ -823,12 +823,15 @@ def t_recent_window_is_not_stretched_for_the_prior_year():
         raise AssertionError("올해 트레이스를 못 찾았어요")
 
 
-SITE_MET = "앱푸시 회원UV(일평균·천명)"
+# 사이트 리포트의 PUSH 채널은 문자(SMS) 유입까지 담는다 — 그래서 「푸시」고 「앱푸시」가
+# 아니다. 앱푸시만 보는 줄은 아래 `UNIQ_MET`(전사 MTD의 유니크유입)이다. 두 이름이
+# 비슷해서 한쪽만 고치면 엉뚱한 줄을 집는다.
+SITE_MET = "푸시 회원UV(문자포함, 일평균·천명)"
 
 
 @case
 def t_site_metric_joins_the_trend_when_the_source_is_there():
-    """앱푸시 회원UV도 추이에 올린다 — 칩·차트·표 셋 다.
+    """푸시 회원UV(문자포함)도 추이에 올린다 — 칩·차트·표 셋 다.
 
     사이트 원천이라 캠페인 집계(`_gsum`)에 없다. 값은 이미 그 기간의 일평균이라
     「값 기준」이 또 나누면 안 되고, 천명 단위라 소수 한 자리로 찍어야 위 표들과
@@ -876,7 +879,7 @@ def t_site_metric_is_absent_without_the_source():
 
 @case
 def t_site_metric_is_not_divided_again_by_the_value_mode():
-    """「일평균」으로 바꿔도 앱푸시 회원UV는 그대로다 — 이미 일평균이라서."""
+    """「일평균」으로 바꿔도 푸시 회원UV는 그대로다 — 이미 일평균이라서."""
     from test_site_metrics import _site_store
     site = _site_store(days=500)
     a = _trend(_open("주별", site=site))
@@ -1013,13 +1016,13 @@ def t_decomposition_names_the_right_previous_period():
 
 
 # ══════════════════════════════════════════════════════════════════
-# 유니크 유입 — 전사 MTD 파일에서 오는 줄
+# 앱푸시 회원UV — 전사 MTD 파일의 유니크유입에서 오는 줄
 #
 # 캠페인 실적에 없는 지표라 원천이 다르다. 하루치가 «그날 들어온 사람 수»라
 # 기간 합계로 더하면 여러 날 온 사람을 겹쳐 센다 — 그래서 **그 기간의 일평균**이고
 # 「값 기준」(누계/일평균)도 안 따른다. 사이트 회원UV와 같은 규칙이다.
 # ══════════════════════════════════════════════════════════════════
-UNIQ_MET = "유니크 유입(일평균)"
+UNIQ_MET = "앱푸시 회원UV(일평균)"
 UNIQ_V = 12_345.0
 
 
@@ -1095,14 +1098,14 @@ def t_unique_inflow_is_a_daily_mean_not_a_sum():
 
 @case
 def t_unique_inflow_is_not_divided_again_by_the_value_mode():
-    """「일평균」으로 바꿔도 유니크 유입은 그대로다 — 이미 일평균이라서."""
+    """「일평균」으로 바꿔도 앱푸시 회원UV는 그대로다 — 이미 일평균이라서."""
     mtd = _mtd_flat()
     a = _trend(_open("주별", mtd=mtd))
     b = _trend(_open("주별", mtd=mtd, wr_valmode="일평균"))
     ca, cb = _done_col(a), _done_col(b)
     assert ca == cb, f"비교할 기간이 달라요 — {ca} vs {cb}"
     assert a.loc[UNIQ_MET, ca] == b.loc[UNIQ_MET, cb], \
-        f"값 기준이 유니크 유입까지 나눴어요 — {a.loc[UNIQ_MET, ca]} → {b.loc[UNIQ_MET, cb]}"
+        f"값 기준이 앱푸시 회원UV까지 나눴어요 — {a.loc[UNIQ_MET, ca]} → {b.loc[UNIQ_MET, cb]}"
     # 가산 지표는 반대로 줄어야 한다 (픽스처가 규칙을 반증하는지 확인)
     assert _num(a.loc["발송", ca]) > _num(b.loc["발송", cb]), \
         "발송이 안 줄었어요 — 일평균 모드가 안 걸린 픽스처예요"

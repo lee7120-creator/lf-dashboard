@@ -22,6 +22,11 @@ try:
 except Exception:                                         # noqa: BLE001
     xlsx_bytes = None
 
+# 차트 레이아웃 적용 — 두 앱 공용(chart_layout.py). `fig.update_layout(**lay)`는
+# 플로틀리가 속성을 하나씩 재귀 병합하며 매번 검증을 다시 돌려 한 장에 12.3ms다.
+# 이쪽은 3.1ms다 — 근거와 실측은 그 모듈의 독스트링에 있다.
+from chart_layout import set_layout
+
 # 보고란 에디터 — 두 앱 공용(note_editor.py). 모듈을 못 불러와도 앱은 떠야 하므로
 # 평범한 텍스트 박스로 내려가는 폴백까지 그 안에 있다.
 from note_editor import note_editor, note_editor_reset
@@ -2361,6 +2366,11 @@ def style_trend(tbl, metrics):
 # ══════════════════════════════════════════════════════
 # YoY 라인차트 (Plotly)
 # ══════════════════════════════════════════════════════
+    fig.layout = go.Layout(**_lay_merge(
+        {k: v for k, v in cur.items() if k != "template"}, lay))
+    return fig
+
+
 def base_layout(h=300, ysuffix="", title=""):
     # 제목은 최상단(container 기준), 범례는 그 아래 별도 줄(plot 상단 바로 위)로 분리해
     # 제목·범례가 같은 높이에서 겹치지 않게 한다. 상단 여백(t)을 넉넉히 확보.
@@ -2409,7 +2419,7 @@ def yoy_chart(df, gran, metric, years, seg="*TOTAL", h=300, win=None):
     if gran in ("주", "일"):
         ly["xaxis"]["tickangle"] = -45
         ly["xaxis"]["nticks"] = 20 if gran == "주" else 14
-    fig.update_layout(**ly)
+    set_layout(fig, ly)
     return fig
 
 # ══════════════════════════════════════════════════════
@@ -2797,14 +2807,14 @@ def render_push_page(df, ref_year, chart_years):
                 if pd.isna(max_rate) or max_rate == 0:
                     max_rate = 10
 
-                fig.update_layout(
+                set_layout(fig, dict(
                     barmode="group",
                     yaxis=dict(title="명", side="left", showgrid=False),
                     yaxis2=dict(title="%", side="right", overlaying="y", range=[0, max_rate * 1.2], showgrid=False),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                     margin=dict(l=0, r=0, t=30, b=0),
-                    xaxis=dict(type="category")
-                )
+                    xaxis=dict(type="category"),
+                ))
                 st.plotly_chart(fig, width="stretch")
 
     # ── 확장 뷰: 동의자 잔고·이탈·순증·요일 패턴 (앱푸시_* 지표)
@@ -2860,7 +2870,7 @@ def render_push_page(df, ref_year, chart_years):
             fig_b.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines",
                                        name="Total" if seg == "*TOTAL" else seg,
                                        line=dict(color=clr(seg_pal[seg]), width=2)))
-        fig_b.update_layout(**base_layout(300, title="수신동의 누적 잔고 (명)"))
+        set_layout(fig_b, base_layout(300, title="수신동의 누적 잔고 (명)"))
         st.plotly_chart(fig_b, width="stretch")
 
         # 타겟팅 가능 모수 — 연중 추이 (전년 비교). 세그먼트별로 각각.
@@ -2903,7 +2913,7 @@ def render_push_page(df, ref_year, chart_years):
             lyy = base_layout(260, title=f"{SEG_LABEL[seg]} — 타겟팅 가능 (명)")
             lyy["xaxis"]["tickformat"] = "%m월"
             lyy["xaxis"]["dtick"] = "M1"
-            figy.update_layout(**lyy)
+            set_layout(figy, lyy)
             st.plotly_chart(figy, width="stretch")
 
             # 증가속도 코멘트는 **화면에 그린 연도**를 따라간다 — 안 보이는 해와 비교한
@@ -2938,7 +2948,7 @@ def render_push_page(df, ref_year, chart_years):
                                        marker=dict(size=4)))
             lyf = base_layout(320, title=f"{gran_opt} 신규추가·이탈·순증 (명)")
             lyf["barmode"] = "relative"
-            fig_f.update_layout(**lyf)
+            set_layout(fig_f, lyf)
             st.plotly_chart(fig_f, width="stretch")
             st.caption("※ 대량 이관·재동의 스파이크(연도별 중앙값 10배 초과)는 왜곡 방지를 위해 제외")
 
@@ -2951,7 +2961,7 @@ def render_push_page(df, ref_year, chart_years):
             if s.empty: continue
             m = s.groupby(s["dt"].dt.dayofweek)["value"].mean().reindex(range(7))
             fig_d.add_trace(go.Bar(x=dows, y=m.values, name=nm, marker_color=clr(cname)))
-        fig_d.update_layout(**base_layout(280, title="요일별 일평균 (명)"))
+        set_layout(fig_d, base_layout(280, title="요일별 일평균 (명)"))
         st.plotly_chart(fig_d, width="stretch")
 
     st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -4038,7 +4048,7 @@ def render_axis_page(df, ref_year, ref_month, wy, wlabel, *,
                 if gran in ("주", "일"):
                     ly["xaxis"]["tickangle"] = -45
                     ly["xaxis"]["nticks"] = 20 if gran == "주" else 14
-                fig.update_layout(**ly)
+                set_layout(fig, ly)
                 st.plotly_chart(fig, width="stretch")
 
     # ── 채널 × 기간 표 ──
@@ -4244,7 +4254,7 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
                     textposition="outside", cliponaxis=False))
                 _ly_r = base_layout(320, title=f"«{dec_met}» 채널별 전년비 변화 ({_suf})")
                 _ly_r["showlegend"] = False
-                _fig_r.update_layout(**_ly_r)
+                set_layout(_fig_r, _ly_r)
                 st.plotly_chart(_fig_r, width="stretch")
                 wtable(style_delta_cols(pd.DataFrame(_rows).set_index("채널")),
                        width="stretch", dl_name=f"채널별 {dec_met} ({period_lbl})")
@@ -4300,7 +4310,7 @@ def render_funnel_page(df, odf, ref_year, ref_month, wy, wlabel):
                 lyw = base_layout(360, title=f"일평균 {dec_met} ({unit}) — 변동 구간 확대")
                 lyw["showlegend"] = False
                 lyw["yaxis"]["range"] = [lo - span * 0.45, hi + span * 0.55]
-                fig_w.update_layout(**lyw)
+                set_layout(fig_w, lyw)
                 st.plotly_chart(fig_w, width="stretch")
 
             # 산출식 (접이식 첨부) — 워터폴을 그린 경우에만
@@ -4980,7 +4990,7 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win=None,
     if tg == "주":
         ly["xaxis"]["tickangle"] = -45
         ly["xaxis"]["nticks"] = 20
-    fig.update_layout(**ly)
+    set_layout(fig, ly)
     st.plotly_chart(fig, width="stretch")
 
     _cap = "위 표에서 조직·카테고리를 누르면 이 차트도 그 아래 단계로 바뀌어요."
@@ -5439,7 +5449,7 @@ def _occ_trend(views, path, node_lbl, met, cy, py, chs, gran, scope):
     if gran in ("주", "일"):
         ly["xaxis"]["tickangle"] = -45
         ly["xaxis"]["nticks"] = 20 if gran == "주" else 14
-    fig.update_layout(**ly)
+    set_layout(fig, ly)
     st.plotly_chart(fig, width="stretch")
 
     rows, dl = {}, {}
@@ -5863,7 +5873,7 @@ def render_orgcat_page(odf, ddf=None):
                 totals=dict(marker=dict(color=clr("slate")))))
             lay = base_layout(380, title=f"{crumb} · {kid_lbl}별 증감 분해 (백만원)")
             lay["showlegend"] = False
-            figw.update_layout(**lay)
+            set_layout(figw, lay)
             st.plotly_chart(figw, width="stretch")
 
     # ── ② 왜 — 요인 분해 ──
@@ -5900,7 +5910,7 @@ def render_orgcat_page(odf, ddf=None):
             totals=dict(marker=dict(color=clr("slate")))))
         lay = base_layout(360, title=f"{crumb} · 거래액 증감을 요인으로 (백만원)")
         lay["showlegend"] = False
-        figf.update_layout(**lay)
+        set_layout(figf, lay)
         st.plotly_chart(figf, width="stretch")
         if detail:
             st.caption("원장엔 상품UV·상품CR이 없어 **거래액 = 고객수 × 객단가**로 쪼개요. "
@@ -5938,7 +5948,7 @@ def render_orgcat_page(odf, ddf=None):
                 line=dict(color=clr(color), width=2 if yr == cy else 1.5,
                           dash=None if yr == cy else "dot"),
                 marker=dict(size=5)))
-        figt.update_layout(**base_layout(
+        set_layout(figt, base_layout(
             340, ysuffix="%" if is_pct else "",
             title=f"{met} · {cy}년 vs {py}년 ({'%' if is_pct else unit})"))
         st.plotly_chart(figt, width="stretch")
@@ -5991,7 +6001,7 @@ def render_orgcat_page(odf, ddf=None):
             lay = base_layout(max(260, 30 * len(z.index) + 120), title=f"{ccol} · {zttl}")
             lay["showlegend"] = False
             lay["yaxis"]["autorange"] = "reversed"
-            figh.update_layout(**lay)
+            set_layout(figh, lay)
             st.plotly_chart(figh, width="stretch")
             st.caption(("빨간 칸이 상위를 끌어내린 곳이에요. " if additive else "")
                        + f"위쪽 {HMAX}개씩만 그려요. "

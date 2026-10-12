@@ -10,6 +10,11 @@ on:
     paths:
       - "send_perf_dashboard.py"
       - "weekly_report.py"
+      # 두 앱 공용 모듈 — 여기 안 넣으면 이것만 고친 PR이 «검사 없이» 머지된다
+      - "chart_layout.py"
+      - "note_markdown.py"
+      - "note_editor.py"
+      - "table_export.py"
       - "requirements.txt"
       - "tests/**"
       - ".github/workflows/dashboard-ci.yml"
@@ -18,6 +23,10 @@ on:
     paths:
       - "send_perf_dashboard.py"
       - "weekly_report.py"
+      - "chart_layout.py"
+      - "note_markdown.py"
+      - "note_editor.py"
+      - "table_export.py"
       - "requirements.txt"
       - "tests/**"
   workflow_dispatch:
@@ -46,7 +55,9 @@ jobs:
 
       - name: 문법 검사
         run: |
-          python -m compileall -q send_perf_dashboard.py weekly_report.py
+          python -m compileall -q send_perf_dashboard.py weekly_report.py \
+                                 chart_layout.py note_markdown.py note_editor.py \
+                                 table_export.py
 
       - name: 전역 헬퍼 섀도잉 검사
         run: python tests/check_shadowing.py
