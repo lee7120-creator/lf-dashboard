@@ -482,6 +482,50 @@ def t_ui_prose_is_haeyoche():
                      + "\n  ".join(bad))
 
 
+@case
+def t_report_capture_survives_a_double_patch():
+    """차트·표 가로채기를 두 번 걸어도 래퍼가 «자기»를 부르지 않는다.
+
+    `st`는 **프로세스 공유**라(멀티유저) 동시 접속한 두 세션이 같은 순간에 이 블록을
+    지나간다. 예전엔 원본을 `st._orig_plotly_chart`에 담고 `hasattr`로 한 번만 담도록
+    막았는데, 두 세션이 그 가드를 **같이 통과**하면 뒤 세션이 «앞 세션의 래퍼»를
+    원본으로 집어 간다. 그 뒤로 래퍼가 자기를 호출해 `RecursionError`로 **앱 전체가
+    내려간다** — 운영에서 실제로 났고, 리런하면 살아나서 원인이 안 드러난다.
+
+    지금은 원본을 **클로저**에 담고(`st`에서 찾지 않는다) 래퍼에 매달아 둬서
+    (`_lf_orig`) 몇 번을 겹쳐 지나가도 되감아 진짜 원본을 감싼다.
+    """
+    sys.path.insert(0, str(ROOT / "tests"))
+    import streamlit as _st
+    from streamlit.testing.v1 import AppTest
+    from smoke_pages import synth_store
+
+    def _depth(fn):
+        d = 0
+        while hasattr(fn, "_lf_orig") and d < 40:
+            fn, d = fn._lf_orig, d + 1
+        return d, fn
+
+    at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=600)
+    at.session_state["camp_store"] = synth_store(weeks=6, per_day=2)
+    at.run()
+    assert not at.exception, at.exception[0].value
+    at.run()                                   # 같은 프로세스에서 한 번 더 — 두 번째 패치
+    assert not at.exception, at.exception[0].value
+
+    for _nm in ("plotly_chart", "dataframe"):
+        d, base = _depth(getattr(_st, _nm))
+        assert d == 1, (f"st.{_nm} 래퍼가 {d}겹이에요 — 감싼 걸 또 감쌌어요. "
+                        "한 겹 더 쌓일 때마다 재귀 위험이 커져요.")
+        assert not hasattr(base, "_lf_orig"), f"st.{_nm}의 바닥이 또 래퍼예요"
+        # 래퍼가 자기(또는 자기를 부르는 것)를 가리키면 호출 한 번에 바로 드러난다
+        assert base is not getattr(_st, _nm), f"st.{_nm}의 원본이 래퍼 자신이에요"
+
+    # 가로채기가 **여전히 동작**해야 한다 — 재귀만 막고 기능을 죽이면 안 된다.
+    assert at.session_state.get("_page_report"), \
+        "차트·표를 하나도 못 모았어요 — 가로채기가 끊겼어요"
+
+
 def main():
     fails = []
     for fn in CASES:
