@@ -5243,6 +5243,74 @@ def main():
                 f'{_pills}</div>',
                 unsafe_allow_html=True)
 
+        # ══ 일별 원천 두 벌 — 캠페인 집계에 없는 지표 ═══════════════════════
+        # 「주요 지표 현황」과 아래 「주요 지표 추이」가 **같은 것**을 본다.
+        #
+        #   · 앱푸시 회원UV — 사이트 전체 리포트(PUSH 채널 × App 디바이스)
+        #   · 유니크 유입   — 전사 MTD 발송상세 파일
+        #
+        # 둘 다 **그날 들어온 «사람 수»**라 기간 합계로 더하면 여러 날 온 사람을 겹쳐
+        # 센다. 그래서 합이 아니라 **그 기간의 일평균**이고, 「값 기준」(누계/일평균)도
+        # 안 따른다(`ADDV`에 안 넣는다). 이름에 「(일평균)」을 박아 두는 것도 그래서다.
+        #
+        # **한 구현으로 묶어 둔다.** 따로 두면 경과분 자르기 같은 규칙이 한쪽만 바뀌어
+        # 같은 화면의 두 줄이 서로 다른 창을 말하게 된다.
+        _wr_site = finalize_site(st.session_state.get("site_store_df"))
+
+        def _perkey(s_dt):
+            """일자 시리즈 → 기간 시작일 키. 기간 단위를 따라간다."""
+            if _unit == "일":
+                return s_dt.dt.normalize()
+            if _unit == "주":
+                return s_dt.dt.to_period("W").dt.start_time
+            return s_dt.dt.to_period("M").dt.start_time
+
+        def _daily_src(rows, vcol):
+            """일별 원천을 (기간 일평균 시리즈, 한 칸 읽는 함수)로 만든다.
+
+            `clip=True`면 **경과분까지만** 평균 낸다 — 진행 중인 기준 기간에서 위
+            카드·표가 쓰는 창(`_elapsed`)과 같아야 마지막 점의 전년비가 지표마다
+            다른 뜻이 되지 않는다."""
+            if rows is None or not len(rows):
+                return None, (lambda ps, clip=False: np.nan)
+            by = rows.groupby(_perkey(rows["dt"]))[vcol].mean()
+
+            def _at(ps, clip=False):
+                if ps is None:
+                    return np.nan
+                ps = pd.Timestamp(ps)
+                if not clip:
+                    return float(by.get(ps, np.nan))
+                e = min(_elapsed, _plen(ps, _unit) - 1)
+                v = rows.loc[(rows["dt"] >= ps)
+                             & (rows["dt"] <= ps + pd.Timedelta(days=e)), vcol]
+                return float(v.mean()) if len(v) else np.nan
+
+            return by, _at
+
+        _SITEM = f"앱푸시 {SITE_LABEL['uv']}(일평균·{SITE_UNIT['uv']})"
+        _sprows = None
+        if len(_wr_site) and _wr_site["uv"].notna().any():
+            _sp = site_pick(_wr_site, "PUSH", "App")
+            if len(_sp):
+                _sprows = _sp
+        _smean, _smean_at = _daily_src(_sprows, "uv")
+
+        # 유니크 유입 — 전사 MTD 파일에만 있다. 캠페인 실적엔 '유입UV'(발송 1건당)가
+        # 있지만 분모가 달라 같은 지표가 아니다. 파일이 없거나 그 칸이 비어 있으면
+        # 아래에서 줄도 선택지도 안 만든다 — 눌러도 아무 선이 안 생기는 선택지는
+        # '왜 안 그려지지'만 남긴다.
+        _UNIQM = "유니크 유입(일평균)"
+        _uqrows = None
+        if mtd_work is not None and len(mtd_work) and "uniqueInflow" in mtd_work:
+            _uq0 = pd.DataFrame({
+                "dt": pd.to_datetime(mtd_work["date"], errors="coerce"),
+                "uniqueInflow": pd.to_numeric(mtd_work["uniqueInflow"], errors="coerce"),
+            }).dropna()
+            if len(_uq0):
+                _uqrows = _uq0
+        _uqmean, _uq_at = _daily_src(_uqrows, "uniqueInflow")
+
         # ── 주요 지표 현황 표 (비교 열은 단위에 따라 달라진다 — 컬럼에 기간 일자 표기) ──
         st.markdown("##### 📋 주요 지표 현황")
         col_cur = f"기준 {_UNAME} ({_rng_short(ref_ps)})"
@@ -5257,10 +5325,23 @@ def main():
                 _r[_dc] = _dlt_sig(met, cur_w, _ag)
             rows.append(_r)
 
+        # ── 유니크 유입 — 전사 MTD 파일이 있을 때만 붙인다.
+        # 「그 기간의 일평균」이다. 하루치가 '그날 들어온 사람 수'라 합계로 더하면
+        # 여러 날 온 사람을 겹쳐 세게 된다 — 「값 기준」을 안 따르는 것도 같은 이유다.
+        # 부분 기간이면 위 지표와 같은 경과 창(_elapsed)을 쓴다.
+        _wk_uq_rows = 0
+        if _uqmean is not None:
+            _r = {"지표": _UNIQM, col_cur: _fmt(_UNIQM, _uq_at(ref_ps, clip=True))}
+            for _dc, _nm2, _bs, _ag in _CMPS_ON:
+                _uq_b = _uq_at(_bs, clip=True)
+                _r[f"{_nm2} ({_rng_short(_bs)})"] = _fmt(_UNIQM, _uq_b)
+                _r[_dc] = _dlt(_UNIQM, _uq_at(ref_ps, clip=True), _uq_b)
+            rows.append(_r)
+            _wk_uq_rows = 1
+
         # ── 앱푸시(PUSH 채널 × App 디바이스) — 사이트 데이터가 있을 때만 같은 표에 붙인다.
         # 발송 실적과 분모가 달라 합계로 못 섞으니 '그 기간의 일평균'으로 나란히 놓는다.
         # 부분 기간이면 위 지표와 같은 경과 창(_elapsed)을 그대로 쓴다.
-        _wr_site = finalize_site(st.session_state.get("site_store_df"))
         _wk_site_rows = 0
         if len(_wr_site):
             def _wk_sm(ps):
@@ -5350,6 +5431,14 @@ def main():
                       else "값은 그 기간의 **합산**이에요. ")
                    + "✱ = CTR·주문CR의 증감이 통계적으로 유의(p<0.05) — 표본 크기를 감안해도 "
                      "우연 변동 범위를 벗어났다는 뜻이에요. 마크가 없으면 노이즈일 수 있어요.")
+        if _wk_uq_rows:
+            st.markdown('<div class="appendix"><b>유니크 유입은 전사 MTD 파일</b>에서 온 값이라 '
+                        '위 발송 실적과 원천이 달라요. 하루치가 <b>그날 들어온 사람 수</b>라 '
+                        '기간 합계로 더하면 여러 날 온 사람을 겹쳐 세게 돼요 — 그래서 '
+                        '<b>그 기간의 일평균</b>으로 놓았고, 위 「값 기준」(누계/일평균)도 '
+                        '따르지 않아요. 캠페인 실적의 <b>UV</b>는 발송 1건당 유입이라 분모가 '
+                        f'다른 값이에요. 단계별로 끊어 보려면 「{menu_ref("유입 퍼널")}」에서 '
+                        '보면 돼요.</div>', unsafe_allow_html=True)
         if _wk_site_rows:
             st.markdown('<div class="appendix"><b>앱푸시 회원UV는 사이트 전체 지표</b>라 위 발송 '
                         '실적과 분모가 달라요 — 기간 합계가 아니라 <b>그 기간의 일평균</b>'
@@ -5451,56 +5540,38 @@ def main():
         # 써 놓고 실은 사흘 전과 비교하게 된다.
         _tpv = {p: _aggt_of(p, _prev_ps(p, _unit)) for p in _tps}
 
-        # 앱푸시 회원UV는 **사이트 원천**이라 캠페인 groupby(`_gsum`)에 없다. 기간 키로
-        # 한 번에 묶어 둔다 — 기간마다 `site_mean`을 부르면 프레임을 그 수만큼 다시 판다.
-        # 값은 이미 그 기간의 일평균이라 「값 기준」이 또 나누지 않게 `ADDV`에 안 넣는다.
-        _SITEM = f"앱푸시 {SITE_LABEL['uv']}(일평균·{SITE_UNIT['uv']})"
-        _smean = None
-        _sprows = None
-        if len(_wr_site) and _wr_site["uv"].notna().any():
-            _sp = site_pick(_wr_site, "PUSH", "App")
-            if len(_sp):
-                _sprows = _sp
-                if _unit == "일":
-                    _sk = _sp["dt"].dt.normalize()
-                elif _unit == "주":
-                    _sk = _sp["dt"].dt.to_period("W").dt.start_time
-                else:
-                    _sk = _sp["dt"].dt.to_period("M").dt.start_time
-                _smean = _sp.groupby(_sk)["uv"].mean()
-        _METS_T = METS + ([_SITEM] if _smean is not None else [])
+        # 캠페인 집계(`_gsum`)에 없는 두 줄 — 위 「주요 지표 현황」과 **같은 원천**을
+        # 본다(공용 `_daily_src`). 발송 → 유입 순서로 세운다.
+        _METS_T = (METS
+                   + ([_UNIQM] if _uqmean is not None else [])
+                   + ([_SITEM] if _smean is not None else []))
 
-        def _smean_at(ps, clip=False):
-            """사이트 원천의 기간 일평균. clip이면 경과분까지만 평균 낸다.
-
-            값이 이미 일평균이라 합산 지표만큼 튀지는 않지만, 같은 화면에서 지표마다
-            창이 갈리면 마지막 점의 전년비가 지표별로 다른 뜻이 된다."""
-            if _smean is None or ps is None:
-                return np.nan
-            ps = pd.Timestamp(ps)
-            if not clip or _sprows is None:
-                return float(_smean.get(ps, np.nan))
-            e = min(_elapsed, _plen(ps, _unit) - 1)
-            _v = _sprows.loc[(_sprows["dt"] >= ps)
-                             & (_sprows["dt"] <= ps + pd.Timedelta(days=e)), "uv"]
-            return float(_v.mean()) if len(_v) else np.nan
+        # 일별 원천 지표 → 한 칸 읽는 함수. 캠페인 집계가 아니라 위 `_daily_src`를 본다.
+        # 지표마다 분기를 흩뿌리면 한 곳을 빠뜨렸을 때 그 자리만 조용히 빈다.
+        _DSRC = {}
+        if _uqmean is not None:
+            _DSRC[_UNIQM] = _uq_at
+        if _smean is not None:
+            _DSRC[_SITEM] = _smean_at
 
         def _tv(p, met):
-            """추이 한 칸의 값 — 사이트 지표만 원천이 다르다."""
-            if met == _SITEM:
-                if _smean is None or p is None or pd.Timestamp(p) > _cut:
+            """추이 한 칸의 값 — 일별 원천 지표만 다른 데서 읽는다."""
+            if met in _DSRC:
+                if p is None or pd.Timestamp(p) > _cut:
                     return np.nan
-                return _smean_at(p, clip=(p == _mtd_ps))
+                return _DSRC[met](p, clip=(p == _mtd_ps))
             return _dv(_tagg.get(p) if p in _tagg else _aggt(p), met)
 
         def _tvy(p, met):
             """그 칸의 전년 값."""
-            if met == _SITEM:
-                return _smean_at(_yoy_ps(p, _unit), clip=(p == _mtd_ps))
+            if met in _DSRC:
+                return _DSRC[met](_yoy_ps(p, _unit), clip=(p == _mtd_ps))
             return _dv(_typ.get(p) if p in _typ else _aggt_of(p, _yoy_ps(p, _unit)), met)
 
         def _tfmt(met, v):
-            """사이트 지표는 천명이라 소수 한 자리 — 위 표들과 같은 서식."""
+            """사이트 회원UV만 천명이라 소수 한 자리 — 위 표들과 같은 서식.
+
+            유니크 유입은 사람 수라 `_fmt`의 정수 서식을 그대로 쓴다."""
             if met == _SITEM:
                 return "–" if v is None or pd.isna(v) else f"{v:,.1f}"
             return _fmt(met, v)
@@ -5509,6 +5580,8 @@ def main():
         # **고른 것만** 보여서 뭘 더 켤 수 있는지가 안 보인다. 칩은 전 목록이 늘 떠 있고
         # 안 고른 건 회색으로 남는다.
         _TDEF = ["발송", "UV", "주문건수", "거래액", "CTR", "주문CR"]
+        if _uqmean is not None:
+            _TDEF = _TDEF + [_UNIQM]
         if _smean is not None:
             _TDEF = _TDEF + [_SITEM]
         guard_multi("wr_trend_pills", _METS_T)
@@ -5536,8 +5609,8 @@ def main():
                     # 했다. 직전 기간 대비와 전년비를 같이 띄운다 — 표를 안 내려가도
                     # 읽히게. 비율 지표는 `_dlt`가 %p로 내므로 단위도 알아서 맞는다.
                     _dpp = [_dlt(_met, _tv(p, _met),
-                                 (_smean_at(_prev_ps(p, _unit), clip=(p == _mtd_ps))
-                                  if _met == _SITEM else _dv(_tpv[p], _met)))
+                                 (_DSRC[_met](_prev_ps(p, _unit), clip=(p == _mtd_ps))
+                                  if _met in _DSRC else _dv(_tpv[p], _met)))
                             for p in _tps]
                     _dyy = [_dlt(_met, _c, _p) for _c, _p in zip(_cy, _py)]
                     # 색은 점마다 다르니 값과 **같이** 싣는다(0·1=값, 2·3=CSS).
