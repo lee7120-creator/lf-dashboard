@@ -2694,12 +2694,28 @@ def main():
     # 그래서 ①원본을 **클로저에 담고**(호출 시점에 `st`에서 찾지 않는다) ②래퍼에
     # 원본을 매달아 두어 몇 겹이 쌓여도 되감아 꺼낸다. 두 세션이 같은 순간에
     # 지나가도 둘 다 진짜 원본을 감싸게 된다 (`t_report_capture_survives_a_double_patch`).
-    def _unwrap(fn):
-        """우리 래퍼면 원본을 꺼낸다 — 감싼 걸 또 감싸는 걸 막는다."""
-        seen = 0
-        while hasattr(fn, "_lf_orig") and seen < 20:
-            fn, seen = fn._lf_orig, seen + 1
-        return fn
+    def _pristine(name):
+        """패치 안 된 «진짜» 원본.
+
+        **`st.<name>`을 믿으면 안 된다.** 배포가 프로세스를 재시작하지 않고 스크립트만
+        갈아 끼우는 일이 있어서, 거기엔 **이전 버전이 남긴 래퍼**가 앉아 있을 수 있다.
+        그 옛 래퍼엔 `_lf_orig`가 없어 되감지도 못하는데, 모르고 그 위에 또 감싸면
+        호출이 옛 체인으로 들어가 `RecursionError`가 난다 — 실제로 그렇게 두 번 났다
+        (두 번째는 «이 블록을 고친 배포»에서 났다. 고친 코드가 옛 래퍼를 못 알아봤다).
+
+        `st._main`은 DeltaGenerator라 **모듈 속성 패치의 영향을 전혀 안 받는다** —
+        `st.plotly_chart`를 무엇으로 덮어써도 `st._main.plotly_chart`는 원본이다.
+        """
+        _dg = getattr(st, "_main", None)
+        _fn = getattr(_dg, name, None)
+        if callable(_fn):
+            return _fn
+        # _main이 없는 판(향후 Streamlit)에선 우리 래퍼만이라도 되감는다
+        _fn = getattr(st, name)
+        _seen = 0
+        while getattr(_fn, "_lf_orig", None) is not None and _seen < 50:
+            _fn, _seen = _fn._lf_orig, _seen + 1
+        return _fn
 
     def _mk_cap(kind, argkey, orig):
         def _cap(*a, **k):
@@ -2716,10 +2732,15 @@ def main():
     # 캡처 버퍼는 session_state에 — st 모듈 속성은 프로세스(멀티유저) 공유라 클로저
     # 리스트에 쌓으면 동시 접속한 다른 사용자의 차트/표가 내 리포트에 섞인다.
     # session_state 프록시는 '호출 시점' 세션 컨텍스트를 따라가므로 항상 자기 세션에 쌓인다.
+    # 옛 버전이 남긴 체인을 끊는다 — 여기 래퍼가 들어 있으면 그걸 타고 재귀한다.
+    for _legacy in ("_orig_plotly_chart", "_orig_dataframe"):
+        if hasattr(st, _legacy):
+            delattr(st, _legacy)
+
     st.session_state["_page_report"] = []
     _REPORT = st.session_state["_page_report"]
-    st.plotly_chart = _mk_cap("fig", "figure_or_data", _unwrap(st.plotly_chart))
-    st.dataframe = _mk_cap("table", "data", _unwrap(st.dataframe))
+    st.plotly_chart = _mk_cap("fig", "figure_or_data", _pristine("plotly_chart"))
+    st.dataframe = _mk_cap("table", "data", _pristine("dataframe"))
 
     st.set_page_config(page_title="LF몰 발송성과 대시보드", layout="wide",
                        initial_sidebar_state="expanded")
