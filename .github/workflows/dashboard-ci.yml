@@ -92,6 +92,9 @@ jobs:
       - name: 주간보고 기간 단위(일/주/월)·값 기준 검사
         run: python tests/test_weekly_perf.py
 
+      - name: 주간보고 요약 상단(필터 바·요약 타일·KPI 목표·메모) 검사
+        run: python tests/test_summary_top.py
+
       - name: 업로드 후 기간 필터·레이블 검사
         run: python tests/test_filter_follows_upload.py
 
