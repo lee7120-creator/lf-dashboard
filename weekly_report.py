@@ -76,6 +76,26 @@ st.markdown("""
 .kpi-delta.up{background:#ecfdf5;color:#15803d}
 .kpi-delta.down{background:#fef2f2;color:#dc2626}
 .kpi-delta.na{background:#f1f5f9;color:#94a3b8}
+.st-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px;margin:4px 0 12px}
+.st-tile{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+.st-l{color:#64748b;font-size:12px}
+.st-v{color:#1e293b;font-size:20px;font-weight:600;margin:2px 0 6px;white-space:nowrap}
+.st-r,.kp-r{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:#64748b;line-height:1.7}
+.st-r b,.kp-r b,.kp-f b{font-weight:600;color:#334155;white-space:nowrap}
+.kp-r span{white-space:nowrap}
+.st-r b.up,.kp-r b.up,.kp-f b.up{color:#15803d}
+.st-r b.down,.kp-r b.down,.kp-f b.down{color:#dc2626}
+.st-r b.na,.kp-r b.na,.kp-f b.na{color:#94a3b8}
+.kp-wrap{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:4px 0 10px}
+.kp-card{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+.kp-t{font-weight:600;color:#1e293b;margin-bottom:6px}
+.kp-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.kp-lab{color:#94a3b8;font-size:11px}
+.kp-v{color:#1e293b;font-size:18px;font-weight:600;margin:0 0 4px;white-space:nowrap}
+.kp-meter{position:relative;height:6px;background:#eef2f7;border-radius:3px;margin:4px 0}
+.kp-meter i{position:absolute;left:0;top:0;bottom:0;background:#2E68B0;border-radius:3px}
+.kp-meter em{position:absolute;top:-3px;bottom:-3px;width:2px;background:#f59e0b}
+.kp-f{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:#64748b;border-top:1px solid #f1f5f9;margin-top:8px;padding-top:6px}
 @media print {
   @page { margin: 12mm; }
   [data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"],
@@ -6024,6 +6044,595 @@ def render_orgcat_page(odf, ddf=None):
                    "거래액만 합이 상위와 일치하고, 고객수·상품UV는 유니크 값이라 조금 넘어요.")
 
 
+# ══════════════════════════════════════════════════════
+# 「주간보고 요약」 상단 — 필터 바 · 실적 요약 타일 · KPI 목표 · 메모
+# ══════════════════════════════════════════════════════
+# 공동 작업 저장소(`ryunj/first-dashboard`, 정적 HTML 대시보드)의 화면을 이 앱으로 옮긴
+# 것이다. 그쪽은 브라우저 IndexedDB·localStorage에 상태를 두지만 여기는 Streamlit이라
+# 위젯 세션 + `wr_insights.json`(백업 ZIP에 같이 담긴다)에 둔다.
+#
+# 값 규칙은 이 앱의 것을 그대로 쓴다 — `report_val`(가입율=계산 · 객단가=파일 우선).
+# 저 저장소의 산식으로 다시 짜면 같은 지표가 이 화면과 「02」에서 다른 숫자가 된다.
+
+SUM_UNITS = ["월", "주", "일"]
+SUM_UNIT_NAME = {"월": "월별", "주": "주별", "일": "일별"}
+# 직전 기간의 이름 — 단위에서 따라 나온다(주에 박아 두면 일·월에서 '전주비'가 실은
+# 전일·전월을 잰다. 발송성과 「1. 주간보고」의 `_PVN`과 같은 이유다).
+SUM_PREV_NAME = {"월": "전월", "주": "전주", "일": "전일"}
+SUM_MODES = ["일평균", "누계"]
+SUM_CMPS = ["전년 동기간", "직전 기간"]
+# 「누계」에서 일수를 곱하는 지표 — 비율·객단가는 이미 나눈 값이라 그대로다.
+SUM_ADDITIVE = {"첫구매 거래액", "첫구매 고객수", "비회원트래픽", "가입자수"}
+
+# KPI — 연간 목표는 첫구매 거래액·고객수·비회원트래픽·가입자수 넷이다
+# (first-dashboard `kpi.example.js`의 amt·cust·tr·sg와 같은 넷).
+KPI_METRICS = ["첫구매 거래액", "첫구매 고객수", "비회원트래픽", "가입자수"]
+KPI_KEY = "wr_kpi_targets::"          # + 연도 → JSON 문자열
+MEMO2_KEY = "wr_memo2::"              # + 메모 id → JSON 문자열 (메모마다 한 칸)
+
+
+def sum_period_dates(gran, sortkey):
+    """기간 하나에 드는 날짜. 라벨은 다시 파싱하지 않고 **정렬키**에서 읽는다.
+
+    주차는 «목요일이 속한 달의 N번째 주»다(`detail_periods`·마스터 주차와 같은 규칙).
+    """
+    sk = int(sortkey)
+    y, mo, x = sk // 10000, sk // 100 % 100, sk % 100
+    try:
+        if gran == "일":
+            return [datetime.date(y, mo, x)]
+        if gran == "월":
+            d0 = datetime.date(y, mo, 1)
+            n = ((d0.replace(day=28) + datetime.timedelta(days=4)).replace(day=1) - d0).days
+            return [d0 + datetime.timedelta(days=i) for i in range(n)]
+        d1 = datetime.date(y, mo, 1)
+        thu = d1 + datetime.timedelta(days=(3 - d1.weekday()) % 7 + 7 * (x - 1))
+        mon = thu - datetime.timedelta(days=3)
+        return [mon + datetime.timedelta(days=i) for i in range(7)]
+    except ValueError:
+        return []
+
+
+_SUM_LAST = {"df": None, "v": None}
+
+
+def sum_last_day(df):
+    """일자 데이터의 마지막 날 — 진행 중인 기간을 «며칠치»로 볼지 정하는 기준.
+
+    일자 원천이 없으면 오늘(KST) 전날까지로 본다. 1칸 메모는 프레임을 들고 `is`로
+    비교한다(`pick`과 같은 규칙 — `id()`만 쓰면 해제된 자리에 앉은 새 프레임을 못 가른다).
+    """
+    if _SUM_LAST["df"] is not df:
+        sk = df.loc[(df["gran"] == "일") & df["value"].notna(), "sortkey"].dropna()
+        v = None
+        if not sk.empty:
+            k = int(sk.max())
+            try:
+                v = datetime.date(k // 10000, k // 100 % 100, k % 100)
+            except ValueError:
+                v = None
+        _SUM_LAST["df"], _SUM_LAST["v"] = df, v
+    return _SUM_LAST["v"] or (today_kst() - datetime.timedelta(days=1))
+
+
+def sum_periods(df, gran):
+    """값이 있는 기간 `(year, label, sortkey)` — 최신이 앞."""
+    sub = (df[(df["gran"] == gran) & df["metric"].isin(METRICS7) & df["value"].notna()]
+           [["year", "label", "sortkey"]].dropna().drop_duplicates(["year", "label"]))
+    sub = sub.sort_values("sortkey", ascending=False)
+    return [(int(y), str(lb), int(k)) for y, lb, k in
+            zip(sub["year"], sub["label"], sub["sortkey"])]
+
+
+def sum_period_text(gran, year, label):
+    if gran == "일":
+        return f"{year}년 {label}"
+    return f"{year}년 {month_trim(label)}"
+
+
+def _sum_key(gran, year, label):
+    p = period_parts(gran, int(year), str(label))
+    return p[1] if p else None
+
+
+def sum_compare(df, gran, year, label, how):
+    """비교 기간 `(year, label, 설명)`. 없으면 `(None, None, 설명)`.
+
+    전년 동기간 — 일=364일 전(요일 보존) · 주=전년 같은 주차(없으면 그 달 마지막 주) ·
+    월=전년 같은 달. 직전 기간 — 전일 · 전주 · 전월. 기간 비교 규칙 절과 같다.
+    """
+    sk = _sum_key(gran, year, label)
+    if sk is None:
+        return None, None, ""
+    if how == "전년 동기간":
+        if gran == "일":
+            d = sum_period_dates("일", sk)[0] - datetime.timedelta(days=364)
+            return d.year, f"{d.month}/{d.day}", "364일 전 같은 요일"
+        if gran == "주":
+            mo, wk = sk // 100 % 100, sk % 100
+            lb, exact = week_like(df, year - 1, mo, wk)
+            if not lb:
+                return None, None, "전년 같은 주차"
+            return year - 1, lb, ("전년 같은 주차" if exact
+                                  else f"전년 같은 주차가 없어 {month_trim(lb)}와 비교")
+        return year - 1, label, "전년 같은 달"
+    if gran == "일":
+        d = sum_period_dates("일", sk)[0] - datetime.timedelta(days=1)
+        return d.year, f"{d.month}/{d.day}", "하루 전"
+    if gran == "주":
+        py, plb = prev_label(df, "주", year, label)
+        return py, plb, "직전 주차"
+    mo = sk // 100 % 100
+    py, pm = (year, mo - 1) if mo > 1 else (year - 1, 12)
+    return py, f"{pm}월", "직전 달"
+
+
+def sum_days(df, gran, year, label, cap=None):
+    """그 기간을 «며칠치»로 셀지 — 진행 중이면 마지막 데이터 날까지만.
+
+    `cap`을 주면 그 일수를 넘지 않는다. 진행 중인 기간과 맞대는 비교 기간은 같은
+    일수까지만 센다(9월 3일치를 8월 31일치와 누계로 맞대면 가짜 급락이 뜬다).
+    """
+    sk = _sum_key(gran, year, label)
+    if sk is None:
+        return None
+    ds = sum_period_dates(gran, sk)
+    if not ds:
+        return None
+    last = sum_last_day(df)
+    n = sum(1 for d in ds if d <= last) or len(ds)
+    return min(n, cap) if cap else n
+
+
+def sum_value(df, gran, met, year, label, prefer, mode, days):
+    v = report_val(df, gran, met, "*TOTAL", year, label, prefer)
+    if pd.isna(v):
+        return np.nan
+    if mode == "누계" and met in SUM_ADDITIVE and days:
+        return float(v) * days
+    return float(v)
+
+
+def _delta_cls(d):
+    if not d:
+        return "na", "–"
+    return ("down" if d.startswith("△") else "up"), d
+
+
+def sum_tiles_html(rows):
+    """요약 타일 HTML — 행마다 (지표, 값, [(이름, 증감)…], (기준 이름, 기준 값))."""
+    out = []
+    for met, cur, deltas, base in rows:
+        lines = "".join(
+            f'<div class="st-r"><span>{esc(nm)}</span>'
+            f'<b class="{_delta_cls(d)[0]}">{esc(_delta_cls(d)[1])}</b></div>'
+            for nm, d in deltas)
+        lines += (f'<div class="st-r"><span>{esc(base[0])}</span>'
+                  f'<span>{esc(fmt_value(met, base[1]))}</span></div>')
+        out.append(f'<div class="st-tile"><div class="st-l">{esc(met)}</div>'
+                   f'<div class="st-v">{esc(fmt_value(met, cur))}</div>{lines}</div>')
+    return f'<div class="st-grid">{"".join(out)}</div>'
+
+
+def _sum_to_latest(unit):
+    """「↩ 최근으로」 — 세션값은 콜백에서만 바꾼다(위젯을 만든 뒤 대입하면 예외다)."""
+    st.session_state.pop(f"wr_sum_at_{unit}", None)
+
+
+def render_summary_top(df, wy, wlabel):
+    """필터 바 + 실적 요약 타일. 고른 기준 기간 `(gran, year, label)`을 돌려준다.
+
+    기본은 **주별 · 사이드바 기준 주차**다 — 주간보고 화면이라서다. 사이드바에서 기준
+    주차를 바꾸면 여기도 따라간다(손으로 고른 값보다 사이드바가 늦게 바뀌었을 때만).
+    """
+    units = [u for u in SUM_UNITS if sum_periods(df, u)]
+    if not units:
+        st.info("요약할 기간이 없어요. 전체관점 마스터 파일을 올려 주세요.")
+        return None
+    _sync = (wy, wlabel)
+    if st.session_state.get("wr_sum_sync") != _sync:
+        st.session_state["wr_sum_sync"] = _sync
+        st.session_state.pop("wr_sum_at_주", None)
+    with st.container(border=True):
+        c1, c2, c3, c4, c5 = st.columns([1.7, 2.0, 0.9, 1.2, 1.6], vertical_alignment="bottom")
+        with c1:
+            # 기본값은 위젯 «전에» 세션에 심는다 — `default=`를 같이 넘기면 📌가 세션으로
+            # 단위를 옮길 때 Streamlit이 경고를 띄운다(`guard_select` 주석 참고).
+            guard_select("wr_sum_unit", units, default="주" if "주" in units else units[0])
+            unit = st.segmented_control("기간 단위", units, key="wr_sum_unit",
+                                        format_func=lambda u: SUM_UNIT_NAME[u])
+            unit = unit or ("주" if "주" in units else units[0])
+        plist = sum_periods(df, unit)
+        opts = [f"{y}|{lb}" for y, lb, _ in plist]
+        dft = (f"{wy}|{wlabel}" if unit == "주" and wlabel and f"{wy}|{wlabel}" in opts
+               else opts[0])
+        _ak = f"wr_sum_at_{unit}"
+        guard_select(_ak, opts, default=dft)
+        with c2:
+            at = st.selectbox("기준 기간", opts, key=_ak,
+                              format_func=lambda s: sum_period_text(unit, *s.split("|", 1)))
+        with c3:
+            st.button("↩ 최근으로", key=f"wr_sum_latest_{unit}", on_click=_sum_to_latest,
+                      args=(unit,), help="기준 기간을 기본값으로 되돌려요.")
+        with c4:
+            guard_select("wr_sum_mode", SUM_MODES, default="일평균")
+            mode = st.segmented_control("값 기준", SUM_MODES, key="wr_sum_mode") or "일평균"
+        with c5:
+            guard_select("wr_sum_cmp", SUM_CMPS, default="전년 동기간")
+            cmp_ = st.segmented_control("비교", SUM_CMPS, key="wr_sum_cmp") or "전년 동기간"
+    year_s, label = at.split("|", 1)
+    year = int(year_s)
+    prefer = "mtd"
+    full = len(sum_period_dates(unit, _sum_key(unit, year, label) or 0)) or 1
+    days = sum_days(df, unit, year, label) or full
+    partial = days < full
+    pv = SUM_PREV_NAME[unit]
+    cmps = {}
+    for how in SUM_CMPS:
+        cy, cl, why = sum_compare(df, unit, year, label, how)
+        cdays = None
+        if cl:
+            cfull = len(sum_period_dates(unit, _sum_key(unit, cy, cl) or 0)) or 1
+            cdays = min(days, cfull) if partial else cfull
+        # 진행 중인 달과 맞대는 전년 같은 달은 «같은 날까지 자른 값»(MTD)을 먼저 본다
+        cprefer = "mtd" if (partial and unit == "월" and how == "전년 동기간") else "final"
+        cmps[how] = (cy, cl, why, cdays, cprefer)
+    other = SUM_CMPS[1] if cmp_ == SUM_CMPS[0] else SUM_CMPS[0]
+    nm = {SUM_CMPS[0]: "전년비", SUM_CMPS[1]: f"{pv}비"}
+    rows = []
+    for met in METRICS7:
+        cur = sum_value(df, unit, met, year, label, prefer, mode, days)
+        vals = {}
+        for how, (cy, cl, _w, cdays, cprefer) in cmps.items():
+            vals[how] = (sum_value(df, unit, met, cy, cl, cprefer, mode, cdays)
+                         if cl else np.nan)
+        rows.append((met, cur,
+                     [(nm[cmp_], fmt_delta(met, cur, vals[cmp_])),
+                      (nm[other], fmt_delta(met, cur, vals[other]))],
+                     ("전년" if cmp_ == SUM_CMPS[0] else pv, vals[cmp_])))
+    cy, cl, why, _cd, _cp = cmps[cmp_]
+    _ctxt = (f"{sum_period_text(unit, cy, cl)}({why})" if cl
+             else f"비교 기간이 없어요({why or '데이터 없음'})")
+    _dtxt = f" · {days}일치까지 집계했어요(진행 중)" if partial else ""
+    st.markdown(f"#### 실적 요약 — {sum_period_text(unit, year, label)}")
+    st.caption(f"{SUM_UNIT_NAME[unit]} · {mode} · 전체 채널 · {cmp_}: {_ctxt} 대비{_dtxt}. "
+               "누계는 거래액·고객수·트래픽·가입자수만 일수를 곱하고, "
+               "비율·객단가는 그대로예요.")
+    st.markdown(sum_tiles_html(rows), unsafe_allow_html=True)
+    return unit, year, label
+
+
+# ── KPI 목표 ─────────────────────────────────────────────────────────
+def kpi_targets(year):
+    raw = st.session_state.wr_texts.get(f"{KPI_KEY}{year}")
+    try:
+        d = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        d = {}
+    return {m: (float(d[m]) if d.get(m) not in (None, "") else None) for m in KPI_METRICS}
+
+
+def kpi_save_targets(year, targets):
+    k = f"{KPI_KEY}{year}"
+    v = json.dumps({m: targets.get(m) for m in KPI_METRICS}, ensure_ascii=False)
+    st.session_state.wr_texts[k] = v
+    all_d = load_insights(); all_d[k] = v; save_insights(all_d)
+
+
+def kpi_actuals(df, year):
+    """연초부터 마지막 데이터 날까지의 **누적**과 전년 같은 기간 누적.
+
+    월별 일평균 × 그 달 일수로 쌓는다. 진행 중인 달은 지난 날까지만 곱하고, 전년은
+    같은 달의 «같은 날까지 자른 값»(MTD)을 먼저 본다 — 전년 동기와 맞대야 해서다.
+    반환: {"el": 경과일, "year_days": 연간 일수, "rows": {지표: (누적, 전년 누적)}}
+    """
+    last = sum_last_day(df)
+    if last.year < year:
+        last = datetime.date(year, 12, 31)
+    if last.year > year:
+        last = datetime.date(year, 12, 31)
+    months = range(1, last.month + 1)
+    rows = {}
+    for met in KPI_METRICS:
+        act = prev = 0.0
+        n_a = n_p = 0
+        for mo in months:
+            ds = sum_period_dates("월", year * 10000 + mo * 100)
+            n = sum(1 for d in ds if d <= last)
+            partial = n < len(ds)
+            va = report_val(df, "월", met, "*TOTAL", year, f"{mo}월",
+                            "mtd" if partial else "final")
+            vp = report_val(df, "월", met, "*TOTAL", year - 1, f"{mo}월",
+                            "mtd" if partial else "final")
+            if not pd.isna(va):
+                act += float(va) * n; n_a += 1
+            if not pd.isna(vp):
+                prev += float(vp) * n; n_p += 1
+        rows[met] = (act if n_a else None, prev if n_p else None)
+    y0 = datetime.date(year, 1, 1)
+    ydays = (datetime.date(year + 1, 1, 1) - y0).days
+    return {"el": (last - y0).days + 1, "year_days": ydays, "last": last, "rows": rows}
+
+
+def _kpi_num(met, v):
+    if v is None or pd.isna(v):
+        return "–"
+    if met == "첫구매 거래액":
+        return f"{v / 1e6:,.0f}백만원" if abs(v) >= 1e9 else f"{v / 1e6:,.1f}백만원"
+    return f"{v:,.0f}명" if met != "비회원트래픽" else f"{v:,.0f}"
+
+
+def _kpi_pct(x, dp=1):
+    return "–" if x is None or pd.isna(x) else f"{x * 100:.{dp}f}%"
+
+
+def kpi_cards_html(K, T):
+    el, yd = K["el"], K["year_days"]
+    left = max(0, yd - el)
+    pace = el / yd
+    out = []
+    for met in KPI_METRICS:
+        act, prev = K["rows"][met]
+        tgt = T.get(met)
+        avg = act / el if act is not None else None
+        tavg = tgt / yd if tgt else None
+        ach = act / tgt if (tgt and act is not None) else None
+        vs = avg / tavg if (avg is not None and tavg) else None
+        need = (max(0.0, tgt - act) / left) if (tgt and act is not None and left) else None
+        yoy = fmt_delta(met, act, prev)
+        ycls, ytxt = _delta_cls(yoy)
+        meter = ""
+        if ach is not None:
+            meter = (f'<div class="kp-meter" title="달성률 {_kpi_pct(ach)} · 연간 경과 '
+                     f'{_kpi_pct(pace)}"><i style="width:{min(100.0, ach * 100):.1f}%"></i>'
+                     f'<em style="left:{pace * 100:.1f}%"></em></div>')
+        vcls = "" if vs is None else ("up" if vs >= 1 else "down")
+        out.append(
+            f'<div class="kp-card"><div class="kp-t">{esc(met)}</div>'
+            f'<div class="kp-grid"><div><div class="kp-lab">누적</div>'
+            f'<div class="kp-v">{_kpi_num(met, act)}</div>'
+            f'<div class="kp-r"><span>연간 목표</span><b>{_kpi_num(met, tgt) if tgt else "미입력"}</b></div>'
+            f'{meter}<div class="kp-r"><span>달성률</span><b>{_kpi_pct(ach)}</b></div></div>'
+            f'<div><div class="kp-lab">일평균</div><div class="kp-v">{_kpi_num(met, avg)}</div>'
+            f'<div class="kp-r"><span>목표 일평균</span><b>{_kpi_num(met, tavg)}</b></div>'
+            f'<div class="kp-r"><span>목표 대비</span><b class="{vcls}">{_kpi_pct(vs)}</b></div>'
+            f'<div class="kp-r"><span>남은 {left}일 필요</span><b>{_kpi_num(met, need)}</b></div>'
+            f'</div></div><div class="kp-f"><span>전년 동기 누적 {_kpi_num(met, prev)}</span>'
+            f'<b class="{ycls}">{esc(ytxt)}</b></div></div>')
+    # 가입률 환산 — 가입자수 ÷ 트래픽. 목표도 두 목표에서 나온다.
+    sa, sp = K["rows"]["가입자수"]
+    ta, tp = K["rows"]["비회원트래픽"]
+    jr = sa / ta if (sa and ta) else None
+    jp = sp / tp if (sp and tp) else None
+    jt = (T["가입자수"] / T["비회원트래픽"]) if (T.get("가입자수") and T.get("비회원트래픽")) else None
+    jd = fmt_delta("가입율", jr, jp)
+    jtd = fmt_delta("가입율", jr, jt) if jt is not None else None
+    out.append(
+        f'<div class="kp-card"><div class="kp-t">가입률 환산</div>'
+        f'<div class="kp-lab">가입자수 ÷ 비회원트래픽</div><div class="kp-v">{_kpi_pct(jr, 2)}</div>'
+        f'<div class="kp-r"><span>전년 동기</span><b>{_kpi_pct(jp, 2)}</b></div>'
+        f'<div class="kp-r"><span>목표 가입률</span><b>{_kpi_pct(jt, 2)}</b></div>'
+        f'<div class="kp-r"><span>목표 대비</span><b class="{_delta_cls(jtd)[0]}">{esc(_delta_cls(jtd)[1])}</b></div>'
+        f'<div class="kp-r"><span>전년비</span><b class="{_delta_cls(jd)[0]}">{esc(_delta_cls(jd)[1])}</b></div></div>')
+    return f'<div class="kp-wrap">{"".join(out)}</div>'
+
+
+def render_kpi_block(df):
+    years = sorted({int(y) for y in df.loc[(df["gran"] == "월") & df["value"].notna(), "year"].dropna()})
+    if not years:
+        return
+    last = sum_last_day(df)
+    dft_y = last.year if last.year in years else years[-1]
+    guard_select("wr_kpi_year", years, default=dft_y)
+    T0 = kpi_targets(st.session_state.get("wr_kpi_year", dft_y))
+    _has = any(T0.values())
+    with st.expander("🎯 KPI 목표 달성률", expanded=_has):
+        cy, _cn = st.columns([1, 4])
+        year = cy.selectbox("목표 연도", years, key="wr_kpi_year")
+        T = kpi_targets(year)
+        K = kpi_actuals(df, year)
+        y0 = datetime.date(year, 1, 1)
+        st.caption(f"전체 채널 · {y0:%m/%d}~{K['last']:%m/%d} {K['el']}일 경과 / "
+                   f"{K['year_days']}일 ({K['el'] / K['year_days'] * 100:.1f}%). "
+                   "막대의 세로선이 연간 경과율이에요. 전년 동기는 같은 날짜까지 잘라 비교해요. "
+                   "누적은 월별 일평균에 그 달 일수를 곱해 쌓은 값이에요.")
+        st.markdown(kpi_cards_html(K, T), unsafe_allow_html=True)
+        with st.popover("목표 입력", width="content"):
+            st.caption(f"{year}년 연간 목표예요. 비워 두면 달성률을 계산하지 않아요. "
+                       "백업 ZIP에 같이 담겨요.")
+            vals = {}
+            for met in KPI_METRICS:
+                cur = T.get(met)
+                if met == "첫구매 거래액":
+                    v = st.number_input("첫구매 거래액 (백만원)", min_value=0.0, step=100.0,
+                                        value=(cur / 1e6 if cur else None),
+                                        key=f"wr_kpi_in_{year}_{met}")
+                    vals[met] = v * 1e6 if v else None
+                else:
+                    v = st.number_input(met, min_value=0.0, step=1000.0,
+                                        value=cur if cur else None,
+                                        key=f"wr_kpi_in_{year}_{met}")
+                    vals[met] = v if v else None
+            if st.button("목표 저장", key=f"wr_kpi_save_{year}", type="primary"):
+                kpi_save_targets(year, vals)
+                st.rerun()
+        if not _has and not any(T.values()):
+            st.caption("아직 목표가 없어요. 「목표 입력」에서 연간 목표를 넣으면 달성률이 보여요.")
+
+
+# ── 메모 (리뷰 · 계획) ──────────────────────────────────────────────
+def memo2_all():
+    out = []
+    for k, v in st.session_state.wr_texts.items():
+        if not str(k).startswith(MEMO2_KEY):
+            continue
+        try:
+            m = json.loads(v)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(m, dict):
+            m["id"] = str(k)[len(MEMO2_KEY):]
+            out.append(m)
+    return sorted(out, key=lambda m: str(m.get("updated", "")), reverse=True)
+
+
+def memo2_put(mid, m):
+    k = f"{MEMO2_KEY}{mid}"
+    v = json.dumps({x: m.get(x) for x in ("gran", "year", "label", "review", "plan",
+                                          "created", "updated")}, ensure_ascii=False)
+    st.session_state.wr_texts[k] = v
+    all_d = load_insights(); all_d[k] = v; save_insights(all_d)
+
+
+def memo2_del(mid):
+    k = f"{MEMO2_KEY}{mid}"
+    st.session_state.wr_texts.pop(k, None)
+    all_d = load_insights(); all_d.pop(k, None); save_insights(all_d)
+
+
+def memo2_span(gran, year, label):
+    sk = _sum_key(gran, year, label)
+    ds = sum_period_dates(gran, sk) if sk else []
+    return (ds[0], ds[-1]) if ds else None
+
+
+def memo2_overlaps(m, cur):
+    """메모가 붙은 기간과 지금 보는 기간이 **겹치나** — 단위가 달라도 날짜로 맞댄다.
+
+    주로 써 둔 메모가 월 단위로 바꿨을 때 사라지면, 같은 기간을 보는데 메모가 안 보인다.
+    """
+    a = memo2_span(m.get("gran"), m.get("year"), m.get("label"))
+    b = memo2_span(*cur) if cur else None
+    return bool(a and b and a[0] <= b[1] and b[0] <= a[1])
+
+
+def _memo2_go(m):
+    """📌 — 메모가 붙은 기간으로 위 필터 바를 옮긴다(세션값은 콜백에서만 바꾼다)."""
+    st.session_state["wr_sum_unit"] = m["gran"]
+    st.session_state[f"wr_sum_at_{m['gran']}"] = f"{m['year']}|{m['label']}"
+
+
+def _memo2_edit(mid):
+    st.session_state["wr_memo2_edit"] = mid
+    st.session_state.pop("wr_memo2_delarm", None)
+
+
+def _memo2_cancel():
+    st.session_state.pop("wr_memo2_edit", None)
+
+
+def _memo2_arm(mid):
+    st.session_state["wr_memo2_delarm"] = mid
+
+
+def _memo2_confirm_del(mid):
+    memo2_del(mid)
+    st.session_state.pop("wr_memo2_delarm", None)
+
+
+def render_memo_block(df, cur):
+    """기간에 붙이는 메모 — 리뷰(지난 기간 돌아보기)와 계획(다음 액션) 두 칸.
+
+    「이 화면 조건」은 지금 보는 기간과 **날짜가 겹치는** 메모만 보여 준다.
+    """
+    allm = memo2_all()
+    here = [m for m in allm if memo2_overlaps(m, cur)]
+    with st.expander(f"📝 메모 — 지금 기간 {len(here)}개 · 전체 {len(allm)}개",
+                     expanded=bool(here) or "wr_memo2_edit" in st.session_state):
+        h1, h2 = st.columns([3, 1], vertical_alignment="bottom")
+        with h1:
+            guard_select("wr_memo2_filter", ["이 화면 조건", "모든 메모"],
+                         default="이 화면 조건")
+            show = st.segmented_control("메모 보기", ["이 화면 조건", "모든 메모"],
+                                        key="wr_memo2_filter") or "이 화면 조건"
+        with h2:
+            st.button("+ 메모", key="wr_memo2_new", on_click=_memo2_edit, args=("new",),
+                      type="primary", width="stretch",
+                      help="지금 보는 기간에 리뷰·계획 메모를 붙여요.")
+        editing = st.session_state.get("wr_memo2_edit")
+        if editing:
+            _memo2_form(df, cur, editing, {m["id"]: m for m in allm}.get(editing))
+        lst = here if show == "이 화면 조건" else allm
+        if not lst and not editing:
+            st.caption("지금 보는 기간에 붙은 메모가 없어요. 「모든 메모」를 누르면 전부 보여요."
+                       if (show == "이 화면 조건" and allm)
+                       else "메모가 없어요. 「+ 메모」로 지금 기간에 리뷰·계획을 남겨 보세요.")
+        for m in lst:
+            if m["id"] == editing:
+                continue
+            with st.container(border=True):
+                rv, pl = (m.get("review") or "").strip(), (m.get("plan") or "").strip()
+                if rv and pl:
+                    a, b = st.columns(2)
+                    a.markdown("**리뷰**"); a.markdown(rv)
+                    b.markdown("**계획**"); b.markdown(pl)
+                else:
+                    st.markdown("**리뷰**" if rv else "**계획**")
+                    st.markdown(rv or pl)
+                f1, f2, f3, f4 = st.columns([3, 2, 1, 1], vertical_alignment="center")
+                f1.button(f"📌 {sum_period_text(m['gran'], m['year'], m['label'])}",
+                          key=f"wr_memo2_go_{m['id']}", on_click=_memo2_go, args=(m,),
+                          help="이 메모가 붙은 기간으로 위 요약을 옮겨요.")
+                f2.caption(str(m.get("updated") or "")[:16].replace("T", " "))
+                f3.button("고치기", key=f"wr_memo2_ed_{m['id']}", on_click=_memo2_edit,
+                          args=(m["id"],), width="stretch")
+                if st.session_state.get("wr_memo2_delarm") == m["id"]:
+                    f4.button("지울까요?", key=f"wr_memo2_del_{m['id']}", type="primary",
+                              on_click=_memo2_confirm_del, args=(m["id"],), width="stretch")
+                else:
+                    f4.button("지우기", key=f"wr_memo2_arm_{m['id']}", on_click=_memo2_arm,
+                              args=(m["id"],), width="stretch")
+        st.caption("메모는 백업 ZIP에 같이 담겨요. 📌를 누르면 그 기간으로 위 요약이 옮겨 가요.")
+
+
+def _memo2_form(df, cur, mid, m):
+    m = m or {}
+    with st.container(border=True):
+        g0 = m.get("gran") or (cur[0] if cur else "주")
+        units = [u for u in SUM_UNITS if sum_periods(df, u)] or [g0]
+        gk = f"wr_memo2_g_{mid}"
+        guard_select(gk, units, default=g0 if g0 in units else units[0])
+        w1, w2 = st.columns([1, 2])
+        g = w1.selectbox("붙일 기간 단위", units, key=gk, format_func=lambda u: SUM_UNIT_NAME[u])
+        opts = [f"{y}|{lb}" for y, lb, _ in sum_periods(df, g)]
+        if m.get("gran") == g and f"{m.get('year')}|{m.get('label')}" not in opts:
+            opts.insert(0, f"{m.get('year')}|{m.get('label')}")
+        if m.get("gran") == g:
+            dft = f"{m.get('year')}|{m.get('label')}"
+        elif cur and cur[0] == g:
+            dft = f"{cur[1]}|{cur[2]}"
+        else:
+            dft = opts[0] if opts else None
+        pk = f"wr_memo2_p_{mid}_{g}"
+        guard_select(pk, opts, default=dft)
+        at = w2.selectbox("붙일 기간", opts, key=pk,
+                          format_func=lambda s: sum_period_text(g, *s.split("|", 1)))
+        e1, e2 = st.columns(2)
+        rv = e1.text_area("리뷰", value=m.get("review") or "", key=f"wr_memo2_rv_{mid}",
+                          height=140, placeholder="지난 기간에 무슨 일이 있었나요?")
+        pl = e2.text_area("계획", value=m.get("plan") or "", key=f"wr_memo2_pl_{mid}",
+                          height=140, placeholder="다음에 무엇을 할까요?")
+        b1, b2, _b3 = st.columns([1, 1, 4])
+        b2.button("취소", key=f"wr_memo2_cancel_{mid}", on_click=_memo2_cancel,
+                  width="stretch")
+        if b1.button("저장", key=f"wr_memo2_save_{mid}", type="primary", width="stretch"):
+            if not (rv.strip() or pl.strip()):
+                st.warning("리뷰나 계획 중 하나는 적어 주세요.")
+                return
+            if not at:
+                st.warning("붙일 기간을 골라 주세요.")
+                return
+            y_s, lb = at.split("|", 1)
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+            new_id = mid if mid != "new" else f"m{now:%Y%m%d%H%M%S%f}"
+            memo2_put(new_id, dict(gran=g, year=int(y_s), label=lb, review=rv.strip(),
+                                   plan=pl.strip(), created=m.get("created") or now.isoformat(),
+                                   updated=now.isoformat()))
+            st.session_state.pop("wr_memo2_edit", None)
+            st.rerun()
+
+
+
 def print_button(label="이 페이지 PDF 저장 / 인쇄"):
     # st.components.v1.html은 제거 예정(2026-06-01 이후) — 후속 API인 st.iframe 사용
     st.iframe(
@@ -6309,57 +6918,13 @@ def main():
         if wlabel:
             st.caption(f"기준 주차: {week_disp(wy, wlabel)}")
 
-        # KPI 카드 (기준 주차 — 전주비·전월비·전년비 모두 주차 기준)
+        # 필터 바 + 실적 요약 타일 · KPI 목표 · 메모 — 공동 작업 저장소(first-dashboard)의
+        # 화면을 옮긴 것이다(`render_summary_top` 위 주석). 예전 KPI 카드 네 장(주 고정 ·
+        # 전주·전월·전년비)은 타일이 단위·비교를 고를 수 있게 되면서 대신한다.
+        _cur = render_summary_top(df, wy, wlabel)
+        render_kpi_block(df)
+        render_memo_block(df, _cur)
         if wlabel:
-            cols = st.columns(4)
-            kpi_metrics = ["첫구매 거래액", "첫구매 고객수", "첫구매 객단가", "가입자수"]
-            py, plb = prev_label(df, "주", wy, wlabel)
-            # 전월 동일 주차 (예: 06월 1주차 → 05월 1주차).
-            # 5주차처럼 전월(또는 전년 동월)에 같은 주차가 없으면 그 달 마지막 주차로
-            # 대체하고, 어떤 주와 비교했는지 뱃지에 같이 적는다.
-            mom_y = mom_lbl = None
-            yoy_lbl, mom_exact, yoy_exact = wlabel, True, True
-            wm = re.match(r"(\d{1,2})월 (\d)주차", wlabel)
-            if wm:
-                mo, wk = int(wm.group(1)), int(wm.group(2))
-                mom_y, mom_m = (wy, mo - 1) if mo > 1 else (wy - 1, 12)
-                mom_lbl, mom_exact = week_like(df, mom_y, mom_m, wk)
-                yoy_lbl, yoy_exact = week_like(df, wy - 1, mo, wk)
-            mom_tag = "전월비" if (mom_exact or not mom_lbl) else f"전월비 · {mom_lbl}"
-            yoy_tag = "전년비" if (yoy_exact or not yoy_lbl) else f"전년비 · {yoy_lbl}"
-            for col, met in zip(cols, kpi_metrics):
-                cur = pick(df, "주", met, "*TOTAL", wy, wlabel, "mtd")
-                deltas = []
-                prv = pick(df, "주", met, "*TOTAL", py, plb, "final") if plb else np.nan
-                deltas.append((fmt_delta(met, cur, prv), "전주비"))
-                if wm:
-                    mom = (pick(df, "주", met, "*TOTAL", mom_y, mom_lbl, "final")
-                           if mom_lbl else np.nan)
-                    deltas.append((fmt_delta(met, cur, mom), mom_tag))
-                yoy = (pick(df, "주", met, "*TOTAL", wy - 1, yoy_lbl, "final")
-                       if yoy_lbl else np.nan)
-                deltas.append((fmt_delta(met, cur, yoy), yoy_tag))
-                pills = ""
-                for d, lab in deltas:
-                    if d:
-                        neg = d.startswith("△")
-                        cls = "down" if neg else "up"
-                        prefix = "" if neg else "↑ "
-                        pills += f'<div class="kpi-delta {cls}">{prefix}{d} ({lab})</div>'
-                    else:
-                        pills += f'<div class="kpi-delta na">– ({lab})</div>'
-                col.markdown(
-                    f'<div class="kpi-card"><div class="kpi-label">{met} ({week_disp(wy, wlabel)})</div>'
-                    f'<div class="kpi-value">{fmt_value(met, cur)}</div>{pills}</div>',
-                    unsafe_allow_html=True)
-            _sub = []
-            if wm and not mom_exact and mom_lbl:
-                _sub.append(f"전월에 {wm.group(2)}주차가 없어 **{mom_y}년 {mom_lbl}**(전월 마지막 주)와 비교")
-            if wm and not yoy_exact and yoy_lbl:
-                _sub.append(f"전년 동월에 {wm.group(2)}주차가 없어 **{wy-1}년 {yoy_lbl}**와 비교")
-            if _sub:
-                st.caption("ℹ️ " + " · ".join(_sub) + " — 주차 수가 달마다 4~5개로 달라서예요.")
-
             # 전전년까지 펼쳐보기 — 올해 흐름이 작년에도 있었는지(= 구조적인지) 확인용
             with st.expander(f"🔍 전년비 · 전전년비 비교 — {wy-2}년에도 같은 추세였는지",
                              expanded=False):
