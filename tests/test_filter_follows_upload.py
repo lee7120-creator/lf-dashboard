@@ -9,9 +9,12 @@
 로컬 실행:
     python tests/test_filter_follows_upload.py
 """
+import base64
+import json
 import pathlib
 import sys
 
+import numpy as np
 import pandas as pd
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -45,6 +48,50 @@ def _goto_yoy(at):
                 subs[0].set_value(opt)
                 at.run()
                 break
+    return at
+
+
+def _nums(y):
+    """plotly JSON은 숫자 배열을 base64(`bdata`)로 싣기도 한다."""
+    if isinstance(y, dict) and "bdata" in y:
+        return np.frombuffer(base64.b64decode(y["bdata"]),
+                             dtype=np.dtype(y.get("dtype", "f8"))).tolist()
+    return list(y or [])
+
+
+def _tag_table(at):
+    """소구 속성 표만 집는다 — 칼럼이 (값, 구분) 2단인 표가 그것 하나다.
+
+    페이지의 표를 전부 훑으면 위 「그날 나간 소재」 문구 표에 CTR·거래액 칼럼이 있어
+    **엉뚱한 표에 걸려 통과한다**(실제로 그 주입이 안 잡혔다).
+    """
+    _SEG = {"기준일", "전년 동요일"}
+    for t in at.dataframe:
+        cols = list(getattr(t.value, "columns", []))
+        if cols and all(isinstance(c, tuple) and len(c) == 2 and c[1] in _SEG for c in cols):
+            return t.value
+    return None
+
+
+def _tag_chart(at):
+    """소구 속성 차트의 (제목, {시리즈: y값}). AppTest는 plotly에 `.value`를 안 준다."""
+    for el in at.get("plotly_chart"):
+        spec = json.loads(el.proto.spec)
+        t = ((spec.get("layout") or {}).get("title") or {}).get("text") or ""
+        if t.startswith("소구 속성별"):
+            return t, {tr.get("name"): tuple(_nums(tr.get("y")))
+                       for tr in spec.get("data", [])}
+    return None, None
+
+
+def _open_yoy(**sess):
+    at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    at.session_state["camp_store"] = synth_store(weeks=60, seed=5)
+    for k, v in sess.items():
+        at.session_state[k] = v
+    at.run()
+    at = _goto_yoy(at)
+    assert not at.exception, at.exception[0].value
     return at
 
 
@@ -208,6 +255,52 @@ def t_label_mode_switches_render():
         tgt.set_value(mode)
         at.run()
         assert not at.exception, f"값 표시={mode}에서 실패: {at.exception[0].value}"
+
+
+@case
+def t_tag_block_follows_the_metric_picker():
+    """소구 속성 블록이 위 「비교 지표」를 따라가야 한다 — 제목뿐 아니라 «값»까지.
+
+    예전엔 CTR로 박혀 있어서, 지표를 거래액으로 바꿔 놓고 내려오면 **같은 화면이 두
+    지표를 말했다.** 제목에도 'CTR'이라고 적혀 있어 눈으로도 안 잡혔다.
+
+    **제목만 보는 검사는 소용없다** — 제목만 바꾸는 건 이 저장소의 전형적인 조용한
+    실패라, 막대 y값까지 대조한다.
+    """
+    got = {}
+    for met in ("CTR", "거래액"):
+        at = _open_yoy(p05b_met=met)
+        title, ys = _tag_chart(at)
+        assert title, f"지표={met}: 소구 속성 차트가 없어요"
+        assert met in title, f"지표={met}인데 차트 제목이 «{title}»예요"
+        heads = [str(m.value) for m in at.main.markdown if "🏷️ 소구 속성별" in str(m.value)]
+        assert heads and met in heads[0], f"지표={met}인데 블록 제목이 {heads}예요"
+        assert ys, f"지표={met}: 막대가 하나도 없어요"
+        got[met] = ys
+        # 표의 값 칼럼 이름도 따라와야 한다 (엑셀로 받았을 때 뭘 받은 건지 알 수 있게)
+        _tv = _tag_table(at)
+        assert _tv is not None, f"지표={met}: 소구 속성 표를 못 찾았어요"
+        _lv0 = {c[0] for c in _tv.columns}
+        assert met in _lv0, f"지표={met}인데 소구 표 칼럼이 {sorted(_lv0)}예요"
+
+    assert got["CTR"] != got["거래액"], \
+        f"지표를 바꿔도 막대 값이 그대로예요 (CTR로 박혀 있어요) — {got['CTR']}"
+
+
+@case
+def t_tag_block_follows_the_ratio_basis():
+    """「비율 기준」(합산 ↔ 캠페인 평균)도 같이 따라가야 한다.
+
+    값은 `_daytot`으로 뽑으므로 저절로 따라오지만, 소구 블록만 따로 계산하도록
+    되돌리면 여기서 걸린다. 같은 화면의 「일자 합산」 막대와 기준이 갈리면 두 막대가
+    서로 다른 말을 한다.
+    """
+    a = _tag_chart(_open_yoy(p05b_met="CTR", p05b_basis="합산(가중)"))
+    b = _tag_chart(_open_yoy(p05b_met="CTR", p05b_basis="캠페인 평균"))
+    assert a[1] and b[1], f"소구 속성 차트가 없어요 — {a[0]} / {b[0]}"
+    assert "합산" in (a[0] or "") and "캠페인 평균" in (b[0] or ""), \
+        f"차트 제목에 기준이 안 적혀요 — {a[0]} / {b[0]}"
+    assert a[1] != b[1], f"비율 기준을 바꿔도 값이 그대로예요 — {a[1]}"
 
 
 def main():

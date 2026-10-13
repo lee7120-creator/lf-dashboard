@@ -7497,6 +7497,9 @@ def main():
             _mcb.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
             _mcb.caption("합계 기준이에요.")
         _AVG = (_basis == "캠페인 평균")
+        # 차트 제목에 붙이는 기준 꼬리표. 아래 소구 속성 블록도 같이 쓰므로 여기 한 곳에
+        # 둔다 — 안쪽에 또 적으면 기준을 바꿀 때 한쪽만 썩는다.
+        _bt = "합산" if not _AVG else "캠페인 평균"
         _RATIO_SRC = {"CTR": "infl_cr", "주문CR": "ord_cr", "RPS": "rps"}
 
         # 비교선 후보 — 기준일 외에 전일·전주/전월/전년 동요일. 레퍼런스 대시보드처럼
@@ -7647,7 +7650,6 @@ def main():
                 textposition="top center",
                 textfont=dict(size=13, color=PALETTE["red"]), cliponaxis=False,
                 connectgaps=True))
-            _bt = "합산" if not _AVG else "캠페인 평균"
             _lay = base_layout(h=420, ysuffix=("%" if _yunit == "%" else ""),
                                title=f"시간대별 {_ymet}({_bt}) — 기준일 vs 비교일", hover="x")
             _lay["showlegend"] = True
@@ -7743,37 +7745,49 @@ def main():
             render_messages(cur_rows, "infl_cr", "p05b_cur", show_hour=True)
 
         # ── 소구 속성 비교 — 전년에 잘 먹힌 소구가 뭐였나 ──
+        # **위 「비교 지표」를 그대로 따른다.** 예전엔 CTR로 박혀 있어서, 지표를 거래액으로
+        # 바꿔 놓고 내려오면 같은 화면이 두 지표를 말했다(제목만 'CTR'이라 눈으로도 안
+        # 잡힌다). 값은 `_daytot`으로 뽑는다 — 오른쪽 「일자 합산」 막대가 쓰는 그 함수라
+        # 비율 기준(합산/캠페인 평균)까지 저절로 같이 따라온다.
         _tags = [t for t in TAG_BOOLS if t in _yb.columns]
         if _tags and len(ly_rows):
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown("##### 🏷️ 소구 속성별 CTR — 전년 동요일 vs 기준일")
+            st.markdown(f"##### 🏷️ 소구 속성별 {_ymet} — 전년 동요일 vs 기준일")
             _trows = []
             for t in _tags:
                 for _lab2, _d in (("전년 동요일", ly_rows), ("기준일", cur_rows)):
                     sub = _d[_d[t]] if t in _d else _d.iloc[0:0]
-                    s, u = float(sub["send"].sum()), float(sub["uv"].sum())
+                    s = float(sub["send"].sum()) if len(sub) else 0.0
                     if len(sub) and s > 0:
+                        # 발송은 규모 맥락이라 지표와 상관없이 늘 싣는다 — 비율이 높아도
+                        # 건수·발송이 적으면 판단이 달라진다.
                         _trows.append({"소구": t, "구분": _lab2, "건수": len(sub),
-                                       "발송": s, "CTR": u / s * 100})
+                                       "발송": s, _ymet: _daytot(sub)})
             if _trows:
                 _td = pd.DataFrame(_trows)
                 figt = go.Figure()
                 for _lab2, _c in (("전년 동요일", PALETTE["slate"]), ("기준일", PALETTE["blue"])):
                     _s2 = _td[_td["구분"] == _lab2]
                     if len(_s2):
-                        figt.add_trace(go.Bar(x=_s2["소구"], y=_s2["CTR"], name=_lab2, marker_color=_c))
-                _lay2 = base_layout(h=360, ysuffix="%", title="소구 속성별 CTR (합산 기준)")
+                        figt.add_trace(go.Bar(x=_s2["소구"], y=_s2[_ymet], name=_lab2,
+                                              marker_color=_c))
+                _lay2 = base_layout(h=360, ysuffix=("%" if _yunit == "%" else ""),
+                                    title=f"소구 속성별 {_ymet}({_bt})")
                 _lay2["barmode"] = "group"
                 _lay2["showlegend"] = True
                 _lay2["legend"] = legend_h()
                 set_layout(figt, _lay2)
                 st.plotly_chart(figt, width="stretch")
-                st.markdown('<div class="appendix">그날 안 쓴 소구는 막대가 없어요. 건수가 적은 소구는 '
-                            '우연히 높/낮게 나올 수 있으니 아래 표의 건수를 함께 보세요.</div>',
+                st.markdown('<div class="appendix">위 <b>「비교 지표」</b>를 그대로 따라가요. '
+                            '그날 안 쓴 소구는 막대가 없어요. 건수가 적은 소구는 우연히 '
+                            '높/낮게 나올 수 있으니 아래 표의 건수를 함께 보세요.</div>',
                             unsafe_allow_html=True)
+                # 지표가 「발송량」이면 값 칼럼이 '발송'과 같은 수라 한 번만 싣는다.
+                _vals = ["건수", "발송"] if _ycol == "발송" else ["건수", "발송", _ymet]
                 table(_td.pivot_table(index="소구", columns="구분",
-                                             values=["건수", "발송", "CTR"], aggfunc="first"),
-                             width="stretch", height=min(38 + 35 * len(_tags), 420), dl_name="소구 속성별 CTR — 전년 동요일 vs 기준일")
+                                      values=_vals, aggfunc="first"),
+                      width="stretch", height=min(38 + 35 * len(_tags), 420),
+                      dl_name=f"소구 속성별 {_ymet} — 전년 동요일 vs 기준일")
             else:
                 st.info("두 날짜 모두 소구 속성이 붙은 발송이 없어요.")
         glossary()
