@@ -3070,6 +3070,245 @@ def growth_pace_note(s_cur, s_prev=None):
     return fig
 
 
+# ── main() 밖으로 올린 공용 헬퍼 ───────────────────────────────────────
+# 예전엔 전부 `main()` 안에 있었고 CLAUDE.md도 「`main()` 지역이라 모듈로 못
+# 뺀다」고 적어 뒀는데, **재 보니 아니었다** — 이 열여섯은 `main()`의 지역
+# 이름을 하나도 안 쓴다(AST로 자유변수를 세어 확인). 안에 둘 이유가 없고,
+# 밖에 두면 ①`main()`이 그만큼 짧아지고 ②단위 검사가 가능해지고 ③페이지
+# 분기가 `main()` 지역에 매이는 끈이 그만큼 끊긴다(25개 분기가 공통으로
+# 매여 있던 자리가 바로 여기다).
+# **올릴 때 스코프를 다시 재고, 섀도잉 검사를 돌릴 것** — 같은 이름이
+# `main()` 안에서 대입되면 전역 헬퍼 섀도잉 사고가 그대로 재현된다.
+PALETTE = {
+    "blue": "rgba(79,143,255,1)", "red": "rgba(245,101,101,1)", "green": "rgba(72,187,120,1)",
+    "amber": "rgba(237,137,54,1)", "purple": "rgba(159,122,234,1)", "teal": "rgba(56,178,172,1)",
+    "slate": "rgba(100,116,139,1)",
+}
+def base_layout(h=300, ysuffix="", title="", hover=None):
+    # 인-차트 제목은 왼쪽 상단에 고정하고, 상단 가로 범례(y≈1.12)와 겹치지 않도록
+    # 제목 영역(top margin)을 충분히 확보한다. (각 차트 위 마크다운 헤더와도 분리)
+    # hover="x" 이면 시계열용 통합 툴팁(hovermode=x unified) + 세로 크로스헤어를 켠다.
+    has_title = bool(title)
+    _FONT = "Pretendard Variable, Pretendard, Malgun Gothic, Apple SD Gothic Neo, sans-serif"
+    xaxis = dict(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
+                 tickfont=dict(color="#64748b", size=11))
+    lay = dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+               font=dict(color="#475569", size=11, family=_FONT),
+               margin=dict(l=10, r=10, t=(58 if has_title else 30), b=10),
+               height=h, showlegend=False,
+               barcornerradius=4,
+               hoverlabel=dict(bgcolor="#ffffff", bordercolor="#e2e8f0",
+                               font=dict(size=12, color="#1e293b", family=_FONT)),
+               title=dict(text=title, font=dict(color="#94a3b8", size=13),
+                          x=0, xanchor="left", y=0.99, yanchor="top"),
+               legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                           xanchor="left", x=0, bgcolor="rgba(0,0,0,0)"),
+               xaxis=xaxis,
+               yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
+                          tickfont=dict(color="#64748b", size=11), ticksuffix=ysuffix))
+    if hover == "x":
+        lay["hovermode"] = "x unified"
+        xaxis.update(showspikes=True, spikemode="across", spikethickness=1,
+                     spikedash="dot", spikecolor="#cbd5e1")
+    return lay
+SERIES_SEQ = [PALETTE["purple"], PALETTE["green"], PALETTE["amber"], PALETTE["blue"],
+              PALETTE["red"], PALETTE["teal"], PALETTE["slate"]]
+def tag_color(t):
+    try:
+        return SERIES_SEQ[TAG_BOOLS.index(t) % len(SERIES_SEQ)]
+    except ValueError:
+        return PALETTE["slate"]
+def stacked_panels(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
+                   h=430, bar_suffix="", line_suffix="", title=""):
+    """이중축 대신 X축을 공유하는 상(막대)/하(선) 패널 — 두 지표의 스케일을 섞지 않으면서
+    같은 시점끼리 비교할 수 있게 한다. 통합 툴팁·크로스헤어 포함."""
+    from plotly.subplots import make_subplots
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.42, 0.58], vertical_spacing=0.07)
+    fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
+                         opacity=0.75), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
+                             line=dict(color=line_color, width=2),
+                             marker=dict(size=7)), row=2, col=1)
+    lay = base_layout(h=h, title=title)
+    lay.pop("xaxis", None); lay.pop("yaxis", None)
+    lay["showlegend"] = True
+    lay["hovermode"] = "x unified"
+    set_layout(fig, lay)
+    fig.update_xaxes(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
+                     tickfont=dict(color="#64748b", size=11),
+                     showspikes=True, spikemode="across", spikethickness=1,
+                     spikedash="dot", spikecolor="#cbd5e1")
+    fig.update_yaxes(gridcolor="#f1f5f9", linecolor="#e2e8f0",
+                     tickfont=dict(color="#64748b", size=11))
+    fig.update_yaxes(ticksuffix=bar_suffix, row=1, col=1)
+    fig.update_yaxes(ticksuffix=line_suffix, row=2, col=1)
+    return fig
+def overlay_dual(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
+                 h=430, bar_suffix="", line_suffix="", title=""):
+    """한 차트 이중축 오버레이 — 막대(좌축)+선(우축)을 같은 X에 겹쳐 그린다.
+    스케일이 크게 다른 '발송 강도 ↔ 효율/증감' 관계를 한 눈에 보려는 용도.
+    어느 축인지 헷갈리지 않게 축 눈금·제목 색을 각 시리즈 색과 맞춘다.
+    통합 툴팁(x unified)+세로 크로스헤어 포함."""
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
+                         opacity=0.55))
+    fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
+                             line=dict(color=line_color, width=2.5),
+                             marker=dict(size=6), yaxis="y2"))
+    lay = base_layout(h=h, title=title, hover="x")
+    lay["showlegend"] = True
+    lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02,
+                         xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+    lay["yaxis"]["ticksuffix"] = bar_suffix
+    lay["yaxis"]["title"] = dict(text=bar_name, font=dict(color=bar_color, size=11))
+    lay["yaxis"]["tickfont"] = dict(color=bar_color, size=11)
+    lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
+                         ticksuffix=line_suffix,
+                         title=dict(text=line_name, font=dict(color=line_color, size=11)),
+                         tickfont=dict(color=line_color, size=11),
+                         zeroline=True, zerolinecolor="#e2e8f0")
+    set_layout(fig, lay)
+    return fig
+def sig_label(p):
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return "–"
+    if p < 0.001: return "p<0.001 · 매우 확실"
+    if p < 0.01:  return "p<0.01 · 신뢰 가능"
+    if p < 0.05:  return "p<0.05 · 유의함"
+    return f"p={p:.2f} · 유의하지 않음(우연일 수 있음)"
+def welch(a, b):
+    from scipy import stats                  # main() 첫 줄 임포트에 기대고 있었다
+    a = np.asarray(a, float); b = np.asarray(b, float)
+    a = a[~np.isnan(a)]; b = b[~np.isnan(b)]
+    if len(a) < 3 or len(b) < 3:
+        return np.nan
+    try:
+        return stats.ttest_ind(a, b, equal_var=False).pvalue
+    except Exception:
+        return np.nan
+def won(v):
+    if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
+    if abs(v) >= 1e8: return f"{v/1e8:.2f}억"
+    if abs(v) >= 1e4: return f"{v/1e4:,.0f}만"
+    return f"{v:,.0f}"
+def bar_label(v, col, pct):
+    """막대 텍스트 라벨 — 비율은 %, 통화 지표는 원화 축약.
+    (RPS·거래액 라벨이 '1234567.89'처럼 콤마·단위 없이 찍히던 문제 통일)"""
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "–"                                # 결측 버킷 라벨이 'nan%'로 노출되던 것 방지
+    if pct:
+        return f"{v:.2f}%"
+    if col in ("rps", "aov", "amt", "revenue", "avgOrderVal", "unitPrice", "rev_per_uniq"):
+        return won(v)
+    return f"{v:,.1f}"
+def bar_xrange(yv, mult=1.18):
+    """수평 막대 x축 상한 — 값이 전부 0/NaN이면 None(자동)으로 둬 축이 [0,0]·[0,NaN]으로
+    붕괴해 막대·라벨이 안 보이는 빈 차트가 되는 것을 막는다."""
+    arr = np.asarray(yv, float)
+    if not len(arr):
+        return None
+    mx = float(np.nanmax(arr)) if np.isfinite(arr).any() else 0.0
+    return [0, mx * mult] if (np.isfinite(mx) and mx > 0) else None
+def guard_multi(key, opts):
+    """multiselect용 가드 — 선택지에서 사라진 값이 세션에 남으면 위젯이 예외로 죽는다.
+    (우선순위 0순위를 1순위로 합치면서 세션에 남은 '0'이 그대로 터졌다)
+
+    **버린 값은 세어 둔다.** 프리셋을 불러오면 그때 있던 브랜드·발송유형이 지금
+    데이터엔 없을 수 있는데, 조용히 지우면 «프리셋이 다르게 복원됐다»로만 보인다
+    (`test_filter_preset.py`의 `t_dropped_values_are_announced`).
+    """
+    _cur = st.session_state.get(key)
+    if isinstance(_cur, (list, tuple)):
+        _keep = [v for v in _cur if v in opts]
+        if len(_keep) != len(_cur):
+            st.session_state[key] = _keep
+            st.session_state.setdefault("_flt_dropped", {})[key] = \
+                [v for v in _cur if v not in opts]
+def guard_select(key, opts):
+    """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
+    무효 선택은 버려서 조용한 리셋/예외를 막는다 (개발 규칙의 pop 가드 일원화)."""
+    if key in st.session_state and st.session_state[key] not in opts:
+        st.session_state.pop(key, None)
+def legend_h():
+    """차트 상단 수평 범례 — 페이지마다 복붙되던 dict를 한 곳으로."""
+    return dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                bgcolor="rgba(0,0,0,0)")
+METRIC_OPTS = {
+    "주문전환율": ("ord_cr", "%", PALETTE["purple"]),
+    "CTR(유입전환율)": ("infl_cr", "%", PALETTE["blue"]),
+    "발송건당거래액(RPS)": ("rps", "원", PALETTE["green"]),
+    "객단가(AOV)": ("aov", "원", PALETTE["amber"]),
+    "거래액": ("amt", "원", PALETTE["teal"]),
+}
+def glossary(which="full"):
+    """비전문가용 지표·발송·통계 용어 주석 (접이식) — 모든 페이지 하단에 호출."""
+    metrics_md = (
+        "**📊 성과 지표**\n"
+        "- **발송**: 메시지를 보낸 건수예요.\n"
+        "- **UV(유입)**: 메시지를 눌러 들어온 사람 수예요(중복 제거).\n"
+        "- **VISIT**: 들어온 사람들이 발생시킨 방문 횟수예요.\n"
+        "- **CTR(유입전환율)** = UV ÷ 발송. 보낸 것 중 몇 %가 들어왔는지예요.\n"
+        "- ⚠️ **피로도 페이지의 CTR은 분모가 다릅니다.** 전사 MTD 파일이 주는 CTR은 "
+        "유니크유입 ÷ **유니크발송고객수**(고객 1명당)예요. 발송 1건당으로 보려면 그 페이지의 "
+        "**‘유입률(발송당)’**(= 총유입 ÷ 총발송)을 쓰세요. 단 피로도 페이지는 **전사 발송**, "
+        "여기는 **CRM 발송**만이라 기준을 맞춰도 값 자체는 서로 달라요.\n"
+        "- **주문전환율(CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀는지예요.\n"
+        "- **유니크 유입**: 들어온 사람 수예요(같은 사람이 여러 번 와도 1명). "
+        "**총유입**은 방문 횟수라 같은 사람이 3번 오면 3으로 세요.\n"
+        "- **유입 대비 구매전환율** = 구매 고객수 ÷ 유니크 유입. "
+        "'들어온 사람 중 산 비율'이에요. **구매전환율(CR)** 은 분모가 발송 고객수라 "
+        "'보낸 사람 중 산 비율'이고, 답하는 질문이 달라요.\n"
+        "- **유입 1명당 방문 횟수** = 총유입 ÷ 유니크 유입. 1에 가까우면 한 번 오고 말았다는 뜻이고, "
+        "커질수록 같은 사람이 여러 번 들어왔다는 뜻이에요.\n"
+        "- **유입 1명당 거래액** = 거래액 ÷ 유니크 유입. 들어온 사람 1명이 남긴 평균 매출이에요.\n"
+        "- **RPS** = 거래액 ÷ 발송. 1건 보냈을 때 평균 매출이에요.\n"
+        "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건에 평균 얼마를 썼는지예요.\n"
+        "- **거래액**: 발송을 통해 발생한 주문 금액 합계예요.\n")
+    biz_md = (
+        "**📨 발송·캠페인 용어**\n"
+        "- **AF코드**: 캠페인(발송 소재) 하나를 식별하는 코드예요 (예: AP101).\n"
+        "- **BPU**: 사업부 단위예요. 1BPU·2BPU처럼 발송 주체를 구분해요.\n"
+        "- **우선순위(순번)**: 같은 시간대에 몇 번째로 나간 발송인지예요. 1이 가장 먼저예요.\n"
+        "- **소구(訴求)**: 문구가 어필하는 포인트예요 — 할인율·마감임박·쿠폰 같은 혜택형부터 "
+        "신상컬렉션·베스트인기·추천큐레이션·시즌환절기·행동리타겟(장바구니·찜)·이벤트응모·"
+        "라이브방송 같은 비혜택형까지 자동 분류돼요.\n"
+        "- **세그먼트(타겟)**: 누구에게 보냈는지 그룹이에요 — 신규·휴면·전체 등.\n"
+        "- **퍼널**: 발송→유입→주문으로 좁아지는 단계 흐름이에요. 급락 단계가 개선 포인트예요.\n"
+        "- **기여율** = 발송 추적 거래액 ÷ 기획전 유입 거래액. 기획전 매출 중 발송이 끌어온 비중이에요.\n"
+        "- **리프트**: 어떤 속성이 있을 때와 없을 때의 성과 차이예요.\n"
+        "- **마모**: 같은 소구를 반복할수록 반응이 무뎌지는 현상이에요.\n"
+        "- **MTD·인당 발송 건수**: 전사 기준 일별 집계예요. 인당 발송 건수는 고객 1명이 "
+        "하루에 받은 평균 메시지 수(발송 강도)예요.\n"
+        "- **기말(期末)**: '주말(weekend)'이 아니라 **그 기간의 마지막 날**이라는 뜻이에요. "
+        "'기말 동의수'는 그 주 마지막 날 기준 누적 값(스냅샷)이고, 신규추가·기존이탈·순증감처럼 "
+        "그 주를 다 더한 '합계'와는 달라요.\n"
+        "- **전주비·전월비·전년비**: 기준 기간을 직전 주·전월 동주(한 달 전 같은 주)·작년 같은 "
+        "기간과 비교한 증감이에요. 비율 지표(CTR·CR)는 %p 차이, 나머지는 증감률(%)로 표시해요.\n"
+        "- **△ 표기**: 마이너스(감소)를 뜻해요 — 회사 보고 양식이에요. 예: △8.9% = 8.9% 감소.\n")
+    stats_md = (
+        "**🔬 통계 용어**\n"
+        "- **p값·유의성**: 이 차이가 우연일 가능성이에요. 0.05 미만이면 보통 '진짜 차이'로 봐요.\n"
+        "- **효과크기(d)**: 차이가 실제로 얼마나 큰지예요. 0.2 작음 · 0.5 중간 · 0.8 큼.\n"
+        "- **보정(FDR)**: 여러 개를 한꺼번에 비교하면 우연히 '유의'가 나오기 쉬워서 "
+        "더 엄격하게 걸러낸 값이에요.\n"
+        "- **순효과**: 카테고리·시간대 등 다른 조건을 맞춘 뒤 그 요소만의 진짜 기여예요.\n"
+        "- **상관 r**: 둘이 같이 움직이는 정도예요(−1\\~+1). +면 같이, −면 반대로 움직여요. "
+        "상관은 인과(원인→결과)와 달라요.\n"
+        "- **R²(결정계수)**: 추세선이 데이터를 얼마나 잘 설명하는지예요(0~1). 1에 가까울수록 뚜렷해요.\n"
+        "- **중앙값**: 크기순으로 줄 세웠을 때 딱 가운데 값이에요. 극단값에 안 휘둘려요.\n"
+        "- **±2σ(시그마)**: 평균에서 아주 많이 벗어났다는 뜻이에요. 상·하위 약 2.5%에 해당해요.\n"
+        "- **5분위(Q1\\~Q5)**: 데이터를 크기순으로 5등분한 거예요. Q1이 가장 작고 Q5가 가장 커요.\n"
+        "- **가중 평균 vs 단순 평균**: 가중은 발송 많은 캠페인에 비중을 더 두고(실제 효율에 가까움), "
+        "단순은 캠페인 1건을 1표로 봐요.\n"
+        "- **최소 발송수**: 표본이 너무 적으면 우연에 흔들려서, 일정 발송수 이상만 분석에 넣어요.\n")
+    with st.expander("📖 용어 주석 — 어려운 용어는 여기서 확인하세요"):
+        g1, g2 = st.columns(2)
+        g1.markdown(metrics_md)
+        g1.markdown(biz_md)
+        g2.markdown(stats_md)
+
+
 def main():
     from scipy import stats
 
@@ -3243,122 +3482,6 @@ def main():
     .psx-rh{font-size:15.5px;font-weight:700;color:#1e293b}
     .psx-rw{font-size:12.5px;color:#94a3b8;margin-bottom:9px}
     </style>""", unsafe_allow_html=True)
-
-    PALETTE = {
-        "blue": "rgba(79,143,255,1)", "red": "rgba(245,101,101,1)", "green": "rgba(72,187,120,1)",
-        "amber": "rgba(237,137,54,1)", "purple": "rgba(159,122,234,1)", "teal": "rgba(56,178,172,1)",
-        "slate": "rgba(100,116,139,1)",
-    }
-
-    def base_layout(h=300, ysuffix="", title="", hover=None):
-        # 인-차트 제목은 왼쪽 상단에 고정하고, 상단 가로 범례(y≈1.12)와 겹치지 않도록
-        # 제목 영역(top margin)을 충분히 확보한다. (각 차트 위 마크다운 헤더와도 분리)
-        # hover="x" 이면 시계열용 통합 툴팁(hovermode=x unified) + 세로 크로스헤어를 켠다.
-        has_title = bool(title)
-        _FONT = "Pretendard Variable, Pretendard, Malgun Gothic, Apple SD Gothic Neo, sans-serif"
-        xaxis = dict(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
-                     tickfont=dict(color="#64748b", size=11))
-        lay = dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                   font=dict(color="#475569", size=11, family=_FONT),
-                   margin=dict(l=10, r=10, t=(58 if has_title else 30), b=10),
-                   height=h, showlegend=False,
-                   barcornerradius=4,
-                   hoverlabel=dict(bgcolor="#ffffff", bordercolor="#e2e8f0",
-                                   font=dict(size=12, color="#1e293b", family=_FONT)),
-                   title=dict(text=title, font=dict(color="#94a3b8", size=13),
-                              x=0, xanchor="left", y=0.99, yanchor="top"),
-                   legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                               xanchor="left", x=0, bgcolor="rgba(0,0,0,0)"),
-                   xaxis=xaxis,
-                   yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
-                              tickfont=dict(color="#64748b", size=11), ticksuffix=ysuffix))
-        if hover == "x":
-            lay["hovermode"] = "x unified"
-            xaxis.update(showspikes=True, spikemode="across", spikethickness=1,
-                         spikedash="dot", spikecolor="#cbd5e1")
-        return lay
-
-    # 시계열 팔레트 순서 — 소구 속성별 고정색(필터가 바뀌어도 같은 속성은 늘 같은 색)
-    SERIES_SEQ = [PALETTE["purple"], PALETTE["green"], PALETTE["amber"], PALETTE["blue"],
-                  PALETTE["red"], PALETTE["teal"], PALETTE["slate"]]
-
-    def tag_color(t):
-        try:
-            return SERIES_SEQ[TAG_BOOLS.index(t) % len(SERIES_SEQ)]
-        except ValueError:
-            return PALETTE["slate"]
-
-    def stacked_panels(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
-                       h=430, bar_suffix="", line_suffix="", title=""):
-        """이중축 대신 X축을 공유하는 상(막대)/하(선) 패널 — 두 지표의 스케일을 섞지 않으면서
-        같은 시점끼리 비교할 수 있게 한다. 통합 툴팁·크로스헤어 포함."""
-        from plotly.subplots import make_subplots
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            row_heights=[0.42, 0.58], vertical_spacing=0.07)
-        fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
-                             opacity=0.75), row=1, col=1)
-        fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
-                                 line=dict(color=line_color, width=2),
-                                 marker=dict(size=7)), row=2, col=1)
-        lay = base_layout(h=h, title=title)
-        lay.pop("xaxis", None); lay.pop("yaxis", None)
-        lay["showlegend"] = True
-        lay["hovermode"] = "x unified"
-        set_layout(fig, lay)
-        fig.update_xaxes(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
-                         tickfont=dict(color="#64748b", size=11),
-                         showspikes=True, spikemode="across", spikethickness=1,
-                         spikedash="dot", spikecolor="#cbd5e1")
-        fig.update_yaxes(gridcolor="#f1f5f9", linecolor="#e2e8f0",
-                         tickfont=dict(color="#64748b", size=11))
-        fig.update_yaxes(ticksuffix=bar_suffix, row=1, col=1)
-        fig.update_yaxes(ticksuffix=line_suffix, row=2, col=1)
-        return fig
-
-    def overlay_dual(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
-                     h=430, bar_suffix="", line_suffix="", title=""):
-        """한 차트 이중축 오버레이 — 막대(좌축)+선(우축)을 같은 X에 겹쳐 그린다.
-        스케일이 크게 다른 '발송 강도 ↔ 효율/증감' 관계를 한 눈에 보려는 용도.
-        어느 축인지 헷갈리지 않게 축 눈금·제목 색을 각 시리즈 색과 맞춘다.
-        통합 툴팁(x unified)+세로 크로스헤어 포함."""
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
-                             opacity=0.55))
-        fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
-                                 line=dict(color=line_color, width=2.5),
-                                 marker=dict(size=6), yaxis="y2"))
-        lay = base_layout(h=h, title=title, hover="x")
-        lay["showlegend"] = True
-        lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02,
-                             xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
-        lay["yaxis"]["ticksuffix"] = bar_suffix
-        lay["yaxis"]["title"] = dict(text=bar_name, font=dict(color=bar_color, size=11))
-        lay["yaxis"]["tickfont"] = dict(color=bar_color, size=11)
-        lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
-                             ticksuffix=line_suffix,
-                             title=dict(text=line_name, font=dict(color=line_color, size=11)),
-                             tickfont=dict(color=line_color, size=11),
-                             zeroline=True, zerolinecolor="#e2e8f0")
-        set_layout(fig, lay)
-        return fig
-
-    def sig_label(p):
-        if p is None or (isinstance(p, float) and np.isnan(p)):
-            return "–"
-        if p < 0.001: return "p<0.001 · 매우 확실"
-        if p < 0.01:  return "p<0.01 · 신뢰 가능"
-        if p < 0.05:  return "p<0.05 · 유의함"
-        return f"p={p:.2f} · 유의하지 않음(우연일 수 있음)"
-
-    def welch(a, b):
-        a = np.asarray(a, float); b = np.asarray(b, float)
-        a = a[~np.isnan(a)]; b = b[~np.isnan(b)]
-        if len(a) < 3 or len(b) < 3:
-            return np.nan
-        try:
-            return stats.ttest_ind(a, b, equal_var=False).pvalue
-        except Exception:
-            return np.nan
 
     # ── 캐시 래퍼 (무거운 파싱 1회만) ──
     @st.cache_data(show_spinner=False, max_entries=4)
@@ -3590,33 +3713,6 @@ def main():
             _msg = str(e).replace(str(key), "***KEY***")[:300]
             return None, f"생성 오류: {_msg}"
 
-    # 숫자 포맷 헬퍼
-    def won(v):
-        if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
-        if abs(v) >= 1e8: return f"{v/1e8:.2f}억"
-        if abs(v) >= 1e4: return f"{v/1e4:,.0f}만"
-        return f"{v:,.0f}"
-
-    def bar_label(v, col, pct):
-        """막대 텍스트 라벨 — 비율은 %, 통화 지표는 원화 축약.
-        (RPS·거래액 라벨이 '1234567.89'처럼 콤마·단위 없이 찍히던 문제 통일)"""
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            return "–"                                # 결측 버킷 라벨이 'nan%'로 노출되던 것 방지
-        if pct:
-            return f"{v:.2f}%"
-        if col in ("rps", "aov", "amt", "revenue", "avgOrderVal", "unitPrice", "rev_per_uniq"):
-            return won(v)
-        return f"{v:,.1f}"
-
-    def bar_xrange(yv, mult=1.18):
-        """수평 막대 x축 상한 — 값이 전부 0/NaN이면 None(자동)으로 둬 축이 [0,0]·[0,NaN]으로
-        붕괴해 막대·라벨이 안 보이는 빈 차트가 되는 것을 막는다."""
-        arr = np.asarray(yv, float)
-        if not len(arr):
-            return None
-        mx = float(np.nanmax(arr)) if np.isfinite(arr).any() else 0.0
-        return [0, mx * mult] if (np.isfinite(mx) and mx > 0) else None
-
     # ── 표 렌더 + 엑셀 내려받기 ──────────────────────────────────────────
     # st.dataframe 기본 툴바의 'Download as CSV'는 서식이 다 날아간다. 모든 표에
     # 같은 자리에서 검은 헤더 스타일 xlsx를 받을 수 있게 공용 래퍼로 감싼다.
@@ -3650,33 +3746,6 @@ def main():
             except Exception:                             # noqa: BLE001
                 pass                                      # 다운로드가 안 되더라도 표는 보여야 한다
         return ev
-
-    def guard_multi(key, opts):
-        """multiselect용 가드 — 선택지에서 사라진 값이 세션에 남으면 위젯이 예외로 죽는다.
-        (우선순위 0순위를 1순위로 합치면서 세션에 남은 '0'이 그대로 터졌다)
-
-        **버린 값은 세어 둔다.** 프리셋을 불러오면 그때 있던 브랜드·발송유형이 지금
-        데이터엔 없을 수 있는데, 조용히 지우면 «프리셋이 다르게 복원됐다»로만 보인다
-        (`test_filter_preset.py`의 `t_dropped_values_are_announced`).
-        """
-        _cur = st.session_state.get(key)
-        if isinstance(_cur, (list, tuple)):
-            _keep = [v for v in _cur if v in opts]
-            if len(_keep) != len(_cur):
-                st.session_state[key] = _keep
-                st.session_state.setdefault("_flt_dropped", {})[key] = \
-                    [v for v in _cur if v not in opts]
-
-    def guard_select(key, opts):
-        """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
-        무효 선택은 버려서 조용한 리셋/예외를 막는다 (개발 규칙의 pop 가드 일원화)."""
-        if key in st.session_state and st.session_state[key] not in opts:
-            st.session_state.pop(key, None)
-
-    def legend_h():
-        """차트 상단 수평 범례 — 페이지마다 복붙되던 dict를 한 곳으로."""
-        return dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-                    bgcolor="rgba(0,0,0,0)")
 
     # ══════════════════════════════════════════════════════════════
     # 사이드바 — 업로드 / 필터 / 페이지
@@ -4810,82 +4879,9 @@ def main():
             unsafe_allow_html=True)
 
     # 지표 메타
-    METRIC_OPTS = {
-        "주문전환율": ("ord_cr", "%", PALETTE["purple"]),
-        "CTR(유입전환율)": ("infl_cr", "%", PALETTE["blue"]),
-        "발송건당거래액(RPS)": ("rps", "원", PALETTE["green"]),
-        "객단가(AOV)": ("aov", "원", PALETTE["amber"]),
-        "거래액": ("amt", "원", PALETTE["teal"]),
-    }
 
     # 전환율은 캠페인별 단순 평균으로 비교(표본은 사이드바 '최소 발송수'로 통제)
 
-    def glossary(which="full"):
-        """비전문가용 지표·발송·통계 용어 주석 (접이식) — 모든 페이지 하단에 호출."""
-        metrics_md = (
-            "**📊 성과 지표**\n"
-            "- **발송**: 메시지를 보낸 건수예요.\n"
-            "- **UV(유입)**: 메시지를 눌러 들어온 사람 수예요(중복 제거).\n"
-            "- **VISIT**: 들어온 사람들이 발생시킨 방문 횟수예요.\n"
-            "- **CTR(유입전환율)** = UV ÷ 발송. 보낸 것 중 몇 %가 들어왔는지예요.\n"
-            "- ⚠️ **피로도 페이지의 CTR은 분모가 다릅니다.** 전사 MTD 파일이 주는 CTR은 "
-            "유니크유입 ÷ **유니크발송고객수**(고객 1명당)예요. 발송 1건당으로 보려면 그 페이지의 "
-            "**‘유입률(발송당)’**(= 총유입 ÷ 총발송)을 쓰세요. 단 피로도 페이지는 **전사 발송**, "
-            "여기는 **CRM 발송**만이라 기준을 맞춰도 값 자체는 서로 달라요.\n"
-            "- **주문전환율(CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀는지예요.\n"
-            "- **유니크 유입**: 들어온 사람 수예요(같은 사람이 여러 번 와도 1명). "
-            "**총유입**은 방문 횟수라 같은 사람이 3번 오면 3으로 세요.\n"
-            "- **유입 대비 구매전환율** = 구매 고객수 ÷ 유니크 유입. "
-            "'들어온 사람 중 산 비율'이에요. **구매전환율(CR)** 은 분모가 발송 고객수라 "
-            "'보낸 사람 중 산 비율'이고, 답하는 질문이 달라요.\n"
-            "- **유입 1명당 방문 횟수** = 총유입 ÷ 유니크 유입. 1에 가까우면 한 번 오고 말았다는 뜻이고, "
-            "커질수록 같은 사람이 여러 번 들어왔다는 뜻이에요.\n"
-            "- **유입 1명당 거래액** = 거래액 ÷ 유니크 유입. 들어온 사람 1명이 남긴 평균 매출이에요.\n"
-            "- **RPS** = 거래액 ÷ 발송. 1건 보냈을 때 평균 매출이에요.\n"
-            "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건에 평균 얼마를 썼는지예요.\n"
-            "- **거래액**: 발송을 통해 발생한 주문 금액 합계예요.\n")
-        biz_md = (
-            "**📨 발송·캠페인 용어**\n"
-            "- **AF코드**: 캠페인(발송 소재) 하나를 식별하는 코드예요 (예: AP101).\n"
-            "- **BPU**: 사업부 단위예요. 1BPU·2BPU처럼 발송 주체를 구분해요.\n"
-            "- **우선순위(순번)**: 같은 시간대에 몇 번째로 나간 발송인지예요. 1이 가장 먼저예요.\n"
-            "- **소구(訴求)**: 문구가 어필하는 포인트예요 — 할인율·마감임박·쿠폰 같은 혜택형부터 "
-            "신상컬렉션·베스트인기·추천큐레이션·시즌환절기·행동리타겟(장바구니·찜)·이벤트응모·"
-            "라이브방송 같은 비혜택형까지 자동 분류돼요.\n"
-            "- **세그먼트(타겟)**: 누구에게 보냈는지 그룹이에요 — 신규·휴면·전체 등.\n"
-            "- **퍼널**: 발송→유입→주문으로 좁아지는 단계 흐름이에요. 급락 단계가 개선 포인트예요.\n"
-            "- **기여율** = 발송 추적 거래액 ÷ 기획전 유입 거래액. 기획전 매출 중 발송이 끌어온 비중이에요.\n"
-            "- **리프트**: 어떤 속성이 있을 때와 없을 때의 성과 차이예요.\n"
-            "- **마모**: 같은 소구를 반복할수록 반응이 무뎌지는 현상이에요.\n"
-            "- **MTD·인당 발송 건수**: 전사 기준 일별 집계예요. 인당 발송 건수는 고객 1명이 "
-            "하루에 받은 평균 메시지 수(발송 강도)예요.\n"
-            "- **기말(期末)**: '주말(weekend)'이 아니라 **그 기간의 마지막 날**이라는 뜻이에요. "
-            "'기말 동의수'는 그 주 마지막 날 기준 누적 값(스냅샷)이고, 신규추가·기존이탈·순증감처럼 "
-            "그 주를 다 더한 '합계'와는 달라요.\n"
-            "- **전주비·전월비·전년비**: 기준 기간을 직전 주·전월 동주(한 달 전 같은 주)·작년 같은 "
-            "기간과 비교한 증감이에요. 비율 지표(CTR·CR)는 %p 차이, 나머지는 증감률(%)로 표시해요.\n"
-            "- **△ 표기**: 마이너스(감소)를 뜻해요 — 회사 보고 양식이에요. 예: △8.9% = 8.9% 감소.\n")
-        stats_md = (
-            "**🔬 통계 용어**\n"
-            "- **p값·유의성**: 이 차이가 우연일 가능성이에요. 0.05 미만이면 보통 '진짜 차이'로 봐요.\n"
-            "- **효과크기(d)**: 차이가 실제로 얼마나 큰지예요. 0.2 작음 · 0.5 중간 · 0.8 큼.\n"
-            "- **보정(FDR)**: 여러 개를 한꺼번에 비교하면 우연히 '유의'가 나오기 쉬워서 "
-            "더 엄격하게 걸러낸 값이에요.\n"
-            "- **순효과**: 카테고리·시간대 등 다른 조건을 맞춘 뒤 그 요소만의 진짜 기여예요.\n"
-            "- **상관 r**: 둘이 같이 움직이는 정도예요(−1\\~+1). +면 같이, −면 반대로 움직여요. "
-            "상관은 인과(원인→결과)와 달라요.\n"
-            "- **R²(결정계수)**: 추세선이 데이터를 얼마나 잘 설명하는지예요(0~1). 1에 가까울수록 뚜렷해요.\n"
-            "- **중앙값**: 크기순으로 줄 세웠을 때 딱 가운데 값이에요. 극단값에 안 휘둘려요.\n"
-            "- **±2σ(시그마)**: 평균에서 아주 많이 벗어났다는 뜻이에요. 상·하위 약 2.5%에 해당해요.\n"
-            "- **5분위(Q1\\~Q5)**: 데이터를 크기순으로 5등분한 거예요. Q1이 가장 작고 Q5가 가장 커요.\n"
-            "- **가중 평균 vs 단순 평균**: 가중은 발송 많은 캠페인에 비중을 더 두고(실제 효율에 가까움), "
-            "단순은 캠페인 1건을 1표로 봐요.\n"
-            "- **최소 발송수**: 표본이 너무 적으면 우연에 흔들려서, 일정 발송수 이상만 분석에 넣어요.\n")
-        with st.expander("📖 용어 주석 — 어려운 용어는 여기서 확인하세요"):
-            g1, g2 = st.columns(2)
-            g1.markdown(metrics_md)
-            g1.markdown(biz_md)
-            g2.markdown(stats_md)
 
     @st.fragment
     def render_messages(d, mcol, key, n=200, show_hour=False, show_tags=False):
