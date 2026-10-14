@@ -1267,6 +1267,109 @@ def notes_dict_to_df(d):
                         columns=NOTES_STORE_COLS)
 
 
+# ── 사이드바 필터 프리셋 — 자주 쓰는 조합을 이름 붙여 저장 ──
+# 「이번 주 영업1 브랜드만」·「컨틴 16시만」처럼 매번 손으로 다시 맞추던 조합이 있다.
+# 값은 **위젯 세션값 그대로**라 따로 변환 규칙이 없다 — 날짜만 JSON에 못 실려 ISO로 오간다.
+#
+# **필터 목록은 `FLT_KEYS` 한곳이다.** 「필터 전체 초기화」·프리셋 저장·프리셋 복원이
+# 전부 이걸 본다. 새 필터를 만들고 여기 안 넣으면 저장에서도 초기화에서도 조용히
+# 빠지는데, 증상은 «그 칸만 안 돌아온다»라서 눈으로는 안 잡힌다
+# (`test_filter_preset.py`의 `t_every_filter_widget_key_is_registered`).
+FLT_KEYS = ("flt_q", "flt_matched", "flt_minsend", "flt_date", "flt_st", "flt_target",
+            "flt_bpu", "flt_prio", "flt_hour", "flt_dow", "flt_cat", "flt_attr",
+            "flt_owner", "flt_brand2", "flt_org", "flt_kind", "flt_tags", "tags_mode")
+
+# 경고 문구가 `flt_brand2` 같은 **위젯 키를 그대로 뱉으면** 읽는 사람이 어느 필터인지
+# 모른다. 사이드바 라벨과 같은 말로 둔다.
+FLT_NAME = {"flt_st": "발송유형", "flt_target": "타겟 구분", "flt_bpu": "BPU(사업부)",
+            "flt_prio": "우선순위", "flt_hour": "시간대", "flt_dow": "요일",
+            "flt_cat": "카테고리", "flt_attr": "대상 속성", "flt_owner": "담당자",
+            "flt_brand2": "브랜드", "flt_org": "영업", "flt_kind": "구분",
+            "flt_tags": "소구 속성"}
+
+PRESET_STORE = "send_perf_presets.csv"
+PRESET_STORE_COLS = ["name", "payload"]
+PRESET_DATE_KEYS = ("flt_date",)          # JSON에 date가 안 실린다 — ISO 문자열로 오간다
+PRESET_MAX = 30                           # 셀렉트가 끝없이 길어지지 않게
+
+
+def preset_dump(state, keys=FLT_KEYS):
+    """세션값 → JSON 문자열. 날짜는 ISO로 내리고 튜플은 리스트로 편다."""
+    out = {}
+    for k in keys:
+        if k not in state:
+            continue                       # 없는 칸은 지어내지 않는다 — 복원 때 기본값
+        v = state[k]
+        if k in PRESET_DATE_KEYS and isinstance(v, (tuple, list)):
+            v = [x.isoformat() if hasattr(x, "isoformat") else str(x) for x in v]
+        elif isinstance(v, tuple):
+            v = list(v)
+        out[k] = v
+    return json.dumps(out, ensure_ascii=False)
+
+
+def preset_read(payload, keys=FLT_KEYS):
+    """JSON 문자열 → 세션에 심을 사전. 날짜는 date로 되돌린다.
+
+    **모르는 키는 버린다** — 옛 프리셋에 지금 없는 필터가 들어 있어도 세션에 그대로
+    심으면 위젯이 안 읽는 찌꺼기가 남는다. 날짜가 깨진 칸은 그 칸만 건너뛰고 나머지는
+    살린다(프리셋 하나가 통째로 안 열리는 것보다 낫다).
+    """
+    try:
+        d = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
+    except Exception:                                      # noqa: BLE001
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k, v in d.items():
+        if k not in keys:
+            continue
+        if k in PRESET_DATE_KEYS and isinstance(v, list):
+            try:
+                v = tuple(datetime.date.fromisoformat(str(x)) for x in v)
+            except Exception:                              # noqa: BLE001
+                continue
+        out[k] = v
+    return out
+
+
+def load_preset_store():
+    if os.path.exists(PRESET_STORE):
+        try:
+            return pd.read_csv(PRESET_STORE, encoding="utf-8-sig", dtype=str).fillna("")
+        except Exception:                                  # noqa: BLE001
+            pass
+    return pd.DataFrame(columns=PRESET_STORE_COLS)
+
+
+def save_preset_store(df):
+    if df is None:
+        return
+    df[[c for c in PRESET_STORE_COLS if c in df]].to_csv(
+        PRESET_STORE, index=False, encoding="utf-8-sig")
+
+
+def preset_df_to_dict(df):
+    """저장소 DataFrame([name,payload]) → {이름: payload} 사전 (보고란과 같은 꼴)."""
+    if df is None or len(df) == 0 or "name" not in df:
+        return {}
+    d = {}
+    for _, r in df.iterrows():
+        k = str(r.get("name", "")).strip()
+        if k and k.lower() != "nan":
+            d[k] = "" if pd.isna(r.get("payload")) else str(r.get("payload"))
+    return d
+
+
+def preset_dict_to_df(d):
+    """{이름: payload} → 저장소 DataFrame([name,payload])."""
+    if not d:
+        return pd.DataFrame(columns=PRESET_STORE_COLS)
+    return pd.DataFrame([{"name": k, "payload": v} for k, v in d.items()],
+                        columns=PRESET_STORE_COLS)
+
+
 def finalize_promo(df):
     """저장소/파싱 로드 공통 — 키 정규화 + 숫자 컬럼 형변환."""
     if df is None or len(df) == 0:
@@ -1537,7 +1640,8 @@ def push_week_note(row):
 
 # ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
 GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store",
-             "push": "push_store", "notes": "notes_store", "site": "site_store"}
+             "push": "push_store", "notes": "notes_store", "site": "site_store",
+             "preset": "preset_store"}
 
 
 def _fix_pem(pk):
@@ -2547,7 +2651,10 @@ def josa(word, pair="은는"):
     """받침 유무로 조사를 고른다 — '기준 월가'·'시그니처이 가장' 같은 문장을 막는다.
 
     기간 단위가 일·주·월로 갈리면서 「기준 {단위}가」가 월에서 '월가'가 됐다.
-    주간보고 앱의 같은 헬퍼와 구현을 맞춰 둔다."""
+    주간보고 앱의 같은 헬퍼와 구현을 맞춰 둔다.
+
+    **은/는·이/가·을/를 전용이다.** 「으로/로」는 ㄹ받침이 예외라(세일**로**·서울**로**)
+    여기에 맡기면 '세일으로'가 나온다 — 그런 문장은 조사를 안 쓰게 고쳐 쓴다."""
     w = str(word).strip()
     if not w:
         return pair[1]
@@ -3106,13 +3213,16 @@ def main():
 
     _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS,
                            "push": PUSH_STORE_COLS, "notes": NOTES_STORE_COLS,
-                           "site": SITE_STORE_COLS}
+                           "site": SITE_STORE_COLS, "preset": PRESET_STORE_COLS}
     _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store,
-                   "push": load_push_store, "notes": load_notes_store, "site": load_site_store}
+                   "push": load_push_store, "notes": load_notes_store, "site": load_site_store,
+                   "preset": load_preset_store}
     _LOCAL_SAVE = {"campaign": save_store, "mtd": save_mtd_store, "promo": save_promo_store,
-                   "push": save_push_store, "notes": save_notes_store, "site": save_site_store}
+                   "push": save_push_store, "notes": save_notes_store, "site": save_site_store,
+                   "preset": save_preset_store}
     _LOCAL_FILE = {"campaign": DATA_STORE, "mtd": MTD_STORE, "promo": PROMO_STORE,
-                   "push": PUSH_STORE, "notes": NOTES_STORE, "site": SITE_STORE}
+                   "push": PUSH_STORE, "notes": NOTES_STORE, "site": SITE_STORE,
+                   "preset": PRESET_STORE}
 
     def storage_load(bk, kind):
         cols = _STORE_COLS_BY_KIND[kind]
@@ -3130,7 +3240,8 @@ def main():
         return _LOCAL_LOAD[kind]()
 
     _KIND_LABEL = {"campaign": "캠페인", "mtd": "MTD", "promo": "기획전",
-                   "push": "앱푸시", "notes": "보고란"}
+                   "push": "앱푸시", "notes": "보고란", "site": "사이트 지표",
+                   "preset": "필터 프리셋"}
 
     def storage_save(bk, kind, df):
         """저장 성공 여부(bool) 반환 — 클라우드 읽기가 실패한 상태면 덮어쓰기 방지를 위해 차단."""
@@ -3307,12 +3418,19 @@ def main():
 
     def guard_multi(key, opts):
         """multiselect용 가드 — 선택지에서 사라진 값이 세션에 남으면 위젯이 예외로 죽는다.
-        (우선순위 0순위를 1순위로 합치면서 세션에 남은 '0'이 그대로 터졌다)"""
+        (우선순위 0순위를 1순위로 합치면서 세션에 남은 '0'이 그대로 터졌다)
+
+        **버린 값은 세어 둔다.** 프리셋을 불러오면 그때 있던 브랜드·발송유형이 지금
+        데이터엔 없을 수 있는데, 조용히 지우면 «프리셋이 다르게 복원됐다»로만 보인다
+        (`test_filter_preset.py`의 `t_dropped_values_are_announced`).
+        """
         _cur = st.session_state.get(key)
         if isinstance(_cur, (list, tuple)):
             _keep = [v for v in _cur if v in opts]
             if len(_keep) != len(_cur):
                 st.session_state[key] = _keep
+                st.session_state.setdefault("_flt_dropped", {})[key] = \
+                    [v for v in _cur if v not in opts]
 
     def guard_select(key, opts):
         """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
@@ -3690,7 +3808,19 @@ def main():
                     if storage_save(BK, "push", m):
                         st.session_state.push_consent_df = m
                         done.append(f"앱푸시 {len(m)//3:,}일")
+                elif "preset" in base:
+                    df = pd.read_csv(data, encoding="utf-8-sig", dtype=str).fillna("")
+                    try:
+                        _cur_p = preset_df_to_dict(storage_load(BK, "preset"))
+                    except Exception:                     # noqa: BLE001
+                        _cur_p = {}
+                    merged_p = {**_cur_p, **preset_df_to_dict(df)}    # 같은 이름은 백업 우선
+                    if storage_save(BK, "preset", preset_dict_to_df(merged_p)):
+                        st.session_state.flt_presets = merged_p
+                        done.append(f"필터 프리셋 {len(merged_p):,}")
                 else:
+                    # **마지막 갈래가 캠페인이다.** 위에서 안 걸린 CSV는 전부 여기로
+                    # 온다 — 새 저장소를 ZIP에 넣으면 갈래도 «여기 위에» 같이 넣을 것.
                     df = pd.read_csv(data, encoding="utf-8-sig", dtype={"date": str, "af": str})
                     m = merge_store(stored, df)
                     if storage_save(BK, "campaign", m):
@@ -3849,15 +3979,99 @@ def main():
             return d
         return d[d[col].astype(str).str.replace(r'\.0$', '', regex=True).isin(sel)]
 
-    # 필터 위젯 키 목록 — 「필터 전체 초기화」가 한 번에 리셋할 대상
-    _FLT_KEYS = ("flt_q", "flt_matched", "flt_minsend", "flt_date", "flt_st", "flt_target",
-                 "flt_bpu", "flt_prio", "flt_hour", "flt_dow", "flt_cat", "flt_attr",
-                 "flt_owner", "flt_brand2", "flt_org", "flt_kind", "flt_tags", "tags_mode")
+    # 필터 위젯 키 목록은 모듈 상단 `FLT_KEYS` 하나다 — 「필터 전체 초기화」·프리셋
+    # 저장·프리셋 복원이 같이 본다.
+    def _flt_clear():
+        for _k in FLT_KEYS:
+            st.session_state.pop(_k, None)
+        st.session_state.pop("_flt_dropped", None)
+
     if st.sidebar.button("↩️ 필터 전체 초기화", width="stretch", key="flt_reset",
                          help="검색·기간·속성 등 아래 모든 필터를 기본값으로 되돌려요"):
-        for _k in _FLT_KEYS:
-            st.session_state.pop(_k, None)
+        _flt_clear()
         st.rerun()
+
+    # ── 필터 프리셋 — 자주 쓰는 조합을 이름 붙여 두고 한 번에 되돌린다 ──
+    # 저장소는 **세션에 한 번만** 읽는다. 리런마다 읽으면 구글시트 모드에서 리런당
+    # 네트워크 왕복이 하나 는다(보고란 `wr_notes`와 같은 규칙).
+    if "flt_presets" not in st.session_state:
+        try:
+            st.session_state.flt_presets = preset_df_to_dict(storage_load(BK, "preset"))
+        except Exception:                                  # noqa: BLE001
+            st.session_state.flt_presets = {}
+    _presets = st.session_state.flt_presets
+
+    def _preset_apply():
+        """고른 프리셋을 세션에 심는다.
+
+        **`on_click` 콜백에서만** 바꾼다 — 위젯을 만든 뒤 세션값을 대입하면 예외다.
+        **먼저 비우고 심는다** — 합치면 직전 프리셋에서 고른 값이 남아 두 프리셋을
+        번갈아 눌렀을 때 «둘을 섞은» 상태가 된다. 화면은 멀쩡히 뜨고 숫자만 틀린다
+        (`t_loading_a_preset_replaces_rather_than_merges`).
+        """
+        _flt_clear()
+        for _k, _v in preset_read(_presets.get(st.session_state.get("preset_pick"), "")).items():
+            st.session_state[_k] = _v
+
+    def _preset_put():
+        _nm = str(st.session_state.get("preset_name", "")).strip()
+        if not _nm:
+            st.session_state["_preset_msg"] = ("warning", "이름을 적어 주세요.")
+            return
+        if _nm not in _presets and len(_presets) >= PRESET_MAX:
+            st.session_state["_preset_msg"] = (
+                "warning", f"프리셋은 {PRESET_MAX}개까지예요. 안 쓰는 걸 먼저 지워 주세요.")
+            return
+        _nxt = dict(_presets)
+        _nxt[_nm] = preset_dump(st.session_state)
+        if storage_save(BK, "preset", preset_dict_to_df(_nxt)):
+            st.session_state.flt_presets = _nxt
+            st.session_state["preset_pick"] = _nm
+            st.session_state["preset_name"] = ""
+            st.session_state.pop("_flt_dropped", None)
+            st.session_state["_preset_msg"] = (
+                "success", f"「{_nm}」{josa(_nm, '을를')} 저장했어요.")
+        else:
+            st.session_state["_preset_msg"] = (
+                "warning", "저장소에 못 썼어요. 사이드바 「🔄 새로 불러오기」로 다시 "
+                           "읽은 뒤 해 주세요.")
+
+    def _preset_del():
+        _nm = st.session_state.get("preset_pick")
+        if _nm not in _presets:
+            return
+        _nxt = {_k: _v for _k, _v in _presets.items() if _k != _nm}
+        if storage_save(BK, "preset", preset_dict_to_df(_nxt)):
+            st.session_state.flt_presets = _nxt
+            st.session_state.pop("preset_pick", None)
+            st.session_state["_preset_msg"] = (
+                "success", f"「{_nm}」{josa(_nm, '을를')} 지웠어요.")
+        else:
+            st.session_state["_preset_msg"] = (
+                "warning", "저장소에 못 썼어요. 사이드바 「🔄 새로 불러오기」로 다시 "
+                           "읽은 뒤 해 주세요.")
+
+    with st.sidebar.expander(f"💾 필터 프리셋 ({len(_presets)})"):
+        _pmsg = st.session_state.pop("_preset_msg", None)
+        if _pmsg:
+            (st.success if _pmsg[0] == "success" else st.warning)(_pmsg[1])
+        if _presets:
+            _pnames = sorted(_presets)
+            guard_select("preset_pick", _pnames)
+            st.selectbox("저장해 둔 조합", _pnames, key="preset_pick")
+            _pc1, _pc2 = st.columns(2)
+            _pc1.button("불러오기", width="stretch", key="preset_load",
+                        on_click=_preset_apply)
+            _pc2.button("삭제", width="stretch", key="preset_drop",
+                        on_click=_preset_del)
+        else:
+            st.caption("저장해 둔 조합이 아직 없어요. 지금 필터를 맞춰 두고 아래에 "
+                       "이름을 적어 저장해 보세요.")
+        st.text_input("새 이름", key="preset_name",
+                      placeholder="예: 영업1 브랜드만",
+                      help="같은 이름으로 저장하면 덮어써요")
+        st.button("💾 지금 필터를 저장", width="stretch", key="preset_put",
+                  on_click=_preset_put)
 
     search = st.sidebar.text_input("🔎 검색", "", key="flt_q",
                                    help="제목·내용·브랜드·AF코드·카테고리에서 찾아요")
@@ -3866,8 +4080,11 @@ def main():
     _mkw = {} if "flt_matched" in st.session_state else {"value": True}
     only_matched = st.sidebar.checkbox("문구 매칭된 것만", key="flt_matched", **_mkw,
                                        help="문구(제목·내용)를 못 찾은 건 빼요")
+    # 프리셋이 이 칸을 되살리면 세션값이 이미 있다 — 그때 `value=`를 같이 넘기면
+    # Streamlit이 경고를 띄운다(「문구 매칭된 것만」과 같은 자리).
+    _skw = {} if "flt_minsend" in st.session_state else {"value": 5000}
     min_send = st.sidebar.number_input(
-        "최소 발송수", value=5000, step=1000, min_value=0, key="flt_minsend",
+        "최소 발송수", **_skw, step=1000, min_value=0, key="flt_minsend",
         help="이 숫자보다 적게 보낸 캠페인은 분석에서 빼요. 발송이 적으면 우연에 흔들려서요. 낮추면 더 많이 포함돼요.")
 
     base_opt = raw[raw["matched"]] if only_matched else raw
@@ -3894,6 +4111,15 @@ def main():
                         st.session_state["flt_date"] = tuple(min(max(d, dmin), dmax)
                                                              for d in _cur_span)
                     st.session_state["_flt_date_span"] = _span
+                # **프리셋에서 돌아온 날짜는 범위 밖일 수 있다** — 저장할 때 있던
+                # 날이 지금 저장소엔 없는 판(좁은 백업을 복원한 경우)이다. 경계 밖
+                # 값을 그대로 넘기면 위젯이 예외로 죽고 **사이드바라 페이지가 전부
+                # 같이 내려간다**. 위 '범위가 바뀌었을 때' 보정과 달리 늘 건다.
+                _cs = st.session_state.get("flt_date")
+                if isinstance(_cs, (tuple, list)) and len(_cs) == 2:
+                    _cl = tuple(min(max(x, dmin), dmax) for x in _cs)
+                    if _cl != tuple(_cs):
+                        st.session_state["flt_date"] = _cl
                 # 세션값이 있으면 value= 를 같이 넘기지 않는다(Streamlit 경고)
                 _dkw = {} if "flt_date" in st.session_state else {"value": _span}
                 date_sel = st.date_input("발송일 범위", min_value=dmin, max_value=dmax,
@@ -3910,18 +4136,30 @@ def main():
             else:
                 st.caption(f"단일 일자: {dmin}")
 
+    def _msel(label, key, col=None, opts=None, **kw):
+        """사이드바 다중선택 — 선택지를 뽑고 **가드를 거친 뒤** 위젯을 만든다.
+
+        프리셋을 불러오면 그때 있던 브랜드·발송유형이 지금 데이터엔 없을 수 있다.
+        가드 없이 위젯을 만들면 그 자리에서 예외가 나는데, **사이드바라 페이지가
+        전부 같이 내려간다** — 우선순위 0순위 때 겪은 그 자리다. 여기 하나로 묶어
+        두면 필터를 새로 달 때 가드를 빠뜨릴 길이 없다
+        (`test_filter_preset.py`의 `t_sidebar_multiselects_go_through_the_guard`).
+        """
+        _o = _opts(base_opt, col) if opts is None else opts
+        guard_multi(key, _o)
+        return st.multiselect(label, _o, key=key, **kw)
+
     with st.sidebar.expander("📤 발송 속성"):
-        sel_st = st.multiselect("발송유형", _opts(base_opt, "stype"), key="flt_st")
-        sel_target = st.multiselect("타겟 구분", _opts(base_opt, "target"), key="flt_target",
-                                    help="신규·휴면·전체 등 누구에게 보냈는지")
-        sel_bpu = st.multiselect("BPU(사업부)", _opts(base_opt, "bpu"), key="flt_bpu")
-        _prio_opts = sorted(_opts(base_opt, "prio_g"),
-                            key=lambda v: int(v) if str(v).isdigit() else 10 ** 9)
-        guard_multi("flt_prio", _prio_opts)
-        sel_prio = st.multiselect("우선순위", _prio_opts, key="flt_prio",
-                                  format_func=lambda v: f"{v}순위",
-                                  help="같은 시간에 몇 번째로 보냈는지 (1=가장 먼저). "
-                                       "0순위는 건수가 적어 1순위에 합쳐서 봐요.")
+        sel_st = _msel("발송유형", "flt_st", "stype")
+        sel_target = _msel("타겟 구분", "flt_target", "target",
+                           help="신규·휴면·전체 등 누구에게 보냈는지")
+        sel_bpu = _msel("BPU(사업부)", "flt_bpu", "bpu")
+        sel_prio = _msel("우선순위", "flt_prio",
+                         opts=sorted(_opts(base_opt, "prio_g"),
+                                     key=lambda v: int(v) if str(v).isdigit() else 10 ** 9),
+                         format_func=lambda v: f"{v}순위",
+                         help="같은 시간에 몇 번째로 보냈는지 (1=가장 먼저). "
+                              "0순위는 건수가 적어 1순위에 합쳐서 봐요.")
 
     def _hm_label(v):  # 시간대 HHMM 문자열 → 'HH시MM분' (예: 1030→10시30분, 800→08시00분)
         try:
@@ -3932,36 +4170,53 @@ def main():
         return f"{hh:02d}시{mm:02d}분" if (0 <= hh <= 23 and 0 <= mm <= 59) else str(v)
 
     with st.sidebar.expander("🕒 발송 시점"):
-        _hour_opts = sorted(_opts(base_opt, "hour"),
-                            key=lambda v: int(float(v)) if str(v).replace(".", "", 1).isdigit() else 10 ** 9)
-        sel_hour = st.multiselect("시간대", _hour_opts, format_func=_hm_label, key="flt_hour")
-        sel_dow = st.multiselect("요일", _opts(base_opt, "dow_k"), key="flt_dow")
+        sel_hour = _msel("시간대", "flt_hour", format_func=_hm_label,
+                         opts=sorted(_opts(base_opt, "hour"),
+                                     key=lambda v: int(float(v))
+                                     if str(v).replace(".", "", 1).isdigit() else 10 ** 9))
+        sel_dow = _msel("요일", "flt_dow", "dow_k")
 
     with st.sidebar.expander("🏷️ 상품·담당"):
-        sel_cat = st.multiselect("카테고리", _opts(base_opt, "cat"), key="flt_cat")
-        sel_attr = st.multiselect("대상 속성", _opts(base_opt, "attr"), key="flt_attr",
-                                  help="통합·정상·이월·입점·마케팅 등")
-        sel_owner = st.multiselect("담당자", _opts(base_opt, "owner"), key="flt_owner")
+        sel_cat = _msel("카테고리", "flt_cat", "cat")
+        sel_attr = _msel("대상 속성", "flt_attr", "attr",
+                         help="통합·정상·이월·입점·마케팅 등")
+        sel_owner = _msel("담당자", "flt_owner", "owner")
 
     # 브랜드는 담당자 수기 입력(brand)이 아니라 문구·브랜드칸에서 자동 태깅한 brand2로
     # 거른다 — 원본은 캠페인명·행사명이 섞여 있어 브랜드 필터로 쓸 수 없다.
     with st.sidebar.expander("🏬 브랜드·영업"):
-        sel_brand2 = st.multiselect("브랜드", _opts(base_opt, "brand2"), key="flt_brand2",
-                                    help="제목·내용·브랜드칸에서 영업별 운영브랜드 시트 기준으로 "
-                                         "자동 분류한 브랜드예요.")
-        sel_org = st.multiselect("영업", _opts(base_opt, "sales_org"), key="flt_org")
-        sel_kind = st.multiselect("구분", _opts(base_opt, "brand_kind"), key="flt_kind",
-                                  help="브랜드 발송 / 전관행사 / 트리거발송 등 발송 성격이에요.")
+        sel_brand2 = _msel("브랜드", "flt_brand2", "brand2",
+                           help="제목·내용·브랜드칸에서 영업별 운영브랜드 시트 기준으로 "
+                                "자동 분류한 브랜드예요.")
+        sel_org = _msel("영업", "flt_org", "sales_org")
+        sel_kind = _msel("구분", "flt_kind", "brand_kind",
+                         help="브랜드 발송 / 전관행사 / 트리거발송 등 발송 성격이에요.")
 
     with st.sidebar.expander("✍️ 문구 속성"):
-        sel_tags = st.multiselect("소구 속성", TAG_BOOLS, key="flt_tags",
-                                  help="할인율·마감임박 등 제목+내용에서 자동으로 분류한 속성이에요")
+        sel_tags = _msel("소구 속성", "flt_tags", opts=TAG_BOOLS,
+                         help="할인율·마감임박 등 제목+내용에서 자동으로 분류한 속성이에요")
         tags_and = True
         if sel_tags:
-            tags_and = st.radio("조건", ["모두 충족(AND)", "하나라도(OR)"], horizontal=True,
+            _TAGMODE = ["모두 충족(AND)", "하나라도(OR)"]
+            guard_select("tags_mode", _TAGMODE)
+            tags_and = st.radio("조건", _TAGMODE, horizontal=True,
                                 key="tags_mode",
                                 help="AND: 선택한 속성을 다 가진 것만 / OR: 하나라도 가진 것") \
                 == "모두 충족(AND)"
+
+    # 프리셋을 불러오면 **그때 있던 값**이 지금 데이터엔 없을 수 있다. `guard_multi`가
+    # 조용히 빼면 '프리셋이 다르게 복원됐다'로만 보이니 뭘 뺐는지 밝힌다. 다음 프리셋
+    # 동작이나 「필터 전체 초기화」까지 남겨 둬야 복원된 필터를 보면서 읽을 수 있다 —
+    # 그 한 번 말고는 안 뜨니 상시 경고가 아니다.
+    _drp = {_k: _v for _k, _v in (st.session_state.get("_flt_dropped") or {}).items()
+            if _v and _k.startswith("flt_")}
+    if _drp:
+        st.sidebar.warning(
+            "지금 데이터에 없는 값은 빼고 걸었어요 — "
+            + " · ".join(
+                f"{FLT_NAME.get(_k, _k)} {', '.join(str(_x) for _x in _v[:3])}"
+                + (f" 외 {len(_v) - 3}개" if len(_v) > 3 else "")
+                for _k, _v in _drp.items()))
 
     CATSEL = {"stype": sel_st, "target": sel_target, "bpu": sel_bpu, "hour": sel_hour,
               "dow_k": sel_dow, "prio_g": sel_prio, "cat": sel_cat,
@@ -4177,6 +4432,15 @@ def main():
                         _z.writestr("notes.csv", _notes_df.to_csv(index=False).encode("utf-8-sig"))
                         _has_any = True
                 except Exception:
+                    pass
+                # 필터 프리셋도 같이 — 재배포하면 로컬 CSV가 날아가서 백업이 유일한
+                # 복구 수단이다(보고란과 같은 이유).
+                try:
+                    _pd_ = preset_dict_to_df(st.session_state.get("flt_presets") or {})
+                    if len(_pd_):
+                        _z.writestr("presets.csv", _pd_.to_csv(index=False).encode("utf-8-sig"))
+                        _has_any = True
+                except Exception:                         # noqa: BLE001
                     pass
             st.session_state["_bak_zip"] = (_bak_sig_now(), _zbuf.getvalue()) if _has_any else None
         _bak_cached = st.session_state.get("_bak_zip")

@@ -8,8 +8,10 @@ secrets.toml
 send_perf_mtd_store.csv
 send_perf_notes.csv
 send_perf_notes.json
+send_perf_presets.csv
 send_perf_promo_store.csv
 send_perf_push_store.csv
+send_perf_site_store.csv
 send_perf_store.csv
 wr_data_store.csv
 wr_detail_store.csv.gz
