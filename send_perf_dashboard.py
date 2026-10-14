@@ -2444,6 +2444,139 @@ def rank_adjusted(d, col, ascending=False):
     return (num + k * prior) / (den + k)
 
 
+# ── 주간 변화 다이제스트 — «지난 기간 대비 뭐가 달라졌나»를 한 화면에 ──
+# 화면이 서른 개 넘는데 그걸 사람이 돌며 눈으로 찾는다. 그래서 매주 같은 걸 놓친다.
+#
+# **여기서 위험한 건 «거짓 발견»이다.** 축 여섯 × 값 수십 × 지표 넷이면 비교가 수백 개라,
+# 보정 없이 p<0.05만 쓰면 **아무 일 없어도** 5%가 「유의미한 변화」로 뜬다. 300개를
+# 검정하면 15개다 — 그걸 매주 들이밀면 사람이 목록을 안 믿게 되고, 화면 하나가 더
+# 느는 것으로 끝난다. 그래서 셋을 지킨다.
+#
+# 1. **FDR(Benjamini–Hochberg) 보정**을 걸고 **몇 개를 검정했는지 화면에 밝힌다.**
+# 2. **표본이 작은 칸은 검정에서 뺀다**(`DIGEST_MIN_*`) — `rank_adjusted`와 같은 이유로,
+#    발송 몇 건짜리 칸의 요행이 목록을 점령하면 안 된다.
+# 3. **「신호 없음」도 그대로 말한다.** 매주 뭔가를 찾아내려 드는 순간 그게 거짓 발견이다.
+DIGEST_MIN_SEND = 30_000      # 칸 하나의 최소 발송(양쪽 기간 모두)
+DIGEST_MIN_CAMP = 3           # 칸 하나의 최소 캠페인 수(양쪽 기간 모두)
+DIGEST_Q = 0.10               # FDR 기준. 발견 목록이라 0.05보다 느슨하게 잡고 q를 같이 띄운다
+
+# **문턱이 둘인 이유.** 합성 1.2만 건으로 처음 돌렸더니 검정 40개 중 **38개가 유의**로
+# 떴다. 픽스처 탓이 아니라 **표본이 커서**다 — 칸 하나가 발송 수십만 건이면 0.1%p 차이도
+# p값이 0으로 떨어진다. 실데이터는 총발송 일평균 250만이라 더하다. 38개를 들이미는
+# 다이제스트는 0개짜리와 똑같이 안 읽힌다.
+#
+# 그래서 **변화폭(상대)이 1차 문턱이고 q는 2차**다. 「통계적으로 유의한가」가 아니라
+# 「움직일 만큼 움직였나」를 먼저 묻는다. q는 그 뒤에 「우연일 수 있나」를 거르는 데
+# 쓴다. 정렬도 q가 아니라 변화폭 순이다(q는 거의 다 0이라 정렬 키로 못 쓴다).
+DIGEST_RELS = {"±20% 이상": 0.20, "±10% 이상": 0.10, "±30% 이상": 0.30, "전부": 0.0}
+
+# 훑을 축. 이름은 사이드바 필터와 같은 말로 둔다.
+DIGEST_DIMS = (("cat", "카테고리"), ("stype", "발송유형"), ("bpu", "BPU"),
+               ("brand2", "브랜드"), ("prio_g", "우선순위"), ("dow_k", "요일"))
+
+# 비율 지표 — (이름, 분자, 분모). **카운트가 뒤에 있어야 2표본 비율 z검정을 쓴다.**
+# RPS·객단가는 금액이라 캠페인별 분포가 치우쳐 z검정이 안 맞는다. 다음 판에 Welch로
+# 따로 넣되, 넣기 전엔 목록에 안 올린다 — 못 재는 걸 올리면 그게 거짓 발견이다.
+DIGEST_RATIOS = (("CTR", "uv", "send"), ("주문CR", "oc", "uv"))
+
+# 반환 컬럼 — **비어 있을 때도 이 모양이어야** 소비처가 안 죽는다.
+DIGEST_COLS = ("축", "값", "지표", "기준", "직전", "차이", "변화율",
+               "발송(기준)", "발송(직전)", "캠페인(기준)", "캠페인(직전)", "p", "q")
+
+
+def two_prop_z(x1, n1, x2, n2):
+    """2표본 비율 z검정 → (차이, p). 분모가 0이거나 합동비율이 0·1이면 (nan, nan).
+
+    차이는 **기준 − 직전**이고 비율 그대로다(화면에서 %p로 찍는다).
+    """
+    import scipy.stats as ss
+    n1, n2 = float(n1 or 0), float(n2 or 0)
+    if n1 <= 0 or n2 <= 0:
+        return float("nan"), float("nan")
+    p1, p2 = float(x1) / n1, float(x2) / n2
+    pool = (float(x1) + float(x2)) / (n1 + n2)
+    if pool <= 0 or pool >= 1:
+        return p1 - p2, float("nan")       # 양쪽 다 0%거나 100% — 잴 게 없다
+    se = (pool * (1 - pool) * (1 / n1 + 1 / n2)) ** 0.5
+    if se <= 0:
+        return p1 - p2, float("nan")
+    return p1 - p2, float(2 * ss.norm.sf(abs((p1 - p2) / se)))
+
+
+def bh_qvalues(pvals):
+    """Benjamini–Hochberg 보정 p값. 빈 목록·전부 NaN이면 그대로 돌려준다.
+
+    NaN은 **검정 수에 안 넣는다** — 못 잰 칸까지 분모에 세면 보정이 느슨해진다.
+    """
+    import numpy as _np
+    import scipy.stats as _ss                           # noqa: F401  (버전 확인용)
+    from scipy.stats import false_discovery_control
+    arr = _np.asarray(list(pvals), dtype=float)
+    out = _np.full(arr.shape, _np.nan)
+    ok = ~_np.isnan(arr)
+    if ok.sum():
+        out[ok] = false_discovery_control(arr[ok], method="bh")
+    return out
+
+
+def change_digest(cur, prev, dims=DIGEST_DIMS, ratios=DIGEST_RATIOS,
+                  min_send=DIGEST_MIN_SEND, min_camp=DIGEST_MIN_CAMP):
+    """두 기간을 축×지표로 훑어 **달라진 칸**을 찾는다 (FDR 보정 포함).
+
+    반환 컬럼은 `DIGEST_COLS`. **정렬은 «변화폭» 순**이고, 거르는 건 화면이 한다
+    (여기선 다 돌려준다 — 몇 개를 검정했는지 세어 화면에 밝혀야 하니까).
+
+    **결과가 비어도 컬럼은 그대로 둔다.** 한쪽 경로만 컬럼 없는 프레임을 돌려주면
+    소비처가 `out["변화율"]`에서 KeyError로 죽는데, 그 경로는 「검정할 칸이 하나도
+    없을 때」라 평소엔 안 밟혀 영영 안 드러난다. 축 컬럼이 없으면 그 축만 건너뛴다.
+    """
+    rows = []
+    if cur is None or prev is None or not len(cur) or not len(prev):
+        return pd.DataFrame(columns=list(DIGEST_COLS))
+    for col, axis in dims:
+        if col not in cur or col not in prev:
+            continue
+        # **`get_group`을 쓰지 말 것.** pandas 3.0.6에서 프레임이 **딱 1행**이면
+        # 스칼라 키로 불러도 `KeyError`로 죽는다(2행부터는 멀쩡하다 — 실측으로
+        # 행 1·그룹 1만 깨지고 행 2·그룹 1은 통과한다). 운영에선 창에 캠페인이 한
+        # 건만 걸리는 일이 흔하다(브랜드 하나로 좁히고 「최근 7일」을 보는 식) —
+        # 그때 화면이 통째로 죽는다. `min_camp` 가드는 **이 줄보다 뒤**라 못 막는다.
+        # 순회해서 받은 조각을 그대로 들고 쓴다 (`t_a_one_row_window_does_not_crash`).
+        cmap = {str(k): g for k, g in cur.groupby(cur[col].astype(str), sort=False)}
+        pmap = {str(k): g for k, g in prev.groupby(prev[col].astype(str), sort=False)}
+        for val in sorted(set(cmap) & set(pmap)):
+            c, q_ = cmap[val], pmap[val]
+            cs, ps_ = float(c["send"].sum()), float(q_["send"].sum())
+            if cs < min_send or ps_ < min_send or len(c) < min_camp or len(q_) < min_camp:
+                continue
+            for name, num, den in ratios:
+                if num not in c or den not in c or num not in q_ or den not in q_:
+                    continue
+                x1, n1 = float(c[num].sum()), float(c[den].sum())
+                x2, n2 = float(q_[num].sum()), float(q_[den].sum())
+                d, p = two_prop_z(x1, n1, x2, n2)
+                if not np.isfinite(d):
+                    continue
+                _b = (x2 / n2) if n2 else np.nan
+                rows.append({"축": axis, "값": val, "지표": name,
+                             "기준": (x1 / n1 if n1 else np.nan),
+                             "직전": _b, "차이": d,
+                             # **상대 변화폭이 1차 필터다.** 아래 주석 참고 — 발송이
+                             # 수십만이면 p값은 거의 다 0이라 거르는 힘이 없다.
+                             "변화율": (d / _b) if (_b and np.isfinite(_b)) else np.nan,
+                             "발송(기준)": cs, "발송(직전)": ps_,
+                             "캠페인(기준)": len(c), "캠페인(직전)": len(q_), "p": p})
+    out = pd.DataFrame(rows, columns=list(DIGEST_COLS))
+    if not len(out):
+        return out
+    out["q"] = bh_qvalues(out["p"])
+    # **q가 아니라 변화폭 순으로 세운다.** 발송이 수십만이면 q가 거의 다 0이라
+    # q로 정렬하면 순서가 사실상 무작위가 된다.
+    return (out.reindex(out["변화율"].abs().sort_values(ascending=False,
+                                                        na_position="last").index)
+            .reset_index(drop=True))
+
+
 def ols_effects(df, attr_cols, ctrl_cols, ycol):
     """속성(0/1) + 통제변수(카테고리·시간대 등 더미) 다중회귀 → 속성별 '순효과' 계수·표준오차·p값.
 
@@ -2548,7 +2681,7 @@ POLICY_CHANGE_DATE = "20260801"
 #   · 「액션」은 뭘 하는 화면인지 이름만으로 안 읽혀 「다음 발송 준비」로 바꿨다.
 # 하위탭 이름은 아래 페이지 분기(`in page`)의 매칭 키를 그대로 품어야 한다.
 CAMPAIGN_GROUPS = {
-    "1. 주간보고":         ["주간보고"],
+    "1. 주간보고":         ["주간보고", "변화 다이제스트"],
     "2. 종합 요약":        ["종합 요약", "전체 효율·추이"],
     "3. 문구 분석":        ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모"],
     "4. 성과 진단":        ["캠페인 리더보드", "전환·AOV 진단", "발송유형·브랜드",
@@ -5143,6 +5276,98 @@ def main():
             else: st.session_state["ai_sum_txt"] = txt
         if st.session_state.get("ai_sum_txt"):
             st.markdown(f'<div class="vg">{safe_ai_html(st.session_state["ai_sum_txt"])}</div>', unsafe_allow_html=True)
+
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # 변화 다이제스트 — «지난 기간 대비 뭐가 달라졌나»를 한 화면에
+    # ══════════════════════════════════════════════════════════════
+    elif "다이제스트" in page:
+        st.title("변화 다이제스트")
+        st.caption("지난 기간 대비 **달라진 칸만** 추려요. 화면이 서른 개 넘어서 눈으로 "
+                   "돌며 찾으면 매주 같은 걸 놓쳐요. 사이드바 필터는 그대로 적용돼요.")
+        _dgb = fdf if len(fdf) else df
+
+        # **기간 경계 로직을 다시 짜지 않는다.** 「1. 주간보고」의 주·월 경계 규칙을 여기
+        # 또 적으면 둘이 갈려서 같은 질문에 다른 답이 나온다 — 이 저장소의 1번 실패
+        # 모양이다. 대신 «같은 길이의 두 창»으로 자족하게 둔다. 길이가 같으니 부분 기간
+        # 문제도 애초에 안 생긴다.
+        _DGW = {"최근 7일": 7, "최근 14일": 14, "최근 28일": 28}
+        if "dg_win" not in st.session_state:
+            st.session_state["dg_win"] = "최근 14일"
+        _dgw = st.selectbox("비교 창", list(_DGW), key="dg_win",
+                            help="고른 길이만큼의 최근 구간을 바로 앞 같은 길이 구간과 맞대요.")
+        _dgn = _DGW[_dgw]
+
+        _dts = pd.to_datetime(_dgb["date"], errors="coerce", format="%Y%m%d")
+        _dlast = _dts.max()
+        if pd.isna(_dlast):
+            st.info("발송 일자를 읽을 수 있는 데이터가 없어요.")
+        else:
+            _clo = _dlast - pd.Timedelta(days=_dgn - 1)
+            _phi = _clo - pd.Timedelta(days=1)
+            _plo = _phi - pd.Timedelta(days=_dgn - 1)
+            _dcur = _dgb[(_dts >= _clo) & (_dts <= _dlast)]
+            _dprv = _dgb[(_dts >= _plo) & (_dts <= _phi)]
+            st.caption(f"기준 **{_clo:%Y-%m-%d}~{_dlast:%Y-%m-%d}** ({len(_dcur):,}건) ↔ "
+                       f"직전 **{_plo:%Y-%m-%d}~{_phi:%Y-%m-%d}** ({len(_dprv):,}건)")
+            if not len(_dprv):
+                st.info("직전 구간에 발송이 없어요. 비교 창을 좁히거나 데이터를 더 올려 주세요.")
+            else:
+                if "dg_rel" not in st.session_state:
+                    st.session_state["dg_rel"] = list(DIGEST_RELS)[0]
+                _dmin = DIGEST_RELS[st.selectbox(
+                    "최소 변화폭", list(DIGEST_RELS), key="dg_rel",
+                    help="직전 대비 몇 % 넘게 움직인 것만 볼지. 표본이 커서 p값만으론 "
+                         "거의 다 걸려요.")]
+
+                _dres = change_digest(_dcur, _dprv)
+                _dnt = int(_dres["p"].notna().sum()) if len(_dres) else 0
+                _dbig = (_dres[_dres["변화율"].abs() >= _dmin] if len(_dres) else _dres)
+                _dhit = _dbig[_dbig["q"] < DIGEST_Q] if len(_dbig) else _dbig
+                st.caption(
+                    f"검정 **{_dnt}개** → 변화폭 통과 **{len(_dbig)}개** → "
+                    f"FDR q<{DIGEST_Q:.2f}까지 통과 **{len(_dhit)}개**예요. "
+                    f"발송 {DIGEST_MIN_SEND:,}건 미만이거나 캠페인 {DIGEST_MIN_CAMP}건 "
+                    "미만인 칸은 양쪽 기간 모두에서 아예 검정에서 뺐어요.")
+                st.markdown(
+                    '<div class="appendix"><b>문턱이 둘인 이유.</b> 축 여섯 × 값 수십 × 지표 '
+                    '둘이라 비교가 수백 개예요. 보정 없이 p&lt;0.05만 쓰면 <b>아무 일 없어도</b> '
+                    '5%가 「유의미」로 떠요. 그런데 반대 함정이 더 큽니다 — 칸 하나가 발송 '
+                    '수십만 건이면 <b>0.1%p 차이도 p값이 0</b>이라, 유의성만 보면 거의 다 '
+                    '걸려요. 그래서 <b>「움직일 만큼 움직였나」(변화폭)를 먼저 묻고</b> '
+                    '<b>FDR(Benjamini–Hochberg)</b> q로 우연을 거릅니다. 정렬도 변화폭 순이에요. '
+                    '관측 데이터라 <b>인과가 아니라 상관</b>이고, 발송 구성이 바뀐 것만으로도 '
+                    '지표는 움직여요.</div>', unsafe_allow_html=True)
+
+                if not _dnt:
+                    st.info("검정할 칸이 없어요 — 두 기간 모두 표본이 충분한 칸이 없네요. "
+                            "비교 창을 넓혀 보세요.")
+                elif not len(_dhit):
+                    # **「신호 없음」도 그대로 말한다.** 매주 뭔가를 찾아내려 드는 순간
+                    # 그게 거짓 발견이다.
+                    st.success(f"이번 창에선 눈에 띄는 변화가 없어요 — {_dnt}개를 검정했는데 "
+                               "변화폭과 q를 둘 다 넘는 게 없네요. 그대로 가도 돼요.")
+
+                _dall = st.checkbox("문턱 아래까지 다 보기", key="dg_all",
+                                    help="변화폭·q를 안 넘은 칸도 같이 봐요. 눈으로 고르면 "
+                                         "그게 곧 거짓 발견이라, 판단은 두 문턱으로 하세요.")
+                _dshow = _dres if _dall else _dhit
+                if len(_dshow):
+                    _dv = _dshow.copy()
+                    for _c in ("기준", "직전", "차이", "변화율"):
+                        _dv[_c] = _dv[_c] * 100
+                    _sty = _dv.style.format({
+                        "기준": "{:.2f}%", "직전": "{:.2f}%", "차이": "{:+.2f}%p",
+                        "변화율": "{:+.1f}%",
+                        "발송(기준)": "{:,.0f}", "발송(직전)": "{:,.0f}",
+                        "캠페인(기준)": "{:,.0f}", "캠페인(직전)": "{:,.0f}",
+                        "p": "{:.4f}", "q": "{:.4f}"}).map(
+                        lambda v: (f"color:{DELTA_UP};font-weight:700" if v > 0
+                                   else f"color:{DELTA_DN};font-weight:700" if v < 0 else ""),
+                        subset=["차이", "변화율"])
+                    table(_sty, hide_index=True, width="stretch",
+                          height=min(38 + 35 * len(_dv), 560), dl_name="변화 다이제스트")
 
         glossary()
 
