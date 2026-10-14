@@ -2577,6 +2577,227 @@ def change_digest(cur, prev, dims=DIGEST_DIMS, ratios=DIGEST_RATIOS,
             .reset_index(drop=True))
 
 
+# ── 소구 사전 후보 발굴 ────────────────────────────────────────────────
+# `KW` 사전은 사람이 손으로 채운 목록이라 **문구가 바뀌어도 안 따라간다.** 담당자가
+# 새로 쓰기 시작한 말(「무료배송」이 「무배」로, 「타임딜」이 새로 등장)은 어느 속성에도
+# 안 잡혀 분석에서 통째로 빠지는데, 증상은 **'미분류가 좀 많네'로만 보인다.**
+#
+# 그래서 문구에서 후보 말을 캐어 **성과가 갈리는 말**을 추려 둔다. 여기서 조용히
+# 틀리는 방식이 정해져 있다.
+#
+# 1. **후보가 수천 개라 거짓 발견이 폭발한다.** 보정 없이 p<0.05만 쓰면 아무 일 없어도
+#    5%가 「유의」로 뜬다 — 후보 3,000개면 150개다. 다이제스트와 같은 구조로 막는다:
+#    **최소 표본 → 변화폭 문턱 → BH FDR**.
+# 2. **그걸로도 모자라서 홀드아웃을 한 겹 더 둔다.** 사전은 한 번 넣으면 **전 화면의
+#    축**이 되고 `TAGSET_VER`가 물려 과거 분석까지 통째로 다시 계산된다. 다이제스트는
+#    그 주만 틀리고 끝나지만 사전은 안 그렇다. 그래서 **앞 기간에서 찾고 뒤 기간에서
+#    버티는지** 본다 — 같은 방향으로 안 움직이면 후보에서 뺀다.
+# 3. **자동 반영은 안 한다.** 화면은 「넣어 볼 후보」까지만 내고 `KW`는 사람이 고친다.
+PHRASE_MIN_CAMP = 8           # 그 말이 들어간 캠페인 최소 수(앞·뒤 기간 모두)
+PHRASE_MIN_SEND = 30_000      # 그 말이 들어간 발송 최소 수(앞·뒤 기간 모두)
+PHRASE_MAX_SHARE = 0.80       # 이보다 흔하면 뺀다 — 비교군이 거의 안 남아 비교가 안 된다
+PHRASE_REL = 0.10             # 변화폭(상대) 1차 문턱
+PHRASE_Q = 0.10               # FDR 2차 문턱
+PHRASE_HOLDOUT = 0.30         # 뒤쪽 이만큼을 홀드아웃으로 뗀다(날짜 기준)
+PHRASE_NGRAM = (2, 4)         # 어절에서 뽑을 접두어 길이
+PHRASE_TOP = 40               # 화면에 세우는 후보 수
+
+# 반환 컬럼 — **비어 있을 때도 이 모양이어야** 소비처가 안 죽는다(다이제스트와 같은 규칙).
+PHRASE_COLS = ("단어", "사전", "캠페인", "발송", "CTR(포함)", "CTR(미포함)",
+               "변화율", "홀드아웃 변화율", "q")
+
+# 조사·어미만 남은 조각과 숫자는 후보가 아니다. 브랜드명은 `brand2`가 이미 축이라 뺀다.
+PHRASE_DROP_RE = re.compile(r"^[0-9]+$|^[가-힣]?[은는이가을를의에서도만과와로]$")
+PHRASE_TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣]+")
+
+
+def phrase_tokens(text, ngram=PHRASE_NGRAM):
+    """문구 한 건 → 후보 말 집합. **한 건에 한 번만** 센다(같은 말 반복은 1).
+
+    한국어는 조사가 뒤에 붙으니 **어절의 앞쪽**이 뜻을 진다 — 그래서 어절 자체와
+    그 접두어를 같이 올린다(`무료배송을` → `무료배송`·`무료`·`무료배`·`무료배송`).
+    형태소 분석기를 안 쓰는 이유는 의존성을 하나 더 늘리는 값이 안 나와서다. 접두어로
+    나온 조각(`무료배`)은 어차피 **같은 캠페인 집합**을 집어 성과가 같으므로, 화면이
+    **가장 긴 것 하나만** 남긴다(`phrase_candidates`의 겹침 정리).
+    """
+    out = set()
+    lo, hi = ngram
+    for w in PHRASE_TOKEN_RE.findall(_s(text)):
+        if len(w) >= lo and not PHRASE_DROP_RE.match(w):
+            out.add(w)
+        for n in range(lo, min(hi, len(w) - 1) + 1):
+            p = w[:n]
+            if not PHRASE_DROP_RE.match(p):
+                out.add(p)
+    return out
+
+
+def _phrase_stats(d, words, min_camp, min_send, max_share):
+    """말마다 (포함/미포함) 카운트를 센다 → {말: (uv1, send1, n1, uv2, send2, n2)}.
+
+    프레임을 말마다 다시 훑지 않는다 — 캠페인을 한 번 돌며 **그 건이 가진 말에만**
+    더한다. 후보가 수천 개라 말마다 마스크를 씌우면 그 수만큼 풀스캔이 된다.
+    """
+    import numpy as _np
+    uv = pd.to_numeric(d.get("uv"), errors="coerce").fillna(0).to_numpy(float)
+    sd = pd.to_numeric(d.get("send"), errors="coerce").fillna(0).to_numpy(float)
+    tot_uv, tot_sd, tot_n = float(uv.sum()), float(sd.sum()), int(len(d))
+    acc = {}
+    for i, ws in enumerate(words):
+        for w in ws:
+            a = acc.get(w)
+            if a is None:
+                acc[w] = [uv[i], sd[i], 1]
+            else:
+                a[0] += uv[i]
+                a[1] += sd[i]
+                a[2] += 1
+    out = {}
+    for w, (u1, s1, n1) in acc.items():
+        n2 = tot_n - n1
+        if n1 < min_camp or n2 < min_camp or s1 < min_send:
+            continue
+        if tot_n and n1 / tot_n > max_share:
+            continue                       # 거의 모든 건에 있는 말 — 비교군이 안 남는다
+        out[w] = (u1, s1, n1, tot_uv - u1, tot_sd - s1, n2)
+    _ = _np
+    return out
+
+
+def _phrase_ctr(u, s):
+    return (u / s) if s else float("nan")
+
+
+def phrase_candidates(df, holdout=PHRASE_HOLDOUT, min_camp=PHRASE_MIN_CAMP,
+                      min_send=PHRASE_MIN_SEND, max_share=PHRASE_MAX_SHARE,
+                      rel=PHRASE_REL, qmax=PHRASE_Q, ngram=PHRASE_NGRAM):
+    """문구에서 **사전에 넣어 볼 말**을 추린다 → (후보 DataFrame, 진행 내역 dict).
+
+    앞 기간(학습)에서 찾고 **뒤 기간(홀드아웃)에서 같은 방향인지** 확인한다. 선택과
+    확인을 같은 데이터로 하면 후보가 전부 '유의'해 보인다 — 백테스트가 거짓말하는
+    1번 경로와 같은 자리다.
+
+    진행 내역은 **화면에 찍는다**: 후보 N개 → 표본 통과 → 변화폭 통과 → q 통과 →
+    홀드아웃 통과. 단계마다 몇 개가 남았는지 안 보이면 「왜 하나도 없지」만 남는다.
+    """
+    steps = {"후보": 0, "표본": 0, "변화폭": 0, "q": 0, "홀드아웃": 0}
+    empty = pd.DataFrame(columns=list(PHRASE_COLS))
+    if df is None or df.empty or "date" not in df.columns:
+        return empty, steps
+
+    d = df.dropna(subset=["date"]).sort_values("date")
+    if d.empty:
+        return empty, steps
+    days = pd.to_datetime(d["date"]).dt.normalize()
+    uniq = days.drop_duplicates().sort_values()
+    if len(uniq) < 2:
+        return empty, steps
+    cut = uniq.iloc[max(1, int(len(uniq) * (1 - holdout))) - 1]
+    tr, ho = d[days <= cut], d[days > cut]
+    if tr.empty or ho.empty:
+        return empty, steps
+
+    def _words(frame):
+        t = frame.get("title")
+        b = frame.get("body")
+        t = t.tolist() if t is not None else [""] * len(frame)
+        b = b.tolist() if b is not None else [""] * len(frame)
+        return [phrase_tokens(f"{x} {y}", ngram) for x, y in zip(t, b)]
+
+    st_tr = _phrase_stats(tr, _words(tr), min_camp, min_send, max_share)
+    steps["후보"] = len(set().union(*_words(tr))) if len(tr) else 0
+    steps["표본"] = len(st_tr)
+    if not st_tr:
+        return empty, steps
+
+    rows, pv = [], []
+    for w, (u1, s1, n1, u2, s2, n2) in st_tr.items():
+        c1, c2 = _phrase_ctr(u1, s1), _phrase_ctr(u2, s2)
+        if not (c2 and c2 == c2):          # 0 또는 NaN — 상대 변화율을 못 만든다
+            continue
+        chg = c1 / c2 - 1.0
+        if abs(chg) < rel:
+            continue
+        _, p = two_prop_z(u1, s1, u2, s2)
+        rows.append({"단어": w, "캠페인": n1, "발송": s1,
+                     "CTR(포함)": c1, "CTR(미포함)": c2, "변화율": chg})
+        pv.append(p)
+    steps["변화폭"] = len(rows)
+    if not rows:
+        return empty, steps
+
+    out = pd.DataFrame(rows)
+    out["q"] = bh_qvalues(pv)
+    out = out[out["q"].notna() & (out["q"] <= qmax)].copy()
+    steps["q"] = len(out)
+    if out.empty:
+        return pd.DataFrame(columns=list(PHRASE_COLS)), steps
+
+    # 홀드아웃 — **같은 방향으로 버티는 말만** 남긴다
+    st_ho = _phrase_stats(ho, _words(ho), min_camp, min_send, max_share)
+    hchg = []
+    for w in out["단어"]:
+        a = st_ho.get(w)
+        if not a:
+            hchg.append(float("nan"))
+            continue
+        u1, s1, _n1, u2, s2, _n2 = a
+        c1, c2 = _phrase_ctr(u1, s1), _phrase_ctr(u2, s2)
+        hchg.append(c1 / c2 - 1.0 if (c2 and c2 == c2) else float("nan"))
+    out["홀드아웃 변화율"] = hchg
+    same = out["홀드아웃 변화율"].notna() & (
+        _np_sign(out["변화율"]) == _np_sign(out["홀드아웃 변화율"]))
+    out = out[same].copy()
+    steps["홀드아웃"] = len(out)
+    if out.empty:
+        return pd.DataFrame(columns=list(PHRASE_COLS)), steps
+
+    out["사전"] = [kw_owner(w) for w in out["단어"]]
+    out = _phrase_drop_nested(out)
+    out = out.reindex(columns=list(PHRASE_COLS))
+    return out.sort_values("변화율", key=lambda s: s.abs(), ascending=False), steps
+
+
+def _np_sign(s):
+    import numpy as _np
+    return _np.sign(pd.to_numeric(s, errors="coerce"))
+
+
+def _phrase_drop_nested(out):
+    """접두어로 나온 겹침을 정리한다 — **같은 캠페인 수·발송이면 긴 쪽만** 남긴다.
+
+    `무료배`·`무료배송`은 같은 건을 집으므로 둘 다 올리면 목록이 조각으로 찬다.
+    캠페인 수가 다르면 서로 다른 집합이라 둘 다 남긴다(`무료`는 「무료반품」도 집는다).
+    """
+    keep, seen = [], {}
+    for _i, r in out.sort_values("단어", key=lambda s: s.str.len(),
+                                 ascending=False).iterrows():
+        k = (int(r["캠페인"]), round(float(r["발송"]), 3))
+        w = str(r["단어"])
+        # **같은 칸에 올린 말을 전부** 본다. 하나만 들고 비교하면, 같은 캠페인을 집는
+        # 서로 다른 말 둘이 겹칠 때(`타임딜`·`시작`) 뒤엣것이 앞엣것을 덮어 그 뒤에
+        # 오는 접두어(`타임`)가 엉뚱한 말과 대조되어 그냥 통과한다.
+        if any(p.startswith(w) for p in seen.get(k, ())):
+            continue                       # 이미 올린 긴 말의 접두어다
+        seen.setdefault(k, []).append(w)
+        keep.append(r)
+    return pd.DataFrame(keep, columns=out.columns) if keep else out.iloc[:0]
+
+
+def kw_owner(word):
+    """그 말이 이미 `KW`에 있으면 속성 이름, 없으면 빈 문자열.
+
+    **이미 있는 말을 「새 후보」로 올리면 목록을 믿을 수 없게 된다** — 거르지 말고
+    어느 속성이 집고 있는지 같이 보여 준다. 긴 말이 짧은 등록어에 걸리는 경우
+    (`무료배송비` ⊃ `무료배송`)도 그 속성이 이미 잡고 있는 것이라 같이 밝힌다.
+    """
+    w = _s(word)
+    if not w:
+        return ""
+    hit = [k for k, ws in KW.items() if any(x and x in w for x in ws)]
+    return " · ".join(hit)
+
+
 # ── 플레이북 슬롯 추천 + 되짚기(백테스트) ──────────────────────────────
 # 「발송 플레이북」은 지난 성과로 (요일 × 시간) 슬롯을 추천하는데, **맞았는지 아무도
 # 안 본다.** 되짚기가 없으면 추천을 믿을 근거도, 고칠 근거도 안 쌓인다.
@@ -2785,7 +3006,8 @@ POLICY_CHANGE_DATE = "20260801"
 CAMPAIGN_GROUPS = {
     "1. 주간보고":         ["주간보고", "변화 다이제스트"],
     "2. 종합 요약":        ["종합 요약", "전체 효율·추이"],
-    "3. 문구 분석":        ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모"],
+    "3. 문구 분석":        ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모",
+                           "소구 사전 후보"],
     "4. 성과 진단":        ["캠페인 리더보드", "전환·AOV 진단", "발송유형·브랜드",
                            "BPU·우선순위", "기획전 비교"],
     "5. 타이밍·카테고리":  ["카테고리·시간대", "타이밍·발송슬롯", "전년 동요일 비교"],
@@ -9069,6 +9291,95 @@ def main():
         chart(figf, width="stretch")
         st.markdown('<div class="appendix">상관계수(r)가 유의한 음수(-)면 같은 소구를 반복해서 성과가 닳고 있다는 신호예요. 효율 감소가 이어지면 그 소구를 한동안 쉬게 하고 다른 오퍼로 바꿔 보세요. 카테고리 구성이나 시즌 영향이 섞일 수 있으니 보조 지표로만 참고하세요.</div>', unsafe_allow_html=True)
 
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 11b — 소구 사전 후보 (문구에서 캐고 홀드아웃으로 거른다)
+    # ══════════════════════════════════════════════════════════════
+    elif "소구 사전" in page:
+        st.title("소구 사전 후보")
+        st.caption("문구에 새로 등장한 말 중에 성과가 갈리는 걸 추려요. "
+                   "사전에 바로 넣지는 않아요 — 보고 고르는 목록이에요.")
+        st.markdown(
+            '<div class="appendix">소구 속성(<b>KW</b>) 사전은 손으로 채운 목록이라 '
+            '문구가 바뀌어도 안 따라가요. 「무배」·「타임딜」처럼 새로 쓰기 시작한 말은 '
+            '어느 속성에도 안 잡혀 분석에서 통째로 빠지는데, 화면엔 미분류가 늘어난 걸로만 '
+            '보여요. 그 자리를 메우려고 문구에서 직접 캐요.</div>',
+            unsafe_allow_html=True)
+
+        _pb = fdf.dropna(subset=["date"]).copy() if "date" in fdf.columns else fdf.iloc[:0]
+        if len(_pb) < 40:
+            st.info("데이터가 부족해요. 주차를 더 쌓거나 사이드바에서 '최소 발송수'를 낮춰 보세요.")
+            st.stop()
+
+        _PH_REL = {"±10% 이상": 0.10, "±20% 이상": 0.20, "±30% 이상": 0.30}
+        _PH_CAMP = {"8건 이상": 8, "5건 이상": 5, "15건 이상": 15, "30건 이상": 30}
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            _rl = st.selectbox("CTR 변화폭 문턱", list(_PH_REL), key="p11b_rel")
+        with _c2:
+            _cp = st.selectbox("그 말이 들어간 캠페인", list(_PH_CAMP), key="p11b_camp")
+
+        _cand, _steps = phrase_candidates(_pb, rel=_PH_REL[_rl], min_camp=_PH_CAMP[_cp])
+
+        st.caption(
+            f"후보 {_steps['후보']:,}개 → 표본 통과 {_steps['표본']:,}개 → "
+            f"변화폭 통과 {_steps['변화폭']:,}개 → q 통과 {_steps['q']:,}개 → "
+            f"홀드아웃 통과 **{_steps['홀드아웃']:,}개**")
+
+        if _cand.empty:
+            st.success("넣어 볼 만한 말이 안 보여요. 지금 사전으로 충분하다는 뜻이에요.")
+            st.markdown(
+                '<div class="appendix">매번 뭔가를 찾아내는 목록이면 그게 거짓 발견이에요. '
+                '문턱을 낮춰 보면 후보가 늘지만, 그만큼 우연히 걸린 말도 같이 늘어요.</div>',
+                unsafe_allow_html=True)
+            glossary()
+            st.stop()
+
+        _show = _cand.head(PHRASE_TOP).copy()
+        _disp = pd.DataFrame({
+            "단어": _show["단어"],
+            "이미 잡는 속성": _show["사전"].replace("", "–"),
+            "캠페인": _show["캠페인"].map("{:,.0f}".format),
+            "발송": _show["발송"].map("{:,.0f}".format),
+            "CTR(포함)": (_show["CTR(포함)"] * 100).map("{:.2f}%".format),
+            "CTR(미포함)": (_show["CTR(미포함)"] * 100).map("{:.2f}%".format),
+            "변화율": (_show["변화율"] * 100).map("{:+.1f}%".format),
+            "홀드아웃": (_show["홀드아웃 변화율"] * 100).map("{:+.1f}%".format),
+            "q": _show["q"].map("{:.3f}".format),
+        })
+        table(_disp, hide_index=True, width="stretch", dl_name="소구 사전 후보")
+        st.markdown(
+            '<div class="appendix"><b>변화율</b>은 그 말이 들어간 캠페인의 CTR이 '
+            '안 들어간 캠페인보다 얼마나 높은지예요(앞 기간 기준). <b>홀드아웃</b>은 '
+            '뒤 기간에서 같은 걸 다시 잰 값이고, <b>같은 방향인 말만</b> 이 표에 올라와요. '
+            '<b>q</b>는 FDR 보정한 값이라 작을수록 우연일 가능성이 낮아요. '
+            '「이미 잡는 속성」이 비어 있으면 지금 사전이 못 집는 말이에요. '
+            '<b>늘 같이 쓰는 말끼리는 못 갈라요</b> — 한 문구에만 함께 나오는 두 말은 '
+            '같은 캠페인을 집어 성과가 똑같이 찍히니, 어느 쪽이 먹힌 건지는 '
+            '사람이 판단해야 해요.</div>',
+            unsafe_allow_html=True)
+
+        _new = _show[_show["사전"] == ""]
+        if len(_new):
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### 지금 사전이 못 집는 말")
+            _up = _new[_new["변화율"] > 0]["단어"].tolist()[:8]
+            _dn = _new[_new["변화율"] < 0]["단어"].tolist()[:8]
+            if _up:
+                st.markdown(f"- 성과가 **높은** 쪽: {' · '.join(f'`{w}`' for w in _up)}")
+            if _dn:
+                st.markdown(f"- 성과가 **낮은** 쪽: {' · '.join(f'`{w}`' for w in _dn)}")
+            st.caption("낮은 쪽도 사전에 넣을 값은 있어요. 어떤 말이 안 먹히는지가 "
+                       "보이면 다음 문구에서 피할 수 있어요.")
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="appendix"><b>사전에 넣는 건 사람이 해요.</b> 코드의 <code>KW</code>에 '
+            '단어를 추가하면 돼요. 사전을 고치면 태깅 캐시가 저절로 갈려서 '
+            '<b>과거 분석까지 새 기준으로 다시 계산돼요</b> — 그만큼 신중하게 고르라고 '
+            '이 화면이 홀드아웃을 한 겹 더 두고 있어요.</div>',
+            unsafe_allow_html=True)
         glossary()
 
     # ══════════════════════════════════════════════════════════════
