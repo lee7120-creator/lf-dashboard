@@ -54,6 +54,7 @@ SECONDS = {
     "test_filter_preset": 110, "test_filter_follows_upload": 84,
     "test_filter_propagation": 95, "test_change_digest": 58,
     "test_playbook_backtest": 38, "test_phrase_mining": 24,
+    "test_golden": 3,
     "test_prio_reduction": 83, "test_target_ctr": 71,
     "smoke_weekly_report": 45, "test_orgcat": 38, "test_detail": 22,
     "test_rerun_cost": 19, "test_summary_top": 12, "test_plan_merge": 11,
@@ -69,7 +70,8 @@ GATE = ["check_shadowing"]
 # 샤드 — LPT(긴 것부터 제일 한가한 쪽에)로 나눈 결과. `test_weekly_perf`가 혼자
 # 한 샤드인 건 그게 바닥이라서다. 다른 둘을 그 시간 안에 채워 넣었다.
 SHARDS = {
-    "1": ["test_weekly_perf", "test_playbook_backtest", "test_phrase_mining"],
+    "1": ["test_weekly_perf", "test_playbook_backtest", "test_phrase_mining",
+          "test_golden"],
     "2": ["test_funnel_page", "smoke_pages", "test_prio_reduction",
           "test_detail", "smoke_weekly_report", "test_change_digest", "test_rerun_cost",
           "test_summary_top", "test_plan_merge",
