@@ -9,7 +9,9 @@
 로컬 실행:
     python tests/test_store_layer.py
 """
+import ast
 import pathlib
+import re
 import sys
 
 import pandas as pd
@@ -80,6 +82,30 @@ def t_finalize_push_is_idempotent():
     assert len(once) == len(twice)
     assert list(once["date"]) == list(twice["date"])
     assert list(once["is_outlier"]) == list(twice["is_outlier"])
+
+
+# ── 저장소 «종류» 레지스트리가 서로 맞는지 ──────────────────────────────
+# 저장소 한 종류를 더하려면 dict 여섯을 같이 고쳐야 한다. 다섯은 빠뜨리면 KeyError로
+# 시끄럽게 죽지만 `_KIND_LABEL`만 `.get`이라 **조용히** 통과하고, 저장이 막힌 날
+# 「⛔ preset 저장을 차단했어요」처럼 영문 키가 그대로 찍힌다. 실제로 `site`가 거기
+# 빠져 있었다.
+KIND_REGISTRIES = ("GS_TITLES", "_STORE_COLS_BY_KIND", "_LOCAL_LOAD",
+                   "_LOCAL_SAVE", "_LOCAL_FILE", "_KIND_LABEL")
+
+
+@case
+def t_storage_kinds_agree_across_registries():
+    src = (ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8")
+    keys = {}
+    for nm in KIND_REGISTRIES:
+        m = re.search(rf"^\s*{nm} = \{{(.*?)\}}", src, re.S | re.M)
+        assert m, f"{nm} 를 못 찾았어요 — 이름이 바뀌었으면 KIND_REGISTRIES도 고치세요"
+        keys[nm] = set(re.findall(r'"(\w+)":', m.group(1)))
+    base = keys["GS_TITLES"]
+    bad = {nm: (sorted(base - ks), sorted(ks - base))
+           for nm, ks in keys.items() if ks != base}
+    assert not bad, "\n".join(
+        f"  {nm}: 빠진 종류 {miss} / 남는 종류 {extra}" for nm, (miss, extra) in bad.items())
 
 
 def main():

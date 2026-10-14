@@ -31,6 +31,7 @@ python tests/test_table_export.py         # 몇 초 — 표 엑셀 내보내기 
 python tests/test_hour_norm.py            # 몇 초 — 발송 시간대 자동 보정 (2400·8000)
 python tests/test_copy_effect.py          # 몇 초 — 기획시트 W·X열(문구변경·잔여모수)·발송유형 정규화
 python tests/test_note_editor.py          # 몇 초 — 보고란 에디터(HTML→마크다운 이행·중첩 4칸)
+python tests/test_filter_preset.py        # 2분 — 사이드바 필터 프리셋(저장·갈아끼우기·백업)
 python tests/test_rerun_cost.py           # 몇 초 — 리런 상시 비용 + 정적 규칙(페이지 번호 참조·안내 문구 대조·해요체·캐시 한도)
 python tests/smoke_pages.py               # 몇 분 — 발송성과 전 페이지·하위탭 렌더
 python tests/test_weekly_perf.py          # 몇 분 — 주간보고 기간 단위(일/주/월)·값 기준·비교·추이
@@ -825,6 +826,46 @@ _load_gs(kind)       # 시트에서 DataFrame 로드
   호출부에서 finalize를 빠뜨리지 말 것 (`test_store_layer.py`가 잡는다).
 - '오늘' 계산은 `date.today()` 금지 — **`today_kst()`** 사용 (서버 UTC라 KST 새벽에 주 경계가 밀림).
   **다운로드 파일명의 날짜도 포함** — UTC면 KST 새벽 0~9시에 하루 전 날짜로 찍힌다.
+
+### 저장소 «종류»를 더하면 dict 여섯을 같이 고친다
+`GS_TITLES` · `_STORE_COLS_BY_KIND` · `_LOCAL_LOAD` · `_LOCAL_SAVE` · `_LOCAL_FILE` ·
+`_KIND_LABEL`. 앞 다섯은 빠뜨리면 `KeyError`로 시끄럽게 죽지만 **`_KIND_LABEL`만
+`.get`이라 조용히 지나간다** — 저장이 막힌 날 「⛔ preset 저장을 차단했어요」처럼
+영문 키가 그대로 찍힌다. 실제로 `site`가 거기 빠져 있었다
+(`test_store_layer.py`의 `t_storage_kinds_agree_across_registries`).
+
+### 사이드바 필터 프리셋 — 조합을 이름 붙여 저장한다
+「영업1 브랜드만」·「컨틴 16시만」을 매번 손으로 다시 맞추던 걸 없앤 것이다. 값은
+**위젯 세션값 그대로**라 변환 규칙이 따로 없다(날짜만 JSON에 못 실려 ISO로 오간다).
+
+- **필터 목록은 모듈 상단 `FLT_KEYS` 하나다.** 「필터 전체 초기화」·프리셋 저장·복원이
+  전부 이걸 본다. 새 필터를 만들고 안 넣으면 저장에서도 초기화에서도 빠지는데, 증상이
+  「불러왔는데 브랜드만 안 돌아오네」라 눈으로는 안 잡힌다. 위젯 키는 **`flt_` 접두어**를
+  붙일 것 — 검사가 그걸로 앱과 목록을 **양방향 대조**한다
+  (`test_filter_preset.py`의 `t_every_filter_widget_key_is_registered`).
+  프리셋 UI 자체의 위젯은 `preset_*`다 — `flt_`로 두면 그 규칙에 **예외 목록**이
+  생기고, 예외 목록은 구멍이 된다.
+- **필터 다중선택은 전부 `_msel`을 거친다** — 거기서 `guard_multi`가 돈다. 프리셋에서
+  돌아온 «지금 없는 값»을 가드 없이 넘기면 위젯이 그 자리에서 예외를 내고, **사이드바라
+  페이지가 전부 같이 내려간다**(우선순위 0순위 때 겪은 그 자리).
+- **버린 값은 화면이 말한다.** `guard_multi`가 센 걸 사이드바 경고로 띄운다 — 조용히
+  지우면 「프리셋이 다르게 복원됐다」로만 보인다. 다음 프리셋 동작이나 「필터 전체
+  초기화」까지만 남으니 상시 경고가 아니다.
+- **범위 밖 날짜는 늘 당겨 넣는다.** 좁은 백업을 복원하면 프리셋의 날짜가 `date_input`의
+  경계 밖이 되어 예외가 난다. 위 '범위가 바뀌었을 때' 보정과 달리 **조건 없이** 건다.
+- **불러오기는 «갈아 끼우기»지 «덮어쓰기»가 아니다**(`_preset_apply`가 먼저 `_flt_clear()`).
+  세션은 `on_click` 콜백에서만 바꾼다 — 위젯을 만든 뒤 대입하면 예외다.
+  - **이 규칙은 버튼으로 두 프리셋을 저장하는 픽스처로는 못 잡는다.** 위젯이 한 번
+    그려지면 그 키가 세션에 남아서 두 프리셋이 **전 칸을 다 싣고**, 합치기여도 덮어써져
+    값이 같아진다 — 실제로 그 주입이 안 잡혔다. 둘이 갈리는 건 **칸이 빠진 프리셋**
+    뿐이라(그 필터가 생기기 전에 저장했거나 옛 백업), 검사는 payload를 직접 심어
+    한쪽에서 브랜드 칸을 뺀다 (`t_loading_a_preset_replaces_rather_than_merges`).
+- **복원 갈래는 캠페인 폴백(`else`)보다 «앞»에 둔다.** `_apply_backup`의 마지막 `else`가
+  캠페인이라 안 걸린 CSV는 전부 거기로 간다 — `presets.csv`가 캠페인 파서로 흘러
+  들어가면 엉뚱한 저장소를 건드린다. **ZIP에 새 저장소를 넣을 땐 갈래도 같이 넣을 것**
+  (`t_backup_routes_presets_before_the_campaign_fallback`).
+- 저장소는 **세션에 한 번만** 읽는다(`flt_presets`). 리런마다 읽으면 구글시트 모드에서
+  리런당 네트워크 왕복이 하나 는다 — 보고란 `wr_notes`와 같은 규칙이다.
 
 ### 기간 비교 규칙 (전주 · 전월 동주 · 전년 동주 · 전년 동요일)
 주차·요일을 맞추는 방식이 화면마다 다르면 숫자가 어긋나 보인다. 아래로 통일한다.

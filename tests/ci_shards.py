@@ -51,7 +51,8 @@ TESTS = ROOT / "tests"
 SECONDS = {
     "test_weekly_perf": 650, "test_funnel_page": 266, "smoke_pages": 210,
     "test_send_volume_band": 101, "test_site_metrics": 93, "test_inflow_funnel": 90,
-    "test_filter_follows_upload": 84, "test_prio_reduction": 83, "test_target_ctr": 71,
+    "test_filter_preset": 110, "test_filter_follows_upload": 84,
+    "test_prio_reduction": 83, "test_target_ctr": 71,
     "smoke_weekly_report": 45, "test_orgcat": 38, "test_detail": 22,
     "test_rerun_cost": 19, "test_summary_top": 12, "test_plan_merge": 11,
     "check_shadowing": 1, "test_store_layer": 1, "test_brand_classify": 1,
@@ -68,11 +69,11 @@ GATE = ["check_shadowing"]
 SHARDS = {
     "1": ["test_weekly_perf"],
     "2": ["test_funnel_page", "smoke_pages", "test_prio_reduction",
-          "test_detail", "test_summary_top", "test_plan_merge",
+          "test_detail", "test_rerun_cost", "test_summary_top", "test_plan_merge",
           "test_table_export", "test_hour_norm"],
-    "3": ["test_send_volume_band", "test_site_metrics", "test_inflow_funnel",
-          "test_filter_follows_upload", "test_target_ctr", "smoke_weekly_report",
-          "test_orgcat", "test_rerun_cost", "test_store_layer",
+    "3": ["test_send_volume_band", "test_site_metrics", "test_filter_preset",
+          "test_inflow_funnel", "test_filter_follows_upload", "test_target_ctr",
+          "smoke_weekly_report", "test_orgcat", "test_store_layer",
           "test_brand_classify", "test_note_editor", "test_copy_effect"],
 }
 
