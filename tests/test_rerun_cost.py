@@ -22,6 +22,7 @@ Streamlit은 리런마다 스크립트 본문을 **통째로 다시 실행**한�
     python tests/test_rerun_cost.py
 """
 import ast
+import collections
 import pathlib
 import re
 import sys
@@ -482,100 +483,6 @@ def t_ui_prose_is_haeyoche():
                      + "\n  ".join(bad))
 
 
-@case
-def t_report_capture_survives_a_double_patch():
-    """차트·표 가로채기를 두 번 걸어도 래퍼가 «자기»를 부르지 않는다.
-
-    `st`는 **프로세스 공유**라(멀티유저) 동시 접속한 두 세션이 같은 순간에 이 블록을
-    지나간다. 예전엔 원본을 `st._orig_plotly_chart`에 담고 `hasattr`로 한 번만 담도록
-    막았는데, 두 세션이 그 가드를 **같이 통과**하면 뒤 세션이 «앞 세션의 래퍼»를
-    원본으로 집어 간다. 그 뒤로 래퍼가 자기를 호출해 `RecursionError`로 **앱 전체가
-    내려간다** — 운영에서 실제로 났고, 리런하면 살아나서 원인이 안 드러난다.
-
-    지금은 원본을 **클로저**에 담고(`st`에서 찾지 않는다) 래퍼에 매달아 둬서
-    (`_lf_orig`) 몇 번을 겹쳐 지나가도 되감아 진짜 원본을 감싼다.
-    """
-    sys.path.insert(0, str(ROOT / "tests"))
-    import streamlit as _st
-    from streamlit.testing.v1 import AppTest
-    from smoke_pages import synth_store
-
-    def _depth(fn):
-        d = 0
-        while hasattr(fn, "_lf_orig") and d < 40:
-            fn, d = fn._lf_orig, d + 1
-        return d, fn
-
-    at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=600)
-    at.session_state["camp_store"] = synth_store(weeks=6, per_day=2)
-    at.run()
-    assert not at.exception, at.exception[0].value
-    at.run()                                   # 같은 프로세스에서 한 번 더 — 두 번째 패치
-    assert not at.exception, at.exception[0].value
-
-    for _nm in ("plotly_chart", "dataframe"):
-        d, base = _depth(getattr(_st, _nm))
-        assert d == 1, (f"st.{_nm} 래퍼가 {d}겹이에요 — 감싼 걸 또 감쌌어요. "
-                        "한 겹 더 쌓일 때마다 재귀 위험이 커져요.")
-        assert not hasattr(base, "_lf_orig"), f"st.{_nm}의 바닥이 또 래퍼예요"
-        # 래퍼가 자기(또는 자기를 부르는 것)를 가리키면 호출 한 번에 바로 드러난다
-        assert base is not getattr(_st, _nm), f"st.{_nm}의 원본이 래퍼 자신이에요"
-
-    # 가로채기가 **여전히 동작**해야 한다 — 재귀만 막고 기능을 죽이면 안 된다.
-    assert at.session_state.get("_page_report"), \
-        "차트·표를 하나도 못 모았어요 — 가로채기가 끊겼어요"
-
-
-@case
-def t_report_capture_recovers_from_a_poisoned_wrapper():
-    """«이전 프로세스가 남긴» 오염된 래퍼 위에 또 감싸지 않는다.
-
-    Streamlit Cloud는 배포할 때 프로세스를 재시작하지 않고 스크립트만 갈아 끼우기도
-    한다. 그러면 `st.plotly_chart`에 **옛 버전의 래퍼**가 그대로 앉아 있는데, 그
-    래퍼엔 `_lf_orig`가 없어 되감을 수가 없다. 모르고 그 위에 또 감싸면 호출이 옛
-    체인으로 들어가 `RecursionError`로 앱이 통째로 내려간다 — 운영에서 두 번째로
-    난 사고가 정확히 이 모양이었다(프레임 이름은 옛 `_cap_plotly`인데 소스 줄은
-    새 코드라 둘이 어긋나 있었다).
-
-    그래서 원본은 `st`가 아니라 **`st._main`(DeltaGenerator)** 에서 가져온다.
-    거긴 모듈 속성을 무엇으로 덮어써도 영향을 안 받는다.
-    """
-    sys.path.insert(0, str(ROOT / "tests"))
-    import streamlit as _st
-    from streamlit.testing.v1 import AppTest
-    from smoke_pages import synth_store
-
-    _save = _st.plotly_chart
-
-    def _legacy(*a, **k):                      # 옛 래퍼 흉내 — 자기를 부른다
-        return _st._orig_plotly_chart(*a, **k)
-
-    _st._orig_plotly_chart = _legacy           # 옛 코드가 원본인 줄 알고 담아 둔 자리
-    _st.plotly_chart = _legacy
-    try:
-        at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=600)
-        at.session_state["camp_store"] = synth_store(weeks=6, per_day=2)
-        at.run()
-        assert not at.exception, at.exception[0].value
-
-        base = _st.plotly_chart
-        hops = 0
-        while getattr(base, "_lf_orig", None) is not None and hops < 40:
-            base, hops = base._lf_orig, hops + 1
-        assert base is not _legacy, \
-            "옛 래퍼를 원본으로 집었어요 — 차트를 그리면 무한 재귀예요"
-        want = _st._main.plotly_chart
-        assert getattr(base, "__func__", base) is getattr(want, "__func__", want), \
-            f"원본이 DeltaGenerator의 것이 아니에요 — {base}"
-        assert not hasattr(_st, "_orig_plotly_chart"), \
-            "옛 체인(st._orig_plotly_chart)을 안 끊었어요"
-        assert at.session_state.get("_page_report"), "가로채기가 끊겼어요"
-    finally:
-        _st.plotly_chart = _save
-        if hasattr(_st, "_orig_plotly_chart"):
-            del _st._orig_plotly_chart
-
-
 # ──────────────────────────────────────────────────────────────────────
 # 차트 레이아웃 — `update_layout`은 리런마다 재귀 병합을 다시 돈다
 # ──────────────────────────────────────────────────────────────────────
@@ -744,6 +651,160 @@ def t_charts_do_not_call_update_layout_directly():
     _cl = ast.parse((ROOT / "chart_layout.py").read_text(encoding="utf-8"))
     _n = _calls(_cl, "update_layout")
     assert len(_n) == 1, f"chart_layout.py의 update_layout이 {len(_n)}곳이에요 — 폴백 하나여야 해요"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 페이지 리포트 — 몽키패치를 걷어낸 자리
+# ──────────────────────────────────────────────────────────────────────
+
+@case
+def t_streamlit_is_not_monkeypatched():
+    """**`st`의 함수를 갈아 끼우지 않는다.**
+
+    예전엔 페이지 리포트를 모으려고 `st.plotly_chart`·`st.dataframe`을 패치했다.
+    `st`는 **프로세스 공유**라 동시 접속한 두 세션이 패치 블록을 같이 지나가면 뒤
+    세션이 앞 세션의 래퍼를 '원본'으로 집어 가고, 그 뒤로 래퍼가 자기를 호출해
+    `RecursionError`로 **앱 전체가 내려갔다.** 운영에서 두 번 났다 — 두 번째는
+    «그걸 고친 배포»에서 났는데, 고친 코드가 배포가 남긴 옛 래퍼를 못 알아봤다.
+    리런하면 프로세스가 새로 떠서 살아나니 증상이 '가끔 죽는다'로만 보였다.
+
+    지금은 가로채기를 그만두고 호출부를 모았다(`chart()`·`table()`). 패치가 없으니
+    세션 사이 경합도, 배포가 남긴 옛 래퍼도 없다 — **다시 들이지 않는 게 이 검사다.**
+    """
+    import streamlit as _st
+    for mod in ("send_perf_dashboard.py", "weekly_report.py"):
+        tree = ast.parse((ROOT / mod).read_text(encoding="utf-8"))
+        bad = [(mod, n.lineno, t.attr) for n in ast.walk(tree)
+               if isinstance(n, ast.Assign) for t in n.targets
+               if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+               and t.value.id == "st"]
+        assert not bad, f"`st`에 대입하고 있어요(몽키패치): {bad}"
+
+    sys.path.insert(0, str(ROOT / "tests"))
+    from streamlit.testing.v1 import AppTest
+    from smoke_pages import group_of, synth_store
+    at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=600)
+    at.session_state["camp_store"] = synth_store(weeks=40, seed=3)
+    at.run()
+    assert not at.exception, at.exception[0].value
+    at.run()                                   # 같은 프로세스에서 한 번 더
+    assert not at.exception, at.exception[0].value
+    for nm in ("plotly_chart", "dataframe"):
+        assert not hasattr(getattr(_st, nm), "_lf_orig"), f"st.{nm}이 래퍼로 덮였어요"
+
+    # **기능을 죽이고 패치만 없애면 안 된다** — 리포트가 여전히 차야 한다.
+    # **종류별로 본다.** 「차 있는가」만 보면 차트 기록이 끊겨도 표가 남아 통과한다
+    # (실제로 그 주입이 안 잡혔다).
+    at.sidebar.radio[0].set_value(group_of("종합 요약"))
+    at.run()
+    assert not at.exception, at.exception[0].value
+    kinds = collections.Counter(k for k, _ in (at.session_state.get("_page_report") or []))
+    assert kinds.get("fig"), f"차트를 하나도 못 모았어요 — {dict(kinds)}"
+    assert kinds.get("table"), f"표를 하나도 못 모았어요 — {dict(kinds)}"
+
+
+@case
+def t_charts_go_through_the_chart_helper():
+    """차트는 **`chart()`를 거친다** — `st.plotly_chart`를 직접 부르지 않는다.
+
+    직접 부르면 **그 차트만 리포트에서 조용히 빠진다.** 화면은 멀쩡히 떠서 눈으로도
+    코드 리뷰로도 안 잡힌다 — 가로채기를 그만둔 대가로 생긴 자리라 규칙으로 막는다.
+    """
+    tree = ast.parse((ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8"))
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "chart")
+    ok = set(range(fn.lineno, fn.end_lineno + 1))
+    bad = [(n.lineno, ast.unparse(n.func)) for n in ast.walk(tree)
+           if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+           and n.func.attr == "plotly_chart" and n.lineno not in ok]
+    assert not bad, f"`chart()`를 안 거친 차트 호출: {bad}"
+
+
+@case
+def t_a_leftover_wrapper_does_not_double_record():
+    """옛 배포가 남긴 래퍼가 `st.plotly_chart`에 앉아 있어도 **두 번 안 담는다.**
+
+    Streamlit Cloud는 배포할 때 프로세스를 재시작하지 않고 스크립트만 갈아 끼우기도
+    한다. 패치를 걷어낸 코드를 올려도 **옛 래퍼는 모듈 속성에 그대로 남는다** — 그
+    래퍼도 리포트에 담으니 차트가 두 벌이 된다. 리포트를 받아 보면 같은 차트가 두
+    번 나오는데 화면은 멀쩡해서, 증상이 '리포트가 좀 이상하네'로만 보인다.
+    (재귀로 앱이 내려간 두 번째 사고가 정확히 «프로세스가 안 죽는다»는 이 자리였다.)
+
+    `chart()`·`table()`이 `st`가 아니라 `st._main`에 넘기므로 모듈 속성을 무엇으로
+    덮어써도 안 걸린다.
+    """
+    sys.path.insert(0, str(ROOT / "tests"))
+    import streamlit as _st
+    from streamlit.testing.v1 import AppTest
+    from smoke_pages import group_of, synth_store
+
+    _seen = []
+    _save_f, _save_d = _st.plotly_chart, _st.dataframe
+
+    def _legacy(kind, orig):
+        def _cap(*a, **k):                     # 옛 배포의 가로채기 흉내
+            _seen.append(kind)
+            try:
+                _st.session_state.setdefault("_page_report", []).append((kind, a[0]))
+            except Exception:                  # noqa: BLE001
+                pass
+            return orig(*a, **k)
+        return _cap
+
+    _st.plotly_chart = _legacy("fig", _save_f)
+    _st.dataframe = _legacy("table", _save_d)
+    try:
+        at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=600)
+        at.session_state["camp_store"] = synth_store(weeks=40, seed=3)
+        at.run()
+        at.sidebar.radio[0].set_value(group_of("종합 요약"))
+        at.run()
+        assert not at.exception, at.exception[0].value
+    finally:
+        _st.plotly_chart, _st.dataframe = _save_f, _save_d
+
+    assert not _seen, (f"옛 래퍼를 그대로 탔어요 — {collections.Counter(_seen)}. "
+                       "`st`가 아니라 `st._main`에 넘겨야 해요.")
+    kinds = collections.Counter(k for k, _ in (at.session_state.get("_page_report") or []))
+    assert kinds.get("fig") and kinds.get("table"), f"리포트가 안 찼어요 — {dict(kinds)}"
+
+
+@case
+def t_column_charts_keep_their_container():
+    """컬럼 안 차트는 **컬럼 안에** 남아야 한다.
+
+    `col.plotly_chart(fig)`를 `chart(fig)`로 바꾸면 그 차트가 **컬럼 밖 본문**에
+    그려진다. 예외가 안 나고 레이아웃만 달라져 화면을 안 보면 안 드러난다 — 옮길 때
+    `_to=`를 빠뜨리기 딱 좋은 자리다. 소스에서 `_to=`를 세지 않고 **화면에서** 본다.
+    """
+    sys.path.insert(0, str(ROOT / "tests"))
+    from streamlit.testing.v1 import AppTest
+    from smoke_pages import group_of, synth_store
+
+    at = AppTest.from_file(str(ROOT / "send_perf_dashboard.py"), default_timeout=600)
+    at.session_state["camp_store"] = synth_store(weeks=60, seed=5)
+    at.run()
+    at.sidebar.radio[0].set_value(group_of("전년 동요일 비교"))
+    at.run()
+    subs = [r for r in at.radio if r.label != "페이지"]
+    subs[0].set_value("전년 동요일 비교")
+    at.run()
+    assert not at.exception, at.exception[0].value
+
+    def _under_columns(block, inside=False):
+        n = 0
+        for ch in block.children.values():
+            t = getattr(ch, "type", "")
+            if t == "plotly_chart":
+                n += int(inside)
+            elif hasattr(ch, "children"):
+                n += _under_columns(ch, inside or t == "column")
+        return n
+
+    total, inside = len(at.get("plotly_chart")), _under_columns(at.main)
+    assert total >= 2, f"이 화면에 차트가 {total}개뿐이라 규칙을 못 봐요"
+    assert inside >= 2, (f"컬럼 안에 있어야 할 차트가 본문으로 빠졌어요 — "
+                         f"전체 {total}개 중 컬럼 안 {inside}개")
 
 
 def main():

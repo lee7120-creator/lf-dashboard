@@ -2917,6 +2917,57 @@ def hhmm_to_minutes(h):
     return hour * 60 + minute
 
 
+def _dg():
+    """모듈 속성 패치의 영향을 안 받는 렌더 대상(DeltaGenerator).
+
+    `st.plotly_chart`는 `st._main.plotly_chart`와 같은 함수인데, 모듈 속성이라
+    **옛 배포가 남긴 래퍼로 덮여 있을 수 있다**(프로세스를 재시작하지 않는 배포).
+    `_main`이 없는 판에선 `st`로 내려간다 — 지금과 똑같이 동작한다.
+    """
+    return getattr(st, "_main", None) or st
+
+
+def report_add(kind, obj):
+    """페이지 리포트 버퍼에 한 블록 담는다 — 실패해도 화면은 그대로 떠야 한다.
+
+    버퍼는 **세션에** 둔다. `st` 모듈 속성은 프로세스(멀티유저) 공유라 클로저
+    리스트에 쌓으면 동시 접속한 다른 사용자의 차트·표가 내 리포트에 섞인다.
+    """
+    if obj is None:
+        return
+    try:
+        st.session_state.setdefault("_page_report", []).append((kind, obj))
+    except Exception:                                     # noqa: BLE001
+        pass
+
+
+def chart(fig, *a, _to=None, **kw):
+    """차트 렌더 + 리포트 기록. **`st.plotly_chart`를 직접 부르지 말 것.**
+
+    예전엔 `st.plotly_chart`를 **몽키패치**해서 가로챘다. `st`는 프로세스 공유라
+    동시 접속한 두 세션이 패치 블록을 같이 지나가면 뒤 세션이 앞 세션의 래퍼를
+    '원본'으로 집어 가고, 그 뒤로 래퍼가 자기를 호출해 `RecursionError`로 **앱
+    전체가 내려갔다.** 운영에서 두 번 났고(두 번째는 «그걸 고친 배포»에서 났다 —
+    고친 코드가 옛 래퍼를 못 알아봤다), 리런하면 프로세스가 새로 떠서 살아나므로
+    증상이 '가끔 죽는다'로만 보였다.
+
+    가로채기를 그만두고 **호출부를 한 자리로 모았다.** 패치가 없으니 세션 사이
+    경합도, 배포가 남긴 옛 래퍼도 없다. 표는 `table()`이 같은 일을 한다.
+    컬럼 컨테이너 안이면 `_to=`로 그 컨테이너를 준다.
+
+    `t_charts_go_through_the_chart_helper`가 직접 호출을 금지한다 — 직접 부르면
+    그 차트만 리포트에서 조용히 빠진다(화면은 멀쩡히 뜬다).
+
+    렌더는 `st`가 아니라 **`st._main`(DeltaGenerator)** 에 넘긴다. Streamlit Cloud는
+    배포할 때 프로세스를 재시작하지 않고 스크립트만 갈아 끼우기도 해서, 패치를
+    걷어낸 뒤에도 **옛 배포가 남긴 래퍼가 `st.plotly_chart`에 그대로 앉아 있을 수
+    있다.** 그 래퍼도 리포트에 담으니 차트가 **두 번씩** 들어간다. `_main`은 모듈
+    속성을 무엇으로 덮어써도 영향을 안 받는다 (`_dg()`).
+    """
+    report_add("fig", fig)
+    return (_to or _dg()).plotly_chart(fig, *a, **kw)
+
+
 def build_report_html(title, blocks):
     """페이지에서 캡처한 차트/표 블록 → 인쇄용 자립형 HTML (브라우저 Ctrl+P로 PDF 저장)."""
     import plotly.io as pio
@@ -3070,67 +3121,264 @@ def growth_pace_note(s_cur, s_prev=None):
     return fig
 
 
+# ── main() 밖으로 올린 공용 헬퍼 ───────────────────────────────────────
+# 예전엔 전부 `main()` 안에 있었고 CLAUDE.md도 「`main()` 지역이라 모듈로 못
+# 뺀다」고 적어 뒀는데, **재 보니 아니었다** — 이 열여섯은 `main()`의 지역
+# 이름을 하나도 안 쓴다(AST로 자유변수를 세어 확인). 안에 둘 이유가 없고,
+# 밖에 두면 ①`main()`이 그만큼 짧아지고 ②단위 검사가 가능해지고 ③페이지
+# 분기가 `main()` 지역에 매이는 끈이 그만큼 끊긴다(25개 분기가 공통으로
+# 매여 있던 자리가 바로 여기다).
+# **올릴 때 스코프를 다시 재고, 섀도잉 검사를 돌릴 것** — 같은 이름이
+# `main()` 안에서 대입되면 전역 헬퍼 섀도잉 사고가 그대로 재현된다.
+PALETTE = {
+    "blue": "rgba(79,143,255,1)", "red": "rgba(245,101,101,1)", "green": "rgba(72,187,120,1)",
+    "amber": "rgba(237,137,54,1)", "purple": "rgba(159,122,234,1)", "teal": "rgba(56,178,172,1)",
+    "slate": "rgba(100,116,139,1)",
+}
+def base_layout(h=300, ysuffix="", title="", hover=None):
+    # 인-차트 제목은 왼쪽 상단에 고정하고, 상단 가로 범례(y≈1.12)와 겹치지 않도록
+    # 제목 영역(top margin)을 충분히 확보한다. (각 차트 위 마크다운 헤더와도 분리)
+    # hover="x" 이면 시계열용 통합 툴팁(hovermode=x unified) + 세로 크로스헤어를 켠다.
+    has_title = bool(title)
+    _FONT = "Pretendard Variable, Pretendard, Malgun Gothic, Apple SD Gothic Neo, sans-serif"
+    xaxis = dict(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
+                 tickfont=dict(color="#64748b", size=11))
+    lay = dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+               font=dict(color="#475569", size=11, family=_FONT),
+               margin=dict(l=10, r=10, t=(58 if has_title else 30), b=10),
+               height=h, showlegend=False,
+               barcornerradius=4,
+               hoverlabel=dict(bgcolor="#ffffff", bordercolor="#e2e8f0",
+                               font=dict(size=12, color="#1e293b", family=_FONT)),
+               title=dict(text=title, font=dict(color="#94a3b8", size=13),
+                          x=0, xanchor="left", y=0.99, yanchor="top"),
+               legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                           xanchor="left", x=0, bgcolor="rgba(0,0,0,0)"),
+               xaxis=xaxis,
+               yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
+                          tickfont=dict(color="#64748b", size=11), ticksuffix=ysuffix))
+    if hover == "x":
+        lay["hovermode"] = "x unified"
+        xaxis.update(showspikes=True, spikemode="across", spikethickness=1,
+                     spikedash="dot", spikecolor="#cbd5e1")
+    return lay
+SERIES_SEQ = [PALETTE["purple"], PALETTE["green"], PALETTE["amber"], PALETTE["blue"],
+              PALETTE["red"], PALETTE["teal"], PALETTE["slate"]]
+def tag_color(t):
+    try:
+        return SERIES_SEQ[TAG_BOOLS.index(t) % len(SERIES_SEQ)]
+    except ValueError:
+        return PALETTE["slate"]
+def stacked_panels(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
+                   h=430, bar_suffix="", line_suffix="", title=""):
+    """이중축 대신 X축을 공유하는 상(막대)/하(선) 패널 — 두 지표의 스케일을 섞지 않으면서
+    같은 시점끼리 비교할 수 있게 한다. 통합 툴팁·크로스헤어 포함."""
+    from plotly.subplots import make_subplots
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.42, 0.58], vertical_spacing=0.07)
+    fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
+                         opacity=0.75), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
+                             line=dict(color=line_color, width=2),
+                             marker=dict(size=7)), row=2, col=1)
+    lay = base_layout(h=h, title=title)
+    lay.pop("xaxis", None); lay.pop("yaxis", None)
+    lay["showlegend"] = True
+    lay["hovermode"] = "x unified"
+    set_layout(fig, lay)
+    fig.update_xaxes(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
+                     tickfont=dict(color="#64748b", size=11),
+                     showspikes=True, spikemode="across", spikethickness=1,
+                     spikedash="dot", spikecolor="#cbd5e1")
+    fig.update_yaxes(gridcolor="#f1f5f9", linecolor="#e2e8f0",
+                     tickfont=dict(color="#64748b", size=11))
+    fig.update_yaxes(ticksuffix=bar_suffix, row=1, col=1)
+    fig.update_yaxes(ticksuffix=line_suffix, row=2, col=1)
+    return fig
+def overlay_dual(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
+                 h=430, bar_suffix="", line_suffix="", title=""):
+    """한 차트 이중축 오버레이 — 막대(좌축)+선(우축)을 같은 X에 겹쳐 그린다.
+    스케일이 크게 다른 '발송 강도 ↔ 효율/증감' 관계를 한 눈에 보려는 용도.
+    어느 축인지 헷갈리지 않게 축 눈금·제목 색을 각 시리즈 색과 맞춘다.
+    통합 툴팁(x unified)+세로 크로스헤어 포함."""
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
+                         opacity=0.55))
+    fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
+                             line=dict(color=line_color, width=2.5),
+                             marker=dict(size=6), yaxis="y2"))
+    lay = base_layout(h=h, title=title, hover="x")
+    lay["showlegend"] = True
+    lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02,
+                         xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
+    lay["yaxis"]["ticksuffix"] = bar_suffix
+    lay["yaxis"]["title"] = dict(text=bar_name, font=dict(color=bar_color, size=11))
+    lay["yaxis"]["tickfont"] = dict(color=bar_color, size=11)
+    lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
+                         ticksuffix=line_suffix,
+                         title=dict(text=line_name, font=dict(color=line_color, size=11)),
+                         tickfont=dict(color=line_color, size=11),
+                         zeroline=True, zerolinecolor="#e2e8f0")
+    set_layout(fig, lay)
+    return fig
+def sig_label(p):
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return "–"
+    if p < 0.001: return "p<0.001 · 매우 확실"
+    if p < 0.01:  return "p<0.01 · 신뢰 가능"
+    if p < 0.05:  return "p<0.05 · 유의함"
+    return f"p={p:.2f} · 유의하지 않음(우연일 수 있음)"
+def welch(a, b):
+    from scipy import stats                  # main() 첫 줄 임포트에 기대고 있었다
+    a = np.asarray(a, float); b = np.asarray(b, float)
+    a = a[~np.isnan(a)]; b = b[~np.isnan(b)]
+    if len(a) < 3 or len(b) < 3:
+        return np.nan
+    try:
+        return stats.ttest_ind(a, b, equal_var=False).pvalue
+    except Exception:
+        return np.nan
+def won(v):
+    if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
+    if abs(v) >= 1e8: return f"{v/1e8:.2f}억"
+    if abs(v) >= 1e4: return f"{v/1e4:,.0f}만"
+    return f"{v:,.0f}"
+def bar_label(v, col, pct):
+    """막대 텍스트 라벨 — 비율은 %, 통화 지표는 원화 축약.
+    (RPS·거래액 라벨이 '1234567.89'처럼 콤마·단위 없이 찍히던 문제 통일)"""
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "–"                                # 결측 버킷 라벨이 'nan%'로 노출되던 것 방지
+    if pct:
+        return f"{v:.2f}%"
+    if col in ("rps", "aov", "amt", "revenue", "avgOrderVal", "unitPrice", "rev_per_uniq"):
+        return won(v)
+    return f"{v:,.1f}"
+def bar_xrange(yv, mult=1.18):
+    """수평 막대 x축 상한 — 값이 전부 0/NaN이면 None(자동)으로 둬 축이 [0,0]·[0,NaN]으로
+    붕괴해 막대·라벨이 안 보이는 빈 차트가 되는 것을 막는다."""
+    arr = np.asarray(yv, float)
+    if not len(arr):
+        return None
+    mx = float(np.nanmax(arr)) if np.isfinite(arr).any() else 0.0
+    return [0, mx * mult] if (np.isfinite(mx) and mx > 0) else None
+def guard_multi(key, opts):
+    """multiselect용 가드 — 선택지에서 사라진 값이 세션에 남으면 위젯이 예외로 죽는다.
+    (우선순위 0순위를 1순위로 합치면서 세션에 남은 '0'이 그대로 터졌다)
+
+    **버린 값은 세어 둔다.** 프리셋을 불러오면 그때 있던 브랜드·발송유형이 지금
+    데이터엔 없을 수 있는데, 조용히 지우면 «프리셋이 다르게 복원됐다»로만 보인다
+    (`test_filter_preset.py`의 `t_dropped_values_are_announced`).
+    """
+    _cur = st.session_state.get(key)
+    if isinstance(_cur, (list, tuple)):
+        _keep = [v for v in _cur if v in opts]
+        if len(_keep) != len(_cur):
+            st.session_state[key] = _keep
+            st.session_state.setdefault("_flt_dropped", {})[key] = \
+                [v for v in _cur if v not in opts]
+def guard_select(key, opts):
+    """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
+    무효 선택은 버려서 조용한 리셋/예외를 막는다 (개발 규칙의 pop 가드 일원화)."""
+    if key in st.session_state and st.session_state[key] not in opts:
+        st.session_state.pop(key, None)
+def legend_h():
+    """차트 상단 수평 범례 — 페이지마다 복붙되던 dict를 한 곳으로."""
+    return dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                bgcolor="rgba(0,0,0,0)")
+METRIC_OPTS = {
+    "주문전환율": ("ord_cr", "%", PALETTE["purple"]),
+    "CTR(유입전환율)": ("infl_cr", "%", PALETTE["blue"]),
+    "발송건당거래액(RPS)": ("rps", "원", PALETTE["green"]),
+    "객단가(AOV)": ("aov", "원", PALETTE["amber"]),
+    "거래액": ("amt", "원", PALETTE["teal"]),
+}
+def glossary(which="full"):
+    """비전문가용 지표·발송·통계 용어 주석 (접이식) — 모든 페이지 하단에 호출."""
+    metrics_md = (
+        "**📊 성과 지표**\n"
+        "- **발송**: 메시지를 보낸 건수예요.\n"
+        "- **UV(유입)**: 메시지를 눌러 들어온 사람 수예요(중복 제거).\n"
+        "- **VISIT**: 들어온 사람들이 발생시킨 방문 횟수예요.\n"
+        "- **CTR(유입전환율)** = UV ÷ 발송. 보낸 것 중 몇 %가 들어왔는지예요.\n"
+        "- ⚠️ **피로도 페이지의 CTR은 분모가 다릅니다.** 전사 MTD 파일이 주는 CTR은 "
+        "유니크유입 ÷ **유니크발송고객수**(고객 1명당)예요. 발송 1건당으로 보려면 그 페이지의 "
+        "**‘유입률(발송당)’**(= 총유입 ÷ 총발송)을 쓰세요. 단 피로도 페이지는 **전사 발송**, "
+        "여기는 **CRM 발송**만이라 기준을 맞춰도 값 자체는 서로 달라요.\n"
+        "- **주문전환율(CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀는지예요.\n"
+        "- **유니크 유입**: 들어온 사람 수예요(같은 사람이 여러 번 와도 1명). "
+        "**총유입**은 방문 횟수라 같은 사람이 3번 오면 3으로 세요.\n"
+        "- **유입 대비 구매전환율** = 구매 고객수 ÷ 유니크 유입. "
+        "'들어온 사람 중 산 비율'이에요. **구매전환율(CR)** 은 분모가 발송 고객수라 "
+        "'보낸 사람 중 산 비율'이고, 답하는 질문이 달라요.\n"
+        "- **유입 1명당 방문 횟수** = 총유입 ÷ 유니크 유입. 1에 가까우면 한 번 오고 말았다는 뜻이고, "
+        "커질수록 같은 사람이 여러 번 들어왔다는 뜻이에요.\n"
+        "- **유입 1명당 거래액** = 거래액 ÷ 유니크 유입. 들어온 사람 1명이 남긴 평균 매출이에요.\n"
+        "- **RPS** = 거래액 ÷ 발송. 1건 보냈을 때 평균 매출이에요.\n"
+        "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건에 평균 얼마를 썼는지예요.\n"
+        "- **거래액**: 발송을 통해 발생한 주문 금액 합계예요.\n")
+    biz_md = (
+        "**📨 발송·캠페인 용어**\n"
+        "- **AF코드**: 캠페인(발송 소재) 하나를 식별하는 코드예요 (예: AP101).\n"
+        "- **BPU**: 사업부 단위예요. 1BPU·2BPU처럼 발송 주체를 구분해요.\n"
+        "- **우선순위(순번)**: 같은 시간대에 몇 번째로 나간 발송인지예요. 1이 가장 먼저예요.\n"
+        "- **소구(訴求)**: 문구가 어필하는 포인트예요 — 할인율·마감임박·쿠폰 같은 혜택형부터 "
+        "신상컬렉션·베스트인기·추천큐레이션·시즌환절기·행동리타겟(장바구니·찜)·이벤트응모·"
+        "라이브방송 같은 비혜택형까지 자동 분류돼요.\n"
+        "- **세그먼트(타겟)**: 누구에게 보냈는지 그룹이에요 — 신규·휴면·전체 등.\n"
+        "- **퍼널**: 발송→유입→주문으로 좁아지는 단계 흐름이에요. 급락 단계가 개선 포인트예요.\n"
+        "- **기여율** = 발송 추적 거래액 ÷ 기획전 유입 거래액. 기획전 매출 중 발송이 끌어온 비중이에요.\n"
+        "- **리프트**: 어떤 속성이 있을 때와 없을 때의 성과 차이예요.\n"
+        "- **마모**: 같은 소구를 반복할수록 반응이 무뎌지는 현상이에요.\n"
+        "- **MTD·인당 발송 건수**: 전사 기준 일별 집계예요. 인당 발송 건수는 고객 1명이 "
+        "하루에 받은 평균 메시지 수(발송 강도)예요.\n"
+        "- **기말(期末)**: '주말(weekend)'이 아니라 **그 기간의 마지막 날**이라는 뜻이에요. "
+        "'기말 동의수'는 그 주 마지막 날 기준 누적 값(스냅샷)이고, 신규추가·기존이탈·순증감처럼 "
+        "그 주를 다 더한 '합계'와는 달라요.\n"
+        "- **전주비·전월비·전년비**: 기준 기간을 직전 주·전월 동주(한 달 전 같은 주)·작년 같은 "
+        "기간과 비교한 증감이에요. 비율 지표(CTR·CR)는 %p 차이, 나머지는 증감률(%)로 표시해요.\n"
+        "- **△ 표기**: 마이너스(감소)를 뜻해요 — 회사 보고 양식이에요. 예: △8.9% = 8.9% 감소.\n")
+    stats_md = (
+        "**🔬 통계 용어**\n"
+        "- **p값·유의성**: 이 차이가 우연일 가능성이에요. 0.05 미만이면 보통 '진짜 차이'로 봐요.\n"
+        "- **효과크기(d)**: 차이가 실제로 얼마나 큰지예요. 0.2 작음 · 0.5 중간 · 0.8 큼.\n"
+        "- **보정(FDR)**: 여러 개를 한꺼번에 비교하면 우연히 '유의'가 나오기 쉬워서 "
+        "더 엄격하게 걸러낸 값이에요.\n"
+        "- **순효과**: 카테고리·시간대 등 다른 조건을 맞춘 뒤 그 요소만의 진짜 기여예요.\n"
+        "- **상관 r**: 둘이 같이 움직이는 정도예요(−1\\~+1). +면 같이, −면 반대로 움직여요. "
+        "상관은 인과(원인→결과)와 달라요.\n"
+        "- **R²(결정계수)**: 추세선이 데이터를 얼마나 잘 설명하는지예요(0~1). 1에 가까울수록 뚜렷해요.\n"
+        "- **중앙값**: 크기순으로 줄 세웠을 때 딱 가운데 값이에요. 극단값에 안 휘둘려요.\n"
+        "- **±2σ(시그마)**: 평균에서 아주 많이 벗어났다는 뜻이에요. 상·하위 약 2.5%에 해당해요.\n"
+        "- **5분위(Q1\\~Q5)**: 데이터를 크기순으로 5등분한 거예요. Q1이 가장 작고 Q5가 가장 커요.\n"
+        "- **가중 평균 vs 단순 평균**: 가중은 발송 많은 캠페인에 비중을 더 두고(실제 효율에 가까움), "
+        "단순은 캠페인 1건을 1표로 봐요.\n"
+        "- **최소 발송수**: 표본이 너무 적으면 우연에 흔들려서, 일정 발송수 이상만 분석에 넣어요.\n")
+    with st.expander("📖 용어 주석 — 어려운 용어는 여기서 확인하세요"):
+        g1, g2 = st.columns(2)
+        g1.markdown(metrics_md)
+        g1.markdown(biz_md)
+        g2.markdown(stats_md)
+
+
 def main():
     from scipy import stats
 
-    # ── 페이지 리포트 캡처: st.plotly_chart / st.dataframe 호출을 가로채 기록 ──
-    # **래퍼를 또 감싸면 안 된다.** `st`는 프로세스 공유(멀티유저)라, 예전처럼
-    # `hasattr` 가드로 원본을 `st._orig_plotly_chart`에 담아 두면 동시 접속한 두
-    # 세션이 가드를 **같이** 통과한다 — 뒤 세션이 앞 세션의 래퍼를 '원본'으로 집어
-    # 가고, 그 뒤로 래퍼가 자기를 호출해 `RecursionError`로 **앱 전체가 내려간다**.
-    # 운영에서 실제로 났고, 증상은 페이지 안 빨간 트레이스백이 아니라 앱이 죽는
-    # 화면이라 리런하면 살아나 원인이 안 드러난다.
+    # ── 페이지 리포트 버퍼 ──────────────────────────────────────────────
+    # 예전엔 `st.plotly_chart`·`st.dataframe`을 **몽키패치**해서 가로챘다. `st`는
+    # 프로세스 공유라 동시 접속한 두 세션이 패치 블록을 같이 지나가면 뒤 세션이 앞
+    # 세션의 래퍼를 '원본'으로 집어 가고, 그 뒤로 래퍼가 자기를 호출해
+    # `RecursionError`로 **앱 전체가 내려갔다.** 운영에서 두 번 났다 — 두 번째는
+    # «그걸 고친 배포»에서 났는데, 고친 코드가 배포가 남긴 옛 래퍼를 못 알아봤다.
+    # 리런하면 프로세스가 새로 떠서 살아나니 증상이 '가끔 죽는다'로만 보였다.
     #
-    # 그래서 ①원본을 **클로저에 담고**(호출 시점에 `st`에서 찾지 않는다) ②래퍼에
-    # 원본을 매달아 두어 몇 겹이 쌓여도 되감아 꺼낸다. 두 세션이 같은 순간에
-    # 지나가도 둘 다 진짜 원본을 감싸게 된다 (`t_report_capture_survives_a_double_patch`).
-    def _pristine(name):
-        """패치 안 된 «진짜» 원본.
-
-        **`st.<name>`을 믿으면 안 된다.** 배포가 프로세스를 재시작하지 않고 스크립트만
-        갈아 끼우는 일이 있어서, 거기엔 **이전 버전이 남긴 래퍼**가 앉아 있을 수 있다.
-        그 옛 래퍼엔 `_lf_orig`가 없어 되감지도 못하는데, 모르고 그 위에 또 감싸면
-        호출이 옛 체인으로 들어가 `RecursionError`가 난다 — 실제로 그렇게 두 번 났다
-        (두 번째는 «이 블록을 고친 배포»에서 났다. 고친 코드가 옛 래퍼를 못 알아봤다).
-
-        `st._main`은 DeltaGenerator라 **모듈 속성 패치의 영향을 전혀 안 받는다** —
-        `st.plotly_chart`를 무엇으로 덮어써도 `st._main.plotly_chart`는 원본이다.
-        """
-        _dg = getattr(st, "_main", None)
-        _fn = getattr(_dg, name, None)
-        if callable(_fn):
-            return _fn
-        # _main이 없는 판(향후 Streamlit)에선 우리 래퍼만이라도 되감는다
-        _fn = getattr(st, name)
-        _seen = 0
-        while getattr(_fn, "_lf_orig", None) is not None and _seen < 50:
-            _fn, _seen = _fn._lf_orig, _seen + 1
-        return _fn
-
-    def _mk_cap(kind, argkey, orig):
-        def _cap(*a, **k):
-            try:
-                x = a[0] if a else k.get(argkey)
-                if x is not None:
-                    st.session_state.setdefault("_page_report", []).append((kind, x))
-            except Exception:                             # noqa: BLE001
-                pass
-            return orig(*a, **k)
-        _cap._lf_orig = orig
-        return _cap
-
-    # 캡처 버퍼는 session_state에 — st 모듈 속성은 프로세스(멀티유저) 공유라 클로저
-    # 리스트에 쌓으면 동시 접속한 다른 사용자의 차트/표가 내 리포트에 섞인다.
-    # session_state 프록시는 '호출 시점' 세션 컨텍스트를 따라가므로 항상 자기 세션에 쌓인다.
-    # 옛 버전이 남긴 체인을 끊는다 — 여기 래퍼가 들어 있으면 그걸 타고 재귀한다.
+    # **가로채기를 그만두고 호출부를 모았다** — 차트는 `chart()`, 표는 `table()`.
+    # 패치가 없으니 세션 사이 경합도, 배포가 남긴 옛 래퍼도 없다. 버퍼는 세션에
+    # 둔다(모듈 속성에 두면 남의 차트가 내 리포트에 섞인다).
     for _legacy in ("_orig_plotly_chart", "_orig_dataframe"):
         if hasattr(st, _legacy):
-            delattr(st, _legacy)
-
+            delattr(st, _legacy)       # 옛 배포가 남긴 패치 흔적을 지운다
     st.session_state["_page_report"] = []
     _REPORT = st.session_state["_page_report"]
-    st.plotly_chart = _mk_cap("fig", "figure_or_data", _pristine("plotly_chart"))
-    st.dataframe = _mk_cap("table", "data", _pristine("dataframe"))
 
     st.set_page_config(page_title="LF몰 발송성과 대시보드", layout="wide",
                        initial_sidebar_state="expanded")
@@ -3243,122 +3491,6 @@ def main():
     .psx-rh{font-size:15.5px;font-weight:700;color:#1e293b}
     .psx-rw{font-size:12.5px;color:#94a3b8;margin-bottom:9px}
     </style>""", unsafe_allow_html=True)
-
-    PALETTE = {
-        "blue": "rgba(79,143,255,1)", "red": "rgba(245,101,101,1)", "green": "rgba(72,187,120,1)",
-        "amber": "rgba(237,137,54,1)", "purple": "rgba(159,122,234,1)", "teal": "rgba(56,178,172,1)",
-        "slate": "rgba(100,116,139,1)",
-    }
-
-    def base_layout(h=300, ysuffix="", title="", hover=None):
-        # 인-차트 제목은 왼쪽 상단에 고정하고, 상단 가로 범례(y≈1.12)와 겹치지 않도록
-        # 제목 영역(top margin)을 충분히 확보한다. (각 차트 위 마크다운 헤더와도 분리)
-        # hover="x" 이면 시계열용 통합 툴팁(hovermode=x unified) + 세로 크로스헤어를 켠다.
-        has_title = bool(title)
-        _FONT = "Pretendard Variable, Pretendard, Malgun Gothic, Apple SD Gothic Neo, sans-serif"
-        xaxis = dict(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
-                     tickfont=dict(color="#64748b", size=11))
-        lay = dict(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                   font=dict(color="#475569", size=11, family=_FONT),
-                   margin=dict(l=10, r=10, t=(58 if has_title else 30), b=10),
-                   height=h, showlegend=False,
-                   barcornerradius=4,
-                   hoverlabel=dict(bgcolor="#ffffff", bordercolor="#e2e8f0",
-                                   font=dict(size=12, color="#1e293b", family=_FONT)),
-                   title=dict(text=title, font=dict(color="#94a3b8", size=13),
-                              x=0, xanchor="left", y=0.99, yanchor="top"),
-                   legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                               xanchor="left", x=0, bgcolor="rgba(0,0,0,0)"),
-                   xaxis=xaxis,
-                   yaxis=dict(gridcolor="#f1f5f9", linecolor="#e2e8f0",
-                              tickfont=dict(color="#64748b", size=11), ticksuffix=ysuffix))
-        if hover == "x":
-            lay["hovermode"] = "x unified"
-            xaxis.update(showspikes=True, spikemode="across", spikethickness=1,
-                         spikedash="dot", spikecolor="#cbd5e1")
-        return lay
-
-    # 시계열 팔레트 순서 — 소구 속성별 고정색(필터가 바뀌어도 같은 속성은 늘 같은 색)
-    SERIES_SEQ = [PALETTE["purple"], PALETTE["green"], PALETTE["amber"], PALETTE["blue"],
-                  PALETTE["red"], PALETTE["teal"], PALETTE["slate"]]
-
-    def tag_color(t):
-        try:
-            return SERIES_SEQ[TAG_BOOLS.index(t) % len(SERIES_SEQ)]
-        except ValueError:
-            return PALETTE["slate"]
-
-    def stacked_panels(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
-                       h=430, bar_suffix="", line_suffix="", title=""):
-        """이중축 대신 X축을 공유하는 상(막대)/하(선) 패널 — 두 지표의 스케일을 섞지 않으면서
-        같은 시점끼리 비교할 수 있게 한다. 통합 툴팁·크로스헤어 포함."""
-        from plotly.subplots import make_subplots
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            row_heights=[0.42, 0.58], vertical_spacing=0.07)
-        fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
-                             opacity=0.75), row=1, col=1)
-        fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
-                                 line=dict(color=line_color, width=2),
-                                 marker=dict(size=7)), row=2, col=1)
-        lay = base_layout(h=h, title=title)
-        lay.pop("xaxis", None); lay.pop("yaxis", None)
-        lay["showlegend"] = True
-        lay["hovermode"] = "x unified"
-        set_layout(fig, lay)
-        fig.update_xaxes(gridcolor="rgba(0,0,0,0)", linecolor="#e2e8f0",
-                         tickfont=dict(color="#64748b", size=11),
-                         showspikes=True, spikemode="across", spikethickness=1,
-                         spikedash="dot", spikecolor="#cbd5e1")
-        fig.update_yaxes(gridcolor="#f1f5f9", linecolor="#e2e8f0",
-                         tickfont=dict(color="#64748b", size=11))
-        fig.update_yaxes(ticksuffix=bar_suffix, row=1, col=1)
-        fig.update_yaxes(ticksuffix=line_suffix, row=2, col=1)
-        return fig
-
-    def overlay_dual(x, bar_y, bar_name, line_y, line_name, bar_color, line_color,
-                     h=430, bar_suffix="", line_suffix="", title=""):
-        """한 차트 이중축 오버레이 — 막대(좌축)+선(우축)을 같은 X에 겹쳐 그린다.
-        스케일이 크게 다른 '발송 강도 ↔ 효율/증감' 관계를 한 눈에 보려는 용도.
-        어느 축인지 헷갈리지 않게 축 눈금·제목 색을 각 시리즈 색과 맞춘다.
-        통합 툴팁(x unified)+세로 크로스헤어 포함."""
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=x, y=bar_y, name=bar_name, marker_color=bar_color,
-                             opacity=0.55))
-        fig.add_trace(go.Scatter(x=x, y=line_y, name=line_name, mode="lines+markers",
-                                 line=dict(color=line_color, width=2.5),
-                                 marker=dict(size=6), yaxis="y2"))
-        lay = base_layout(h=h, title=title, hover="x")
-        lay["showlegend"] = True
-        lay["legend"] = dict(orientation="h", yanchor="bottom", y=1.02,
-                             xanchor="left", x=0, bgcolor="rgba(0,0,0,0)")
-        lay["yaxis"]["ticksuffix"] = bar_suffix
-        lay["yaxis"]["title"] = dict(text=bar_name, font=dict(color=bar_color, size=11))
-        lay["yaxis"]["tickfont"] = dict(color=bar_color, size=11)
-        lay["yaxis2"] = dict(overlaying="y", side="right", showgrid=False,
-                             ticksuffix=line_suffix,
-                             title=dict(text=line_name, font=dict(color=line_color, size=11)),
-                             tickfont=dict(color=line_color, size=11),
-                             zeroline=True, zerolinecolor="#e2e8f0")
-        set_layout(fig, lay)
-        return fig
-
-    def sig_label(p):
-        if p is None or (isinstance(p, float) and np.isnan(p)):
-            return "–"
-        if p < 0.001: return "p<0.001 · 매우 확실"
-        if p < 0.01:  return "p<0.01 · 신뢰 가능"
-        if p < 0.05:  return "p<0.05 · 유의함"
-        return f"p={p:.2f} · 유의하지 않음(우연일 수 있음)"
-
-    def welch(a, b):
-        a = np.asarray(a, float); b = np.asarray(b, float)
-        a = a[~np.isnan(a)]; b = b[~np.isnan(b)]
-        if len(a) < 3 or len(b) < 3:
-            return np.nan
-        try:
-            return stats.ttest_ind(a, b, equal_var=False).pvalue
-        except Exception:
-            return np.nan
 
     # ── 캐시 래퍼 (무거운 파싱 1회만) ──
     @st.cache_data(show_spinner=False, max_entries=4)
@@ -3590,33 +3722,6 @@ def main():
             _msg = str(e).replace(str(key), "***KEY***")[:300]
             return None, f"생성 오류: {_msg}"
 
-    # 숫자 포맷 헬퍼
-    def won(v):
-        if v is None or (isinstance(v, float) and np.isnan(v)): return "–"
-        if abs(v) >= 1e8: return f"{v/1e8:.2f}억"
-        if abs(v) >= 1e4: return f"{v/1e4:,.0f}만"
-        return f"{v:,.0f}"
-
-    def bar_label(v, col, pct):
-        """막대 텍스트 라벨 — 비율은 %, 통화 지표는 원화 축약.
-        (RPS·거래액 라벨이 '1234567.89'처럼 콤마·단위 없이 찍히던 문제 통일)"""
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            return "–"                                # 결측 버킷 라벨이 'nan%'로 노출되던 것 방지
-        if pct:
-            return f"{v:.2f}%"
-        if col in ("rps", "aov", "amt", "revenue", "avgOrderVal", "unitPrice", "rev_per_uniq"):
-            return won(v)
-        return f"{v:,.1f}"
-
-    def bar_xrange(yv, mult=1.18):
-        """수평 막대 x축 상한 — 값이 전부 0/NaN이면 None(자동)으로 둬 축이 [0,0]·[0,NaN]으로
-        붕괴해 막대·라벨이 안 보이는 빈 차트가 되는 것을 막는다."""
-        arr = np.asarray(yv, float)
-        if not len(arr):
-            return None
-        mx = float(np.nanmax(arr)) if np.isfinite(arr).any() else 0.0
-        return [0, mx * mult] if (np.isfinite(mx) and mx > 0) else None
-
     # ── 표 렌더 + 엑셀 내려받기 ──────────────────────────────────────────
     # st.dataframe 기본 툴바의 'Download as CSV'는 서식이 다 날아간다. 모든 표에
     # 같은 자리에서 검은 헤더 스타일 xlsx를 받을 수 있게 공용 래퍼로 감싼다.
@@ -3629,7 +3734,8 @@ def main():
         `dl_data`를 주면 **내려받기만** 그 객체로 만든다. 화면에서 열을 접어 둔 표라도
         파일엔 전부 들어가야 한다 — 접힌 건 화면 사정이지 데이터가 없는 게 아니다.
         """
-        ev = st.dataframe(data, *args, **kw)
+        report_add("table", data)      # 리포트 기록 — 차트의 `chart()`와 대칭이다
+        ev = _dg().dataframe(data, *args, **kw)   # 옛 배포가 남긴 래퍼를 비켜 간다
         if dl and xlsx_bytes is not None:
             _i = next(_tbl_seq)
             _nm = dl_name or (dl_title or "표")
@@ -3650,33 +3756,6 @@ def main():
             except Exception:                             # noqa: BLE001
                 pass                                      # 다운로드가 안 되더라도 표는 보여야 한다
         return ev
-
-    def guard_multi(key, opts):
-        """multiselect용 가드 — 선택지에서 사라진 값이 세션에 남으면 위젯이 예외로 죽는다.
-        (우선순위 0순위를 1순위로 합치면서 세션에 남은 '0'이 그대로 터졌다)
-
-        **버린 값은 세어 둔다.** 프리셋을 불러오면 그때 있던 브랜드·발송유형이 지금
-        데이터엔 없을 수 있는데, 조용히 지우면 «프리셋이 다르게 복원됐다»로만 보인다
-        (`test_filter_preset.py`의 `t_dropped_values_are_announced`).
-        """
-        _cur = st.session_state.get(key)
-        if isinstance(_cur, (list, tuple)):
-            _keep = [v for v in _cur if v in opts]
-            if len(_keep) != len(_cur):
-                st.session_state[key] = _keep
-                st.session_state.setdefault("_flt_dropped", {})[key] = \
-                    [v for v in _cur if v not in opts]
-
-    def guard_select(key, opts):
-        """지표·필터 변경으로 옵션 목록이 바뀌면 세션에 남은 선택값이 목록 밖이 될 수 있다 —
-        무효 선택은 버려서 조용한 리셋/예외를 막는다 (개발 규칙의 pop 가드 일원화)."""
-        if key in st.session_state and st.session_state[key] not in opts:
-            st.session_state.pop(key, None)
-
-    def legend_h():
-        """차트 상단 수평 범례 — 페이지마다 복붙되던 dict를 한 곳으로."""
-        return dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-                    bgcolor="rgba(0,0,0,0)")
 
     # ══════════════════════════════════════════════════════════════
     # 사이드바 — 업로드 / 필터 / 페이지
@@ -4810,82 +4889,9 @@ def main():
             unsafe_allow_html=True)
 
     # 지표 메타
-    METRIC_OPTS = {
-        "주문전환율": ("ord_cr", "%", PALETTE["purple"]),
-        "CTR(유입전환율)": ("infl_cr", "%", PALETTE["blue"]),
-        "발송건당거래액(RPS)": ("rps", "원", PALETTE["green"]),
-        "객단가(AOV)": ("aov", "원", PALETTE["amber"]),
-        "거래액": ("amt", "원", PALETTE["teal"]),
-    }
 
     # 전환율은 캠페인별 단순 평균으로 비교(표본은 사이드바 '최소 발송수'로 통제)
 
-    def glossary(which="full"):
-        """비전문가용 지표·발송·통계 용어 주석 (접이식) — 모든 페이지 하단에 호출."""
-        metrics_md = (
-            "**📊 성과 지표**\n"
-            "- **발송**: 메시지를 보낸 건수예요.\n"
-            "- **UV(유입)**: 메시지를 눌러 들어온 사람 수예요(중복 제거).\n"
-            "- **VISIT**: 들어온 사람들이 발생시킨 방문 횟수예요.\n"
-            "- **CTR(유입전환율)** = UV ÷ 발송. 보낸 것 중 몇 %가 들어왔는지예요.\n"
-            "- ⚠️ **피로도 페이지의 CTR은 분모가 다릅니다.** 전사 MTD 파일이 주는 CTR은 "
-            "유니크유입 ÷ **유니크발송고객수**(고객 1명당)예요. 발송 1건당으로 보려면 그 페이지의 "
-            "**‘유입률(발송당)’**(= 총유입 ÷ 총발송)을 쓰세요. 단 피로도 페이지는 **전사 발송**, "
-            "여기는 **CRM 발송**만이라 기준을 맞춰도 값 자체는 서로 달라요.\n"
-            "- **주문전환율(CR)** = 주문 ÷ UV. 들어온 사람 중 몇 %가 샀는지예요.\n"
-            "- **유니크 유입**: 들어온 사람 수예요(같은 사람이 여러 번 와도 1명). "
-            "**총유입**은 방문 횟수라 같은 사람이 3번 오면 3으로 세요.\n"
-            "- **유입 대비 구매전환율** = 구매 고객수 ÷ 유니크 유입. "
-            "'들어온 사람 중 산 비율'이에요. **구매전환율(CR)** 은 분모가 발송 고객수라 "
-            "'보낸 사람 중 산 비율'이고, 답하는 질문이 달라요.\n"
-            "- **유입 1명당 방문 횟수** = 총유입 ÷ 유니크 유입. 1에 가까우면 한 번 오고 말았다는 뜻이고, "
-            "커질수록 같은 사람이 여러 번 들어왔다는 뜻이에요.\n"
-            "- **유입 1명당 거래액** = 거래액 ÷ 유니크 유입. 들어온 사람 1명이 남긴 평균 매출이에요.\n"
-            "- **RPS** = 거래액 ÷ 발송. 1건 보냈을 때 평균 매출이에요.\n"
-            "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건에 평균 얼마를 썼는지예요.\n"
-            "- **거래액**: 발송을 통해 발생한 주문 금액 합계예요.\n")
-        biz_md = (
-            "**📨 발송·캠페인 용어**\n"
-            "- **AF코드**: 캠페인(발송 소재) 하나를 식별하는 코드예요 (예: AP101).\n"
-            "- **BPU**: 사업부 단위예요. 1BPU·2BPU처럼 발송 주체를 구분해요.\n"
-            "- **우선순위(순번)**: 같은 시간대에 몇 번째로 나간 발송인지예요. 1이 가장 먼저예요.\n"
-            "- **소구(訴求)**: 문구가 어필하는 포인트예요 — 할인율·마감임박·쿠폰 같은 혜택형부터 "
-            "신상컬렉션·베스트인기·추천큐레이션·시즌환절기·행동리타겟(장바구니·찜)·이벤트응모·"
-            "라이브방송 같은 비혜택형까지 자동 분류돼요.\n"
-            "- **세그먼트(타겟)**: 누구에게 보냈는지 그룹이에요 — 신규·휴면·전체 등.\n"
-            "- **퍼널**: 발송→유입→주문으로 좁아지는 단계 흐름이에요. 급락 단계가 개선 포인트예요.\n"
-            "- **기여율** = 발송 추적 거래액 ÷ 기획전 유입 거래액. 기획전 매출 중 발송이 끌어온 비중이에요.\n"
-            "- **리프트**: 어떤 속성이 있을 때와 없을 때의 성과 차이예요.\n"
-            "- **마모**: 같은 소구를 반복할수록 반응이 무뎌지는 현상이에요.\n"
-            "- **MTD·인당 발송 건수**: 전사 기준 일별 집계예요. 인당 발송 건수는 고객 1명이 "
-            "하루에 받은 평균 메시지 수(발송 강도)예요.\n"
-            "- **기말(期末)**: '주말(weekend)'이 아니라 **그 기간의 마지막 날**이라는 뜻이에요. "
-            "'기말 동의수'는 그 주 마지막 날 기준 누적 값(스냅샷)이고, 신규추가·기존이탈·순증감처럼 "
-            "그 주를 다 더한 '합계'와는 달라요.\n"
-            "- **전주비·전월비·전년비**: 기준 기간을 직전 주·전월 동주(한 달 전 같은 주)·작년 같은 "
-            "기간과 비교한 증감이에요. 비율 지표(CTR·CR)는 %p 차이, 나머지는 증감률(%)로 표시해요.\n"
-            "- **△ 표기**: 마이너스(감소)를 뜻해요 — 회사 보고 양식이에요. 예: △8.9% = 8.9% 감소.\n")
-        stats_md = (
-            "**🔬 통계 용어**\n"
-            "- **p값·유의성**: 이 차이가 우연일 가능성이에요. 0.05 미만이면 보통 '진짜 차이'로 봐요.\n"
-            "- **효과크기(d)**: 차이가 실제로 얼마나 큰지예요. 0.2 작음 · 0.5 중간 · 0.8 큼.\n"
-            "- **보정(FDR)**: 여러 개를 한꺼번에 비교하면 우연히 '유의'가 나오기 쉬워서 "
-            "더 엄격하게 걸러낸 값이에요.\n"
-            "- **순효과**: 카테고리·시간대 등 다른 조건을 맞춘 뒤 그 요소만의 진짜 기여예요.\n"
-            "- **상관 r**: 둘이 같이 움직이는 정도예요(−1\\~+1). +면 같이, −면 반대로 움직여요. "
-            "상관은 인과(원인→결과)와 달라요.\n"
-            "- **R²(결정계수)**: 추세선이 데이터를 얼마나 잘 설명하는지예요(0~1). 1에 가까울수록 뚜렷해요.\n"
-            "- **중앙값**: 크기순으로 줄 세웠을 때 딱 가운데 값이에요. 극단값에 안 휘둘려요.\n"
-            "- **±2σ(시그마)**: 평균에서 아주 많이 벗어났다는 뜻이에요. 상·하위 약 2.5%에 해당해요.\n"
-            "- **5분위(Q1\\~Q5)**: 데이터를 크기순으로 5등분한 거예요. Q1이 가장 작고 Q5가 가장 커요.\n"
-            "- **가중 평균 vs 단순 평균**: 가중은 발송 많은 캠페인에 비중을 더 두고(실제 효율에 가까움), "
-            "단순은 캠페인 1건을 1표로 봐요.\n"
-            "- **최소 발송수**: 표본이 너무 적으면 우연에 흔들려서, 일정 발송수 이상만 분석에 넣어요.\n")
-        with st.expander("📖 용어 주석 — 어려운 용어는 여기서 확인하세요"):
-            g1, g2 = st.columns(2)
-            g1.markdown(metrics_md)
-            g1.markdown(biz_md)
-            g2.markdown(stats_md)
 
     @st.fragment
     def render_messages(d, mcol, key, n=200, show_hour=False, show_tags=False):
@@ -5147,7 +5153,7 @@ def main():
             _l2["xaxis"] = {**_l2["xaxis"], "type": "date", "tickformat": "%m/%d",
                             "dtick": 7 * 86400000}
             set_layout(_f2, _l2)
-            st.plotly_chart(_f2, width="stretch")
+            chart(_f2, width="stretch")
         if _drop:
             st.caption(f"양쪽 군이 {min_n}건 미만인 주 {_drop}개는 뺐어요 — 1~2건짜리 주는 "
                        "CTR이 0%·100% 근처로 튀어서 추세를 가려요. 표에도 안 나옵니다.")
@@ -5261,7 +5267,7 @@ def main():
                 figt = stacked_panels(_tw["주"], _tw["거래액"], "거래액(주간 합)",
                                       _tw["CTR"], "가중 CTR", PALETTE["slate"], PALETTE["blue"],
                                       h=340, line_suffix="%", title=_ttl)
-                st.plotly_chart(figt, width="stretch")
+                chart(figt, width="stretch")
             elif _p01_anchor_ws is not None:
                 st.caption("선택한 주차까지 완결된 주가 3주가 안 돼서 13주 흐름은 생략했어요.")
 
@@ -6309,7 +6315,7 @@ def main():
                     if _met in RATE:
                         _lay["yaxis"]["tickformat"] = ".2%"
                     set_layout(_fg, _lay)
-                    _tc.plotly_chart(_fg, width="stretch")
+                    chart(_fg, width="stretch", _to=_tc)
 
         # 표는 **왼쪽에 실적 · 오른쪽에 전년비**로 모은다 — 증감만 가로로 훑어야
         # '어느 기간부터 꺾였나'가 보인다. 기간을 잘라 보여 주지 않는 건 위 「추이 구간」이
@@ -6370,7 +6376,7 @@ def main():
                     "_b": [_dv(_tagg[p], WRT_BAR[_bl]) for p in _tps],
                     "_l": [_dv(_tagg[p], _lc) for p in _tps],
                 })
-                st.plotly_chart(
+                chart(
                     stacked_panels(_sp["_x"], _sp["_b"], _bl,
                                    _sp["_l"] * (100 if _ls == "%" else 1), _ll,
                                    PALETTE["slate"], PALETTE["purple"], h=430,
@@ -6947,7 +6953,7 @@ def main():
                     h=410, title=f"거래액 {won(prev_tot)} → {won(cur_tot)} "
                                  f"({_dlt('거래액', cur_tot, prev_tot)})"
                 ))
-                st.plotly_chart(figw, width="stretch")
+                chart(figw, width="stretch")
                 
                 wrows = []
                 top8_cats = [x for x in dif.index if x != "기타"]
@@ -7040,7 +7046,7 @@ def main():
                     ))
                     set_layout(wf, base_layout(
                         h=380, title=f"지표 체인 기여 분해 (LMDI) — {_wfn} → 기준 {_UNAME}"))
-                    st.plotly_chart(wf, width="stretch")
+                    chart(wf, width="stretch")
                     _tot_d = v1 - v0
                     _big = max(contrib, key=lambda k: abs(contrib[k]))
                     _shr = (abs(contrib[_big]) / abs(_tot_d) * 100) if _tot_d else 0.0
@@ -7377,7 +7383,7 @@ def main():
             text=[f"{v:+.2f}{'%p' if is_pct else ''}" for v in delta_disp], textposition="outside"))
         set_layout(fig, base_layout(h=360, title=f"{mlabel} — 속성 보유 시 평균 차이 (보유 − 미보유)"))
         fig.update_yaxes(autorange="reversed")        # 아래 순효과 차트와 같은 방향(큰 값이 위)
-        st.plotly_chart(fig, width="stretch")
+        chart(fig, width="stretch")
 
         def fmtv(v):
             return f"{v*100:.2f}%" if is_pct else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}")
@@ -7420,7 +7426,7 @@ def main():
                 text=[f"{v:+.3f}{'%p' if is_pct else ''}" for v in ev], textposition="outside"))
             set_layout(figr, base_layout(h=380, title=f"{mlabel} — 속성 순효과 (교란 통제)"))
             figr.update_yaxes(autorange="reversed")
-            st.plotly_chart(figr, width="stretch")
+            chart(figr, width="stretch")
             er = eff.copy()
             er["순효과"] = [f"{v*100:+.3f}%p" if is_pct else (f"{v:+,.0f}" if mcol in ("rps", "aov", "amt") else f"{v:+,.3f}")
                           for v in eff["순효과"]]
@@ -7490,7 +7496,7 @@ def main():
             bm = base_mean * (100 if is_pct else 1)
             figc.add_vline(x=bm, line_dash="dot", line_color="#94a3b8",
                            annotation_text=f"전체평균 {bm:.2f}", annotation_position="top")
-            st.plotly_chart(figc, width="stretch")
+            chart(figc, width="stretch")
 
             cshow = cdf.copy()
             if is_pct:
@@ -7562,7 +7568,7 @@ def main():
                                    textposition="outside"))
             set_layout(fig, base_layout(h=300, ysuffix=("%" if is_pct else ""),
                                             title=f"{label} 길이 구간별 평균 {mlabel}"))
-            container.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch", _to=container)
 
         len_bins("제목길이", "제목", lc1)
         len_bins("본문길이", "본문", lc2)
@@ -7763,7 +7769,7 @@ def main():
                 hovertemplate="%{y} × %{x}<br>" + mlabel + ": %{z:.2f}"
                               + ("%" if is_pct else "") + " · n=%{customdata:.0f}<extra></extra>"))
             set_layout(fig, base_layout(h=420, title=title))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             st.caption(f"빈 셀은 캠페인 {min_cell_n}건 미만이라 가린 구간이에요 (우연값 강조 방지) · "
                        "hover에 표본수(n)가 함께 떠요.")
 
@@ -7815,7 +7821,7 @@ def main():
                               + ("%" if is_pct else "") + " · n=%{customdata}<extra></extra>"))
             set_layout(fig, base_layout(h=max(320, 60 + 34 * len(cmat)),
                                             title=f"카테고리 × 문구속성 — 평균 {mlabel}"))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             st.caption("빈 셀은 캠페인이 3건이 안 되는 조합이에요. 마우스를 올리면 표본수(n)가 보여요.")
             # 카테고리별 베스트 속성 추천표 — n 병기
             recs = []
@@ -7879,7 +7885,7 @@ def main():
                                    marker_color=METRIC_OPTS[mlabel][2],
                                    text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
             set_layout(fig, base_layout(h=320, ysuffix=("%" if is_pct else ""), title=title))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
 
         cc = st.columns(2)
         with cc[0]: barby("hour", f"시간대별 평균 {mlabel}")
@@ -7897,7 +7903,7 @@ def main():
                                    text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
             set_layout(fig, base_layout(h=320, ysuffix=("%" if is_pct else ""),
                                             title=f"발송 규모 5분위(Q1 소량→Q5 대량)별 평균 {mlabel}"))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             st.markdown('<div class="appendix">대량 발송 구간(Q5)에서 효율이 떨어지면 더 보내는 게 오히려 '
                         '낮다는 신호예요. 단, 발송유형/카테고리 구성 차이가 섞일 수 있어요.</div>',
                         unsafe_allow_html=True)
@@ -7934,7 +7940,7 @@ def main():
                 lay["xaxis"]["range"] = bar_xrange(yv, 1.2)
                 set_layout(figs, lay)
                 figs.update_yaxes(autorange="reversed")
-                st.plotly_chart(figs, width="stretch")
+                chart(figs, width="stretch")
                 disp = slot.copy()
                 disp["요일"] = disp["dow_k"]
                 disp["시간"] = disp["hour"].map(fmt_hhmm)
@@ -8256,7 +8262,7 @@ def main():
             # 시간대 라인 옆에 '그 날 통째로' 얼마였는지 막대로 — 시간대 분포와 일자 총량을
             # 한 화면에서 같이 봐야 "특정 시간이 좋았나 / 그날 자체가 좋았나"가 갈린다.
             _lc, _rc = st.columns([4, 1])
-            _lc.plotly_chart(figh, width="stretch")
+            chart(figh, width="stretch", _to=_lc)
 
             _ORDER = ["기준일"] + _cmp_sel
             _SHORT = {"기준일": "기준일", "전일": "전일", "전주 동요일": "전주",
@@ -8272,7 +8278,7 @@ def main():
                                 title=f"일자 합산 {_ymet}")
             _lay2["yaxis"]["range"] = bar_xrange([v for v in _tv if np.isfinite(v)], 1.25)
             set_layout(figt2, _lay2)
-            _rc.plotly_chart(figt2, width="stretch")
+            chart(figt2, width="stretch", _to=_rc)
 
             _basis_txt = ("비율은 <b>합산 기준</b>(ΣUV÷Σ발송)이에요. 발송 전체의 실제 효율이죠."
                           if not _AVG else
@@ -8368,7 +8374,7 @@ def main():
                 _lay2["showlegend"] = True
                 _lay2["legend"] = legend_h()
                 set_layout(figt, _lay2)
-                st.plotly_chart(figt, width="stretch")
+                chart(figt, width="stretch")
                 st.markdown('<div class="appendix">위 <b>「비교 지표」</b>를 그대로 따라가요. '
                             '그날 안 쓴 소구는 막대가 없어요. 건수가 적은 소구는 우연히 '
                             '높/낮게 나올 수 있으니 아래 표의 건수를 함께 보세요.</div>',
@@ -8539,7 +8545,7 @@ def main():
                            PALETTE["slate"], PALETTE["green"], h=430,
                            bar_suffix=("%" if lpct else ""), line_suffix=("%" if rpct else ""),
                            title=f"{llab}(좌·막대) ↔ {rlab}(우·선)")
-        st.plotly_chart(fig, width="stretch")
+        chart(fig, width="stretch")
         if _wk_dropped:
             st.caption(f"발송이 미미한 주 {_wk_dropped}개는 추세에서 제외했어요 "
                        "(오조작·이월 날짜로 생긴 뜬금없는 주 — x축 왜곡 방지).")
@@ -8616,7 +8622,7 @@ def main():
             layf2["xaxis"]["ticksuffix"] = "%"
             set_layout(figf, layf2)
             figf.update_yaxes(autorange="reversed")
-            st.plotly_chart(figf, width="stretch")
+            chart(figf, width="stretch")
             # 단계별 전환율 표
             frows = []
             for i in range(1, len(avail)):
@@ -8739,7 +8745,7 @@ def main():
                                    text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
             set_layout(fig, base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"BPU별 (가중) {mlabel}"))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             table(eff_table(bp.sort_values("발송", ascending=False), "BPU"),
                          hide_index=True, width="stretch", dl_name="BPU별 효율")
 
@@ -8762,7 +8768,7 @@ def main():
                                    text=[bar_label(v, mcol, is_pct) for v in y], textposition="outside"))
             set_layout(fig, base_layout(h=340, ysuffix=("%" if is_pct else ""),
                                             title=f"우선순위별 (가중) {mlabel}"))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             if n_excluded:
                 excluded_labels = ", ".join(
                     f"{int(k)}순위" for k in pr.loc[pr["캠페인수"] <= 1, "_key"])
@@ -8800,7 +8806,7 @@ def main():
                                                      + ("%" if is_pct else "")
                                                      + " · n=%{customdata:.0f}<extra></extra>"))
             set_layout(fig, base_layout(h=420, title=f"BPU × 우선순위 평균 {mlabel}"))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
         st.markdown('<div class="appendix">빈 셀은 캠페인 3건 미만(우연값 방지). hover에 표본수(n)가 함께 떠요.</div>',
                     unsafe_allow_html=True)
 
@@ -8871,7 +8877,7 @@ def main():
             st.info("조건에 맞는 키워드가 없어요. 기준을 낮춰 보세요.")
         else:
             if _kw_view.startswith("평균"):
-                st.plotly_chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
+                chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
                                         max(360, 40 + 24 * min(len(kdf), int(ktop)))),
                                 width="stretch")
             else:
@@ -8896,7 +8902,7 @@ def main():
                                    title=f"전체평균 대비 차이 ±상하위 — {mlabel} (회색=유의하지 않음)")
                 set_layout(figd, layd)
                 figd.update_yaxes(autorange="reversed")
-                st.plotly_chart(figd, width="stretch")
+                chart(figd, width="stretch")
             sel_kw = st.selectbox("조회 대상 키워드 선택 (실제 발송 메시지 드릴다운)", list(kdf["단어"]), key="p10_kw")
             if sel_kw:
                 hay = (base["title"].astype(str) + " " + base["body"].astype(str))
@@ -8911,7 +8917,7 @@ def main():
         if len(edf) == 0:
             st.info("조건에 맞는 이모지가 없어요. 이모지를 쓴 캠페인이 적을 수 있어요.")
         else:
-            st.plotly_chart(_barfig(edf, "이모지", f"이모지별 평균 {mlabel}",
+            chart(_barfig(edf, "이모지", f"이모지별 평균 {mlabel}",
                                     max(320, 40 + 28 * len(edf))), width="stretch")
             eshow = edf.copy()
             if is_pct:
@@ -8973,7 +8979,7 @@ def main():
         lay["showlegend"] = True
         lay["legend"] = legend_h()
         set_layout(fig, lay)
-        st.plotly_chart(fig, width="stretch")
+        chart(fig, width="stretch")
 
         # 마모 진단: 각 속성의 주차 추세 회귀(기울기) + 사용 빈도 추이
         st.markdown("##### 📉 반복 소구 노출에 따른 성과 감쇠(마모) 진단")
@@ -9060,7 +9066,7 @@ def main():
         layf["showlegend"] = True
         layf["legend"] = legend_h()
         set_layout(figf, layf)
-        st.plotly_chart(figf, width="stretch")
+        chart(figf, width="stretch")
         st.markdown('<div class="appendix">상관계수(r)가 유의한 음수(-)면 같은 소구를 반복해서 성과가 닳고 있다는 신호예요. 효율 감소가 이어지면 그 소구를 한동안 쉬게 하고 다른 오퍼로 바꿔 보세요. 카테고리 구성이나 시즌 영향이 섞일 수 있으니 보조 지표로만 참고하세요.</div>', unsafe_allow_html=True)
 
         glossary()
@@ -9296,7 +9302,7 @@ def main():
                                h=430,
                                line_suffix=("%" if yc in MTD_PCT else ""),
                                title=f"{xlab}(좌·막대) ↔ {ylab}(우·선)")
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
 
             # ── 두 지표의 상관 — 눈으로만 보면 착시가 생긴다 ──
             _cx = pd.to_numeric(_xv, errors="coerce")
@@ -9537,7 +9543,7 @@ def main():
                 textinfo="value+percent previous",
                 marker=dict(color=[PALETTE["slate"], PALETTE["blue"], PALETTE["purple"]])))
             set_layout(_fig, base_layout(h=320, title="하루 평균 퍼널 (선택 기간 합계 기준 비율)"))
-            st.plotly_chart(_fig, width="stretch")
+            chart(_fig, width="stretch")
             st.markdown('<div class="appendix">막대 옆 %는 <b>바로 앞 단계 대비</b> 남은 비율이에요. '
                         '전사 MTD 기준이라 CRM 발송만 보는 다른 페이지와 값이 달라요. '
                         '비율은 일별 비율의 평균이 아니라 <b>기간 합계끼리 나눈 값</b>이라, '
@@ -9587,7 +9593,7 @@ def main():
             _flay["showlegend"] = True
             _flay["legend"] = legend_h()
             set_layout(_figt, _flay)
-            st.plotly_chart(_figt, width="stretch")
+            chart(_figt, width="stretch")
             st.markdown('<div class="appendix">세 선이 같이 내려가면 발송량·피로도 쪽을, '
                         '<b>유입→구매만</b> 내려가면 랜딩·오퍼 쪽을 먼저 보세요. '
                         '<b>발송→유입만</b> 내려가면 문구·타겟 문제에 가까워요.</div>',
@@ -9603,7 +9609,7 @@ def main():
                     PALETTE["amber"], PALETTE["green"], h=400,
                     bar_suffix="회", line_suffix="원",
                     title="유입 품질 추이")
-                st.plotly_chart(_figq, width="stretch")
+                chart(_figq, width="stretch")
                 st.markdown('<div class="appendix">방문 횟수는 늘었는데 1명당 거래액이 제자리면 '
                             '<b>같은 사람이 여러 번 들어온 것</b>에 가까워요 — 유입 수가 늘어난 것처럼 '
                             '보여도 실제 매출로는 안 이어져요.</div>', unsafe_allow_html=True)
@@ -9714,7 +9720,7 @@ def main():
                                        text=[bar_label(v, mc, mc in MTD_PCT) for v in y], textposition="outside"))
                 set_layout(fig, base_layout(h=340, ysuffix=("%" if mc in MTD_PCT else ""),
                                                 title=f"인당 발송 구간별 평균 {lab} (표본 30일+)"))
-                st.plotly_chart(fig, width="stretch")
+                chart(fig, width="stretch")
 
             # 한계수익 — 같은 구간에서 한 단계 더 늘렸을 때의 증분 (구 F3 페이지 통합)
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -9729,7 +9735,7 @@ def main():
                                        marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in diff],
                                        text=[f"{v:+.2f}" for v in diff], textposition="outside"))
                 set_layout(fig, base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
-                st.plotly_chart(fig, width="stretch")
+                chart(fig, width="stretch")
                 st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 더 보낼수록 반응과 '
                             '효율이 오히려 줄어드는 구간이에요.</div>', unsafe_allow_html=True)
             else:
@@ -9757,7 +9763,7 @@ def main():
                                      bar_suffix=("%" if m1 in MTD_PCT else ""),
                                      line_suffix=("%" if m2 in MTD_PCT else ""),
                                      title="발송량 5분위(Q1 소량→Q5 대량)")
-                st.plotly_chart(fig, width="stretch")
+                chart(fig, width="stretch")
 
         # ── 발송량 최적 구간 ──
         # '감축했다가 다시 올려도 되나'에 답하는 화면. 총량은 늘고 효율은 떨어지는 게
@@ -9816,7 +9822,7 @@ def main():
                                      MCLR["revenue"], MCLR["rps"], h=420,
                                      bar_suffix="억", line_suffix="원",
                                      title="인당 발송 구간별 — 총량(위) vs 효율(아래)")
-                st.plotly_chart(fig, width="stretch")
+                chart(fig, width="stretch")
                 _ob_peak = str(_ob_b.loc[_ob_b["revenue"].idxmax(), "bucket"])
                 if _ob_peak == str(_ob_b["bucket"].iloc[-1]):
                     st.markdown('<div class="appendix">일평균 거래액이 <b>가장 높은 구간이 관측된 '
@@ -9933,7 +9939,7 @@ def main():
                         hovertemplate="%{x}<br>" + _ob_lab + ": %{y:,.2f}<br>발송 %{customdata:,}건<extra></extra>"))
                     set_layout(fig, base_layout(h=380, ysuffix=("%" if _ob_pct else ""),
                                                     title=f"발송유형별 {_ob_lab}"))
-                    st.plotly_chart(fig, width="stretch")
+                    chart(fig, width="stretch")
                     _ob_show = _ob_g[["_styp", "cnt", "send", "rps", "infl_cr", "ord_cr", "aov", "amt"]].copy()
                     _ob_show.columns = ["발송유형", "캠페인 수", "발송", "RPS", "CTR", "주문CR", "객단가", "거래액"]
                     _ob_show["CTR"] = _ob_show["CTR"] * 100
@@ -9976,7 +9982,7 @@ def main():
                                    text=[bar_label(v, mc, mc in MTD_PCT) for v in y], textposition="outside"))
             set_layout(fig, base_layout(h=320, ysuffix=("%" if mc in MTD_PCT else ""),
                                             title=f"요일별 평균 {lab}"))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             dc = pd.DataFrame(mtd_data["dow_comp"])
             if len(dc):
                 st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -10038,7 +10044,7 @@ def main():
             lay["showlegend"] = True
             lay["xaxis"]["ticksuffix"] = "%"; lay["yaxis"]["ticksuffix"] = "%"
             set_layout(fig, lay)
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             qsum = d["사분면"].value_counts().reset_index()
             qsum.columns = ["사분면", "캠페인수"]
             table(qsum.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch", dl_name="① CTR vs 주문전환율")
@@ -10081,7 +10087,7 @@ def main():
             lay = base_layout(h=420, title="주문CR(많이) × AOV(비싸게) — 점 크기=거래액")
             lay["xaxis"]["ticksuffix"] = "%"
             set_layout(fig, lay)
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             gs = gg.sort_values("거래액", ascending=False).copy()
             gs["전략"] = [("박리다매(전환↑·객단↓)" if cr >= mcr and av < mav else
                           "고가저빈도(전환↓·객단↑)" if cr < mcr and av >= mav else
@@ -10299,7 +10305,7 @@ def main():
             lay = base_layout(h=max(280, 40 + 28 * len(g)), title=f"{title} — 평균 {mlabel} (빨간선=전체평균)")
             lay["xaxis"]["range"] = bar_xrange(yv, 1.22)
             set_layout(fig, lay); fig.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             gs = g.copy()
             gs["지표"] = gs["지표"].map(lambda v: f"{v*100:.2f}%" if is_pct else (won(v) if mcol in ("rps", "aov", "amt") else f"{v:,.1f}"))
             gs["거래액"] = gs["거래액"].map(won)
@@ -10594,7 +10600,7 @@ def main():
                 lay = base_layout(h=300, title="기여율 분포 (200% 초과는 200%로 표시)")
                 set_layout(fig, lay)
                 fig.update_xaxes(ticksuffix="%")
-                st.plotly_chart(fig, width="stretch")
+                chart(fig, width="stretch")
                 show = a.sort_values("기여율", ascending=False)
                 st.markdown("**기여율 우수 기획전 — 발송 주도형 매출**")
                 table(promo_perf_table(show.head(15)),
@@ -10648,7 +10654,7 @@ def main():
             fig = go.Figure(go.Bar(x=["발송함", "발송안함"], y=[sset.mean(), uset.mean()],
                                    marker_color=[PALETTE["green"], PALETTE["slate"]]))
             set_layout(fig, base_layout(h=320, title=f"발송 유무별 평균 {base_lbl}"))
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
             p = welch(sset.dropna().values, uset.dropna().values)
             st.caption(f"평균 차이 통계 유의성: {sig_label(p)} · 발송 {len(sset):,}건 vs 미발송 {len(uset):,}건")
             st.markdown('<div class="appendix">평균은 초대형 기획전 하나에 크게 휘둘려요. 중앙값도 같이 보세요. 발송한 쪽 매출이 월등히 높다면 발송 효과인지, 원래 큰 기획전만 골라 보낸 건지는 따로 검증해야 알 수 있어요.</div>',
@@ -10678,7 +10684,7 @@ def main():
                 lay["showlegend"] = True
                 lay["legend"] = legend_h()
                 set_layout(fig, lay)
-                st.plotly_chart(fig, width="stretch")
+                chart(fig, width="stretch")
                 cnt = P2.groupby(["월", "발송"]).size().reset_index(name="기획전수")
                 figc = go.Figure()
                 for flag, name, clr in [(True, "발송 기획전", PALETTE["green"]),
@@ -10690,7 +10696,7 @@ def main():
                 layc["showlegend"] = True
                 layc["legend"] = legend_h()
                 set_layout(figc, layc)
-                st.plotly_chart(figc, width="stretch")
+                chart(figc, width="stretch")
                 st.caption("기획전 시작월 기준으로 묶었어요. 발송을 본격적으로 돌린 시점 전후로 녹색 선이 어떻게 움직였는지 보세요.")
 
         glossary()
@@ -10763,7 +10769,7 @@ def main():
             laym = base_layout(h=260, title="주차별 문구 매칭률(%) — 80% 미만 주는 빨강")
             laym["yaxis"]["range"] = [0, 108]
             set_layout(figm, laym)
-            st.plotly_chart(figm, width="stretch")
+            chart(figm, width="stretch")
             _low = wk_m[wk_m["매칭률"] < 0.8]
             if len(_low):
                 st.caption("⚠️ 매칭률 80% 미만 주: "
@@ -10983,7 +10989,7 @@ def main():
         lay_consent["yaxis"]["gridcolor"] = "#f1f5f9"
         lay_consent["yaxis"]["title"] = "수신동의 수"
         set_layout(fig_consent, lay_consent)
-        st.plotly_chart(fig_consent, width="stretch")
+        chart(fig_consent, width="stretch")
 
         # ── 차트 1-b: 연중 추이 (전년 비교) + 증감 속도 코멘트 ──
         # 연중 비교이므로 위 '기간' 필터는 적용하지 않는다(잘라내면 연중 곡선이 무의미).
@@ -11025,7 +11031,7 @@ def main():
             _lay_yoy["xaxis"]["dtick"] = "M1"
             _lay_yoy["yaxis"]["title"] = "수신동의 수"
             set_layout(fig_yoy, _lay_yoy)
-            st.plotly_chart(fig_yoy, width="stretch")
+            chart(fig_yoy, width="stretch")
 
         # 증감 속도 코멘트 — 세 그룹 모두 (기존은 빠지는데 신규가 메우는지 한눈에)
         for _grp in ("Total", "기존", "신규"):
@@ -11068,7 +11074,7 @@ def main():
         lay_addrem["yaxis"]["zerolinecolor"] = "#cbd5e1"
         lay_addrem["yaxis"]["title"] = "명"
         set_layout(fig_addrem, lay_addrem)
-        st.plotly_chart(fig_addrem, width="stretch")
+        chart(fig_addrem, width="stretch")
 
         # ── 차트 3: 주간 순증감 바차트 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -11108,7 +11114,7 @@ def main():
             lay_wk["xaxis"]["tickformat"] = "%Y-%m"  # 연도-월 형태로 눈금 깔끔하게 포맷
             lay_wk["xaxis"]["dtick"] = "M3"  # 3개월 간격으로 격자선 및 눈금 표시
             set_layout(fig_wk, lay_wk)
-            st.plotly_chart(fig_wk, width="stretch")
+            chart(fig_wk, width="stretch")
 
         # ── 차트 4: 기존 vs 신규 동의수 비교 (스택 영역) ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -11141,7 +11147,7 @@ def main():
             lay_stack["yaxis"]["gridcolor"] = "#f1f5f9"
             lay_stack["yaxis"]["title"] = "수신동의 수"
             set_layout(fig_stack, lay_stack)
-            st.plotly_chart(fig_stack, width="stretch")
+            chart(fig_stack, width="stretch")
 
         # ── 크로스 분석: 발송 강도(MTD) ↔ 수신동의 증감 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
@@ -11194,7 +11200,7 @@ def main():
                         PALETTE["slate"], PALETTE["purple"], h=440,
                         line_suffix="명",
                         title=f"{_gran} {_sendlab}(좌·막대) ↔ 수신동의 순증감(우·선)")
-                    st.plotly_chart(fig_x, width="stretch")
+                    chart(fig_x, width="stretch")
 
                     # 상관 + 산점도(추세선) — 발송 강도 vs 순증감
                     x = mrg["발송지표"].values.astype(float)
@@ -11223,7 +11229,7 @@ def main():
                         lay_sc["yaxis"]["zeroline"] = True
                         lay_sc["yaxis"]["zerolinecolor"] = "#cbd5e1"
                         set_layout(fig_sc, lay_sc)
-                        st.plotly_chart(fig_sc, width="stretch")
+                        chart(fig_sc, width="stretch")
 
                         if r <= -0.3:
                             _msg = ("발송이 많은 기간일수록 순증감이 낮아져요 — <b>발송 피로로 동의가 "
@@ -11604,7 +11610,7 @@ def main():
                     hovertemplate="%{x}<br>CTR 차이 %{y:+.2f}%p<br>"
                                   "변경 %{customdata[0]}건 · 그대로 %{customdata[1]}건<extra></extra>"))
                 set_layout(_fg, base_layout(h=300, title="발송유형별 CTR 차이 (변경 − 그대로)"))
-                st.plotly_chart(_fg, width="stretch")
+                chart(_fg, width="stretch")
                 table(_sdf.style.format({
                     "변경 CTR": "{:.2f}%", "그대로 CTR": "{:.2f}%", "CTR 차이(%p)": "{:+.2f}",
                     "변경 RPS": "{:,.0f}", "그대로 RPS": "{:,.0f}",
@@ -11834,7 +11840,7 @@ def main():
             _kt_bar.add_hline(y=100, line_dash="dot", line_color="#94a3b8")
             set_layout(_kt_bar, base_layout(
                 h=320, title="영업 세일즈 푸시를 100으로 뒀을 때 컨틴 (100 위면 컨틴이 나음)"))
-            st.plotly_chart(_kt_bar, width="stretch")
+            chart(_kt_bar, width="stretch")
             table(pd.DataFrame(_kt_rows).style.map(
                 lambda v: (f"color:{DELTA_DN};font-weight:600" if str(v).startswith("△")
                            else f"color:{DELTA_UP};font-weight:600" if str(v).startswith("+")
@@ -11910,7 +11916,7 @@ def main():
                 set_layout(_ft, base_layout(
                     h=320, title=(f"소구 속성별 {_mlab}" if _is_total
                                   else f"소구 속성별 {_mlab} 리프트 (기준 {_mtxt(_bm)})")))
-                st.plotly_chart(_ft, width="stretch")
+                chart(_ft, width="stretch")
                 _tfmt = {"건수": "{:,.0f}", "CTR": "{:.2f}%", "RPS": "{:,.0f}",
                          _lift_lab: ("{:,.0f}" if _is_total else
                                      ("{:+.2f}" if _munit == "%" else "{:+,.0f}"))}
@@ -11972,7 +11978,7 @@ def main():
                 hovertemplate="%{x|%Y-%m}<br>남은발송 %{y:.1f}%<br>"
                               "%{customdata[0]}건 / %{customdata[1]}건<extra></extra>"))
             set_layout(_fm, base_layout(h=280, title="월별 남은발송 비중 (%)", hover="x"))
-            st.plotly_chart(_fm, width="stretch")
+            chart(_fm, width="stretch")
             if len(_mpart):
                 st.caption("발송이 몇 건뿐인 달 "
                            + ", ".join(f"{pd.Timestamp(_d):%Y-%m}" for _d in _mpart["월"])
@@ -12085,7 +12091,7 @@ def main():
                                  title="월 발송량(위)과 남은발송 비중(아래)")
             fig.add_vline(x=_pf_cut_ts, line_dash="dot", line_color="#94a3b8")
             fig.update_xaxes(type="date", tickformat="%y/%m")
-            st.plotly_chart(fig, width="stretch")
+            chart(fig, width="stretch")
         else:
             st.caption(f"월별로 캠페인 20건 넘는 달이 {len(_pf_mg)}개뿐이라 추이는 생략했어요.")
         _pf_rb = _pf[(_pf["dt"] >= _pf_lo) & (_pf["dt"] < _pf_cut_ts)]
@@ -12174,7 +12180,7 @@ def main():
         _pf_lay["legend"] = legend_h()
         _pf_lay["barmode"] = "group"
         set_layout(fig, _pf_lay)
-        st.plotly_chart(fig, width="stretch")
+        chart(fig, width="stretch")
 
         _pf_show = _pf_t.copy()
         _pf_show.columns = ["우선순위", "전 캠페인", "후 캠페인", f"전 {_pf_lab}",
@@ -12425,7 +12431,7 @@ def main():
             set_layout(fig, base_layout(h=380,
                                             title=f"{_sv_ch} · {_sv_dev} — {_sv_mlab}"))
         fig.update_xaxes(**_sv_ax)
-        st.plotly_chart(fig, width="stretch")
+        chart(fig, width="stretch")
         if not _sv_avg and _sv_unit != "일별":
             st.caption("합계로 보고 있어요. 진행 중인 마지막 구간은 날짜 수가 모자라 낮게 보여요.")
         if _sv_unit != "일별" and _sv_avg:
@@ -12500,7 +12506,7 @@ def main():
                                  tickfont=dict(color="#64748b", size=9))
             for _an in _sv_fig.layout.annotations:
                 _an.font.size = 12
-            st.plotly_chart(_sv_fig, width="stretch")
+            chart(_sv_fig, width="stretch")
             st.caption(f"패널마다 세로축이 달라요 — 채널끼리 높이를 비교하지 말고 **각 채널의 "
                        f"모양과 전년 격차**를 보세요. 디바이스는 **{_sv_dev}** 로 고정했어요."
                        + ("" if _SV_YN else " 비교를 켜면 전년 선이 겹쳐 그려져요."))
@@ -12549,7 +12555,7 @@ def main():
                 _pl = base_layout(h=330, title=f"{_plab} ({_prng})")
                 _pl.pop("xaxis", None); _pl.pop("yaxis", None)
                 set_layout(_fig, _pl)
-                _col.plotly_chart(_fig, width="stretch")
+                chart(_fig, width="stretch", _to=_col)
             if len(_sv_pies) > 1:
                 _tn, _ta = sum(_sv_now.values()), sum(_sv_ago.values())
                 _sh = []
