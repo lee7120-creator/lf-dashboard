@@ -3,6 +3,10 @@ name: "대시보드 검사"
 # 머지 전에 '열자마자 죽는' 회귀를 막는다.
 # 2026-07 전역 헬퍼 섀도잉(`_s`) 사고로 11개 페이지가 전부 다운된 적이 있어서,
 # 정적 검사(빠름) + 전 페이지 실제 렌더(느리지만 확실) 두 겹으로 본다.
+#
+# 검사 목록은 여기 적지 않는다 — **`tests/ci_shards.py` 한곳**이다. 워크플로에
+# 또 적으면 새 검사를 한쪽에만 넣었을 때 **CI에서 조용히 빠진다**. 관문(gate)이
+# `--verify`로 표와 `tests/` 디렉터리를 대조하고, 샤드 목록도 `--matrix`가 준다.
 
 on:
   pull_request:
@@ -29,6 +33,7 @@ on:
       - "table_export.py"
       - "requirements.txt"
       - "tests/**"
+      - ".github/workflows/dashboard-ci.yml"
   workflow_dispatch:
 
 concurrency:                      # 같은 PR에 연달아 푸시하면 이전 실행은 취소
@@ -36,12 +41,14 @@ concurrency:                      # 같은 PR에 연달아 푸시하면 이전 �
   cancel-in-progress: true
 
 jobs:
-  check:
+  # ── 관문 ─────────────────────────────────────────────────────────────
+  # 몇 초짜리 정적 검사만 먼저 본다. 문법이 깨졌으면 러너 셋을 11분씩 태우지
+  # 않고 1분에 끝낸다. 샤드 목록도 여기서 꺼내 아래 매트릭스에 넘긴다.
+  gate:
     runs-on: ubuntu-latest
-    # 검사 단계만 19분 33초까지 늘었다(2026-09-09, f2b5760). 20분이면 마지막
-    # 주간보고 스모크가 성공 메시지를 찍은 직후 벽에 잘려 '취소'로 끝난다 —
-    # 전부 통과했는데 빨간불로 보여서 원인이 안 드러난다. 여유를 두고 40분.
-    timeout-minutes: 40
+    timeout-minutes: 15
+    outputs:
+      shards: ${{ steps.shards.outputs.ids }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,68 +66,56 @@ jobs:
                                  chart_layout.py note_markdown.py note_editor.py \
                                  table_export.py
 
+      - name: 샤드 표 ↔ 검사 디렉터리 대조
+        run: python tests/ci_shards.py --verify
+
       - name: 전역 헬퍼 섀도잉 검사
-        run: python tests/check_shadowing.py
+        run: python tests/ci_shards.py --run gate
 
-      - name: 실적↔기획 문구 조인 검사
-        run: python tests/test_plan_merge.py
+      - name: 샤드 목록
+        id: shards
+        run: echo "ids=$(python tests/ci_shards.py --matrix)" >> "$GITHUB_OUTPUT"
 
-      - name: 브랜드 자동 분류 검사
-        run: python tests/test_brand_classify.py
+  # ── 샤드 ─────────────────────────────────────────────────────────────
+  # 직렬 30분을 셋으로 나눠 동시에 돈다. 벽시계의 바닥은 «제일 느린 파일 하나»
+  # (`test_weekly_perf` 10.8분)라 더 쪼개도 안 줄어든다.
+  tests:
+    needs: gate
+    runs-on: ubuntu-latest
+    # 제일 긴 샤드가 11분쯤이다. 러너가 느린 날을 감안해 두 배 남짓 둔다.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false            # 한 샤드가 깨져도 나머지 결과를 같이 본다
+      matrix:
+        shard: ${{ fromJSON(needs.gate.outputs.shards) }}
+    name: "검사 샤드 ${{ matrix.shard }}"
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: 저장소 계층(dtype 방어) 검사
-        run: python tests/test_store_layer.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
 
-      - name: 표 엑셀 내보내기 검사
-        run: python tests/test_table_export.py
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
 
-      - name: 발송 시간대 보정 검사
-        run: python tests/test_hour_norm.py
+      - name: 샤드 ${{ matrix.shard }} 실행
+        run: python tests/ci_shards.py --run ${{ matrix.shard }}
 
-      - name: 문구 개선 효과(기획시트 W·X) 검사
-        run: python tests/test_copy_effect.py
-
-      - name: 보고란 에디터(HTML→마크다운 이행) 검사
-        run: python tests/test_note_editor.py
-
-      - name: 리런 상시 비용(사전 캐시·지연 다운로드) 검사
-        run: python tests/test_rerun_cost.py
-
-      - name: 발송성과 전 페이지 렌더 스모크
-        run: python tests/smoke_pages.py
-
-      - name: 주간보고 기간 단위(일/주/월)·값 기준 검사
-        run: python tests/test_weekly_perf.py
-
-      - name: 주간보고 요약 상단(필터 바·요약 타일·KPI 목표·메모) 검사
-        run: python tests/test_summary_top.py
-
-      - name: 업로드 후 기간 필터·레이블 검사
-        run: python tests/test_filter_follows_upload.py
-
-      - name: 발송량 최적 구간(MTD·앱푸시 결합) 검사
-        run: python tests/test_send_volume_band.py
-
-      - name: 우선순위·발송 감축 효과 검사
-        run: python tests/test_prio_reduction.py
-
-      - name: 사이트 회원UV·거래액 검사
-        run: python tests/test_site_metrics.py
-
-      - name: 목표 CTR 역산 검사
-        run: python tests/test_target_ctr.py
-
-      - name: 유입 퍼널(유니크유입 파생·단계 비율) 검사
-        run: python tests/test_inflow_funnel.py
-
-      - name: 첫구매 퍼널별 상세 실적(비율 출처·채널 분해) 검사
-        run: python tests/test_funnel_page.py
-
-      - name: 조직×카테고리(구분06×구분07) 검사
-        run: python tests/test_orgcat.py
-
-      - name: 브랜드·상품 원장(결제 원장) 검사
-        run: python tests/test_detail.py
-
-      - name: 주간보고 전 페이지 렌더 스모크
-        run: python tests/smoke_weekly_report.py
+  # ── 합류 ─────────────────────────────────────────────────────────────
+  # 브랜치 보호에 걸 검사는 이것 하나다. 샤드가 늘고 줄어도 이름이 안 바뀐다.
+  all-green:
+    if: always()
+    needs: [gate, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 관문·샤드 결과 확인
+        run: |
+          echo "관문: ${{ needs.gate.result }} / 샤드: ${{ needs.tests.result }}"
+          [ "${{ needs.gate.result }}" = "success" ] \
+            || { echo "::error::관문이 통과하지 못했어요"; exit 1; }
+          [ "${{ needs.tests.result }}" = "success" ] \
+            || { echo "::error::검사 샤드가 통과하지 못했어요"; exit 1; }
+          echo "전부 초록 ✅"

@@ -1127,16 +1127,22 @@ def t_unique_inflow_reads_only_the_elapsed_days():
     from test_send_volume_band import synth_mtd
     LOW, HIGH = 1_000.0, 90_000.0
 
+    m = synth_mtd(days=700)
+    mdt = pd.to_datetime(m["date"])
+
     d = STORE.copy()
     dt = pd.to_datetime(d["date"], format="%Y%m%d")
     end = dt.max().normalize()
     while end.weekday() != 2:                      # 수요일 — 주 한가운데라 반드시 부분 주
         end -= pd.Timedelta(days=1)
+    # 두 픽스처가 다 «오늘»에서 끝나므로, 오늘이 수요일이면 자를 게 한 칸도 안 남는다
+    # — 캠페인 끝과 MTD 끝이 같은 날이 되어 '실적 없는 날'이 안 생기고, 아래 반증
+    # 가드가 걸린다(2026-10-14 수요일에 CI가 그렇게 빨간불이 났다). 한 주씩 민다.
+    while end >= mdt.max().normalize():
+        end -= pd.Timedelta(days=7)
     camp = d[dt <= end].reset_index(drop=True)
     assert len(camp), "픽스처를 너무 많이 잘랐어요"
 
-    m = synth_mtd(days=700)
-    mdt = pd.to_datetime(m["date"])
     m["uniqueInflow"] = [HIGH if x > end else LOW for x in mdt]
     # 픽스처가 규칙을 반증하는지 먼저 확인 — 기준 주 안에 '실적 없는 날'이 있어야
     # 자르고 안 자르고가 갈린다
