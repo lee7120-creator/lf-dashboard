@@ -2577,6 +2577,108 @@ def change_digest(cur, prev, dims=DIGEST_DIMS, ratios=DIGEST_RATIOS,
             .reset_index(drop=True))
 
 
+# ── 플레이북 슬롯 추천 + 되짚기(백테스트) ──────────────────────────────
+# 「발송 플레이북」은 지난 성과로 (요일 × 시간) 슬롯을 추천하는데, **맞았는지 아무도
+# 안 본다.** 되짚기가 없으면 추천을 믿을 근거도, 고칠 근거도 안 쌓인다.
+#
+# **추천 규칙은 여기 한 곳이다.** 백테스트가 랭킹을 따로 짜면 화면이 추천하지 «않은»
+# 걸 재게 되고, 숫자는 멀쩡히 나오는데 뜻이 없다 — 이 저장소의 1번 실패 모양이다.
+PLAYBOOK_TOP = 8              # 화면이 세우는 슬롯 수
+PLAYBOOK_MIN_CAMP = 2         # 슬롯 하나의 최소 캠페인 수
+BT_MIN_WEEKS = 8              # 이만큼 못 모으면 **판정하지 않는다**
+BT_TRAIN_WEEKS = 4            # 추천을 만들 최소 학습 주 수
+
+
+def playbook_slots(d, gcol, top=PLAYBOOK_TOP, min_camp=PLAYBOOK_MIN_CAMP):
+    """(요일, 시간) 슬롯 추천 목록 — **화면과 백테스트가 같이 본다.**
+
+    순위는 `rank_adjusted`(표본 보정)다. 캠페인 몇 건짜리 슬롯의 요행이 1등을
+    먹으면 추천이 곧 소음이 된다.
+    """
+    if d is None or not len(d) or "dow_k" not in d or "hour" not in d:
+        return []
+    g = (d.dropna(subset=["hour"]).groupby(["dow_k", "hour"])
+         .agg(n=("hour", "size"), uv=("uv", "sum"), oc=("oc", "sum"),
+              send=("send", "sum"), amt=("amt", "sum"),
+              **{gcol: (gcol, "mean")} if gcol not in ("uv", "oc", "send", "amt") else {}))
+    if not len(g):
+        return []
+    g = g[g["n"] >= min_camp]
+    if not len(g):
+        return []
+    rk = rank_adjusted(g.reset_index(), gcol, ascending=False)
+    g = g.assign(_rk=rk.values).sort_values("_rk", ascending=False)
+    return [(str(a), b) for a, b in g.index[:top]]
+
+
+def backtest_slots(df, gcol, top=PLAYBOOK_TOP, min_camp=PLAYBOOK_MIN_CAMP,
+                   train_weeks=BT_TRAIN_WEEKS):
+    """전진식 되짚기 — 「그 주 «전»까지의 데이터로 추천했다면 어땠나」.
+
+    **학습 창은 평가 주 시작 «전»으로 엄격히 자른다.** 평가 주를 한 줄이라도 학습에
+    넣으면 백테스트는 언제나 멋진 숫자를 낸다 — 백테스트가 거짓말하는 1번 경로다.
+    그래서 결과에 **그 주에 쓴 추천 목록(`추천`)을 같이 실어** 밖에서 되계산해
+    대조할 수 있게 한다 (`t_recommendation_uses_only_past_data`).
+
+    반환: 주마다 한 줄 — 주 · 추천 · 추천 슬롯 지표 · 나머지 지표 · 리프트 · 양쪽 건수.
+    비교 기준은 **그 주의 나머지 발송**이다. 전체 평균과 맞대면 추천분이 분모에도
+    들어가 리프트가 저절로 깎인다.
+    """
+    cols = ["주", "추천", "추천 지표", "나머지 지표", "리프트", "추천 건수", "나머지 건수"]
+    if df is None or not len(df) or "dow_k" not in df or "hour" not in df:
+        return pd.DataFrame(columns=cols)
+    d = df.copy()
+    d["_dt"] = pd.to_datetime(d["date"], format="%Y%m%d", errors="coerce")
+    d = d.dropna(subset=["_dt"])
+    if not len(d):
+        return pd.DataFrame(columns=cols)
+    d["_wk"] = d["_dt"].dt.to_period("W-SUN").dt.start_time
+    wks = sorted(d["_wk"].unique())
+    rows = []
+    for i, w in enumerate(wks):
+        if i < train_weeks:
+            continue
+        train = d[d["_wk"] < w]                      # ← **엄격히 «전»까지만**
+        rec = playbook_slots(train, gcol, top=top, min_camp=min_camp)
+        if not rec:
+            continue
+        cur = d[d["_wk"] == w]
+        key = list(zip(cur["dow_k"].astype(str), cur["hour"]))
+        inn = cur[[k in rec for k in key]]
+        out = cur[[k not in rec for k in key]]
+        if not len(inn) or not len(out):
+            continue                                  # 한쪽이 비면 맞댈 게 없다
+        a, b = float(inn[gcol].mean()), float(out[gcol].mean())
+        if not (np.isfinite(a) and np.isfinite(b)):
+            continue
+        rows.append({"주": w, "추천": rec, "추천 지표": a, "나머지 지표": b,
+                     "리프트": a - b, "추천 건수": len(inn), "나머지 건수": len(out)})
+    return pd.DataFrame(rows, columns=cols)
+
+
+def backtest_verdict(bt, min_weeks=BT_MIN_WEEKS):
+    """주별 리프트를 모아 **판정**한다 — 부호검정(이항).
+
+    평균만 보면 한두 주의 큰 값이 결론을 만든다. 「몇 주 중 몇 주를 이겼나」를
+    이항검정으로 보면 그 왜곡이 줄고, 해석도 쉽다.
+
+    주 수가 모자라면 **판정하지 않는다**(`verdict=None`). 적은 표본으로 판정하는 게
+    이 화면에서 가장 쉽게 거짓말하는 길이다.
+    """
+    import scipy.stats as ss
+    n = len(bt)
+    if n < min_weeks:
+        return {"n": n, "verdict": None, "wins": None, "p": None, "mean": None,
+                "why": f"평가할 주가 {n}개뿐이에요 (최소 {min_weeks}주)"}
+    wins = int((bt["리프트"] > 0).sum())
+    p = float(ss.binomtest(wins, n, 0.5).pvalue)
+    mean = float(bt["리프트"].mean())
+    good = wins > n / 2 and p < 0.05
+    return {"n": n, "verdict": bool(good), "wins": wins, "p": p, "mean": mean,
+            "why": ("추천 슬롯이 나머지보다 꾸준히 나았어요" if good else
+                    "추천이 나머지보다 낫다고 보기 어려워요")}
+
+
 def ols_effects(df, attr_cols, ctrl_cols, ycol):
     """속성(0/1) + 통제변수(카테고리·시간대 등 더미) 다중회귀 → 속성별 '순효과' 계수·표준오차·p값.
 
@@ -10280,9 +10382,13 @@ def main():
             slot = base.dropna(subset=["hour"]).groupby(["dow_k", "hour"]).agg(
                 캠페인수=("hour", "size"), 지표=(gcol, "mean"), 발송=("send", "sum"),
                 _uv=("uv", "sum"), _oc=("oc", "sum"), _amt=("amt", "sum")).reset_index()
-            _sf = slot.rename(columns={"_uv": "uv", "_oc": "oc", "발송": "send", "_amt": "amt"})
-            slot["_rk"] = rank_adjusted(_sf, gcol, ascending=False).values
-            slot = slot[slot["캠페인수"] >= 2].sort_values("_rk", ascending=False).head(8)
+            # 순위는 **`playbook_slots`가 정한다** — 아래 되짚기와 같은 함수를 봐야
+            # 「화면이 추천한 것」을 되짚게 된다. 여기서 따로 정렬하면 둘이 갈린다.
+            _rec = playbook_slots(base, gcol)
+            _rank = {k: i for i, k in enumerate(_rec)}
+            slot["_rk"] = [_rank.get((str(a), b), 10 ** 9)
+                           for a, b in zip(slot["dow_k"], slot["hour"])]
+            slot = slot[slot["_rk"] < 10 ** 9].sort_values("_rk")
             if len(slot):
                 sshow = slot.copy()
                 sshow["시간"] = sshow["hour"].map(fmt_hhmm)
@@ -10292,6 +10398,42 @@ def main():
                              hide_index=True, width="stretch", dl_name="추천 발송 슬롯 (요일 × 시간)")
             else:
                 st.caption("슬롯 데이터가 부족해요.")
+
+        # ── 되짚기 — 「그 주 전까지의 데이터로 추천했다면 어땠나」 ──
+        st.markdown("##### 🔁 추천이 맞았는지 되짚기")
+        _bt = backtest_slots(base, gcol)
+        _vd = backtest_verdict(_bt)
+        if _vd["verdict"] is None:
+            st.info(f"아직 되짚을 게 부족해요 — {_vd['why']}. 주가 쌓이면 여기서 "
+                    "추천이 맞았는지 보여드려요.")
+        else:
+            if _vd["verdict"]:
+                st.success(f"**{_vd['n']}주 중 {_vd['wins']}주**에서 추천 슬롯이 나머지보다 "
+                           f"나았어요 (부호검정 p={_vd['p']:.3f}). {_vd['why']}.")
+            else:
+                st.warning(f"**{_vd['n']}주 중 {_vd['wins']}주**만 추천 슬롯이 나았어요 "
+                           f"(부호검정 p={_vd['p']:.3f}). {_vd['why']} — 지금 추천을 "
+                           "실행 근거로 쓰기엔 일러요.")
+            _btv = _bt.assign(주=_bt["주"].dt.strftime("%Y-%m-%d"))
+            _btv["추천 슬롯 수"] = _bt["추천"].map(len)
+            _btv = _btv.drop(columns=["추천"])
+            for _c in ("추천 지표", "나머지 지표", "리프트"):
+                _btv[_c] = _btv[_c].map(_fmtv)
+            table(_btv[["주", "추천 슬롯 수", "추천 건수", "나머지 건수",
+                        "추천 지표", "나머지 지표", "리프트"]]
+                  .style.format({"추천 슬롯 수": "{:,.0f}", "추천 건수": "{:,.0f}",
+                                 "나머지 건수": "{:,.0f}"}),
+                  hide_index=True, width="stretch",
+                  height=min(38 + 35 * len(_btv), 420), dl_name="추천 되짚기")
+        st.markdown(
+            '<div class="appendix"><b>전진식으로 되짚어요.</b> 주마다 «그 주 시작 전»까지의 '
+            '데이터로만 추천을 만들어, 그 주에 실제로 그 슬롯으로 나간 발송과 '
+            '<b>나머지 발송</b>을 맞대요. 평가 주를 학습에 한 줄이라도 넣으면 백테스트는 '
+            '언제나 멋진 숫자를 내요. 전체 평균이 아니라 «나머지»와 맞대는 건, 전체엔 '
+            '추천분이 같이 들어 있어 리프트가 저절로 깎이기 때문이에요. 주 수가 모자라면 '
+            '<b>판정하지 않아요</b> — 적은 표본으로 판정하는 게 제일 쉽게 거짓말하는 '
+            '길이라서요. 관측 데이터라 <b>인과가 아니라 상관</b>이에요.</div>',
+            unsafe_allow_html=True)
 
         st.markdown("##### 💡 추천 소구 및 리프트 성과")
         trows = []
