@@ -70,12 +70,13 @@ GATE = ["check_shadowing"]
 SHARDS = {
     "1": ["test_weekly_perf"],
     "2": ["test_funnel_page", "smoke_pages", "test_prio_reduction",
-          "test_detail", "test_rerun_cost", "test_summary_top", "test_plan_merge",
+          "test_detail", "smoke_weekly_report", "test_rerun_cost",
+          "test_summary_top", "test_plan_merge",
           "test_table_export", "test_hour_norm"],
     "3": ["test_send_volume_band", "test_site_metrics", "test_filter_preset",
           "test_filter_propagation",
           "test_inflow_funnel", "test_filter_follows_upload", "test_target_ctr",
-          "smoke_weekly_report", "test_orgcat", "test_store_layer",
+          "test_orgcat", "test_store_layer",
           "test_brand_classify", "test_note_editor", "test_copy_effect"],
 }
 

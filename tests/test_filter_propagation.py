@@ -26,6 +26,7 @@
 """
 import base64
 import json
+import os
 import pathlib
 import sys
 
@@ -117,6 +118,39 @@ def _open(tab, store, **sess):
     return at
 
 
+def perf_page(tab, weeks=60, seed=5, **fixed):
+    """발송성과 화면 하나를 여는 함수를 만든다.
+
+    픽스처가 **1년을 넘어야** 한다 — 60주 미만이면 전년 짝이 없어 「전년 동요일
+    비교」의 소구 블록이 아예 안 그려지고, 계약이 덮는 게 0인 채로 초록이 된다.
+    """
+    store = synth_store(weeks=weeks, seed=seed)
+
+    def _o(**sess):
+        return _open(tab, store, **{**fixed, **sess})
+    return _o
+
+
+def weekly_funnel_page(unit, store=None):
+    """주간보고 「02. 첫구매 퍼널별 상세 실적」을 여는 함수.
+
+    저쪽 앱은 저장소가 **cwd 기준 CSV**라 하네스가 임시 폴더로 들어간다
+    (`test_funnel_page._open`). 돌아오는 건 `check`가 맡는다 — 중간에 돌아오면
+    다음 `at.run()`부터 저장소가 통째로 사라져 「데이터가 없어요」 화면을 보고
+    통과해 버린다.
+    """
+    def _o(**sess):
+        import test_funnel_page as F
+        at = F._open(store=store, unit=unit)
+        for k, v in sess.items():
+            at.session_state[k] = v
+        if sess:
+            at.run()
+        assert not at.exception, at.exception[0].value
+        return at
+    return _o
+
+
 def _diff(a, b):
     """두 스냅샷을 **자리별로** 맞댄다. 블록 수가 달라지면 그것부터 말한다."""
     assert len(a) == len(b), (
@@ -128,20 +162,24 @@ def _diff(a, b):
     return same, moved
 
 
-def check(tab, ctrl_key, values, stays_below=(), follows_above=(),
-          store=None, **sess):
+def check(tab, opener, ctrl_key, values, stays_below=(), follows_above=()):
     """컨트롤 하나의 «전파 계약»을 확인한다.
 
-    `stays_below` — 아래인데 **안 바뀌어도 되는** 블록(이름 조각 → 이유).
+    `values` — 넣어 볼 두 값. 화면에서 읽어야 하면 `(at) -> (a, b)` 함수로 준다
+    (범위 슬라이더처럼 선택지가 데이터에서 나오는 경우).
+    `stays_below` — 아래인데 **안 바뀌어도 되는** 블록(이름 조각).
     `follows_above` — 위인데 **바뀌어도 되는** 블록. 둘 다 적은 게 실제로 화면에
     나와야 한다. 블록을 지우고 목록만 남으면 그 줄이 썩은 채로 규칙을 느슨하게
     만드는데, 증상이 없어서 영영 안 드러난다.
     """
-    store = synth_store(weeks=60, seed=5) if store is None else store
-    snaps = []
-    for v in values:
-        at = _open(tab, store, **{ctrl_key: v}, **sess)
-        snaps.append(_snap(at, ctrl_key))
+    cwd = os.getcwd()
+    try:
+        if callable(values):
+            values = values(opener())
+        assert len(values) == 2, f"값 두 개가 필요해요 — {values}"
+        snaps = [_snap(opener(**{ctrl_key: v}), ctrl_key) for v in values]
+    finally:
+        os.chdir(cwd)
     (ab_a, be_a), (ab_b, be_b) = snaps
 
     def _hit(exc, la, lb):
@@ -175,6 +213,14 @@ def check(tab, ctrl_key, values, stays_below=(), follows_above=(),
 # 전파 계약
 # ══════════════════════════════════════════════════════════════════════
 
+# 「기준 기간 자체를 보여 주는 블록」은 **비교 기준을 안 따라간다.** 비교 기준은
+# '무엇과 맞댈지'를 고르는 것이라, 기준 기간에 나간 문구·캠페인 목록은 그대로다.
+# 그 자리가 `stays_below`에 반복해서 나오는 이유다.
+_REF_ONLY = ("날짜|시간|카테고리",     # 「그날 나간 소재」 문구 표 (render_messages)
+             "날짜|카테고리|제목",      # 「기준 기간에 나간 소재」
+             "날짜|카테고리|브랜드")    # 캠페인 목록
+
+
 @case
 def t_yoy_metric_picker_drives_everything_below():
     """「비교 지표」(`p05b_met`) — 시간대 차트·표·일자 합산·소구 블록을 다 끈다.
@@ -182,17 +228,97 @@ def t_yoy_metric_picker_drives_everything_below():
     2026-10 사고 자리다. 소구 블록만 CTR에 박혀 있었고 제목에도 「소구 속성별 CTR」
     이라 적혀 있어 눈으로도 안 잡혔다.
     """
-    moved, same = check(
-        "전년 동요일 비교", "p05b_met", ("CTR", "거래액"),
-        stays_below=("날짜|시간|카테고리",))   # 문구 표 — CTR 순 정렬이 공용 헬퍼 인자다
+    moved, _ = check("전년 동요일 비교", perf_page("전년 동요일 비교"),
+                     "p05b_met", ("CTR", "거래액"), stays_below=_REF_ONLY[:1])
     assert moved >= 4, f"따라간 블록이 {moved}개뿐이에요 — 픽스처가 너무 얕아요"
 
 
 @case
 def t_yoy_ratio_basis_drives_everything_below():
     """「비율 기준」(`p05b_basis`) — 합산↔캠페인 평균. 소구 블록까지 같이 간다."""
-    check("전년 동요일 비교", "p05b_basis", ("합산", "캠페인 평균"),
-          stays_below=("날짜|시간|카테고리",))
+    check("전년 동요일 비교", perf_page("전년 동요일 비교"),
+          "p05b_basis", ("합산", "캠페인 평균"), stays_below=_REF_ONLY[:1])
+
+
+@case
+def t_weekly_comparison_basis_drives_the_blocks_below():
+    """「비교 기준」(`wr_wf_cmp_월`) — 증감 기여 분해 두 블록과 카테고리 표를 같이 끈다.
+
+    처음엔 위젯을 탭 ① 안에 두고 아래 카테고리 블록은 안 따라가게 짰다가
+    「전년 동월로 바꿔도 카테고리 표가 안 바뀐다」는 지적을 받은 자리다. 둘은 같은
+    질문('어느 카테고리가 빠졌나')이라 기준이 갈리면 한 화면이 두 기간을 말한다.
+    """
+    moved, _ = check("주간보고", perf_page("주간보고", weeks=70, wr_unit="월별"),
+                     "wr_wf_cmp_월", ("전월", "전년 동월"),
+                     stays_below=_REF_ONLY[1:] + ("지표|당월 MTD",))
+    assert moved >= 3, f"따라간 블록이 {moved}개뿐이에요"
+
+
+@case
+def t_weekly_comparison_basis_leaves_the_cards_above_alone():
+    """**반대 방향도 계약이다.** 위 KPI 카드·「주요 지표 현황」·추이는 그대로여야 한다.
+
+    위쪽은 「비교」 칩으로 셋을 한꺼번에 보는 화면이라 기준 하나를 고르는 개념이
+    없다. 같이 바뀌면 어디서 바뀐 건지 되짚을 수가 없다. `check`가 `follows_above`
+    를 비워 둔 채로 이미 그걸 보는데, 규칙이 눈에 띄게 **따로** 한 줄 둔다.
+    """
+    check("주간보고", perf_page("주간보고", weeks=70, wr_unit="월별"),
+          "wr_wf_cmp_월", ("전월", "전년 동월"),
+          stays_below=_REF_ONLY[1:] + ("지표|당월 MTD",), follows_above=())
+
+
+# 일별 값을 **시간에 따라 흔든** 마스터 픽스처. 원본 `synth_store()`는 세그먼트마다
+# 상수라(세그먼트×연도 고유값이 전부 1) 창을 바꿔도 값이 같을 수밖에 없다 — 그걸
+# 그대로 쓰면 「안 따라온다」가 전부 픽스처 탓이라 계약이 아무것도 못 본다.
+# **비율 지표는 안 건드린다** — 가입율 = 가입자수 ÷ 비회원트래픽 같은 항등식을 깨면
+# 화면이 딴소리를 하고, 카운트만 흔들어도 비율은 저절로 보존된다.
+_RATIO_METRICS = ("가입율", "당일가입CR", "첫구매 객단가", "상품CR")
+
+
+def _wavy_funnel_store():
+    import test_funnel_page as F
+    st = F.synth_store().copy()
+    day = st[st["gran"] == "일"]
+    labs = (day[["label", "sortkey"]].drop_duplicates()
+            .sort_values("sortkey")["label"].tolist())
+    f = {l: 0.5 + 1.5 * (i / max(len(labs) - 1, 1)) for i, l in enumerate(labs)}
+    m = (st["gran"] == "일") & (~st["metric"].isin(_RATIO_METRICS))
+    st.loc[m, "value"] = [float(v) * f.get(l, 1.0)
+                          for v, l in zip(st.loc[m, "value"], st.loc[m, "label"])]
+    return st
+
+
+def _day_range(at):
+    """「조회 기간」 선택지에서 «연중 전체»와 «최근 7칸»을 뽑는다."""
+    sl = [x for x in at.get("select_slider")
+          if getattr(x, "key", None) == "wr_fn_day"]
+    assert sl, "「조회 기간」 슬라이더가 화면에 없어요 — 일자별이 아닌가요"
+    o = list(sl[0].options)
+    assert len(o) >= 8, f"선택지가 {len(o)}칸뿐이라 창을 못 좁혀요"
+    return ((o[0], o[-1]), (o[-7], o[-1]))
+
+
+@case
+def t_funnel_lookup_window_scopes_the_blocks_below():
+    """주간보고 「02」의 「조회 기간」 — 위에서 3주를 골라 놓고 아래만 연중이면 안 된다.
+
+    세 번째 사고 자리다. 창은 `gran_ref`가 한 번 정하고(`clabel`·`win`) 아래는 받아
+    쓰기만 한다.
+
+    **⑤ 조직×카테고리의 «레벨 표» 셋은 아직 안 따라간다.** 픽스처 탓이 아니다 —
+    그 원천(`synth_orgcat`)은 시간에 따라 값이 갈리고(고유값 4~8), 같은 블록의
+    «연중 추이 차트»는 창을 따라간다. CLAUDE.md가 창을 따르는 자리로 적어 둔 것도
+    「②의 차트·표 · ⑤의 **연중 추이** · 03의 채널×기간」이라 레벨 표는 빠져 있다.
+    그런데 `gran_ref`는 일 단위에서 `clabel`을 **고른 범위 그대로** 돌려주므로,
+    그걸 읽는 블록은 따라가는 게 맞다. 의도인지 빠뜨린 건지 **아직 안 갈렸다** —
+    갈리기 전까지 여기 적어 두고 나머지 13개는 못 박는다.
+    """
+    moved, _ = check(
+        "주간보고 02", weekly_funnel_page("일자별", store=_wavy_funnel_store()),
+        "wr_fn_day", _day_range,
+        stays_below=("조직|2025년|2026년",      # ⑤ 레벨 표 — 확인 필요(위 설명)
+                     "2025년|2026년|전년비"))   # ⑤ 요인 분해·카테고리 합산 — 〃
+    assert moved >= 12, f"따라간 블록이 {moved}개뿐이에요 — 픽스처가 너무 얕아요"
 
 
 def main():
