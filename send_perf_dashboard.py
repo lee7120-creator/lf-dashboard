@@ -535,7 +535,8 @@ class _UF:
 
 def classify_upload(name, file_bytes):
     """업로드 xlsx 한 개의 종류 자동 판별:
-    perf(발송실적) / plan(발송기획 통합본) / promo(기획전 성과시트) / mtd(전사 MTD) / push(앱푸시 동의 현황) / unknown."""
+    perf(발송실적) / plan(발송기획 통합본) / promo(기획전 성과시트) / mtd(전사 MTD) /
+    mtdmon(월별 MTD 발송 상세) / push(앱푸시 동의 현황) / site / unknown."""
     nm_lower = (name or "").lower()
     if any(k in nm_lower for k in ("push", "consent", "앱푸시", "동의현황")):
         return "push"
@@ -585,6 +586,11 @@ def classify_upload(name, file_bytes):
                     return "plan"
                 if "주문금액" in hdr or "발송" in hdr or "주문전환율" in hdr:
                     return "perf"
+        # 4-1) 월별 MTD 발송 상세 — 열이 `2026년 10월` 꼴이다. 일별 MTD와 지표 행 이름이
+        # 같아서 **MTD 판정보다 먼저** 가른다. 일별 파서로 가면 날짜를 못 읽어 빈 프레임이
+        # 되고, 증상은 '올렸는데 아무 일도 없다'로만 보인다.
+        if any(sum(1 for v in r[1:] if mon_label(v)) >= 2 for r in head[:6]):
+            return "mtdmon"
         # 5) 전사 MTD — 2번째 행에 날짜 다수 또는 1열에 지표명
         r1 = head[1] if len(head) > 1 else []
         date_like = 0
@@ -708,6 +714,42 @@ def _dow_residual(df, col):
     return res
 
 
+def _mtd_metric_rows(metric_col):
+    """A열 지표 행 이름 → {지표키: 행 인덱스}, {지표 라벨: 읽은 행 이름}.
+
+    일별 MTD(`parse_mtd_bytes`)와 월별 MTD 발송 상세(`parse_mtdmon_bytes`)가 같은 규칙을
+    봐야 한다 — 따로 두면 한쪽만 고쳐져 같은 지표가 두 화면에서 다른 행을 집는다."""
+    _key = metric_col.str.replace(" ", "", regex=False)
+
+    # **정확 일치를 전부 먼저 잡고, 남은 행에서만 접두어 일치를 본다.** 순서를 섞으면
+    # `유니크유입`이 `유니크유입고객수` 행을 먼저 집어 가 엉뚱한 값이 붙는다.
+    # 접두어까지 보는 이유: 지표 이름 뒤에 단위·꼬리말이 붙어 오는 판이 있는데
+    # (`유니크유입수`·`유니크 유입UV`), 정확 일치만 보면 그 지표가 **통째로 NaN이 되고
+    # 화면엔 선이 안 그려지는 것으로만 보인다** — 원인이 안 드러난다.
+    # 부분 일치(contains)로 넓히면 `거래액`이 `발송건당거래액`·`M당거래액`까지 먹으니
+    # 접두어까지만 허용한다.
+    taken, rows, guessed = set(), {}, {}
+    for _k, _kws in MTD_METRICS.items():
+        for _kw in _kws:
+            hit = _key[_key == _kw.replace(" ", "")]
+            if not hit.empty:
+                rows[_k] = hit.index[0]
+                taken.add(hit.index[0])
+                break
+    for _k, _kws in MTD_METRICS.items():
+        if _k in rows:
+            continue
+        for _kw in _kws:
+            _kk = _kw.replace(" ", "")
+            hit = [i for i in _key.index if i not in taken and _key[i].startswith(_kk)]
+            if hit:
+                rows[_k] = hit[0]
+                taken.add(hit[0])
+                guessed[_k] = str(metric_col[hit[0]])
+                break
+    return rows, guessed
+
+
 def parse_mtd_bytes(file_bytes):
     """전사 MTD 발송상세(날짜=열, 지표=행) → 일자별 DataFrame. 시작 열 자동 탐지."""
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -738,34 +780,7 @@ def parse_mtd_bytes(file_bytes):
         except Exception:
             dates.append(pd.NaT)
     metric_col = ws.iloc[3:, 0].astype(str).str.strip()
-    _key = metric_col.str.replace(" ", "", regex=False)
-
-    # **정확 일치를 전부 먼저 잡고, 남은 행에서만 접두어 일치를 본다.** 순서를 섞으면
-    # `유니크유입`이 `유니크유입고객수` 행을 먼저 집어 가 엉뚱한 값이 붙는다.
-    # 접두어까지 보는 이유: 지표 이름 뒤에 단위·꼬리말이 붙어 오는 판이 있는데
-    # (`유니크유입수`·`유니크 유입UV`), 정확 일치만 보면 그 지표가 **통째로 NaN이 되고
-    # 화면엔 선이 안 그려지는 것으로만 보인다** — 원인이 안 드러난다.
-    # 부분 일치(contains)로 넓히면 `거래액`이 `발송건당거래액`·`M당거래액`까지 먹으니
-    # 접두어까지만 허용한다.
-    taken, rows, guessed = set(), {}, {}
-    for _k, _kws in MTD_METRICS.items():
-        for _kw in _kws:
-            hit = _key[_key == _kw.replace(" ", "")]
-            if not hit.empty:
-                rows[_k] = hit.index[0]
-                taken.add(hit.index[0])
-                break
-    for _k, _kws in MTD_METRICS.items():
-        if _k in rows:
-            continue
-        for _kw in _kws:
-            _kk = _kw.replace(" ", "")
-            hit = [i for i in _key.index if i not in taken and _key[i].startswith(_kk)]
-            if hit:
-                rows[_k] = hit[0]
-                taken.add(hit[0])
-                guessed[_k] = str(metric_col[hit[0]])
-                break
+    rows, guessed = _mtd_metric_rows(metric_col)
 
     def get_m(k):
         i = rows.get(k)
@@ -816,6 +831,176 @@ def merge_mtd_store(old, new):
     if both.empty:
         return both
     return both.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
+
+
+# ── 월별 MTD 발송 상세 (월 단위 유니크) — 「6. 발송량·피로도 › 푸시 반응률」 ──────
+# 일별 MTD 파일과 **모양은 같고 열이 월**이다(1행=`2026년 10월`, 2행=`~10/15`).
+# 월 유니크(발송 MAU·유입 MAU)는 일별 값을 더해서 만들 수 없다 — 같은 사람이 여러 날
+# 겹치기 때문이다. 그래서 이 표를 따로 받아 **별도 저장소**에 쌓는다. 일별 저장소에
+# 섞으면 날짜 키가 안 맞아 조용히 버려진다.
+MTDMON_STORE = "send_perf_mtdmon_store.csv"
+MTDMON_STORE_COLS = ["month", "asof"] + list(MTD_METRICS)
+_MON_RE = re.compile(r"^\s*(\d{4})\s*년\s*(\d{1,2})\s*월\s*$")
+_ASOF_RE = re.compile(r"~\s*(\d{1,2})\s*/\s*(\d{1,2})")
+# 월 반응률 목표 — 24년 4분기(10~12월 평균 24.3%) 수준. 24년 연평균은 21.4%라
+# 목표 근거를 물으면 «4분기 수준»이라고 답해야 한다(화면 캡션에도 밝힌다).
+RR_TARGET = 0.23
+
+
+def mon_label(v):
+    """`2026년 10월` → (2026, 10). 아니면 None."""
+    m = _MON_RE.match(str(v)) if v is not None else None
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def parse_mtdmon_bytes(file_bytes):
+    """월별 MTD 발송 상세(지표=행, 월=열) → [month(YYYYMM), asof(YYYYMMDD), 지표…].
+
+    `asof`는 그 달을 어디까지 집계했는지다. 2행 `~10/15`가 있으면 그 날, 없으면 월말.
+    진행 중인 달의 월 유니크는 «15일까지의 유니크»라 완결 월과 맞대면 안 된다 —
+    화면이 `asof`로 가른다."""
+    ws = pd.read_excel(io.BytesIO(file_bytes), header=None, sheet_name=0)
+    out = pd.DataFrame(columns=MTDMON_STORE_COLS)
+    if ws.shape[0] < 3 or ws.shape[1] < 2:
+        return out
+    hr = None
+    for i in range(min(6, ws.shape[0])):
+        if sum(1 for v in ws.iloc[i, 1:] if mon_label(v)) >= 2:
+            hr = i
+            break
+    if hr is None:
+        return out
+    cols = [(j, mon_label(ws.iloc[hr, j])) for j in range(1, ws.shape[1])]
+    cols = [(j, ym) for j, ym in cols if ym]
+    asof_row = hr + 1 if hr + 1 < ws.shape[0] and any(
+        _ASOF_RE.search(str(ws.iloc[hr + 1, j])) for j, _ in cols) else None
+    body0 = (asof_row if asof_row is not None else hr) + 1
+    metric_col = ws.iloc[body0:, 0].astype(str).str.strip()
+    rows, guessed = _mtd_metric_rows(metric_col)
+    recs = []
+    for j, (y, mo) in cols:
+        mend = (pd.Timestamp(y, mo, 1) + pd.offsets.MonthEnd(0))
+        asof = mend
+        if asof_row is not None:
+            ma = _ASOF_RE.search(str(ws.iloc[asof_row, j]))
+            if ma:
+                try:
+                    asof = pd.Timestamp(y, int(ma.group(1)), int(ma.group(2)))
+                except ValueError:
+                    asof = mend
+        r = {"month": f"{y:04d}{mo:02d}", "asof": asof.strftime("%Y%m%d")}
+        for k in MTD_METRICS:
+            r[k] = pd.to_numeric(ws.iloc[rows[k], j], errors="coerce") if k in rows else np.nan
+        recs.append(r)
+    out = finalize_mtdmon(pd.DataFrame(recs))
+    out = out.dropna(subset=["customers", "uniqueInflow"], how="all").reset_index(drop=True)
+    # 반응률에 꼭 필요한 두 줄을 못 찾았으면 **업로드 자리에서 말한다** — 조용히 NaN이면
+    # 화면엔 '차트가 비었다'로만 보인다(일별 MTD의 `mtd_missing`과 같은 자리).
+    out.attrs["mtdmon_missing"] = [MTD_LABELS[k] for k in ("customers", "uniqueInflow")
+                                   if k not in rows]
+    out.attrs["mtdmon_guessed"] = {MTD_LABELS.get(k, k): v for k, v in guessed.items()}
+    return out
+
+
+def finalize_mtdmon(df):
+    """저장소 로드 공통 — dtype 복구 (구글시트 라운드트립이 전값을 문자열로 되돌린다)."""
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=MTDMON_STORE_COLS)
+    d = df.copy()
+    for c in MTDMON_STORE_COLS:
+        if c not in d.columns:
+            d[c] = np.nan
+    for c in ("month", "asof"):
+        d[c] = d[c].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    for c in MTD_METRICS:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d[d["month"].str.match(r"^\d{6}$", na=False) & d["asof"].str.match(r"^\d{8}$", na=False)]
+    return d[MTDMON_STORE_COLS].reset_index(drop=True)
+
+
+def merge_mtdmon_store(old, new):
+    """월 키로 병합 — 같은 달은 신규 우선(진행 중인 달은 매주 늘어난 값으로 갈린다)."""
+    both = pd.concat([finalize_mtdmon(old), finalize_mtdmon(new)], ignore_index=True)
+    if both.empty:
+        return finalize_mtdmon(both)
+    both = both.drop_duplicates(subset=["month"], keep="last")
+    return both.sort_values("month").reset_index(drop=True)
+
+
+def load_mtdmon_store():
+    if os.path.exists(MTDMON_STORE):
+        try:
+            return finalize_mtdmon(pd.read_csv(MTDMON_STORE, encoding="utf-8-sig",
+                                               dtype={"month": str, "asof": str}))
+        except Exception:
+            pass
+    return pd.DataFrame(columns=MTDMON_STORE_COLS)
+
+
+def save_mtdmon_store(df):
+    out = finalize_mtdmon(df)
+    out.to_csv(MTDMON_STORE, index=False, encoding="utf-8-sig")
+    return out
+
+
+def mtdmon_rates(df):
+    """월 반응률 표 — [month, y, m, asof, partial, smau, mau, rr, rr_yoy].
+
+    월 반응률 = 유입 MAU ÷ 발송 MAU (월 유니크끼리). **진행 중인 달(`partial`)은 전년비를
+    안 매긴다** — 15일치 유니크를 30일치 유니크와 맞대면 유입이 덜 쌓여 늘 낮게 나온다."""
+    d = finalize_mtdmon(df)
+    if not len(d):
+        return pd.DataFrame(columns=["month", "y", "m", "asof", "partial", "smau", "mau",
+                                     "rr", "rr_yoy"])
+    out = pd.DataFrame({"month": d["month"], "asof": d["asof"],
+                        "smau": d["customers"], "mau": d["uniqueInflow"]})
+    out["y"] = out["month"].str[:4].astype(int)
+    out["m"] = out["month"].str[4:].astype(int)
+    _mend = pd.to_datetime(out["month"] + "01", format="%Y%m%d") + pd.offsets.MonthEnd(0)
+    out["partial"] = pd.to_datetime(out["asof"], format="%Y%m%d") < _mend
+    out["rr"] = np.where(out["smau"] > 0, out["mau"] / out["smau"].where(out["smau"] > 0), np.nan)
+    _prev = dict(zip(zip(out["y"], out["m"]), zip(out["rr"], out["partial"])))
+    out["rr_yoy"] = [
+        np.nan if p or (y - 1, m) not in _prev or _prev[(y - 1, m)][1]
+        else r - _prev[(y - 1, m)][0]
+        for y, m, r, p in zip(out["y"], out["m"], out["rr"], out["partial"])]
+    return out.reset_index(drop=True)
+
+
+def weekly_daily_rr(md):
+    """주간 추적용 일 반응률 — 일 유니크 유입 ÷ 일 유니크 발송 고객을 ISO 주로 평균.
+
+    월 반응률은 달이 끝나야 나와서 매주 볼 보조 지표가 필요하다. 전년은 **같은 ISO
+    주차**(없으면 364일 전)와 맞대고, 진행 중인 주는 **같은 요일까지만** 잘라 비교한다
+    (CLAUDE.md 기간 비교 규칙). 일 반응률 평균은 일별 비율의 평균이다 — 발송 대상을
+    크게 줄인 날은 분모가 작아 비율이 튄다(화면에 밝힌다)."""
+    cols = ["iy", "iw", "start", "end", "days", "inflow", "rcpt", "drr", "ly_drr", "diff"]
+    if md is None or not len(md) or not {"date", "uniqueInflow", "customers"} <= set(md.columns):
+        return pd.DataFrame(columns=cols)
+    d = md[["date", "uniqueInflow", "customers"]].copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    d = d.dropna()
+    d = d[d["customers"] > 0]
+    if not len(d):
+        return pd.DataFrame(columns=cols)
+    d["drr"] = d["uniqueInflow"] / d["customers"]
+    iso = d["date"].dt.isocalendar()
+    d["iy"], d["iw"], d["dow"] = iso["year"].astype(int), iso["week"].astype(int), iso["day"].astype(int)
+    by_date = d.set_index("date")
+    recs = []
+    for (iy, iw), g in d.groupby(["iy", "iw"]):
+        try:
+            ly_mon = pd.Timestamp(datetime.date.fromisocalendar(iy - 1, iw, 1))
+        except ValueError:                                # 53주차가 전년에 없을 때
+            ly_mon = pd.Timestamp(datetime.date.fromisocalendar(iy, iw, 1)) - pd.Timedelta(days=364)
+        ly_days = [ly_mon + pd.Timedelta(days=int(x) - 1) for x in g["dow"]]
+        ly = by_date["drr"].reindex(ly_days).dropna()
+        lyv = float(ly.mean()) if len(ly) else np.nan
+        recs.append({"iy": iy, "iw": iw, "start": g["date"].min(), "end": g["date"].max(),
+                     "days": len(g), "inflow": g["uniqueInflow"].mean(),
+                     "rcpt": g["customers"].mean(), "drr": g["drr"].mean(), "ly_drr": lyv,
+                     "diff": g["drr"].mean() - lyv if pd.notna(lyv) else np.nan})
+    return pd.DataFrame(recs, columns=cols).sort_values(["iy", "iw"]).reset_index(drop=True)
 
 
 # ── 기획전 성과시트 (기획전번호별 유입/총매출) — 발송 promo 와 조인 ──────────
@@ -1641,7 +1826,7 @@ def push_week_note(row):
 # ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
 GS_TITLES = {"campaign": "campaign_store", "mtd": "mtd_store", "promo": "promo_store",
              "push": "push_store", "notes": "notes_store", "site": "site_store",
-             "preset": "preset_store"}
+             "preset": "preset_store", "mtdmon": "mtdmon_store"}
 
 
 def _fix_pem(pk):
@@ -3012,7 +3197,7 @@ CAMPAIGN_GROUPS = {
                            "BPU·우선순위", "기획전 비교"],
     "5. 타이밍·카테고리":  ["카테고리·시간대", "타이밍·발송슬롯", "전년 동요일 비교"],
     "6. 발송량·피로도":    ["피로도 시계열", "발송 빈도·한계수익", "발송량 최적 구간",
-                           "요일 패턴", "유입 퍼널"],
+                           "요일 패턴", "유입 퍼널", "푸시 반응률"],
     "7. 개선 효과 검증":   ["문구 개선 효과", "잔여모수 추가 효과", "컨틴 구좌 효율",
                            "발송 감축 효과"],
     "8. 다음 발송 준비":   ["발송 플레이북", "AI 처방·카피"],
@@ -3535,6 +3720,9 @@ def glossary(which="full"):
         "- **유입 1명당 방문 횟수** = 총유입 ÷ 유니크 유입. 1에 가까우면 한 번 오고 말았다는 뜻이고, "
         "커질수록 같은 사람이 여러 번 들어왔다는 뜻이에요.\n"
         "- **유입 1명당 거래액** = 거래액 ÷ 유니크 유입. 들어온 사람 1명이 남긴 평균 매출이에요.\n"
+        "- **월 반응률** = 유입 MAU ÷ 발송 MAU. 한 달에 푸시를 받은 사람 중 들어온 사람 비율이에요. "
+        "월 유니크끼리 나눈 값이라 일별 값을 더해서는 못 만들어요.\n"
+        "- **일 반응률** = 일 유니크 유입 ÷ 일 유니크 발송 고객. 월 반응률을 매주 따라가는 보조 지표예요.\n"
         "- **RPS** = 거래액 ÷ 발송. 1건 보냈을 때 평균 매출이에요.\n"
         "- **객단가(AOV)** = 거래액 ÷ 주문. 주문 1건에 평균 얼마를 썼는지예요.\n"
         "- **거래액**: 발송을 통해 발생한 주문 금액 합계예요.\n")
@@ -3802,16 +3990,17 @@ def main():
 
     _STORE_COLS_BY_KIND = {"campaign": STORE_COLS, "mtd": MTD_STORE_COLS, "promo": PROMO_STORE_COLS,
                            "push": PUSH_STORE_COLS, "notes": NOTES_STORE_COLS,
-                           "site": SITE_STORE_COLS, "preset": PRESET_STORE_COLS}
+                           "site": SITE_STORE_COLS, "preset": PRESET_STORE_COLS,
+                           "mtdmon": MTDMON_STORE_COLS}
     _LOCAL_LOAD = {"campaign": load_store, "mtd": load_mtd_store, "promo": load_promo_store,
                    "push": load_push_store, "notes": load_notes_store, "site": load_site_store,
-                   "preset": load_preset_store}
+                   "preset": load_preset_store, "mtdmon": load_mtdmon_store}
     _LOCAL_SAVE = {"campaign": save_store, "mtd": save_mtd_store, "promo": save_promo_store,
                    "push": save_push_store, "notes": save_notes_store, "site": save_site_store,
-                   "preset": save_preset_store}
+                   "preset": save_preset_store, "mtdmon": save_mtdmon_store}
     _LOCAL_FILE = {"campaign": DATA_STORE, "mtd": MTD_STORE, "promo": PROMO_STORE,
                    "push": PUSH_STORE, "notes": NOTES_STORE, "site": SITE_STORE,
-                   "preset": PRESET_STORE}
+                   "preset": PRESET_STORE, "mtdmon": MTDMON_STORE}
 
     def storage_load(bk, kind):
         cols = _STORE_COLS_BY_KIND[kind]
@@ -3830,7 +4019,7 @@ def main():
 
     _KIND_LABEL = {"campaign": "캠페인", "mtd": "MTD", "promo": "기획전",
                    "push": "앱푸시", "notes": "보고란", "site": "사이트 지표",
-                   "preset": "필터 프리셋"}
+                   "preset": "필터 프리셋", "mtdmon": "월별 MTD"}
 
     def storage_save(bk, kind, df):
         """저장 성공 여부(bool) 반환 — 클라우드 읽기가 실패한 상태면 덮어쓰기 방지를 위해 차단."""
@@ -4006,6 +4195,9 @@ def main():
         st.session_state.site_store_df = finalize_site(storage_load(BK, "site"))
     site_df = st.session_state.site_store_df
 
+    if "mtdmon_store_df" not in st.session_state:
+        st.session_state.mtdmon_store_df = finalize_mtdmon(storage_load(BK, "mtdmon"))
+
     # ── 발송기획(문구) 소스: 업로드 파일 ↔ 구글시트 직접연결 ──
     _PLAN_SHEET_URL = "https://docs.google.com/spreadsheets/d/1xqlaRnHa5HMLz3ASUn-H7AvMkUsvQw6l7aw1rWLqfjw"
     plan_file = None
@@ -4061,9 +4253,11 @@ def main():
     perf_files, promo_files, mtd_files = [], None, []
     if uni_files:
         _LBL = {"perf": "발송실적", "plan": "발송기획", "promo": "기획전성과",
-                "mtd": "전사MTD", "push": "📱앱푸시", "site": "🌐사이트", "unknown": "❓미인식"}
+                "mtd": "전사MTD", "mtdmon": "📅월별MTD", "push": "📱앱푸시", "site": "🌐사이트",
+                "unknown": "❓미인식"}
         _perf_b, _promo_b, _mtd_b, _cls = [], [], [], []
         _site_new, _site_read = None, []
+        _mon_new = None
         with st.spinner("파일 종류를 파악하고 있어요…"):
             for nm, b in expand_uploads(uni_files):
                 if b is None:
@@ -4103,6 +4297,23 @@ def main():
                                                    f"(총 {len(merged_push)//3:,}일치).")
                     except Exception as _e:
                         st.sidebar.error(f"앱푸시 파일 읽기 실패: {str(_e)[:80]}")
+                elif k == "mtdmon":
+                    try:
+                        _mdf = parse_mtdmon_bytes(b)
+                        if _mdf.attrs.get("mtdmon_missing"):
+                            st.sidebar.warning(
+                                f"⚠️ 월별 MTD({nm[:22]})에서 **"
+                                + "·".join(_mdf.attrs["mtdmon_missing"])
+                                + "** 줄을 못 찾았어요. 반응률이 빈 채로 나와요.")
+                        if _mdf.attrs.get("mtdmon_guessed"):
+                            st.sidebar.caption("월별 MTD 지표 이름이 조금 달라서 비슷한 행으로 "
+                                               "읽었어요 — " + " · ".join(
+                                                   f"{a} ← {v}" for a, v in
+                                                   _mdf.attrs["mtdmon_guessed"].items()))
+                        if len(_mdf):
+                            _mon_new = merge_mtdmon_store(_mon_new, _mdf)
+                    except Exception as _e:
+                        st.sidebar.error(f"월별 MTD 파일 읽기 실패: {str(_e)[:80]}")
                 elif k == "site":
                     try:
                         _skind, _sdf = parse_site_bytes(b, nm)
@@ -4119,7 +4330,20 @@ def main():
         _cnt = Counter(k for _, k in _cls)
         st.sidebar.success("자동 분류 — " + " · ".join(
             f"{_LBL[k]} {_cnt[k]}"
-            for k in ("perf", "plan", "promo", "mtd", "push", "site", "unknown") if _cnt.get(k)))
+            for k in ("perf", "plan", "promo", "mtd", "mtdmon", "push", "site", "unknown")
+            if _cnt.get(k)))
+        if _mon_new is not None and len(_mon_new):
+            # 자동 저장한다 — 사이트 지표와 같다. 수십 줄짜리 월 표라 미리보기·저장 버튼을
+            # 두면 누르는 걸 잊어 «올렸는데 안 남았다»만 생긴다.
+            _mon_cur = st.session_state.get("mtdmon_store_df")
+            if _mon_cur is None:
+                _mon_cur = storage_load(BK, "mtdmon")
+            _mon_m = merge_mtdmon_store(_mon_cur, _mon_new)
+            if storage_save(BK, "mtdmon", _mon_m):
+                st.session_state.mtdmon_store_df = _mon_m
+                _last = _mon_m["month"].iloc[-1]
+                st.sidebar.success(f"📅 월별 MTD를 병합 저장했어요 (총 {len(_mon_m):,}개월 · "
+                                   f"최근 {_last[:4]}년 {int(_last[4:])}월).")
         if _site_read:
             # 어느 파일을 무엇으로 읽었는지 보여 준다 — 두 리포트는 구조가 같아서
             # 값(정수/소수)으로 가르기 때문에 오판을 눈으로 잡을 수 있어야 한다.
@@ -4144,7 +4368,7 @@ def main():
     st.sidebar.caption(BK["status"])
     if st.sidebar.button("🔄 새로 불러오기", width="stretch"):
         for k in ("camp_store", "mtd_store_df", "promo_store_df", "push_consent_df", "push_consent_hash",
-                  "site_store_df", "_merge_sig", "_merge_new_raw", "_merge_parse_log", "wr_notes"):
+                  "site_store_df", "mtdmon_store_df", "_merge_sig", "_merge_new_raw", "_merge_parse_log", "wr_notes"):
             st.session_state.pop(k, None)
         for k in [k for k in st.session_state if str(k).startswith("_load_failed_")]:
             st.session_state.pop(k, None)
@@ -4294,7 +4518,19 @@ def main():
                 if not base.endswith(".csv"):
                     continue
                 data = io.BytesIO(z.read(nm))
-                if "mtd" in base:
+                if base.startswith("mtdmon"):
+                    # **일별 MTD 갈래(`"mtd" in base`)보다 앞이어야 한다** — 이름에 mtd가
+                    # 들어 있어 뒤에 두면 월 표가 일별 저장소로 흘러가 조용히 버려진다.
+                    df = finalize_mtdmon(pd.read_csv(data, encoding="utf-8-sig",
+                                                     dtype={"month": str, "asof": str}))
+                    _cur_mm = st.session_state.get("mtdmon_store_df")
+                    if _cur_mm is None:
+                        _cur_mm = storage_load(BK, "mtdmon")
+                    m = merge_mtdmon_store(_cur_mm, df)
+                    if storage_save(BK, "mtdmon", m):
+                        st.session_state.mtdmon_store_df = m
+                        done.append(f"월별 MTD {len(m):,}개월")
+                elif "mtd" in base:
                     df = pd.read_csv(data, encoding="utf-8-sig")
                     _cur = st.session_state.get("mtd_store_df")
                     if _cur is None:                      # 빈 화면 복원 경로 — 아직 로드 전이면
@@ -4932,7 +5168,8 @@ def main():
                     _notes_sig = 0
                 _sig_memo.append((len(work), _dfsig(work),
                                   _dfsig(mtd_work), _dfsig(promo_work), _dfsig(_push_df),
-                                  _dfsig(st.session_state.get("site_store_df")), _notes_sig))
+                                  _dfsig(st.session_state.get("site_store_df")),
+                                  _dfsig(st.session_state.get("mtdmon_store_df")), _notes_sig))
             return _sig_memo[0]
 
         if st.button("📦 백업 파일 만들기", width="stretch", key="bak_make"):
@@ -4954,6 +5191,11 @@ def main():
                 if _push_df is not None and not _push_df.empty:
                     _z.writestr("push_consent.csv",
                         _push_df.to_csv(index=False).encode("utf-8-sig"))
+                    _has_any = True
+                _mon_bak = st.session_state.get("mtdmon_store_df")
+                if _mon_bak is not None and len(_mon_bak):
+                    _z.writestr("mtdmon.csv",
+                        finalize_mtdmon(_mon_bak).to_csv(index=False).encode("utf-8-sig"))
                     _has_any = True
                 _site_bak = st.session_state.get("site_store_df")
                 if _site_bak is not None and len(_site_bak):
@@ -5075,6 +5317,21 @@ def main():
                 st.session_state.pop("push_consent_hash", None)
                 st.cache_data.clear()
                 st.success("앱푸시 데이터를 영구히 지웠어요. 새로고침해 주세요.")
+
+            st.markdown("---")
+            _mm_df = finalize_mtdmon(st.session_state.get("mtdmon_store_df"))
+            st.caption(f"월별 MTD 발송 상세 {len(_mm_df):,}개월")
+            if len(_mm_df):
+                st.download_button(
+                    "📥 월별 MTD 백업 (CSV)",
+                    data=lambda d=_mm_df: d.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="send_perf_mtdmon_backup.csv", mime="text/csv",
+                    width="stretch", key="mtdmon_bak")
+            if st.button("🧹 월별 MTD 저장소 초기화", width="stretch", key="clear_mtdmon"):
+                storage_clear(BK, "mtdmon")
+                st.session_state.mtdmon_store_df = pd.DataFrame(columns=MTDMON_STORE_COLS)
+                st.cache_data.clear()
+                st.success("월별 MTD를 영구히 지웠어요. 새로고침해 주세요.")
 
             st.markdown("---")
             _s_df = site_frame(st.session_state.get("site_store_df"))
@@ -9380,6 +9637,147 @@ def main():
             '<b>과거 분석까지 새 기준으로 다시 계산돼요</b> — 그만큼 신중하게 고르라고 '
             '이 화면이 홀드아웃을 한 겹 더 두고 있어요.</div>',
             unsafe_allow_html=True)
+        glossary()
+
+    # ══════════════════════════════════════════════════════════════
+    # 푸시 반응률 — 월 반응률(유입 MAU ÷ 발송 MAU) + 주간 일 반응률
+    # ══════════════════════════════════════════════════════════════
+    elif "푸시 반응률" in page:
+        st.title("푸시 반응률")
+        st.markdown(
+            "한 달에 푸시를 받은 사람 중 **몇 %가 실제로 들어왔는지**를 봐요. 발송량·인당 발송건수는 "
+            "보낸 쪽 숫자라, 받는 사람의 반응이 줄어도 그대로일 수 있어요. 그래서 이 화면을 "
+            "**핵심 관리 지표**로 둬요.")
+        _rr_m = mtdmon_rates(st.session_state.get("mtdmon_store_df"))
+        _rr_w = weekly_daily_rr(mtd_data["df"] if mtd_data is not None else None)
+        if not len(_rr_m) and not len(_rr_w):
+            st.info("월 반응률은 **월별 MTD 발송 상세**(열이 `2026년 10월` 꼴인 표)를, 주간 추적은 "
+                    "**전사 MTD**(일별)를 올리면 볼 수 있어요. 왼쪽 「📂 파일 올리기」에 넣으면 "
+                    "자동으로 알아봐요.")
+            glossary()
+            st.stop()
+
+        def _rr_col(v):
+            if v is None or pd.isna(v) or v == 0:
+                return ""
+            return f"color:{DELTA_UP if v > 0 else DELTA_DN}"
+
+        _pp = lambda v: "–" if v is None or pd.isna(v) else ("+" if v >= 0 else "△") + f"{abs(v) * 100:.1f}%p"
+        _done = _rr_m[~_rr_m["partial"] & _rr_m["rr"].notna()] if len(_rr_m) else _rr_m
+        _wdone = _rr_w[_rr_w["days"] == 7] if len(_rr_w) else _rr_w
+        _k1, _k2, _k3 = st.columns(3)
+        if len(_done):
+            _lm = _done.iloc[-1]
+            _k1.metric(f"월 반응률 ({_lm['y']}년 {_lm['m']}월)", f"{_lm['rr'] * 100:.1f}%",
+                       delta=None if pd.isna(_lm["rr_yoy"]) else f"{_pp(_lm['rr_yoy'])} 전년 동월 대비",
+                       delta_color="normal")
+            _k2.metric("목표 대비", f"{RR_TARGET * 100:.0f}% 목표",
+                       delta=f"{_pp(_lm['rr'] - RR_TARGET)}", delta_color="normal")
+        else:
+            _k1.metric("월 반응률", "–")
+            _k2.metric("목표 대비", f"{RR_TARGET * 100:.0f}% 목표")
+        if len(_wdone):
+            _lw = _wdone.iloc[-1]
+            _k3.metric(f"일 반응률 ({_lw['iw']}주차)", f"{_lw['drr'] * 100:.2f}%",
+                       delta=None if pd.isna(_lw["diff"]) else
+                       ("+" if _lw["diff"] >= 0 else "△") + f"{abs(_lw['diff']) * 100:.2f}%p 전년 같은 주 대비",
+                       delta_color="normal")
+        else:
+            _k3.metric("일 반응률 (최근 완결 주)", "–")
+        st.caption(f"목표 {RR_TARGET * 100:.0f}%는 24년 4분기 수준이에요(10~12월 평균 24.3%). "
+                   "24년 연평균은 21.4%예요.")
+
+        # ── ① 월 반응률 — 연도 비교 ──
+        st.markdown("#### ① 월 반응률 (유입 MAU ÷ 발송 MAU)")
+        if not len(_done):
+            st.info("월별 MTD 발송 상세를 올리면 볼 수 있어요. 진행 중인 달만 있으면 완결 월이 "
+                    "생길 때까지 차트가 비어요.")
+        else:
+            _yrs = sorted(_done["y"].unique())[-3:]
+            _ystyle = {0: dict(color=PALETTE["blue"], width=3, dash=None),
+                       1: dict(color="#94a3b8", width=2, dash=None),
+                       2: dict(color="#cbd5e1", width=1.5, dash="dot")}
+            fig_rr = go.Figure()
+            for _i, _yy in enumerate(reversed(_yrs)):
+                _sy = _done[_done["y"] == _yy].sort_values("m")
+                _st = _ystyle.get(_i, _ystyle[2])
+                fig_rr.add_trace(go.Scatter(
+                    x=_sy["m"], y=_sy["rr"] * 100, name=f"{_yy}년", mode="lines+markers",
+                    line=dict(color=_st["color"], width=_st["width"], dash=_st["dash"]),
+                    marker=dict(size=6 if _i == 0 else 4),
+                    hovertemplate=f"{_yy}년 " + "%{x}월 · %{y:.1f}%<extra></extra>"))
+            fig_rr.add_hline(y=RR_TARGET * 100, line=dict(color=DELTA_DN, dash="dash", width=1),
+                             annotation_text=f"목표 {RR_TARGET * 100:.0f}%",
+                             annotation_position="top left")
+            _lay = base_layout(h=320, ysuffix="%", hover="x")
+            _lay["showlegend"] = True
+            _lay["legend"] = legend_h()
+            _lay["xaxis"] = dict(_lay["xaxis"], tickmode="array", tickvals=list(range(1, 13)),
+                                 ticktext=[f"{x}월" for x in range(1, 13)], range=[0.5, 12.5])
+            set_layout(fig_rr, _lay)
+            chart(fig_rr, width="stretch")
+            if len(_rr_m) and _rr_m["partial"].any():
+                _pm = _rr_m[_rr_m["partial"]].iloc[-1]
+                st.caption(f"{_pm['y']}년 {_pm['m']}월은 {_pm['asof'][4:6].lstrip('0')}/"
+                           f"{_pm['asof'][6:].lstrip('0')}까지만 집계돼서 차트에서 뺐어요. 월 유니크는 "
+                           "기간이 짧으면 덜 쌓여 완결 월보다 늘 낮게 나와요.")
+
+            _tm = _rr_m.sort_values("month", ascending=False).head(13).copy()
+            _tm["월"] = [f"{y}년 {m}월" + (f" (~{a[4:6].lstrip('0')}/{a[6:].lstrip('0')})" if p else "")
+                        for y, m, a, p in zip(_tm["y"], _tm["m"], _tm["asof"], _tm["partial"])]
+            _lyrr = dict(zip(zip(_rr_m["y"], _rr_m["m"]), _rr_m["rr"]))
+            _tv = pd.DataFrame({
+                "월": _tm["월"].values,
+                "월 반응률": (_tm["rr"] * 100).values,
+                "전년 동월": [(_lyrr.get((y - 1, m), np.nan) * 100) for y, m in zip(_tm["y"], _tm["m"])],
+                "차이(%p)": (_tm["rr_yoy"] * 100).values,
+                "목표 대비(%p)": [np.nan if p else (r - RR_TARGET) * 100
+                                 for r, p in zip(_tm["rr"], _tm["partial"])],
+                "발송 MAU": _tm["smau"].values,
+                "유입 MAU": _tm["mau"].values,
+            })
+            _tsty = (_tv.style.format({"월 반응률": "{:.1f}%", "전년 동월": "{:.1f}%",
+                                       "차이(%p)": "{:+.1f}", "목표 대비(%p)": "{:+.1f}",
+                                       "발송 MAU": "{:,.0f}", "유입 MAU": "{:,.0f}"}, na_rep="–")
+                    .map(_rr_col, subset=["차이(%p)", "목표 대비(%p)"]))
+            table(_tsty, hide_index=True, width="stretch", dl_name="월 반응률")
+            st.caption("진행 중인 달은 전년비·목표 대비를 매기지 않아요. 같은 날까지 자른 전년 값이 "
+                       "월 표에는 없어서예요.")
+
+        # ── ② 주간 추적 — 일 반응률 ──
+        st.markdown("#### ② 주간 추적 (일 반응률 = 유입 DAU ÷ 발송 DAU)")
+        if not len(_rr_w):
+            st.info("전사 MTD(일별)를 올리면 주간 추적을 볼 수 있어요.")
+        else:
+            _wr = _rr_w.tail(26)
+            fig_w = go.Figure()
+            _wx = [f"{iw}주차" for iw in _wr["iw"]]
+            fig_w.add_trace(go.Scatter(x=_wx, y=_wr["ly_drr"] * 100, name="전년 같은 주",
+                                       mode="lines", line=dict(color="#94a3b8", width=1.5, dash="dot"),
+                                       hovertemplate="전년 %{y:.2f}%<extra></extra>"))
+            fig_w.add_trace(go.Scatter(x=_wx, y=_wr["drr"] * 100, name="올해", mode="lines+markers",
+                                       line=dict(color=PALETTE["blue"], width=2.5),
+                                       hovertemplate="올해 %{y:.2f}%<extra></extra>"))
+            _lw2 = base_layout(h=300, ysuffix="%", hover="x")
+            _lw2["showlegend"] = True
+            _lw2["legend"] = legend_h()
+            set_layout(fig_w, _lw2)
+            chart(fig_w, width="stretch")
+            _tw = _rr_w.tail(8).iloc[::-1]
+            _twv = pd.DataFrame({
+                "주차": [f"{iy}년 {iw}주차 ({s:%m/%d}~{e:%m/%d}" + ("" if n == 7 else f", {n}일") + ")"
+                        for iy, iw, s, e, n in zip(_tw["iy"], _tw["iw"], _tw["start"], _tw["end"], _tw["days"])],
+                "유입 DAU": _tw["inflow"].values, "발송 DAU": _tw["rcpt"].values,
+                "일 반응률": (_tw["drr"] * 100).values, "전년 같은 주": (_tw["ly_drr"] * 100).values,
+                "차이(%p)": (_tw["diff"] * 100).values})
+            _twsty = (_twv.style.format({"유입 DAU": "{:,.0f}", "발송 DAU": "{:,.0f}",
+                                         "일 반응률": "{:.2f}%", "전년 같은 주": "{:.2f}%",
+                                         "차이(%p)": "{:+.2f}"}, na_rep="–")
+                      .map(_rr_col, subset=["차이(%p)"]))
+            table(_twsty, hide_index=True, width="stretch", dl_name="주간 반응률")
+            st.caption("일 반응률은 날마다 낸 비율의 주 평균이에요. 발송 대상을 크게 줄인 날은 분모가 "
+                       "작아져 비율이 올라가니 감안해 주세요. 진행 중인 주는 같은 요일까지만 전년과 "
+                       "맞대요.")
         glossary()
 
     # ══════════════════════════════════════════════════════════════
