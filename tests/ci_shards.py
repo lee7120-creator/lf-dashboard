@@ -60,7 +60,7 @@ SECONDS = {
     "test_rerun_cost": 19, "test_summary_top": 12, "test_plan_merge": 11,
     "check_shadowing": 1, "test_store_layer": 1, "test_brand_classify": 1,
     "test_note_editor": 1, "test_hour_norm": 1, "test_copy_effect": 1,
-    "test_table_export": 1,
+    "test_table_export": 1, "test_response_rate": 30,
 }
 
 # 첫 관문 — 몇 초짜리 정적 검사. 샤드 셋을 띄우기 «전»에 돌려서, 문법이 깨졌으면
@@ -80,7 +80,8 @@ SHARDS = {
           "test_filter_propagation",
           "test_inflow_funnel", "test_filter_follows_upload", "test_target_ctr",
           "test_orgcat", "test_store_layer",
-          "test_brand_classify", "test_note_editor", "test_copy_effect"],
+          "test_brand_classify", "test_note_editor", "test_copy_effect",
+          "test_response_rate"],
 }
 
 
