@@ -18,7 +18,7 @@
     python tools/perf_rerun.py                      # 발송성과 전 페이지
     python tools/perf_rerun.py --app weekly         # 주간보고 전 페이지
     python tools/perf_rerun.py --rows 40            # 데이터 규모를 키워서
-    python tools/perf_rerun.py --page "6. 발송량·피로도" --profile 25
+    python tools/perf_rerun.py --page "5. 발송량·피로도" --profile 25
 
 고친 뒤엔 **같은 명령으로 다시 재서 전후 값을 커밋·CLAUDE.md에 남길 것.**
 숫자가 없으면 다음 사람이 이유를 몰라 되돌린다.
