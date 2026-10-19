@@ -7,6 +7,7 @@
 로컬 실행:
     python tests/test_target_ctr.py
 """
+import json
 import pathlib
 import re
 import sys
@@ -78,6 +79,23 @@ def _texts(at):
 
 def _kpi(at):
     return {m.label: m.value for m in at.metric}
+
+
+def _funnel_sent(at):
+    """④ 퍼널 차트의 첫 막대 라벨에서 발송 건수를 읽는다.
+
+    AppTest는 plotly 요소에 `.value`를 안 준다 — `el.proto.spec`이 figure JSON 통째다.
+    가로 막대가 이 페이지에 또 생길 수 있으니 **레이아웃 제목으로** 그 차트를 집는다.
+    """
+    for el in at.get("plotly_chart"):
+        spec = json.loads(el.proto.spec)
+        ttl = str(((spec.get("layout") or {}).get("title") or {}).get("text", ""))
+        if "단계별 전환" not in ttl:
+            continue
+        txt = (spec.get("data") or [{}])[0].get("text") or []
+        if txt:
+            return int(str(txt[0]).replace(",", "").replace("건", ""))
+    return None
 
 
 def _tbl(at, first_col):
@@ -224,6 +242,52 @@ def t_manual_target_switches_basis():
     assert not at.exception, at.exception[0].value
     _after = _kpi(at)["목표 CTR"]
     assert float(_after.rstrip("%")) > float(_before.rstrip("%")), (_before, _after)
+
+
+# ── ④ 퍼널 — 「전체 효율·추이」에서 옮겨 온 블록 ──────────────────────────
+# 그 탭은 여섯 블록 중 다섯이 다른 화면과 겹쳐서 없앴고, 안 겹친 이 퍼널만 여기로 왔다.
+# 옮기면서 **프레임이 바뀌면 값이 조용히 달라진다** — ①②③은 '최소 발송수'를 넘긴
+# 캠페인(`fdf`)을 보는데 퍼널은 작은 발송까지 더한 `dff_all`을 봐야 전체 잔존이 된다.
+
+@case
+def t_funnel_counts_every_campaign_not_just_the_big_ones():
+    """④ 퍼널만 '최소 발송수' 필터를 안 거친다.
+
+    `dff_all` → `fdf`로 바꿔 놓으면 발송 합계가 작아지는데 **화면은 멀쩡히 뜬다**.
+    픽스처는 최소 발송수(기본 5,000) **아래** 캠페인을 일부러 섞어야 둘이 갈린다 —
+    전부 큰 발송이면 두 프레임이 같아서 규칙을 깨도 값이 안 변한다.
+    """
+    big = synth(weeks=10)
+    small = big.head(60).copy()
+    small["af"] = [f"SM{i:04d}" for i in range(len(small))]
+    small["send"] = 1_000                          # 기본 최소 발송수 5,000 미만
+    small["uv"] = 40
+    small["cust"] = 12
+    small["oc"] = 4
+    small["amt"] = 4 * 130_000
+    small["infl_cr"] = small["uv"] / small["send"]
+    small["ord_cr"] = small["oc"] / small["uv"]
+    store = pd.concat([big, small], ignore_index=True)
+
+    at = _open(store)
+    sent = _funnel_sent(at)
+    assert sent is not None, "④ 퍼널 차트를 못 찾았어요"
+
+    all_sum = int(store["send"].sum())
+    big_sum = int(big["send"].sum())
+    assert all_sum != big_sum, "픽스처로는 규칙을 못 깨요 — 작은 발송이 안 섞였어요"
+    assert sent == all_sum, (
+        f"퍼널 발송 합계가 {sent:,} — 전체 {all_sum:,}가 아니라 "
+        f"최소 발송수 통과분 {big_sum:,}만 센 것 같아요")
+
+
+@case
+def t_funnel_says_it_skips_the_min_send_filter():
+    """같은 화면의 다른 블록과 기준이 다르면 **화면이 그렇게 말해야** 한다."""
+    at = _open(synth(weeks=10))
+    txt = " ".join(_texts(at))
+    assert "최소 발송수" in txt and "안 거쳐" in txt, \
+        "퍼널이 최소 발송수를 안 거친다는 안내가 없어요"
 
 
 def main():

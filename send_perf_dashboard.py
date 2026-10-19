@@ -3225,7 +3225,13 @@ POLICY_CHANGE_DATE = "20260801"
 # 묶는 기준은 **답하는 질문**이다. 예전엔 13개 그룹이었고 그중 다섯이 한 탭짜리라,
 # 사이드바는 긴데 정작 「무엇부터 볼까」가 안 보였다. 지금은 10개고 한 탭짜리는
 # 둘뿐이다(주간보고·데이터).
-#   · 「종합 요약」에 전체 효율·추이를 합쳤다 — 둘 다 '전반이 어떤가'다.
+#   · 「전체 효율·추이」를 없앴다 — 한동안 「종합 요약」과 같은 그룹에 뒀지만 그건
+#     자리만 붙인 것이었다. 여섯 블록 중 다섯이 다른 화면과 겹쳤고(아래), 안 겹친
+#     퍼널 하나만 「전환·AOV 진단 ④」로 옮겼다.
+#       KPI 4장·주차별 실적 → 「주간보고」가 일/주/월에 비교 3종까지 한다
+#       주차별 캠페인 보기  → 「캠페인 리더보드」가 전 기간을 더 넓게 본다
+#       기간 비교(최근↔직전) → 「변화 다이제스트」가 FDR까지 걸어 제대로 한다
+#       주차별 두 지표 상관  → 「주간보고」의 증감 기여 분해(LMDI)가 더 센 답을 준다
 #   · 「캠페인 리더보드」·「기획전 비교」를 「성과 진단」으로 넣었다 — 축만 다른 랭킹이다.
 #   · 「앱푸시 수신동의 모수」·「회원UV·거래액」을 「사이트·앱 지표」로 묶었다 —
 #     둘 다 CRM 발송 실적이 아니라 그 바깥의 모수·환경이다.
@@ -3241,7 +3247,7 @@ POLICY_CHANGE_DATE = "20260801"
 # 하위탭 이름은 아래 페이지 분기(`in page`)의 매칭 키를 그대로 품어야 한다.
 CAMPAIGN_GROUPS = {
     "1. 주간보고":         ["주간보고", "변화 다이제스트"],
-    "2. 종합 요약":        ["종합 요약", "푸시 반응률", "전체 효율·추이"],
+    "2. 종합 요약":        ["종합 요약", "푸시 반응률"],
     "3. 문구 분석":        ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모",
                            "소구 사전 후보"],
     "4. 성과 진단":        ["캠페인 리더보드", "전환·AOV 진단", "발송유형·브랜드",
@@ -9032,221 +9038,6 @@ def main():
         glossary()
 
     # ══════════════════════════════════════════════════════════════
-    # PAGE 08 — 전체 효율·추이 (send_dashboard 피로도 관점 계승)
-    # ══════════════════════════════════════════════════════════════
-    elif "전체 효율" in page:
-        st.title("전체 효율·추이")
-        st.caption("전체 발송을 주차 단위로 집계한 효율 흐름이에요. "
-                   "사이드바 필터는 반영되고, '최소 발송수'는 제외돼요.")
-        g = dff_all.dropna(subset=["dt"]).copy()
-        g = g[g["send"].fillna(0) > 0]
-        if len(g) < 3:
-            st.info("데이터가 부족해요. 더 많은 주차를 올려 주세요."); st.stop()
-
-        g["주"] = g["dt"].dt.to_period("W").dt.start_time
-        rows = []
-        for wkstart, d in g.groupby("주"):
-            s, u, o, a = d["send"].sum(), d["uv"].sum(), d["oc"].sum(), d["amt"].sum()
-            rows.append(dict(주=wkstart, 발송=s, 거래액=a, 캠페인수=len(d), 유입UV=u, 주문건수=o,
-                             유입전환율=(u / s if s else np.nan),
-                             주문전환율=(o / u if u else np.nan),
-                             RPS=(a / s if s else np.nan)))
-        wk = pd.DataFrame(rows).sort_values("주").reset_index(drop=True)
-        # 발송이 미미한 주(오조작·이월 날짜 1~2건으로 생긴 뜬금없는 주)는 추세에서 제외 —
-        # 중앙값 주 발송의 5% 미만이면 버림(x축이 통째로 늘어나 차트가 깨지는 것 방지)
-        _wk_all = len(wk)
-        if len(wk) >= 4:
-            _med_send = wk["발송"].median()
-            if _med_send and _med_send > 0:
-                # 발송 극소(중앙값 5% 미만) 또는 캠페인 3건 미만(오날짜 1~2건) 주 제외
-                _wk_f = wk[(wk["발송"] >= _med_send * 0.05)
-                           & (wk["캠페인수"] >= 3)].reset_index(drop=True)
-                if len(_wk_f) >= 2:          # 필터가 최소 2주는 남길 때만 적용(과필터 방지)
-                    wk = _wk_f
-        _wk_dropped = _wk_all - len(wk)
-
-        c = st.columns(4)
-        c[0].metric("누적 발송", won(g["send"].sum()))
-        c[1].metric("누적 거래액", won(g["amt"].sum()))
-        c[2].metric("전체 가중 주문전환율",
-                    f"{(g['oc'].sum()/g['uv'].sum())*100:.2f}%" if g["uv"].sum() else "–")
-        c[3].metric("전체 RPS", won(g["amt"].sum() / g["send"].sum() if g["send"].sum() else np.nan))
-
-        # 주차별 이중축 — 좌(막대)/우(선) 지표 선택해 상관관계 확인
-        WKM = {"발송량": ("발송", False), "거래액": ("거래액", False), "캠페인수": ("캠페인수", False),
-               "유입UV": ("유입UV", False), "주문건수": ("주문건수", False),
-               "CTR(유입전환율)": ("유입전환율", True), "주문전환율": ("주문전환율", True),
-               "RPS": ("RPS", False)}
-        _keys = list(WKM.keys())
-        mc1, mc2 = st.columns(2)
-        llab = mc1.selectbox("막대 지표 (위)", _keys, index=_keys.index("발송량"), key="p08_wk_left")
-        rlab = mc2.selectbox("선 지표 (아래)", _keys, index=_keys.index("RPS"), key="p08_wk_right")
-        lc, lpct = WKM[llab]; rc, rpct = WKM[rlab]
-        # 좌(막대) 우(선) 이중축 오버레이 차트로 변경
-        fig = overlay_dual(wk["주"], wk[lc] * (100 if lpct else 1), llab,
-                           wk[rc] * (100 if rpct else 1), rlab,
-                           PALETTE["slate"], PALETTE["green"], h=430,
-                           bar_suffix=("%" if lpct else ""), line_suffix=("%" if rpct else ""),
-                           title=f"{llab}(좌·막대) ↔ {rlab}(우·선)")
-        chart(fig, width="stretch")
-        if _wk_dropped:
-            st.caption(f"발송이 미미한 주 {_wk_dropped}개는 추세에서 제외했어요 "
-                       "(오조작·이월 날짜로 생긴 뜬금없는 주 — x축 왜곡 방지).")
-
-        # 선택한 두 지표의 상관관계
-        x = wk[lc].values.astype(float); y = wk[rc].values.astype(float)
-        m = ~np.isnan(x) & ~np.isnan(y)
-        if m.sum() >= 5 and np.std(x[m]) > 0 and np.std(y[m]) > 0:
-            r = float(np.corrcoef(x[m], y[m])[0, 1])
-            _, _, _, p, _ = stats.linregress(x[m], y[m])
-            arrow = "같이 움직임(양의 상관)" if r > 0 else "반대로 움직임(음의 상관)"
-            st.markdown(
-                f'<div class="appendix"><b>상관관계</b> — 주차 {llab} ↔ {rlab}: 상관 r={r:.2f} ({arrow}), '
-                f'{sig_label(p)}. r이 +1/−1에 가까울수록 강하고 0이면 관계가 없어요. '
-                f'상관은 인과가 아니며 시즌·구성 변화가 섞일 수 있어요 '
-                f'(예: 발송량↑인데 RPS·전환율↓이면 발송 피로도 신호).</div>', unsafe_allow_html=True)
-        elif m.sum() < 5:
-            st.caption("상관을 계산하려면 5주차 이상 필요해요.")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 주차별 실적")
-        show = wk.copy()
-        show["주"] = show["주"].dt.strftime("%Y-%m-%d")
-        # 합계 컬럼은 원본이 float면(실데이터의 uv/oc는 NaN 때문에 float) 포맷이 없을 때
-        # 627533.000000 처럼 소수점이 그대로 노출된다 — 숫자 컬럼은 빠짐없이 지정할 것.
-        table(show.style.format({
-            "발송": "{:,.0f}", "거래액": "{:,.0f}", "캠페인수": "{:,.0f}",
-            "유입UV": "{:,.0f}", "주문건수": "{:,.0f}",
-            "유입전환율": "{:.2%}", "주문전환율": "{:.2%}", "RPS": "{:,.0f}"}),
-            hide_index=True, width="stretch", height=360, dl_name="주차별 실적")
-        st.markdown("<div class=\"appendix\">‘인당 발송 건수’ 기반 피로도(고객 중복 제거)는 이 데이터만으론 계산할 수 없어요 "
-                    "— 전사 MTD 발송상세가 필요해요. 여기서는 캠페인 합산 기준 전체 효율을 봐요.</div>",
-                    unsafe_allow_html=True)
-
-        # ── 주차별 드릴다운: 해당 주의 캠페인 목록 ──
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📋 주차별 캠페인 보기")
-        wk_labels = [f"{r['주'].strftime('%Y-%m-%d')} (캠페인 {r['캠페인수']:.0f}건)" for _, r in wk.iterrows()]
-        if wk_labels:
-            guard_select("p08_wk", wk_labels)
-            sel_wk = st.selectbox("주차 선택", wk_labels, key="p08_wk")
-            wk_idx = wk_labels.index(sel_wk)
-            wk_start = wk.iloc[wk_idx]["주"]
-            wk_end = wk_start + pd.Timedelta(days=7)
-            sub8 = g[(g["dt"] >= wk_start) & (g["dt"] < wk_end)]
-            st.caption(f"해당 주 캠페인 {len(sub8)}건 — 거래액 높은 순")
-            render_messages(sub8, "amt", "p08_drill")
-
-        # ── 퍼널 분해 (발송→UV→VISIT→고객→주문) ──
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 🪜 퍼널 분석 — 어디서 빠질까")
-        st.caption("발송 → UV → 주문고객 → 주문 단계별 전환율이에요. 크게 떨어지는 단계가 개선 포인트예요.")
-        steps = [("발송", "send"), ("UV(유입)", "uv"),
-                 ("주문고객수", "cust"), ("주문", "oc")]
-        avail = [(lab, c) for lab, c in steps if c in g.columns and g[c].fillna(0).sum() > 0]
-        if len(avail) >= 2:
-            vals = [float(g[c].fillna(0).sum()) for _, c in avail]
-            labs = [lab for lab, _ in avail]
-            base_v = vals[0] if vals[0] else 1
-            # 로그 폭 퍼널은 '좁아지는 정도'가 실제 전환율과 무관해 모양 자체가 왜곡 —
-            # 막대 길이 = '직전 단계 대비 전환율'인 수평 막대로 교체 (라벨 = 실제 건수)
-            rates = [100.0] + [(vals[i] / vals[i - 1] * 100 if vals[i - 1] else 0.0)
-                               for i in range(1, len(vals))]
-            figf = go.Figure(go.Bar(
-                x=rates, y=labs, orientation="h",
-                marker_color=[PALETTE["slate"], PALETTE["blue"], PALETTE["teal"],
-                              PALETTE["green"], PALETTE["purple"]][:len(labs)],
-                text=[(f"{v:,.0f}건" + ("" if i == 0 else f" · 직전 대비 {rates[i]:.2f}%"))
-                      for i, v in enumerate(vals)],
-                textposition="outside",
-                hovertemplate="%{y}<br>직전 단계 대비: %{x:.2f}%<extra></extra>"))
-            layf2 = base_layout(h=340, title="단계별 전환 — 막대 길이 = 직전 단계 대비 전환율(%)")
-            layf2["xaxis"]["range"] = [0, 130]
-            layf2["xaxis"]["ticksuffix"] = "%"
-            set_layout(figf, layf2)
-            figf.update_yaxes(autorange="reversed")
-            chart(figf, width="stretch")
-            # 단계별 전환율 표
-            frows = []
-            for i in range(1, len(avail)):
-                prev_l, prev_c = avail[i - 1]; cur_l, cur_c = avail[i]
-                pv = float(g[prev_c].fillna(0).sum()); cv = float(g[cur_c].fillna(0).sum())
-                frows.append(dict(단계=f"{prev_l} → {cur_l}", 직전대비=f"{(cv/pv if pv else 0)*100:.2f}%",
-                                  발송대비=f"{(cv/base_v)*100:.2f}%"))
-            table(pd.DataFrame(frows), hide_index=True, width="stretch", dl_name="퍼널 분석 — 어디서 빠질까")
-            st.markdown("<div class=\"appendix\">’직전대비’가 가장 낮은 단계가 병목이에요. UV→주문이 낮으면 "
-                        "랜딩·오퍼·상품 매력도, 발송→UV가 낮으면 제목·발송시점·타겟이 개선 포인트예요.</div>",
-                        unsafe_allow_html=True)
-        else:
-            st.info("퍼널 분석에 필요한 데이터(UV·방문·고객·주문)가 부족해요.")
-
-        # ── 기간 비교 (직전 대비) ──
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 📈 기간 비교 — 최근 vs 직전")
-        st.caption("기간을 둘로 나눠서 효율이 어떻게 바뀌었는지 봐요.")
-        gdt = g.dropna(subset=["dt"]).sort_values("dt")
-        if gdt["dt"].nunique() < 2:
-            st.info("발송일이 2일 이상 있어야 비교할 수 있어요.")
-        else:
-            uniq_days = sorted(gdt["dt"].dt.normalize().unique())
-            mid = uniq_days[len(uniq_days) // 2]
-            prev = gdt[gdt["dt"] < mid]; recent = gdt[gdt["dt"] >= mid]
-            if len(prev) == 0 or len(recent) == 0:
-                st.info("기간을 나누기에 데이터가 부족해요.")
-            else:
-                def _agg(d):
-                    s, u, o, a = d["send"].sum(), d["uv"].sum(), d["oc"].sum(), d["amt"].sum()
-                    return dict(캠페인수=len(d), 발송=s, 거래액=a,
-                                유입전환율=(u / s if s else np.nan), 주문전환율=(o / u if u else np.nan),
-                                RPS=(a / s if s else np.nan))
-                pa, ra = _agg(prev), _agg(recent)
-                p_lab = f"직전 (~{pd.Timestamp(mid).strftime('%m/%d')} 전)"
-                r_lab = f"최근 ({pd.Timestamp(mid).strftime('%m/%d')}~)"
-                cmp_rows = []
-                for k in ["캠페인수", "발송", "거래액", "유입전환율", "주문전환율", "RPS"]:
-                    pv, rv = pa[k], ra[k]
-                    if k in ("유입전환율", "주문전환율"):
-                        pvs = f"{pv*100:.2f}%" if pd.notna(pv) else "–"; rvs = f"{rv*100:.2f}%" if pd.notna(rv) else "–"
-                        chg = f"{(rv-pv)*100:+.2f}%p" if (pd.notna(pv) and pd.notna(rv)) else "–"
-                    elif k in ("발송", "거래액", "RPS"):
-                        pvs, rvs = won(pv), won(rv)
-                        chg = f"{((rv/pv-1)*100):+.1f}%" if (pv and pd.notna(pv) and pd.notna(rv)) else "–"
-                    else:
-                        pvs, rvs = f"{pv:,.0f}", f"{rv:,.0f}"
-                        chg = f"{((rv/pv-1)*100):+.1f}%" if pv else "–"
-                    cmp_rows.append({"지표": k, p_lab: pvs, r_lab: rvs, "변화": chg})
-                table(pd.DataFrame(cmp_rows), hide_index=True, width="stretch", dl_name="기간 비교 — 최근 vs 직전")
-                # 카테고리별 주문전환율 변화 Top
-                if "cat" in gdt.columns:
-                    def _catcr(d):
-                        gg = d.groupby("cat").apply(
-                            lambda x: (x["oc"].sum() / x["uv"].sum()) if x["uv"].sum() else np.nan)
-                        return gg
-                    pc, rc = _catcr(prev), _catcr(recent)
-                    cats_common = [c for c in rc.index if c in pc.index and pd.notna(pc[c]) and pd.notna(rc[c])]
-                    if cats_common:
-                        ch = pd.DataFrame({"카테고리": cats_common,
-                                           "직전_주문CR": [pc[c] for c in cats_common],
-                                           "최근_주문CR": [rc[c] for c in cats_common]})
-                        ch["변화%p"] = (ch["최근_주문CR"] - ch["직전_주문CR"]) * 100
-                        ch = ch.sort_values("변화%p", ascending=False)
-                        ch["직전_주문CR"] = ch["직전_주문CR"].map(lambda v: f"{v*100:.2f}%")
-                        ch["최근_주문CR"] = ch["최근_주문CR"].map(lambda v: f"{v*100:.2f}%")
-                        ch["변화%p"] = ch["변화%p"].map(lambda v: f"{v:+.2f}%p")
-                        st.markdown("**카테고리별 주문전환율 변화 (최근 − 직전)**")
-                        table(ch, hide_index=True, width="stretch", height=260, dl_name="카테고리별 주문전환율 변화 (최근 − 직전)")
-
-        # 피로도 하위탭은 전사 MTD가 있어야 열려서 «다른 그룹»에 모아 뒀다 —
-        # 가리키는 이름은 메뉴에서 만든다(번호를 박으면 재정렬 때 썩는다).
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.caption("🌡️ 인당 발송 건수 기반 피로도 분석은 "
-                   f"**「{menu_ref('피로도 시계열').split(' › ')[0]}」**에서 "
-                   "볼 수 있어요"
-                   + ("" if mtd_data is not None else " (전사 MTD 파일 업로드 필요)") + ".")
-
-        glossary()
-
-    # ══════════════════════════════════════════════════════════════
     # PAGE 09 — BPU·우선순위 효율
     # ══════════════════════════════════════════════════════════════
     elif "BPU" in page:
@@ -11060,6 +10851,65 @@ def main():
                           "네 값이 서로 독립이라는 전제라, 실제로는 CTR을 올리면 유입 품질이 "
                           "묽어져 주문CR이 같이 내려가기도 해요. 목표치는 상한이 아니라 "
                           "출발점으로 보세요.")
+        # ── ④ 퍼널 — 발송 → UV → 주문고객 → 주문 ──
+        # 「2. 종합 요약 › 전체 효율·추이」에 있던 블록이다. 그 탭은 나머지 다섯 블록이
+        # 전부 다른 화면과 겹쳐서 없앴는데 이 퍼널만 갈 곳이 없었다 — 「유입 퍼널」은
+        # **전사 MTD 원천**(발송고객 → 유니크유입 → 구매고객)이고 MTD가 있어야 열린다.
+        # 여기는 **캠페인 실적만으로** 단계별 잔존을 본다. ①이 CTR·주문CR 두 비율의
+        # 관계를 보는 자리라면 여기는 같은 사슬을 단계별 잔존으로 편 것이다.
+        #
+        # **이 블록만 `dff_all`이다.** ①②③은 '최소 발송수'를 넘긴 캠페인(`fdf`)만 보는데,
+        # 단계별 잔존은 작은 발송까지 더해야 전체 그림이 된다. 옮기면서 `fdf`로 바꾸면
+        # 값이 조용히 달라지므로 옛 화면이 쓰던 프레임을 그대로 쓴다.
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### ④ 퍼널 — 발송 → UV → 주문고객 → 주문")
+        st.caption("단계별로 얼마나 남는지예요. 크게 떨어지는 단계가 개선 포인트예요. "
+                   "이 블록만 '최소 발송수' 필터를 안 거쳐요 — 작은 발송까지 더해야 전체 "
+                   "잔존이 돼요.")
+        _fn_g = dff_all.dropna(subset=["dt"]).copy()
+        _fn_g = _fn_g[_fn_g["send"].fillna(0) > 0]
+        _fn_steps = [("발송", "send"), ("UV(유입)", "uv"), ("주문고객수", "cust"), ("주문", "oc")]
+        _fn_av = [(lab, c) for lab, c in _fn_steps
+                  if c in _fn_g.columns and _fn_g[c].fillna(0).sum() > 0]
+        if len(_fn_av) >= 2:
+            _fn_v = [float(_fn_g[c].fillna(0).sum()) for _, c in _fn_av]
+            _fn_lb = [lab for lab, _ in _fn_av]
+            _fn_b0 = _fn_v[0] if _fn_v[0] else 1
+            # 로그 폭 퍼널은 '좁아지는 정도'가 실제 전환율과 무관해 모양 자체가 왜곡된다 —
+            # 막대 길이 = '직전 단계 대비 전환율'인 수평 막대로 그린다 (라벨 = 실제 건수)
+            _fn_rt = [100.0] + [(_fn_v[i] / _fn_v[i - 1] * 100 if _fn_v[i - 1] else 0.0)
+                                for i in range(1, len(_fn_v))]
+            _fn_fig = go.Figure(go.Bar(
+                x=_fn_rt, y=_fn_lb, orientation="h",
+                marker_color=[PALETTE["slate"], PALETTE["blue"], PALETTE["teal"],
+                              PALETTE["green"], PALETTE["purple"]][:len(_fn_lb)],
+                text=[(f"{v:,.0f}건" + ("" if i == 0 else f" · 직전 대비 {_fn_rt[i]:.2f}%"))
+                      for i, v in enumerate(_fn_v)],
+                textposition="outside",
+                hovertemplate="%{y}<br>직전 단계 대비: %{x:.2f}%<extra></extra>"))
+            _fn_lay = base_layout(h=340, title="단계별 전환 — 막대 길이 = 직전 단계 대비 전환율(%)")
+            _fn_lay["xaxis"]["range"] = [0, 130]
+            _fn_lay["xaxis"]["ticksuffix"] = "%"
+            set_layout(_fn_fig, _fn_lay)
+            _fn_fig.update_yaxes(autorange="reversed")
+            chart(_fn_fig, width="stretch")
+            _fn_rows = []
+            for i in range(1, len(_fn_av)):
+                prev_l, prev_c = _fn_av[i - 1]
+                cur_l, cur_c = _fn_av[i]
+                pv = float(_fn_g[prev_c].fillna(0).sum())
+                cv = float(_fn_g[cur_c].fillna(0).sum())
+                _fn_rows.append(dict(단계=f"{prev_l} → {cur_l}",
+                                     직전대비=f"{(cv / pv if pv else 0) * 100:.2f}%",
+                                     발송대비=f"{(cv / _fn_b0) * 100:.2f}%"))
+            table(pd.DataFrame(_fn_rows), hide_index=True, width="stretch",
+                  dl_name="퍼널 — 단계별 잔존")
+            st.markdown("<div class=\"appendix\">’직전대비’가 가장 낮은 단계가 병목이에요. "
+                        "UV→주문이 낮으면 랜딩·오퍼·상품 매력도, 발송→UV가 낮으면 "
+                        "제목·발송시점·타겟이 개선 포인트예요.</div>", unsafe_allow_html=True)
+        else:
+            st.info("퍼널에 필요한 데이터(UV·주문고객·주문)가 부족해요.")
+
         glossary()
 
     # ══════════════════════════════════════════════════════════════
