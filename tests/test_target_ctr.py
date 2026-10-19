@@ -21,9 +21,14 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from streamlit.testing.v1 import AppTest        # noqa: E402
 
+from smoke_pages import group_of                # noqa: E402
+
 APP = str(ROOT / "send_perf_dashboard.py")
 TIMEOUT = 300
-PAGE, TAB = "4. 성과 진단", "전환·AOV 진단"
+# 그룹 이름을 박지 않는다 — `group_of`가 앱의 `CAMPAIGN_GROUPS`에서 찾아 준다.
+# 번호까지 박아 두면 메뉴를 재정렬할 때마다 같이 고쳐야 한다(실제로 「4. 성과 진단」이
+# 「3. 성과 진단」이 되면서 걸렸다).
+TAB = "전환·AOV 진단"
 
 
 def synth(weeks=70, ctr=0.030, cr=0.010, aov=130_000, drop=0.5, jitter=0.0, seed=8):
@@ -60,7 +65,7 @@ def _open(store):
     at.session_state["camp_store"] = store
     at.run()
     assert not at.exception, at.exception[0].value
-    at.sidebar.radio[0].set_value(PAGE)
+    at.sidebar.radio[0].set_value(group_of(TAB))
     at.run()
     subs = [r for r in at.radio if r.label != "페이지"]
     assert subs and TAB in subs[0].options, f"{TAB} 탭이 없어요"
