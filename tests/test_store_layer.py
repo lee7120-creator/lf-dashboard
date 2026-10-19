@@ -108,6 +108,102 @@ def t_storage_kinds_agree_across_registries():
         f"  {nm}: 빠진 종류 {miss} / 남는 종류 {extra}" for nm, (miss, extra) in bad.items())
 
 
+# ── 업로드 저장 큐 — 올린 종류가 몇이든 버튼은 하나다 ──────────────────────
+# 예전엔 발송실적·전사 MTD·기획전이 각자 버튼을 들고 있었다. 셋을 같이 올린 날 하나만
+# 누르고 떠나면 나머지는 조용히 안 남는데, 화면엔 「합쳐서 N건 (미리보기)」가 그대로
+# 떠 있어서 저장된 줄로 읽힌다. 이 저장소의 전형적인 조용한 실패다.
+
+def _sb_button_labels(src):
+    """`st.sidebar.button("…")` 의 첫 인자 리터럴 목록 — AST로 읽는다.
+
+    문자열로 찾으면 주석·문서에 적힌 버튼 이름까지 걸린다.
+    """
+    out = []
+    for n in ast.walk(ast.parse(src)):
+        if not isinstance(n, ast.Call) or not isinstance(n.func, ast.Attribute):
+            continue
+        if n.func.attr != "button":
+            continue
+        tgt = n.func.value
+        if not (isinstance(tgt, ast.Attribute) and tgt.attr == "sidebar"
+                and isinstance(tgt.value, ast.Name) and tgt.value.id == "st"):
+            continue
+        if n.args and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str):
+            out.append(n.args[0].value)
+    return out
+
+
+@case
+def t_upload_has_one_save_button():
+    src = (ROOT / "send_perf_dashboard.py").read_text(encoding="utf-8")
+    saves = [b for b in _sb_button_labels(src) if "저장하기" in b]
+    assert len(saves) == 1, (
+        f"사이드바 저장 버튼이 {len(saves)}개예요 — {saves}. 저장소 종류를 더해도 버튼은 "
+        "하나입니다. `save_queue_add`로 큐에 넣으세요.")
+
+
+def _entry(kind, applied):
+    """저장 대기 한 칸 — `build`가 만든 값을 `applied`에 남긴다."""
+    return dict(kind=kind, label=kind,
+                build=lambda k=kind: f"{k}-df",
+                apply_=lambda df, k=kind: applied.__setitem__(k, df))
+
+
+def _queue(kinds, applied):
+    pend = []
+    for k in kinds:
+        e = _entry(k, applied)
+        S.save_queue_add(pend, e["kind"], e["label"], e["build"], e["apply_"])
+    return pend
+
+
+@case
+def t_one_press_saves_every_queued_store():
+    """한 번 눌러서 큐에 있는 **전부**가 저장돼야 한다."""
+    applied, saved = {}, []
+    pend = _queue(["campaign", "mtd", "promo"], applied)
+    ok, ng = S.save_queue_flush(pend, lambda kind, df: (saved.append((kind, df)) or True))
+    assert [k for k, _ in saved] == ["campaign", "mtd", "promo"], f"저장 호출이 {saved}"
+    assert saved == [(k, f"{k}-df") for k in ("campaign", "mtd", "promo")], \
+        f"엉뚱한 프레임을 저장했어요 — {saved}"
+    assert applied == {k: f"{k}-df" for k in ("campaign", "mtd", "promo")}, \
+        f"세션 반영이 빠졌어요 — {applied}"
+    assert (ok, ng) == (["campaign", "mtd", "promo"], []), f"결과가 {(ok, ng)}"
+
+
+@case
+def t_a_blocked_store_does_not_swallow_the_others():
+    """한 종류가 막혀도 나머지는 끝까지 간다 — 그리고 막힌 건 세션에 안 넣는다.
+
+    중간에 멈추면 사용자는 「저장했어요」를 보고 떠나는데 일부만 남는다. 막힌 걸
+    세션에만 넣으면 화면은 저장된 것처럼 보이고 저장소엔 없다.
+    """
+    applied, saved = {}, []
+    pend = _queue(["campaign", "mtd", "promo"], applied)
+    ok, ng = S.save_queue_flush(
+        pend, lambda kind, df: (saved.append(kind) or (kind != "mtd")))
+    assert saved == ["campaign", "mtd", "promo"], f"중간에 멈췄어요 — {saved}"
+    assert ok == ["campaign", "promo"] and ng == ["mtd"], f"결과가 {(ok, ng)}"
+    assert "mtd" not in applied, "저장이 막혔는데 세션엔 넣었어요"
+    assert set(applied) == {"campaign", "promo"}, f"세션 반영이 {sorted(applied)}"
+
+
+@case
+def t_a_raising_build_is_reported_not_swallowed():
+    """프레임을 만들다 터져도 나머지는 저장하고, 터진 건 실패로 보고한다."""
+    applied, saved = {}, []
+    pend = _queue(["campaign", "promo"], applied)
+    pend.insert(1, {"kind": "mtd", "label": "전사 MTD",
+                    "build": lambda: (_ for _ in ()).throw(ValueError("깨진 프레임")),
+                    "apply": lambda df: applied.__setitem__("mtd", df)})
+    ok, ng = S.save_queue_flush(pend, lambda kind, df: (saved.append(kind) or True))
+    assert saved == ["campaign", "promo"], f"저장 호출이 {saved}"
+    assert ok == ["campaign", "promo"], f"성공 목록이 {ok}"
+    assert len(ng) == 1 and ng[0].startswith("전사 MTD") and "깨진 프레임" in ng[0], \
+        f"실패를 삼켰어요 — {ng}"
+    assert "mtd" not in applied, "터졌는데 세션엔 넣었어요"
+
+
 def main():
     fails = []
     for fn in CASES:
