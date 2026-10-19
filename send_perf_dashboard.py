@@ -833,7 +833,7 @@ def merge_mtd_store(old, new):
     return both.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
 
 
-# ── 월별 MTD 발송 상세 (월 단위 유니크) — 「6. 발송량·피로도 › 푸시 반응률」 ──────
+# ── 월별 MTD 발송 상세 (월 단위 유니크) — 「2. 종합 요약 › 푸시 반응률」 ──────────
 # 일별 MTD 파일과 **모양은 같고 열이 월**이다(1행=`2026년 10월`, 2행=`~10/15`).
 # 월 유니크(발송 MAU·유입 MAU)는 일별 값을 더해서 만들 수 없다 — 같은 사람이 여러 날
 # 겹치기 때문이다. 그래서 이 표를 따로 받아 **별도 저장소**에 쌓는다. 일별 저장소에
@@ -1821,6 +1821,49 @@ def push_week_note(row):
     if int(row.get("결측일수", 0) or 0) > 0:
         parts.append(f"데이터 없음 {int(row['결측일수'])}일")
     return " · ".join(parts)
+
+
+# ── 업로드 저장 큐 — 올린 종류가 몇이든 버튼은 «하나»다 ────────────────────
+# 예전엔 발송실적·전사 MTD·기획전이 **각자 버튼**을 들고 있었다. 셋을 같이 올린 날엔
+# 사이드바를 오르내리며 세 번 눌러야 했고, 하나만 누르고 떠나면 나머지는 조용히 안
+# 남는다 — 화면엔 「합쳐서 N건 (미리보기)」가 그대로 떠 있어서 저장된 줄로 읽힌다.
+# 지금은 블록마다 «무엇을 어떻게 저장할지»만 큐에 넣고, 세 블록이 다 끝난 뒤
+# 버튼 하나로 한꺼번에 저장한다.
+
+def save_queue_add(pend, kind, label, build, apply_):
+    """저장 대기 등록 — `build()`가 저장할 프레임을 만들고 `apply_(df)`가 세션에 반영한다.
+
+    `build`를 지금 부르지 않고 **누른 순간** 부르는 게 요점이다. 그때 저장소를 다시
+    읽어 합쳐야(낙관적 병합) 두 세션이 각자 스냅샷으로 저장할 때 나중 저장이 먼저
+    저장분을 안 지운다.
+    """
+    pend.append({"kind": kind, "label": label, "build": build, "apply": apply_})
+    return pend
+
+
+def save_queue_flush(pend, save):
+    """대기 목록을 한 번에 저장한다 → (성공 라벨, 실패 라벨).
+
+    두 가지를 지킨다.
+
+    - **성공했을 때만 세션에 반영한다.** `save(kind, df)`가 거짓이면(읽기 실패 상태라
+      저장이 차단된 경우) 세션까지 갱신하면 화면은 저장된 것처럼 보이고 저장소엔 없다.
+    - **한 종류가 실패해도 나머지는 계속 간다.** 중간에 멈추면 사용자는 「저장했어요」를
+      보고 떠나는데 일부만 남고, 증상은 '올렸는데 일부만 있네'로만 보인다.
+    """
+    ok, ng = [], []
+    for p in pend:
+        try:
+            df = p["build"]()
+        except Exception as e:                            # noqa: BLE001
+            ng.append(f"{p['label']} ({str(e)[:40]})")
+            continue
+        if save(p["kind"], df):
+            p["apply"](df)
+            ok.append(p["label"])
+        else:
+            ng.append(p["label"])
+    return ok, ng
 
 
 # ── 구글시트 영속 저장 (선택) — 미설정 시 로컬 CSV 폴백 ──────────────────
@@ -3187,17 +3230,20 @@ POLICY_CHANGE_DATE = "20260801"
 #   · 「앱푸시 동의 현황」·「회원UV·거래액」을 「사이트·앱 지표」로 묶었다 —
 #     둘 다 CRM 발송 실적이 아니라 그 바깥의 모수·환경이다.
 #   · 「액션」은 뭘 하는 화면인지 이름만으로 안 읽혀 「다음 발송 준비」로 바꿨다.
+#   · 「푸시 반응률」을 「발송량·피로도」에서 「종합 요약」으로 올렸다 — 발송량 옆에
+#     두면 '얼마나 보냈나'의 곁가지로 읽히는데, 실제론 **핵심 관리 지표**라
+#     '전반이 어떤가'를 묻는 자리에 있어야 한다.
 # 하위탭 이름은 아래 페이지 분기(`in page`)의 매칭 키를 그대로 품어야 한다.
 CAMPAIGN_GROUPS = {
     "1. 주간보고":         ["주간보고", "변화 다이제스트"],
-    "2. 종합 요약":        ["종합 요약", "전체 효율·추이"],
+    "2. 종합 요약":        ["종합 요약", "푸시 반응률", "전체 효율·추이"],
     "3. 문구 분석":        ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모",
                            "소구 사전 후보"],
     "4. 성과 진단":        ["캠페인 리더보드", "전환·AOV 진단", "발송유형·브랜드",
                            "BPU·우선순위", "기획전 비교"],
     "5. 타이밍·카테고리":  ["카테고리·시간대", "타이밍·발송슬롯", "전년 동요일 비교"],
     "6. 발송량·피로도":    ["피로도 시계열", "발송 빈도·한계수익", "발송량 최적 구간",
-                           "요일 패턴", "유입 퍼널", "푸시 반응률"],
+                           "요일 패턴", "유입 퍼널"],
     "7. 개선 효과 검증":   ["문구 개선 효과", "잔여모수 추가 효과", "컨틴 구좌 효율",
                            "발송 감축 효과"],
     "8. 다음 발송 준비":   ["발송 플레이북", "AI 처방·카피"],
@@ -4487,6 +4533,16 @@ def main():
                 st.session_state["_merge_new_raw"] = new_raw
                 st.session_state["_merge_parse_log"] = parse_log
 
+    # 저장 대기 목록 — 종류마다 버튼을 두지 않는다. 아래 세 블록(발송실적·전사 MTD·
+    # 기획전)이 여기에 등록만 하고, 버튼은 셋이 다 끝난 뒤 한 번만 그린다.
+    _pend = []
+
+    def _sess_set(key):
+        """세션 한 칸을 채우는 콜백을 만든다 — `save_queue_add`의 `apply_`로 넘긴다."""
+        def _put(df, _k=key):
+            st.session_state[_k] = df
+        return _put
+
     # 누적 병합 — 저장 전까지는 미리보기(영구 반영 X)
     if new_raw is not None and len(new_raw):
         work = merge_store(stored, new_raw)
@@ -4494,15 +4550,11 @@ def main():
         kn = set(map(tuple, store_key_frame(new_raw).values))
         st.sidebar.success(f"신규 {len(new_raw)}건 → 누적 {len(work)}건 "
                            f"(추가 {len(kn - ko)} · 갱신 {len(kn & ko)})")
-        if st.sidebar.button("💾 저장하기", width="stretch"):
-            # 낙관적 병합: 저장 직전 시트를 다시 읽어 합친다 — 두 세션이 각자 스냅샷으로
-            # 저장하면 나중 저장이 먼저 저장분을 지우던 last-write-wins 유실 방지
-            _tosave = merge_store(storage_load(BK, "campaign"), work)
-            if storage_save(BK, "campaign", _tosave):
-                st.session_state.camp_store = _tosave
-                tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-                st.sidebar.success(f"저장했어요 ✓ ({tgt}, 총 {len(_tosave):,}건) — 다음에도 유지돼요.")
-        st.sidebar.caption("저장을 눌러야 반영돼요. 안 누르면 이번 세션에서만 보여요.")
+        # 낙관적 병합: 저장 직전 시트를 다시 읽어 합친다 — 두 세션이 각자 스냅샷으로
+        # 저장하면 나중 저장이 먼저 저장분을 지우던 last-write-wins 유실 방지
+        save_queue_add(_pend, "campaign", f"발송실적 {len(work):,}건",
+                       lambda w=work: merge_store(storage_load(BK, "campaign"), w),
+                       _sess_set("camp_store"))
     else:
         work = stored
 
@@ -4705,12 +4757,9 @@ def main():
     if mtd_new is not None and len(mtd_new):
         mtd_work = merge_mtd_store(mtd_stored, mtd_new)
         st.sidebar.success(f"MTD 새로 {len(mtd_new)}일 → 합쳐서 {len(mtd_work)}일 (미리보기)")
-        if st.sidebar.button("💾 MTD 저장하기", width="stretch", key="save_mtd"):
-            _tosave = merge_mtd_store(storage_load(BK, "mtd"), mtd_work)   # 낙관적 병합
-            if storage_save(BK, "mtd", _tosave):
-                st.session_state.mtd_store_df = _tosave
-                tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-                st.sidebar.success(f"MTD 저장했어요 ✓ ({tgt})")
+        save_queue_add(_pend, "mtd", f"전사 MTD {len(mtd_work):,}일",
+                       lambda w=mtd_work: merge_mtd_store(storage_load(BK, "mtd"), w),
+                       _sess_set("mtd_store_df"))
     else:
         mtd_work = mtd_stored
     mtd_data = cached_compute_mtd(mtd_work) if (mtd_work is not None and len(mtd_work) >= 10) else None
@@ -4725,16 +4774,27 @@ def main():
             pnew = cached_promo(promo_files.getvalue())
             promo_work = merge_promo_store(promo_stored, pnew)
             st.sidebar.success(f"기획전 시트 {len(pnew):,}건 → 합쳐서 {len(promo_work):,}건 (미리보기)")
-            if st.sidebar.button("💾 기획전 저장하기", width="stretch", key="save_promo"):
-                _tosave = merge_promo_store(storage_load(BK, "promo"), promo_work)   # 낙관적 병합
-                if storage_save(BK, "promo", _tosave):
-                    st.session_state.promo_store_df = _tosave
-                    tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
-                    st.sidebar.success(f"기획전 저장했어요 ✓ ({tgt})")
-            st.sidebar.caption("저장을 눌러야 반영돼요.")
+            save_queue_add(_pend, "promo", f"기획전 {len(promo_work):,}건",
+                           lambda w=promo_work: merge_promo_store(storage_load(BK, "promo"), w),
+                           _sess_set("promo_store_df"))
         except Exception as e:
             st.sidebar.error(f"기획전 시트를 읽지 못했어요: {str(e)[:90]}")
     promo_df = finalize_promo(promo_work)
+
+    # ── 통합 저장 — 올린 종류가 몇이든 버튼은 하나다 ──
+    # 앱푸시·월별 MTD·사이트 지표는 업로드 즉시 자동 저장하므로 여기 안 올라온다.
+    if _pend:
+        st.sidebar.caption("저장 대기 — " + " · ".join(p["label"] for p in _pend))
+        if st.sidebar.button("💾 저장하기", width="stretch", key="save_all"):
+            _tgt = "구글시트" if BK["mode"] == "gsheets" else "로컬"
+            _ok, _ng = save_queue_flush(
+                _pend, lambda kind, df: storage_save(BK, kind, df))
+            if _ok:
+                st.sidebar.success(f"{_tgt}에 저장했어요 ✓ " + " · ".join(_ok)
+                                   + ". 다음에도 유지돼요.")
+            if _ng:
+                st.sidebar.error("저장하지 못한 게 있어요 — " + " · ".join(_ng))
+        st.sidebar.caption("저장을 눌러야 반영돼요. 안 누르면 이번 세션에서만 보여요.")
 
     # ── 필터 (카테고리별) ──
     st.sidebar.markdown("---")
@@ -9648,6 +9708,24 @@ def main():
             "한 달에 푸시를 받은 사람 중 **몇 %가 실제로 들어왔는지**를 봐요. 발송량·인당 발송건수는 "
             "보낸 쪽 숫자라, 받는 사람의 반응이 줄어도 그대로일 수 있어요. 그래서 이 화면을 "
             "**핵심 관리 지표**로 둬요.")
+        with st.expander("🧮 산출식", expanded=False):
+            st.markdown(
+                "**① 월 반응률** — 그 달의 유니크끼리 나눠요.\n"
+                "- 분자 `유입 MAU` = 그 달에 한 번이라도 들어온 **사람 수**\n"
+                "- 분모 `발송 MAU` = 그 달에 한 번이라도 푸시를 받은 **사람 수**\n")
+            st.latex(r"\text{월 반응률}=\frac{\text{유입 MAU}}{\text{발송 MAU}}")
+            st.markdown(
+                "**② 일 반응률** — 날마다 낸 비율을 그 주에서 평균 내요.\n"
+                "- 분자 `유니크 유입`·분모 `유니크 발송 고객수`는 전사 MTD의 **그날** 값이에요\n")
+            st.latex(r"\text{일 반응률}_{\text{주}}=\frac{1}{n}\sum_{d\in\text{주}}"
+                     r"\frac{\text{유니크 유입}_d}{\text{유니크 발송 고객수}_d}")
+            st.markdown(
+                "- **월 유니크는 일별 값을 더해서 못 만들어요.** 같은 사람이 여러 날 겹쳐서예요. "
+                "그래서 월 표(`월별 MTD 발송 상세`)를 따로 받아요.\n"
+                "- **진행 중인 달은 전년비·목표 대비를 안 매겨요.** 15일치 유니크는 30일치보다 "
+                "덜 쌓여 늘 낮게 나와서, 맞대면 없는 하락이 보여요.\n"
+                "- 전년은 **같은 달**(①)·**같은 ISO 주차**(②)와 맞대고, 진행 중인 주는 "
+                "**같은 요일까지만** 잘라서 봐요.")
         _rr_m = mtdmon_rates(st.session_state.get("mtdmon_store_df"))
         _rr_w = weekly_daily_rr(mtd_data["df"] if mtd_data is not None else None)
         if not len(_rr_m) and not len(_rr_w):
