@@ -237,25 +237,31 @@ def t_cache_marker_mentions_uniq():
 
 @case
 def t_new_metrics_selectable_in_mtd_tabs():
-    """유니크유입 계열 지표를 다른 MTD 탭 셀렉트에서도 고를 수 있어야 한다."""
-    for tab, want in (("발송 빈도·한계수익", "유입 대비 구매전환율"),
-                      ("요일 패턴", "유니크 유입")):
-        at = AppTest.from_file(APP, default_timeout=TIMEOUT)
-        at.session_state["camp_store"] = synth_store(weeks=10)
-        at.session_state["mtd_store_df"] = synth_mtd(days=200)
-        at.run()
-        at.sidebar.radio[0].set_value(group_of(TAB))
-        at.run()
-        subs = [r for r in at.radio if r.label != "페이지"][0]
-        subs.set_value(tab)
-        at.run()
-        assert not at.exception, at.exception[0].value
-        sels = [s for s in at.selectbox if s.label == "지표"]
-        assert sels, f"[{tab}] 지표 셀렉트가 없어요"
+    """유니크유입 계열 지표를 「발송량 최적 구간」의 두 셀렉트에서도 고를 수 있어야 한다.
+
+    옛 「발송 빈도·한계수익」·「요일 패턴」 탭이 이 화면의 ②③·⑥으로 합쳐졌다. 두
+    셀렉트는 **라벨로 가른다** — 둘 다 「지표」면 어느 쪽을 집는 건지 사람도 검사도
+    못 가른다.
+    """
+    at = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    at.session_state["camp_store"] = synth_store(weeks=10)
+    at.session_state["mtd_store_df"] = synth_mtd(days=200)
+    at.run()
+    at.sidebar.radio[0].set_value(group_of(TAB))
+    at.run()
+    subs = [r for r in at.radio if r.label != "페이지"][0]
+    subs.set_value("발송량 최적 구간")
+    at.run()
+    assert not at.exception, at.exception[0].value
+    for label, want in (("구간별 지표", "유입 대비 구매전환율"),
+                        ("요일별 지표", "유니크 유입")):
+        sels = [s for s in at.selectbox if s.label == label]
+        assert sels, f"「{label}」 셀렉트가 없어요 — {[s.label for s in at.selectbox]}"
         assert want in list(sels[0].options), \
-            f"[{tab}] '{want}'가 선택지에 없어요 — {list(sels[0].options)}"
+            f"[{label}] '{want}'가 선택지에 없어요 — {list(sels[0].options)}"
         sels[0].set_value(want)
         at.run()
+        assert not at.exception, at.exception[0].value
         assert not at.exception, f"[{tab}] {want} 선택에서 실패: {at.exception[0].value}"
 
 

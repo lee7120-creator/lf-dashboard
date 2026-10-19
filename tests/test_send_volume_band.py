@@ -138,11 +138,22 @@ def t_renders_without_mtd():
 
 @case
 def t_renders_with_mtd_only():
-    """MTD만 있어도 ①·③은 그려지고, ②는 앱푸시를 요청해야 한다."""
+    """MTD만 있어도 ①②③⑤⑥는 그려지고, ④(이탈)는 앱푸시를 요청해야 한다.
+
+    옛 「발송 빈도·한계수익」(→②③)과 「요일 패턴」(→⑥)을 이 화면으로 합치면서
+    번호가 밀렸다. **여섯을 다 세는 게 요점이다** — 「① 과 ③ 이 보이면 통과」처럼 두어
+    개만 보면, 합치다 블록 하나를 빠뜨려도 조용히 통과한다(실제로 번호가 밀린 뒤에도
+    옛 단언이 그대로 통과했다).
+    """
     at = _open_tab(mtd=synth_mtd())
     txt = " ".join(_texts(at))
-    assert "① " in txt and "③ " in txt, "①·③ 블록이 안 보여요"
-    assert "앱푸시 수신동의 파일" in txt, "② 앱푸시 안내가 없어요"
+    _miss = [n for n in "①②③⑤⑥" if f"{n} " not in txt]
+    assert not _miss, f"블록 {_miss} 가 안 보여요"
+    assert "앱푸시 수신동의 파일" in txt, "④ 앱푸시 안내가 없어요"
+    # 번호만 보면 «순서를 바꿔 단 다른 블록»도 통과한다 — 제목으로 같이 본다.
+    # (위젯 라벨·차트 제목은 `_texts`가 안 모으니 마크다운 제목으로 집는다)
+    for _h in ("인당 발송 구간별 효율", "발송량 5분위 효율", "요일별 — 언제 태우면 좋을까"):
+        assert _h in txt, f"「{_h}」 블록이 안 보여요"
     assert any(m.label.startswith("인당발송 +1건당") for m in at.metric), \
         f"회귀 KPI가 없어요 — {[m.label for m in at.metric]}"
     cols = [list(getattr(t.value, "columns", [])) for t in at.dataframe]

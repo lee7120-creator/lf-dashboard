@@ -3256,8 +3256,7 @@ CAMPAIGN_GROUPS = {
     "3. 성과 진단":        ["캠페인 리더보드", "전환·AOV 진단", "발송유형·브랜드",
                            "BPU·우선순위", "기획전 비교"],
     "4. 타이밍·카테고리":  ["카테고리·시간대", "타이밍·발송슬롯", "전년 동요일 비교"],
-    "5. 발송량·피로도":    ["피로도 시계열", "발송 빈도·한계수익", "발송량 최적 구간",
-                           "요일 패턴", "유입 퍼널"],
+    "5. 발송량·피로도":    ["피로도 시계열", "발송량 최적 구간", "유입 퍼널"],
     "6. 개선 효과 검증":   ["문구 개선 효과", "잔여모수 추가 효과", "발송 감축 효과"],
     "7. 다음 발송 준비":   ["발송 플레이북", "컨틴 구좌 효율", "AI 처방·카피"],
     "8. 사이트·앱 지표":   ["회원UV·거래액", "앱푸시 수신동의 모수"],
@@ -3266,8 +3265,7 @@ CAMPAIGN_GROUPS = {
 
 # 전사 MTD 파일이 있어야 열리는 하위탭 — **한 그룹에 모아 둔다**. 분기 조건과
 # 사이드바 안내가 같은 목록을 봐야 한 쪽만 고쳐져 갈리지 않는다.
-MTD_TABS = ("피로도 시계열", "발송 빈도·한계수익", "발송량 최적 구간",
-            "요일 패턴", "유입 퍼널")
+MTD_TABS = ("피로도 시계열", "발송량 최적 구간", "유입 퍼널")
 
 
 def menu_ref(tab):
@@ -10288,76 +10286,19 @@ def main():
                            f'{_fadv} 쪽에서 잘 먹힌 게 있는지 확인해 두면 다음에 재현할 수 있어요.')
                         + '</div>', unsafe_allow_html=True)
 
-        # ── 발송 빈도·한계수익 (구 F2+F3 통합) ──
-        elif page == "발송 빈도·한계수익":
-            st.title("발송 빈도 효율·한계수익")
-            st.markdown("고객 한 명에게 몇 번 보냈을 때 효율이 어떻게 변하는지, 한 구간 더 늘리면 "
-                        "얼마나 남는지 함께 봐요.")
-            lab = st.selectbox("지표", ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)",
-                                      "발송건당거래액(RPS)", "거래액", "객단가",
-                                      "유입 대비 구매전환율", "유입 1명당 거래액",
-                                      "유입 1명당 방문 횟수"])
-            mc = MTDOPT[lab]
-            b = mtd_data["buckets"]
-            if len(b):
-                y = b[mc] * (100 if mc in MTD_PCT else 1)
-                fig = go.Figure(go.Bar(x=b["bucket"].astype(str), y=y, marker_color=MCLR[mc],
-                                       text=[bar_label(v, mc, mc in MTD_PCT) for v in y], textposition="outside"))
-                set_layout(fig, base_layout(h=340, ysuffix=("%" if mc in MTD_PCT else ""),
-                                                title=f"인당 발송 구간별 평균 {lab} (표본 30일+)"))
-                chart(fig, width="stretch")
-
-            # 한계수익 — 같은 구간에서 한 단계 더 늘렸을 때의 증분 (구 F3 페이지 통합)
-            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown("##### 한계수익 — 발송 구간을 한 단계 올리면 얼마나 변할까")
-            b3 = mtd_data["buckets"].reset_index(drop=True)
-            if len(b3) >= 2:
-                vals = (b3[mc] * (100 if mc in MTD_PCT else 1)).values
-                diff = np.diff(vals)
-                labels = [f"{b3['bucket'].astype(str).iloc[i]}→{b3['bucket'].astype(str).iloc[i+1]}"
-                          for i in range(len(b3) - 1)]
-                fig = go.Figure(go.Bar(x=labels, y=diff,
-                                       marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in diff],
-                                       text=[f"{v:+.2f}" for v in diff], textposition="outside"))
-                set_layout(fig, base_layout(h=360, title=f"인당 발송 구간 상승 시 {lab} 한계 변화"))
-                chart(fig, width="stretch")
-                st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 더 보낼수록 반응과 '
-                            '효율이 오히려 줄어드는 구간이에요.</div>', unsafe_allow_html=True)
-            else:
-                st.info("구간별 데이터가 부족해요.")
-
-            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown("##### 발송량 5분위 효율")
-            q = mtd_data["quintile"]
-            if len(q):
-                cc = st.columns(2)
-                with cc[0]:
-                    _l1o = ["발송건당거래액(RPS)", "CTR(고객당)", "유입률(발송당)", "거래액",
-                            "유입 1명당 거래액"]
-                    guard_select("q_l", _l1o)
-                    l1 = st.selectbox("막대 지표 (위)", _l1o, key="q_l")
-                with cc[1]:
-                    _l2o = ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)", "객단가",
-                            "유입 대비 구매전환율"]
-                    guard_select("q_r", _l2o)
-                    l2 = st.selectbox("선 지표 (아래)", _l2o, key="q_r")
-                m1, m2 = MTDOPT[l1], MTDOPT[l2]
-                fig = stacked_panels(q["label"], q[m1] * (100 if m1 in MTD_PCT else 1), l1,
-                                     q[m2] * (100 if m2 in MTD_PCT else 1), l2,
-                                     MCLR[m1], MCLR[m2], h=400,
-                                     bar_suffix=("%" if m1 in MTD_PCT else ""),
-                                     line_suffix=("%" if m2 in MTD_PCT else ""),
-                                     title="발송량 5분위(Q1 소량→Q5 대량)")
-                chart(fig, width="stretch")
-
         # ── 발송량 최적 구간 ──
         # '감축했다가 다시 올려도 되나'에 답하는 화면. 총량은 늘고 효율은 떨어지는 게
-        # 정상이라, 어디까지가 남는 장사인지를 ①총량↔효율 ②이탈 손익분기 ③구좌 선택
-        # 세 조각으로 나눠 본다.
+        # 정상이라, 어디까지가 남는 장사인지를 여섯 조각으로 나눠 본다.
+        #   얼마나 올릴까   ①총량↔효율 ②구간별·한계수익 ③5분위
+        #   올려도 되나     ④이탈 손익분기
+        #   어디에 태울까   ⑤발송유형 ⑥요일
+        # ②③은 옛 「발송 빈도·한계수익」, ⑥은 옛 「요일 패턴」 탭이다. 셋 다 '더 보내도
+        # 되나'의 다른 조각인데 탭이 갈려 있어서, ①에서 '올려도 된다'를 본 사람이
+        # '그럼 어느 구간까지·어느 요일로'를 보려고 사이드바로 되돌아가야 했다.
         elif page == "발송량 최적 구간":
             st.title("발송량 최적 구간")
             st.markdown("발송을 더 늘리면 매출이 느는지, 늘린 만큼 이탈로 잃는지, 늘린다면 "
-                        "어떤 구좌로 늘려야 하는지를 한 화면에서 봐요.")
+                        "어떤 구좌·어떤 요일로 늘려야 하는지를 한 화면에서 봐요.")
             st.markdown('<div class="appendix">관측 데이터라 <b>인과가 아니라 상관</b>이에요. '
                         '발송을 늘린 날은 대개 행사일이라, 행사 효과가 발송 효과로 섞여 보일 수 '
                         '있어요. 방향과 크기를 가늠하는 용도로 보세요.</div>',
@@ -10430,9 +10371,81 @@ def main():
             else:
                 st.info("인당 발송 구간별로 30일 넘게 쌓인 구간이 2개 미만이라 아직 곡선을 못 그려요.")
 
-            # ── ② 이탈 손익분기 ──
+            # ── ② 인당 발송 구간별 효율 · 한계수익 ──
+            # 옛 「발송 빈도·한계수익」 탭이다. 질문이 ①과 같다 — '얼마나 올릴까'.
+            # 탭을 갈라 두니 ①에서 '올려도 된다'를 본 사람이 '그럼 어느 구간까지'를
+            # 보려고 사이드바로 되돌아가야 했다.
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown("##### ② 이탈 손익분기 — 이탈 1명이 얼마 이상 가치가 있으면 손해일까")
+            st.markdown("##### ② 인당 발송 구간별 효율 — 한 단계 올리면 얼마나 변할까")
+            st.caption("고객 한 명에게 몇 번 보냈을 때 효율이 어떻게 변하는지, 한 구간 더 "
+                       "늘리면 얼마나 남는지를 같이 봐요.")
+            _FQ_OPTS = ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)",
+                        "발송건당거래액(RPS)", "거래액", "객단가",
+                        "유입 대비 구매전환율", "유입 1명당 거래액", "유입 1명당 방문 횟수"]
+            # 한 화면에 「지표」 셀렉트가 둘이라(여기와 ⑥) **라벨을 가르고 key를 준다** —
+            # 둘 다 `st.selectbox("지표", …)` 면 어느 쪽을 만지는 건지 화면에서 안 갈린다.
+            guard_select("p_band_freq", _FQ_OPTS)
+            _fq_lab = st.selectbox("구간별 지표", _FQ_OPTS, key="p_band_freq")
+            _fq_mc = MTDOPT[_fq_lab]
+            _fq_b = mtd_data["buckets"].reset_index(drop=True)
+            if len(_fq_b):
+                _fq_y = _fq_b[_fq_mc] * (100 if _fq_mc in MTD_PCT else 1)
+                _fq_fig = go.Figure(go.Bar(
+                    x=_fq_b["bucket"].astype(str), y=_fq_y, marker_color=MCLR[_fq_mc],
+                    text=[bar_label(v, _fq_mc, _fq_mc in MTD_PCT) for v in _fq_y],
+                    textposition="outside"))
+                set_layout(_fq_fig, base_layout(
+                    h=340, ysuffix=("%" if _fq_mc in MTD_PCT else ""),
+                    title=f"인당 발송 구간별 평균 {_fq_lab} (표본 30일+)"))
+                chart(_fq_fig, width="stretch")
+            if len(_fq_b) >= 2:
+                _fq_v = (_fq_b[_fq_mc] * (100 if _fq_mc in MTD_PCT else 1)).values
+                _fq_d = np.diff(_fq_v)
+                _fq_x = [f"{_fq_b['bucket'].astype(str).iloc[i]}→"
+                         f"{_fq_b['bucket'].astype(str).iloc[i + 1]}"
+                         for i in range(len(_fq_b) - 1)]
+                _fq_fig2 = go.Figure(go.Bar(
+                    x=_fq_x, y=_fq_d,
+                    marker_color=[PALETTE["green"] if v >= 0 else PALETTE["red"] for v in _fq_d],
+                    text=[f"{v:+.2f}" for v in _fq_d], textposition="outside"))
+                set_layout(_fq_fig2, base_layout(
+                    h=360, title=f"인당 발송 구간 상승 시 {_fq_lab} 한계 변화"))
+                chart(_fq_fig2, width="stretch")
+                st.markdown('<div class="appendix">한계효율이 음수(-)인 구간은 더 보낼수록 '
+                            '반응과 효율이 오히려 줄어드는 구간이에요.</div>',
+                            unsafe_allow_html=True)
+            else:
+                st.info("구간별 데이터가 부족해요.")
+
+            # ── ③ 발송량 5분위 효율 ──
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### ③ 발송량 5분위 효율")
+            _fq_q = mtd_data["quintile"]
+            if len(_fq_q):
+                _fq_cc = st.columns(2)
+                with _fq_cc[0]:
+                    _l1o = ["발송건당거래액(RPS)", "CTR(고객당)", "유입률(발송당)", "거래액",
+                            "유입 1명당 거래액"]
+                    guard_select("q_l", _l1o)
+                    l1 = st.selectbox("막대 지표 (위)", _l1o, key="q_l")
+                with _fq_cc[1]:
+                    _l2o = ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)", "객단가",
+                            "유입 대비 구매전환율"]
+                    guard_select("q_r", _l2o)
+                    l2 = st.selectbox("선 지표 (아래)", _l2o, key="q_r")
+                m1, m2 = MTDOPT[l1], MTDOPT[l2]
+                _fq_fig3 = stacked_panels(
+                    _fq_q["label"], _fq_q[m1] * (100 if m1 in MTD_PCT else 1), l1,
+                    _fq_q[m2] * (100 if m2 in MTD_PCT else 1), l2,
+                    MCLR[m1], MCLR[m2], h=400,
+                    bar_suffix=("%" if m1 in MTD_PCT else ""),
+                    line_suffix=("%" if m2 in MTD_PCT else ""),
+                    title="발송량 5분위(Q1 소량→Q5 대량)")
+                chart(_fq_fig3, width="stretch")
+
+            # ── ④ 이탈 손익분기 ──
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### ④ 이탈 손익분기 — 이탈 1명이 얼마 이상 가치가 있으면 손해일까")
             _ob_push = st.session_state.get("push_consent_df")
             if _ob_push is None or len(_ob_push) == 0:
                 st.info("앱푸시 수신동의 파일을 올리면 발송량과 이탈을 같은 날짜 축에 놓고 "
@@ -10485,9 +10498,9 @@ def main():
                     st.caption(f"두 데이터에 같은 날짜가 있는 {len(_ob_j):,}일로 계산했어요. "
                                "배치 이관 같은 이상치 날짜는 뺐어요.")
 
-            # ── ③ 어떤 구좌로 늘릴까 ──
+            # ── ⑤ 어떤 구좌로 늘릴까 ──
             st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-            st.markdown("##### ③ 늘린다면 어떤 발송유형으로 — 유형별 효율")
+            st.markdown("##### ⑤ 늘린다면 어떤 발송유형으로 — 유형별 효율")
             st.caption("같은 한 건을 더 보낸다면 어디에 태울지 고르는 자리예요. 총량이 아니라 건당 효율로 봐요.")
             _ob_after = st.checkbox("정책 변경(2026-08-01) 이후만", value=True, key="ob_after",
                                     help="구좌를 10개에서 5개로 줄이기 전후는 운영 자체가 달라요. 끄면 전체 기간을 봐요.")
@@ -10552,36 +10565,47 @@ def main():
                     st.caption("순위는 표본 보정 점수로 정렬했어요(표시 값은 원값). "
                                "건수가 적은 유형이 요행으로 1등을 먹는 걸 막으려고요.")
 
-        # ── 요일 패턴 ──
-        else:
-            st.title("요일 패턴")
-            lab = st.selectbox("지표", ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)",
-                                      "발송건당거래액(RPS)", "거래액", "인당 발송 건수",
-                                      "유입 대비 구매전환율", "유니크 유입"])
-            mc = MTDOPT[lab]
-            dm = mtd_data["dow_mean"]
-            order = ["월", "화", "수", "목", "금", "토", "일"]
-            dm = dm.set_index("요일").reindex([o for o in order if o in dm["요일"].values]).reset_index()
-            y = dm[mc] * (100 if mc in MTD_PCT else 1)
-            fig = go.Figure(go.Bar(x=dm["요일"], y=y, marker_color=MCLR[mc],
-                                   text=[bar_label(v, mc, mc in MTD_PCT) for v in y], textposition="outside"))
-            set_layout(fig, base_layout(h=320, ysuffix=("%" if mc in MTD_PCT else ""),
-                                            title=f"요일별 평균 {lab}"))
-            chart(fig, width="stretch")
-            dc = pd.DataFrame(mtd_data["dow_comp"])
-            if len(dc):
-                st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-                st.markdown("##### 같은 요일에서 적게 보낸 날 vs 많이 보낸 날")
-                show = pd.DataFrame({
-                    "요일": dc["요일"],
-                    "저발송일 CTR": (dc["lowCtr"] * 100).map("{:.2f}%".format),
-                    "고발송일 CTR": (dc["highCtr"] * 100).map("{:.2f}%".format),
-                    "저발송일 RPS": dc["lowRps"].map("{:,.0f}".format),
-                    "고발송일 RPS": dc["highRps"].map("{:,.0f}".format),
+            # ── ⑥ 요일별 — 언제 태울까 ──
+            # 옛 「요일 패턴」 탭이다. ⑤가 '어떤 발송유형으로'라면 이건 '어느 요일로'라,
+            # 같은 '어디에 태울까'의 다른 축이다. 탭을 갈라 두면 둘을 같이 못 본다.
+            st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+            st.markdown("##### ⑥ 요일별 — 언제 태우면 좋을까")
+            _DW_OPTS = ["CTR(고객당)", "유입률(발송당)", "구매전환율(CR)",
+                        "발송건당거래액(RPS)", "거래액", "인당 발송 건수",
+                        "유입 대비 구매전환율", "유니크 유입"]
+            guard_select("p_band_dow", _DW_OPTS)
+            _dw_lab = st.selectbox("요일별 지표", _DW_OPTS, key="p_band_dow")
+            _dw_mc = MTDOPT[_dw_lab]
+            _dw_order = ["월", "화", "수", "목", "금", "토", "일"]
+            _dw_m = mtd_data["dow_mean"]
+            _dw_m = (_dw_m.set_index("요일")
+                     .reindex([o for o in _dw_order if o in _dw_m["요일"].values])
+                     .reset_index())
+            _dw_y = _dw_m[_dw_mc] * (100 if _dw_mc in MTD_PCT else 1)
+            _dw_fig = go.Figure(go.Bar(
+                x=_dw_m["요일"], y=_dw_y, marker_color=MCLR[_dw_mc],
+                text=[bar_label(v, _dw_mc, _dw_mc in MTD_PCT) for v in _dw_y],
+                textposition="outside"))
+            set_layout(_dw_fig, base_layout(
+                h=320, ysuffix=("%" if _dw_mc in MTD_PCT else ""),
+                title=f"요일별 평균 {_dw_lab}"))
+            chart(_dw_fig, width="stretch")
+            _dw_c = pd.DataFrame(mtd_data["dow_comp"])
+            if len(_dw_c):
+                st.markdown("**같은 요일에서 적게 보낸 날 vs 많이 보낸 날**")
+                _dw_show = pd.DataFrame({
+                    "요일": _dw_c["요일"],
+                    "저발송일 CTR": (_dw_c["lowCtr"] * 100).map("{:.2f}%".format),
+                    "고발송일 CTR": (_dw_c["highCtr"] * 100).map("{:.2f}%".format),
+                    "저발송일 RPS": _dw_c["lowRps"].map("{:,.0f}".format),
+                    "고발송일 RPS": _dw_c["highRps"].map("{:,.0f}".format),
                 })
-                table(show, hide_index=True, width="stretch", dl_name="같은 요일에서 적게 보낸 날 vs 많이 보낸 날")
-                st.markdown('<div class="appendix">같은 요일에 적게 보냈을 때 효율(CTR·RPS)이 뚜렷이 높다면, 모수를 무리하게 늘리기보다 타겟을 잘게 쪼개는 쪽이 나아요.</div>',
-                            unsafe_allow_html=True)
+                table(_dw_show, hide_index=True, width="stretch",
+                      dl_name="같은 요일에서 적게 보낸 날 vs 많이 보낸 날")
+                st.markdown('<div class="appendix">같은 요일에 적게 보냈을 때 효율(CTR·RPS)이 '
+                            '뚜렷이 높다면, 모수를 무리하게 늘리기보다 타겟을 잘게 쪼개는 쪽이 '
+                            '나아요.</div>', unsafe_allow_html=True)
+
         glossary()
 
     # ══════════════════════════════════════════════════════════════
