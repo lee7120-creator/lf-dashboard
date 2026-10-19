@@ -154,7 +154,7 @@ def copy_perf_store(weeks=60, seed=5):
     return store
 
 
-def weekly_funnel_page(unit, store=None):
+def weekly_funnel_page(unit, store=None, orgcat=None):
     """주간보고 「02. 첫구매 퍼널별 상세 실적」을 여는 함수.
 
     저쪽 앱은 저장소가 **cwd 기준 CSV**라 하네스가 임시 폴더로 들어간다
@@ -164,7 +164,7 @@ def weekly_funnel_page(unit, store=None):
     """
     def _o(**sess):
         import test_funnel_page as F
-        at = F._open(store=store, unit=unit)
+        at = F._open(store=store, orgcat=orgcat, unit=unit)
         for k, v in sess.items():
             at.session_state[k] = v
         if sess:
@@ -326,6 +326,36 @@ def _wavy_funnel_store():
     return st
 
 
+def _wavy_orgcat():
+    """조직×카테고리 픽스처도 같이 흔든다 — 원본은 **라벨마다 값이 같다**.
+
+    `synth_orgcat()`은 노드(조직·카테고리·채널)로는 값이 갈리지만 **기간으로는
+    상수**라, 일자 라벨 36개의 고유값이 1이다. 창을 좁혀도 일평균이 같은 값이라
+    ⑤의 «레벨 표» 셋은 규칙을 지키든 안 지키든 값이 안 변한다 — 그래서 오래
+    「⑤ 레벨 표는 창을 안 따라간다」로 읽혔는데 **앱이 아니라 픽스처 탓**이었다.
+    같은 블록의 연중 추이 차트만 잡힌 건 그쪽 지문엔 x축 라벨이 같이 들어가서다.
+
+    카운트 셋(거래액·고객수·상품UV)만 흔든다. 객단가·상품CR은 그대로 둬야
+    `거래액 = 상품UV × 상품CR × 객단가`와 `거래액 = 고객수 × 객단가`가 둘 다
+    살아남는다 — 셋을 같은 배수로 밀면 두 항등식이 저절로 보존된다.
+    """
+    import test_funnel_page as F
+    oc = F.synth_orgcat().copy()
+    day = oc[oc["gran"] == "일"]
+    labs = (day[["label", "sortkey"]].drop_duplicates()
+            .sort_values("sortkey")["label"].tolist())
+    f = {l: 0.5 + 1.5 * (i / max(len(labs) - 1, 1)) for i, l in enumerate(labs)}
+    m = (oc["gran"] == "일") & (~oc["metric"].isin(_RATIO_METRICS))
+    oc.loc[m, "value"] = [float(v) * f.get(l, 1.0)
+                          for v, l in zip(oc.loc[m, "value"], oc.loc[m, "label"])]
+    # **자기 반증 가드** — 흔든 뒤에도 라벨별 값이 하나뿐이면 계약이 아무것도 못 본다.
+    chk = oc[(oc["gran"] == "일") & (oc["metric"] == "첫구매 거래액")
+             & (oc["org"] == "*TOTAL") & (oc["cat"] == "*TOTAL")
+             & (oc["ch"] == F.W.ORGCAT_CH_ALL) & (oc["year"] == 2026)]
+    assert chk["value"].nunique() > 1, "조직×카테고리 픽스처가 아직 평평해요"
+    return oc
+
+
 def _day_range(at):
     """「조회 기간」 선택지에서 «연중 전체»와 «최근 7칸»을 뽑는다."""
     sl = [x for x in at.get("select_slider")
@@ -341,22 +371,20 @@ def t_funnel_lookup_window_scopes_the_blocks_below():
     """주간보고 「02」의 「조회 기간」 — 위에서 3주를 골라 놓고 아래만 연중이면 안 된다.
 
     세 번째 사고 자리다. 창은 `gran_ref`가 한 번 정하고(`clabel`·`win`) 아래는 받아
-    쓰기만 한다.
+    쓰기만 한다. **예외 없이 16개 블록이 전부 따라간다.**
 
-    **⑤ 조직×카테고리의 «레벨 표» 셋은 아직 안 따라간다.** 픽스처 탓이 아니다 —
-    그 원천(`synth_orgcat`)은 시간에 따라 값이 갈리고(고유값 4~8), 같은 블록의
-    «연중 추이 차트»는 창을 따라간다. CLAUDE.md가 창을 따르는 자리로 적어 둔 것도
-    「②의 차트·표 · ⑤의 **연중 추이** · 03의 채널×기간」이라 레벨 표는 빠져 있다.
-    그런데 `gran_ref`는 일 단위에서 `clabel`을 **고른 범위 그대로** 돌려주므로,
-    그걸 읽는 블록은 따라가는 게 맞다. 의도인지 빠뜨린 건지 **아직 안 갈렸다** —
-    갈리기 전까지 여기 적어 두고 나머지 13개는 못 박는다.
+    오래 ⑤ 조직×카테고리의 «레벨 표» 셋이 예외로 적혀 있었는데 **앱이 아니라
+    픽스처 탓이었다.** `synth_orgcat()`은 노드로는 값이 갈리지만 기간으로는 상수라
+    (일자 라벨 36개의 고유값이 1), 창을 좁혀도 일평균이 같은 값이다 — 규칙을 지키든
+    안 지키든 표가 안 변하니 「안 따라간다」로 읽혔다. 같은 블록의 연중 추이 차트만
+    잡힌 건 그쪽 지문에 x축 라벨이 같이 들어가서고, 그래서 「픽스처 탓이 아니다」로
+    잘못 읽었다. `_wavy_orgcat()`으로 흔들어 보니 셋 다 따라간다.
     """
     moved, _ = check(
-        "주간보고 02", weekly_funnel_page("일자별", store=_wavy_funnel_store()),
-        "wr_fn_day", _day_range,
-        stays_below=("조직|2025년|2026년",      # ⑤ 레벨 표 — 확인 필요(위 설명)
-                     "2025년|2026년|전년비"))   # ⑤ 요인 분해·카테고리 합산 — 〃
-    assert moved >= 12, f"따라간 블록이 {moved}개뿐이에요 — 픽스처가 너무 얕아요"
+        "주간보고 02", weekly_funnel_page("일자별", store=_wavy_funnel_store(),
+                                         orgcat=_wavy_orgcat()),
+        "wr_fn_day", _day_range)
+    assert moved >= 16, f"따라간 블록이 {moved}개뿐이에요 — 픽스처가 너무 얕아요"
 
 
 def main():
