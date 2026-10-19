@@ -118,17 +118,40 @@ def _open(tab, store, **sess):
     return at
 
 
-def perf_page(tab, weeks=60, seed=5, **fixed):
+def perf_page(tab, weeks=60, seed=5, store=None, **fixed):
     """발송성과 화면 하나를 여는 함수를 만든다.
 
     픽스처가 **1년을 넘어야** 한다 — 60주 미만이면 전년 짝이 없어 「전년 동요일
     비교」의 소구 블록이 아예 안 그려지고, 계약이 덮는 게 0인 채로 초록이 된다.
     """
-    store = synth_store(weeks=weeks, seed=seed)
+    store = synth_store(weeks=weeks, seed=seed) if store is None else store
 
     def _o(**sess):
         return _open(tab, store, **{**fixed, **sess})
     return _o
+
+
+def copy_perf_store(weeks=60, seed=5):
+    """소구 속성이 실제로 «붙는» 픽스처.
+
+    `synth_store`의 제목은 「제목N 세일&특가 <단독>」이라 `KW` 사전에 거의 안 걸린다.
+    그대로 쓰면 「문구 성과」가 '속성 비교에 필요한 표본이 없어요'로 끝나 **컨트롤
+    아래에 값 블록이 하나도 없다** — 계약이 아무것도 못 보는 채로 초록이 될 뻔했고,
+    `_snap`의 「블록이 하나도 안 잡혔으면 멈춘다」 가드가 그 자리에서 잡았다.
+    """
+    store = synth_store(weeks=weeks, seed=seed).copy()
+    tpl = ["오늘만 최대 50% 할인 — 마감임박",
+           "신상 입고 · 선착순 쿠폰 드려요",
+           "베스트 인기상품 한정수량",
+           "무료배송 이벤트 응모하세요",
+           "장바구니에 담아두신 상품 특가"]
+    store["title"] = [tpl[i % len(tpl)] for i in range(len(store))]
+    # **본문도 길이를 흔든다.** `synth_store`의 본문은 전부 「본문 내용입니다」라
+    # 본문길이 고유값이 1인데, 그러면 `qcut`이 구간을 0개 주고 「본문 길이 구간별」이
+    # 값 없는 빈 차트가 된다 — 지표를 바꿔도 «둘 다 비어 있어» 안 따라오는 걸로 잡힌다.
+    # 블록이 진짜로 따라오는지 보려면 픽스처가 그걸 반증할 수 있어야 한다.
+    store["body"] = [("본문 내용입니다 " * (1 + i % 5)).strip() for i in range(len(store))]
+    return store
 
 
 def weekly_funnel_page(unit, store=None):
@@ -241,6 +264,21 @@ def t_yoy_ratio_basis_drives_everything_below():
 
 
 @case
+def t_copy_metric_drives_everything_below():
+    """「성과 지표」(`p02_metric`) — 소구·조합·길이·키워드·이모지를 다 끈다.
+
+    옛 「키워드·이모지 성과」 탭을 이 화면으로 합치면서 생긴 자리다. 합치기 전엔
+    두 화면이 각자 「성과 지표」를 들고 있어서 양쪽에서 따로 골라야 했는데,
+    합치고 나면 **하나가 전부를 끌어야** 한다. 옮긴 블록이 자기 셀렉트를 그대로
+    들고 있었으면 같은 화면이 두 지표를 말하게 된다.
+    """
+    moved, _ = check("문구 성과",
+                     perf_page("문구 성과", store=copy_perf_store()),
+                     "p02_metric", ("주문전환율", "거래액"))
+    assert moved >= 4, f"따라간 블록이 {moved}개뿐이에요 — 픽스처가 너무 얕아요"
+
+
+@case
 def t_weekly_comparison_basis_drives_the_blocks_below():
     """「비교 기준」(`wr_wf_cmp_월`) — 증감 기여 분해 두 블록과 카테고리 표를 같이 끈다.
 
@@ -324,7 +362,14 @@ def t_funnel_lookup_window_scopes_the_blocks_below():
 def main():
     want = sys.argv[1:]
     fails = []
-    for fn in [f for f in CASES if not want or any(w in f.__name__ for w in want)]:
+    picked = [f for f in CASES if not want or any(w in f.__name__ for w in want)]
+    # **하나도 안 걸리면 멈춘다.** 이름은 ASCII 인데 한글 조각으로 거르면 0건이
+    # 뽑히고, 예전엔 그래도 「통과 ✅」가 찍혔다 — 아무것도 안 돌린 걸 초록으로 읽는다.
+    if want and not picked:
+        print(f"이름에 {want} 가 든 계약이 없어요 — "
+              + ", ".join(f.__name__ for f in CASES))
+        return 2
+    for fn in picked:
         try:
             fn()
             print(f"  OK   {fn.__name__}")

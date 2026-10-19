@@ -3251,8 +3251,7 @@ POLICY_CHANGE_DATE = "20260801"
 # 하위탭 이름은 아래 페이지 분기(`in page`)의 매칭 키를 그대로 품어야 한다.
 CAMPAIGN_GROUPS = {
     "1. 현황":             ["주간보고", "종합 요약", "변화 다이제스트", "푸시 반응률"],
-    "2. 문구 분석":        ["문구 속성별 성과", "키워드·이모지 성과", "소구 추세·마모",
-                           "소구 사전 후보"],
+    "2. 문구 분석":        ["문구 성과", "소구 추세·마모", "소구 사전 후보"],
     "3. 성과 진단":        ["캠페인 리더보드", "전환·AOV 진단", "발송유형·브랜드",
                            "BPU·우선순위", "기획전 비교"],
     "4. 타이밍·카테고리":  ["카테고리·시간대", "타이밍·발송슬롯", "전년 동요일 비교"],
@@ -7896,12 +7895,15 @@ def main():
         glossary()
 
     # ══════════════════════════════════════════════════════════════
-    # PAGE 02 — 문구 속성별 성과 (핵심)
+    # PAGE 02 — 문구 성과 (소구 속성 · 조합 · 길이 · 키워드 · 이모지)
     # ══════════════════════════════════════════════════════════════
-    elif "문구 속성별" in page:
-        st.title("문구 속성별 성과")
-        st.caption("각 소구 속성이 있을 때와 없을 때 성과가 얼마나 다른지 비교해요.")
-        mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()))
+    elif "문구 성과" in page:
+        st.title("문구 성과")
+        st.caption("어떤 소구 속성·단어·이모지가 잘 먹히는지 한 화면에서 봐요. "
+                   "맨 위 「성과 지표」 하나가 아래 블록을 전부 끌고 가요.")
+        # 키를 준다 — `test_filter_propagation`이 「이 컨트롤 아래」를 가르는 기준으로
+        # 위젯 키를 쓴다. 키가 없으면 그 계약을 걸 수가 없다.
+        mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p02_metric")
         mcol, msuf, mclr = METRIC_OPTS[mlabel]
         base = fdf
         if len(base) < 6:
@@ -8107,6 +8109,11 @@ def main():
             except Exception:
                 container.info(f"{label} 구간화 불가"); return
             g = b.groupby("_bin", observed=True)[mcol].agg(["mean", "count", "std"])
+            # 길이가 모두 같으면 `qcut(duplicates="drop")`은 **예외 없이 0개 구간**을
+            # 준다 — 위 try/except 로는 안 걸리고 제목만 달린 **빈 차트**가 뜬다.
+            # 화면이 아무 말도 안 하는 게 제일 나쁘다.
+            if not len(g):
+                container.info(f"{label} 길이가 모두 같아 구간을 못 나눠요"); return
             xs = [f"{int(iv.left)}~{int(iv.right)}자" for iv in g.index]
             yvv = g["mean"].values * (100 if is_pct else 1)
             _se = (g["std"] / np.sqrt(g["count"].clip(lower=1))).fillna(0).values
@@ -8162,6 +8169,98 @@ def main():
             st.caption("늘릴수록 좋다가 어느 지점부터 꺾이는 역U형이 통계적으로 확인될 때만 최적점을 보여줘요. "
                        "카테고리가 섞인 단순 회귀라 참고용이에요.")
 
+        # ── 키워드·이모지 ──
+        # 옛 「키워드·이모지 성과」 탭이다. 위 블록들과 묻는 게 같다 — '어떤 문구가 잘
+        # 먹히나'. 탭이 갈려 있어서 「성과 지표」를 양쪽에서 따로 골라야 했고, 소구 속성과
+        # 단어를 같이 못 봤다. **이제 맨 위 「성과 지표」 하나가 이 화면 전부를 끈다.**
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        _kw_pct = mcol in ("ord_cr", "infl_cr")
+        _kw_c1, _kw_c2 = st.columns(2)
+        _kw_min = _kw_c1.number_input("키워드 최소 표본(캠페인 수)", value=5, min_value=2, step=1, key="p10_kmin")
+        _kw_top = _kw_c2.number_input("상위 N개", value=20, min_value=5, step=5, key="p10_ktop")
+
+        def _kw_barfig(d, namecol, title, h):
+            up = d.head(int(_kw_top))
+            yv = up["평균"] * (100 if _kw_pct else 1)
+            # 유의(FDR p<0.1) 항목만 본색, 나머지 회색 — 요행 단어가 진하게 강조되는 것 방지
+            if "유의성" in up.columns:
+                bar_colors = [mclr if s.startswith("✱") else "#cbd5e1" for s in up["유의성"]]
+            else:
+                bar_colors = mclr
+            fig = go.Figure(go.Bar(
+                x=yv, y=up[namecol], orientation="h", marker_color=bar_colors, customdata=up["캠페인수"],
+                text=[f"{v:.2f}{'%' if _kw_pct else ''} (n={int(n)})" for v, n in zip(yv, up["캠페인수"])],
+                textposition="outside",
+                hovertemplate="%{y}<br>평균: %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
+            lay = base_layout(h=h, title=title)
+            lay["xaxis"]["range"] = bar_xrange(yv, 1.18)
+            set_layout(fig, lay)
+            fig.update_yaxes(autorange="reversed")
+            return fig
+
+        st.markdown("##### 🔤 키워드별 성과")
+        _kw_view = st.radio("보기", ["평균 상위", "차이 ±상하위 (평균을 깎는 단어까지)"],
+                            horizontal=True, key="p10_kwview")
+        _kdf_full = cached_keyword_perf(base, mcol, int(_kw_min), 500)
+        kdf = _kdf_full.head(int(_kw_top))
+        if len(_kdf_full) == 0:
+            st.info("조건에 맞는 키워드가 없어요. 기준을 낮춰 보세요.")
+        else:
+            if _kw_view.startswith("평균"):
+                chart(_kw_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(_kw_top)})",
+                                        max(360, 40 + 24 * min(len(kdf), int(_kw_top)))),
+                                width="stretch")
+            else:
+                # diverging — 전체평균 대비 +/− 상하위 각 10개 (역효과 단어가 안 보이던 문제)
+                _hi = _kdf_full.sort_values("차이", ascending=False).head(10)
+                _lo = _kdf_full.sort_values("차이").head(10)
+                _dv = pd.concat([_hi, _lo]).drop_duplicates("단어").sort_values("차이", ascending=False)
+                kdf = _dv
+                _yv = _dv["차이"] * (100 if _kw_pct else 1)
+                _sig_col = _dv["유의성"] if "유의성" in _dv.columns else pd.Series("✱", index=_dv.index)
+                _cols_dv = [("#cbd5e1" if not str(s).startswith("✱")
+                             else (PALETTE["green"] if v >= 0 else PALETTE["red"]))
+                            for v, s in zip(_dv["차이"], _sig_col)]
+                figd = go.Figure(go.Bar(
+                    x=_yv, y=_dv["단어"], orientation="h", marker_color=_cols_dv,
+                    customdata=_dv["캠페인수"],
+                    text=[f"{v:+.2f}{'%p' if _kw_pct else ''} (n={int(n)})"
+                          for v, n in zip(_yv, _dv["캠페인수"])],
+                    textposition="outside",
+                    hovertemplate="%{y}<br>전체평균 대비: %{x:+.2f}<br>캠페인수: %{customdata}<extra></extra>"))
+                layd = base_layout(h=max(420, 40 + 24 * len(_dv)),
+                                   title=f"전체평균 대비 차이 ±상하위 — {mlabel} (회색=유의하지 않음)")
+                set_layout(figd, layd)
+                figd.update_yaxes(autorange="reversed")
+                chart(figd, width="stretch")
+            sel_kw = st.selectbox("조회 대상 키워드 선택 (실제 발송 메시지 드릴다운)", list(kdf["단어"]), key="p10_kw")
+            if sel_kw:
+                hay = (base["title"].astype(str) + " " + base["body"].astype(str))
+                subk = base[hay.str.contains(re.escape(sel_kw), na=False)]
+                st.caption(f"'{sel_kw}' 포함 {len(subk)}건 — {mlabel} 높은 순")
+                render_messages(subk, mcol, f"p10kw_{sel_kw}")
+
+        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
+        st.markdown("##### 😀 이모지별 성과")
+        emin = st.number_input("이모지 최소 표본(캠페인 수)", value=3, min_value=2, step=1, key="p10_emin")
+        edf = cached_emoji_perf(base, mcol, int(emin), 30)
+        if len(edf) == 0:
+            st.info("조건에 맞는 이모지가 없어요. 이모지를 쓴 캠페인이 적을 수 있어요.")
+        else:
+            chart(_kw_barfig(edf, "이모지", f"이모지별 평균 {mlabel}",
+                                    max(320, 40 + 28 * len(edf))), width="stretch")
+            eshow = edf.copy()
+            if _kw_pct:
+                eshow["평균"] = eshow["평균"].map(lambda v: f"{v*100:.2f}%")
+                eshow["차이"] = eshow["차이"].map(lambda v: f"{v*100:+.2f}%p")
+            elif mcol in ("rps", "aov", "amt"):
+                eshow["평균"] = eshow["평균"].map(won); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.0f}")
+            else:
+                eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
+            eshow = eshow.drop(columns=["_p_adj"], errors="ignore")
+            table(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch", dl_name="이모지별 성과")
+        st.markdown('<div class="appendix">단어·이모지 성과는 캠페인 단위 평균이에요. 건수(n)가 적은 항목은 들쭉날쭉할 수 있어요. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨) 차트의 <b>회색 막대</b>는 보유 vs 미보유 차이가 통계적으로 유의하지 않은(FDR 보정 p≥0.1) 항목 — 우연일 수 있으니 참고만 하세요.</div>',
+                    unsafe_allow_html=True)
         # ── 속성별 드릴다운: 실제 발송 메시지 ──
         st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
         st.markdown("##### 📋 속성별 실제 메시지 보기")
@@ -9165,107 +9264,6 @@ def main():
         st.caption(f"조건 일치 {len(sub9)}건 — {mlabel} 높은 순")
         render_messages(sub9, mcol, "p09_drill")
 
-        glossary()
-
-    # ══════════════════════════════════════════════════════════════
-    # PAGE 10 — 키워드·이모지 성과
-    # ══════════════════════════════════════════════════════════════
-    elif "키워드" in page:
-        st.title("키워드·이모지 성과")
-        st.caption("문구에 쓴 단어와 이모지가 각각 얼마나 효과가 있었는지 봐요. 전체 평균과 비교한 값이에요.")
-        mlabel = st.selectbox("성과 지표", list(METRIC_OPTS.keys()), key="p10_metric")
-        mcol, _ms, mclr = METRIC_OPTS[mlabel]
-        is_pct = mcol in ("ord_cr", "infl_cr")
-        base = fdf
-        if len(base) < 5:
-            st.info("데이터가 부족해요. '최소 발송수'를 낮춰 보세요."); st.stop()
-
-        c1, c2 = st.columns(2)
-        kmin = c1.number_input("키워드 최소 표본(캠페인 수)", value=5, min_value=2, step=1, key="p10_kmin")
-        ktop = c2.number_input("상위 N개", value=20, min_value=5, step=5, key="p10_ktop")
-
-        def _barfig(d, namecol, title, h):
-            up = d.head(int(ktop))
-            yv = up["평균"] * (100 if is_pct else 1)
-            # 유의(FDR p<0.1) 항목만 본색, 나머지 회색 — 요행 단어가 진하게 강조되는 것 방지
-            if "유의성" in up.columns:
-                bar_colors = [mclr if s.startswith("✱") else "#cbd5e1" for s in up["유의성"]]
-            else:
-                bar_colors = mclr
-            fig = go.Figure(go.Bar(
-                x=yv, y=up[namecol], orientation="h", marker_color=bar_colors, customdata=up["캠페인수"],
-                text=[f"{v:.2f}{'%' if is_pct else ''} (n={int(n)})" for v, n in zip(yv, up["캠페인수"])],
-                textposition="outside",
-                hovertemplate="%{y}<br>평균: %{x:.2f}<br>캠페인수: %{customdata}<extra></extra>"))
-            lay = base_layout(h=h, title=title)
-            lay["xaxis"]["range"] = bar_xrange(yv, 1.18)
-            set_layout(fig, lay)
-            fig.update_yaxes(autorange="reversed")
-            return fig
-
-        st.markdown("##### 🔤 키워드별 성과")
-        _kw_view = st.radio("보기", ["평균 상위", "차이 ±상하위 (평균을 깎는 단어까지)"],
-                            horizontal=True, key="p10_kwview")
-        _kdf_full = cached_keyword_perf(base, mcol, int(kmin), 500)
-        kdf = _kdf_full.head(int(ktop))
-        if len(_kdf_full) == 0:
-            st.info("조건에 맞는 키워드가 없어요. 기준을 낮춰 보세요.")
-        else:
-            if _kw_view.startswith("평균"):
-                chart(_barfig(kdf, "단어", f"키워드별 평균 {mlabel} (상위 {int(ktop)})",
-                                        max(360, 40 + 24 * min(len(kdf), int(ktop)))),
-                                width="stretch")
-            else:
-                # diverging — 전체평균 대비 +/− 상하위 각 10개 (역효과 단어가 안 보이던 문제)
-                _hi = _kdf_full.sort_values("차이", ascending=False).head(10)
-                _lo = _kdf_full.sort_values("차이").head(10)
-                _dv = pd.concat([_hi, _lo]).drop_duplicates("단어").sort_values("차이", ascending=False)
-                kdf = _dv
-                _yv = _dv["차이"] * (100 if is_pct else 1)
-                _sig_col = _dv["유의성"] if "유의성" in _dv.columns else pd.Series("✱", index=_dv.index)
-                _cols_dv = [("#cbd5e1" if not str(s).startswith("✱")
-                             else (PALETTE["green"] if v >= 0 else PALETTE["red"]))
-                            for v, s in zip(_dv["차이"], _sig_col)]
-                figd = go.Figure(go.Bar(
-                    x=_yv, y=_dv["단어"], orientation="h", marker_color=_cols_dv,
-                    customdata=_dv["캠페인수"],
-                    text=[f"{v:+.2f}{'%p' if is_pct else ''} (n={int(n)})"
-                          for v, n in zip(_yv, _dv["캠페인수"])],
-                    textposition="outside",
-                    hovertemplate="%{y}<br>전체평균 대비: %{x:+.2f}<br>캠페인수: %{customdata}<extra></extra>"))
-                layd = base_layout(h=max(420, 40 + 24 * len(_dv)),
-                                   title=f"전체평균 대비 차이 ±상하위 — {mlabel} (회색=유의하지 않음)")
-                set_layout(figd, layd)
-                figd.update_yaxes(autorange="reversed")
-                chart(figd, width="stretch")
-            sel_kw = st.selectbox("조회 대상 키워드 선택 (실제 발송 메시지 드릴다운)", list(kdf["단어"]), key="p10_kw")
-            if sel_kw:
-                hay = (base["title"].astype(str) + " " + base["body"].astype(str))
-                subk = base[hay.str.contains(re.escape(sel_kw), na=False)]
-                st.caption(f"'{sel_kw}' 포함 {len(subk)}건 — {mlabel} 높은 순")
-                render_messages(subk, mcol, f"p10kw_{sel_kw}")
-
-        st.markdown('<div class="sdiv"></div>', unsafe_allow_html=True)
-        st.markdown("##### 😀 이모지별 성과")
-        emin = st.number_input("이모지 최소 표본(캠페인 수)", value=3, min_value=2, step=1, key="p10_emin")
-        edf = cached_emoji_perf(base, mcol, int(emin), 30)
-        if len(edf) == 0:
-            st.info("조건에 맞는 이모지가 없어요. 이모지를 쓴 캠페인이 적을 수 있어요.")
-        else:
-            chart(_barfig(edf, "이모지", f"이모지별 평균 {mlabel}",
-                                    max(320, 40 + 28 * len(edf))), width="stretch")
-            eshow = edf.copy()
-            if is_pct:
-                eshow["평균"] = eshow["평균"].map(lambda v: f"{v*100:.2f}%")
-                eshow["차이"] = eshow["차이"].map(lambda v: f"{v*100:+.2f}%p")
-            elif mcol in ("rps", "aov", "amt"):
-                eshow["평균"] = eshow["평균"].map(won); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.0f}")
-            else:
-                eshow["평균"] = eshow["평균"].map(lambda v: f"{v:,.1f}"); eshow["차이"] = eshow["차이"].map(lambda v: f"{v:+,.1f}")
-            eshow = eshow.drop(columns=["_p_adj"], errors="ignore")
-            table(eshow.style.format({"캠페인수": "{:,.0f}"}), hide_index=True, width="stretch", dl_name="이모지별 성과")
-        st.markdown('<div class="appendix">단어·이모지 성과는 캠페인 단위 평균이에요. 건수(n)가 적은 항목은 들쭉날쭉할 수 있어요. (동일 캠페인 내 중복 단어는 1회 집계, 일부 의미 없는 기호/불용어/숫자는 분석에서 제외됨) 차트의 <b>회색 막대</b>는 보유 vs 미보유 차이가 통계적으로 유의하지 않은(FDR 보정 p≥0.1) 항목 — 우연일 수 있으니 참고만 하세요.</div>',
-                    unsafe_allow_html=True)
         glossary()
 
     # ══════════════════════════════════════════════════════════════
