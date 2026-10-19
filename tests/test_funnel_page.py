@@ -2086,7 +2086,7 @@ def t_pages_are_reordered_without_the_trend_pages():
     pages = list([r for r in at.sidebar.radio if r.label == "페이지"][0].options)
     assert pages == ["01. 주간보고 요약", "02. 첫구매 퍼널별 상세 실적",
                      "03. 조직·카테고리·채널별 첫구매 상세", "04. 채널별 실적",
-                     "05. 앱푸시 동의 현황", "06. 첫구매 고객 세그먼트 성과",
+                     "05. 신규회원 앱 수신동의율", "06. 첫구매 고객 세그먼트 성과",
                      "07. 조직·카테고리별 실적", "08. 통합 데이터·다운로드"], pages
 
 
