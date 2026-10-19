@@ -2716,10 +2716,10 @@ def ai_generate_insight(df, ref_year, ref_month, ref_week, model,
         return None, f"생성 중 오류: {e}"
 
 # ══════════════════════════════════════════════════════
-# 04. 앱푸시 동의 현황 페이지
+# 신규회원 앱 수신동의율 페이지
 # ══════════════════════════════════════════════════════
 def render_push_page(df, ref_year, chart_years):
-    st.markdown("## 앱푸시 동의 현황")
+    st.markdown("## 신규회원 앱 수신동의율")
     gran_opt = st.radio("차트 보기 기준", ["일자별", "주차별", "월별"], horizontal=True, key="push_gran_opt")
     gran_map = {"일자별": "일", "주차별": "주", "월별": "월"}
     sel_gran = gran_map[gran_opt]
@@ -3754,7 +3754,7 @@ PAGE_SUMMARY = "주간보고 요약"
 PAGE_FUNNEL = "첫구매 퍼널별 상세 실적"
 PAGE_ORGCAT_CH = "조직·카테고리·채널별 첫구매 상세"
 PAGE_CHANNEL = "채널별 실적"
-PAGE_PUSH = "앱푸시 동의 현황"
+PAGE_PUSH = "신규회원 앱 수신동의율"
 PAGE_SEGMENT = "첫구매 고객 세그먼트 성과"
 PAGE_ORGCAT = "조직·카테고리별 실적"
 PAGE_DOWNLOAD = "통합 데이터·다운로드"
@@ -4876,7 +4876,7 @@ def _funnel_orgcat_trend(odf, base, path, node_lbl, met, cy, py, gran, win=None,
     **색은 항목, 선 모양은 연도**다. 올해는 실선, 전년은 얇은 점선. 색을 연도에 쓰면
     항목이 셋만 넘어도 무엇이 무엇인지 못 짚는다. 항목 색은 **전체 자식 목록** 기준으로
     고정한다 — 그린 것만으로 색을 매기면 연도를 끄고 켤 때 색이 바뀐다
-    (「05. 앱푸시 동의 현황」의 `_ycolor`와 같은 이유).
+    (「신규회원 앱 수신동의율」의 `_ycolor`와 같은 이유).
 
     연도는 체크로 넣고 뺀다. 항목이 많으면 두 해가 겹쳐 구분이 안 되므로, 전년을 꺼서
     올해 흐름만 보는 길을 열어 둔다.
@@ -6994,7 +6994,7 @@ def main():
         _cwy, _cwlabel = week_ref(df, ref_year, ref_week)
         render_channel_page(df, ref_year, ref_month, _cwy, _cwlabel, ch_sel)
 
-    # ════════════ 앱푸시 동의 현황 ════════════
+    # ════════════ 신규회원 앱 수신동의율 ════════════
     elif _pg == PAGE_PUSH:
         render_push_page(df, ref_year, chart_years)
 
