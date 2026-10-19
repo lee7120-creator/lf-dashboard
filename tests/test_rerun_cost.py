@@ -224,6 +224,54 @@ def t_leaderboard_formats_in_the_browser_not_in_python():
 
 
 @case
+def t_planning_memo_is_folded_not_mixed_with_the_numbers():
+    """「앱푸시 수신동의 모수」의 **기획 문서**는 접어 두고 분석과 섞지 않는다.
+
+    이 화면은 740줄에 블록이 열셋이었다. 그중 ①상태 매트릭스 ②상태 전환 흐름
+    ③KPI 구조 ④실행 로드맵은 숫자가 아니라 **운영 설계 메모**인데, 분석 블록과
+    같은 높이로 펼쳐져 있어서 이 화면이 무엇을 묻는 화면인지 안 읽혔다.
+
+    **정적으로 본다.** 이 화면은 앱푸시 원천 + 기간 선택이 맞아떨어져야 본문 끝까지
+    가는데, 그 픽스처를 맞추는 비용에 비해 렌더로 더 잡히는 게 「라벨이 바뀌었다」
+    정도다. 되돌아가는 길은 둘 뿐이고 둘 다 AST로 보인다 — 메모를 다시 `main()`
+    안에 펼쳐 놓거나, 호출을 빼 **메모가 통째로 사라지는데 화면은 멀쩡히 뜨거나.**
+    """
+    tree = _tree("send_perf_dashboard.py")
+    HEADS = ("① 상태 매트릭스", "② 상태 전환 흐름", "③ KPI 구조", "④ 실행 로드맵")
+
+    fn = next((n for n in tree.body
+               if isinstance(n, ast.FunctionDef) and n.name == "push_consent_playbook"), None)
+    assert fn, "push_consent_playbook() 가 모듈 레벨에 없어요 — 메모를 다시 main() 안에 폈나요?"
+    inside = "\n".join(str(getattr(n, "value", "")) for n in ast.walk(fn)
+                       if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    missing = [h for h in HEADS if h not in inside]
+    assert not missing, f"메모 함수 안에서 사라진 블록이 있어요: {missing}"
+
+    # main() 안에 같은 제목이 남아 있으면 둘로 갈린 것이다
+    main_fn = next(n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "main")
+    dup = [h for h in HEADS
+           if any(isinstance(n, ast.Constant) and isinstance(n.value, str) and h in n.value
+                  for n in ast.walk(main_fn))]
+    assert not dup, f"main() 안에도 같은 블록이 남아 있어요: {dup}"
+
+    # 호출은 반드시 **접이식 안**에서 — 그냥 부르면 접은 의미가 없다
+    folded = False
+    for n in ast.walk(main_fn):
+        if not isinstance(n, ast.With):
+            continue
+        it = " ".join(ast.unparse(w.context_expr) for w in n.items)
+        if "st.expander" not in it:
+            continue
+        if any(isinstance(c, ast.Call) and getattr(c.func, "id", "") == "push_consent_playbook"
+               for c in ast.walk(n)):
+            folded = True
+            assert "expanded=False" in it, f"메모가 펼쳐진 채로 열려요 — {it}"
+    assert folded, ("push_consent_playbook() 을 `with st.expander(...)` 안에서 안 불러요 — "
+                    "호출이 빠지면 메모가 통째로 사라지는데 화면은 멀쩡히 떠요.")
+
+
+@case
 def t_pages_are_not_referenced_by_number():
     """페이지를 **번호로** 가리키지 말 것 — 재정렬하면 조용히 끊긴다.
 
